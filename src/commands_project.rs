@@ -16,6 +16,16 @@ use std::sync::RwLock;
 use yoagent::agent::Agent;
 use yoagent::*;
 
+/// Acquire a read-guard, recovering from a poisoned RwLock instead of panicking.
+fn rw_read_or_recover<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Acquire a write-guard, recovering from a poisoned RwLock instead of panicking.
+fn rw_write_or_recover<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|e| e.into_inner())
+}
+
 // ── /todo ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,13 +63,13 @@ pub fn todo_add(description: &str) -> usize {
         description: description.to_string(),
         status: TodoStatus::Pending,
     };
-    TODO_LIST.write().unwrap().push(item);
+    rw_write_or_recover(&TODO_LIST).push(item);
     id
 }
 
 /// Update the status of a todo item by ID.
 pub fn todo_update(id: usize, status: TodoStatus) -> Result<(), String> {
-    let mut list = TODO_LIST.write().unwrap();
+    let mut list = rw_write_or_recover(&TODO_LIST);
     match list.iter_mut().find(|item| item.id == id) {
         Some(item) => {
             item.status = status;
@@ -71,18 +81,18 @@ pub fn todo_update(id: usize, status: TodoStatus) -> Result<(), String> {
 
 /// Return a snapshot of all todo items.
 pub fn todo_list() -> Vec<TodoItem> {
-    TODO_LIST.read().unwrap().clone()
+    rw_read_or_recover(&TODO_LIST).clone()
 }
 
 /// Clear all todo items and reset the ID counter.
 pub fn todo_clear() {
-    TODO_LIST.write().unwrap().clear();
+    rw_write_or_recover(&TODO_LIST).clear();
     TODO_NEXT_ID.store(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Remove a single todo item by ID.
 pub fn todo_remove(id: usize) -> Result<TodoItem, String> {
-    let mut list = TODO_LIST.write().unwrap();
+    let mut list = rw_write_or_recover(&TODO_LIST);
     let pos = list
         .iter()
         .position(|item| item.id == id)

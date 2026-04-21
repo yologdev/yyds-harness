@@ -10,6 +10,21 @@ use yoagent::agent::Agent;
 use yoagent::context::total_tokens;
 use yoagent::*;
 
+/// Acquire a read-guard, recovering from a poisoned RwLock instead of panicking.
+fn rw_read_or_recover<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Acquire a write-guard, recovering from a poisoned RwLock instead of panicking.
+fn rw_write_or_recover<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Acquire a Mutex guard, recovering from a poisoned Mutex instead of panicking.
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 // ── Watch mode state ─────────────────────────────────────────────────────
 // Global state for `/watch` — auto-run a test command after agent edits.
 
@@ -18,19 +33,19 @@ static WATCH_COMMAND: RwLock<Option<String>> = RwLock::new(None);
 
 /// Set the watch command, enabling watch mode.
 pub fn set_watch_command(cmd: &str) {
-    let mut guard = WATCH_COMMAND.write().unwrap();
+    let mut guard = rw_write_or_recover(&WATCH_COMMAND);
     *guard = Some(cmd.to_string());
 }
 
 /// Get the current watch command, if watch mode is active.
 pub fn get_watch_command() -> Option<String> {
-    let guard = WATCH_COMMAND.read().unwrap();
+    let guard = rw_read_or_recover(&WATCH_COMMAND);
     guard.clone()
 }
 
 /// Clear the watch command, disabling watch mode.
 pub fn clear_watch_command() {
-    let mut guard = WATCH_COMMAND.write().unwrap();
+    let mut guard = rw_write_or_recover(&WATCH_COMMAND);
     *guard = None;
 }
 
@@ -188,7 +203,7 @@ impl SessionChanges {
 
     /// Record a file modification.
     pub fn record(&self, path: &str, kind: ChangeKind) {
-        let mut changes = self.inner.lock().unwrap();
+        let mut changes = lock_or_recover(&self.inner);
         // Update existing entry if same path, or add new
         if let Some(existing) = changes.iter_mut().find(|c| c.path == path) {
             existing.kind = kind;
@@ -202,12 +217,12 @@ impl SessionChanges {
 
     /// Get a snapshot of all changes, in order of first modification.
     pub fn snapshot(&self) -> Vec<FileChange> {
-        self.inner.lock().unwrap().clone()
+        lock_or_recover(&self.inner).clone()
     }
 
     /// Clear all tracked changes.
     pub fn clear(&self) {
-        self.inner.lock().unwrap().clear();
+        lock_or_recover(&self.inner).clear();
     }
 }
 
@@ -215,12 +230,12 @@ impl SessionChanges {
 impl SessionChanges {
     /// Return the number of unique files changed.
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().len()
+        lock_or_recover(&self.inner).len()
     }
 
     /// Return true if no files have been changed.
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().unwrap().is_empty()
+        lock_or_recover(&self.inner).is_empty()
     }
 }
 

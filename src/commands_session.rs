@@ -16,6 +16,16 @@ use crate::cli::{
     PROACTIVE_COMPACT_THRESHOLD,
 };
 
+/// Acquire a read-guard, recovering from a poisoned RwLock instead of panicking.
+fn rw_read_or_recover<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Acquire a write-guard, recovering from a poisoned RwLock instead of panicking.
+fn rw_write_or_recover<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|e| e.into_inner())
+}
+
 // ── compact thrash detection ─────────────────────────────────────────────
 
 /// Tracks consecutive low-yield compactions to avoid thrashing.
@@ -534,7 +544,7 @@ pub fn handle_stash_push(agent: &mut Agent, description: &str) -> String {
     };
 
     let msg_count = agent.messages().len();
-    let mut stash = CONVERSATION_STASH.write().unwrap();
+    let mut stash = rw_write_or_recover(&CONVERSATION_STASH);
     let idx = stash.len();
     let desc = if description.is_empty() {
         format!("stash@{{{idx}}}")
@@ -569,7 +579,7 @@ pub fn handle_stash_push(agent: &mut Agent, description: &str) -> String {
 
 /// Pop the most recent stash entry and restore it.
 pub fn handle_stash_pop(agent: &mut Agent) -> String {
-    let mut stash = CONVERSATION_STASH.write().unwrap();
+    let mut stash = rw_write_or_recover(&CONVERSATION_STASH);
     if stash.is_empty() {
         return format!("{DIM}  (stash is empty — nothing to pop){RESET}\n");
     }
@@ -589,7 +599,7 @@ pub fn handle_stash_pop(agent: &mut Agent) -> String {
 
 /// List all stash entries.
 pub fn handle_stash_list() -> String {
-    let stash = CONVERSATION_STASH.read().unwrap();
+    let stash = rw_read_or_recover(&CONVERSATION_STASH);
     if stash.is_empty() {
         return format!("{DIM}  (stash is empty){RESET}\n");
     }
@@ -614,7 +624,7 @@ pub fn handle_stash_list() -> String {
 pub fn handle_stash_drop(index_str: &str) -> String {
     let index: usize = if index_str.is_empty() {
         // Default: drop the most recent (top of stack)
-        let stash = CONVERSATION_STASH.read().unwrap();
+        let stash = rw_read_or_recover(&CONVERSATION_STASH);
         if stash.is_empty() {
             return format!("{DIM}  (stash is empty — nothing to drop){RESET}\n");
         }
@@ -626,7 +636,7 @@ pub fn handle_stash_drop(index_str: &str) -> String {
         }
     };
 
-    let mut stash = CONVERSATION_STASH.write().unwrap();
+    let mut stash = rw_write_or_recover(&CONVERSATION_STASH);
     if index >= stash.len() {
         return format!(
             "{RED}  stash index {index} out of range (have {} entries){RESET}\n",
@@ -1103,7 +1113,7 @@ mod tests {
     fn test_stash_list_empty() {
         // Clear the global stash for this test
         {
-            let mut stash = CONVERSATION_STASH.write().unwrap();
+            let mut stash = rw_write_or_recover(&CONVERSATION_STASH);
             stash.clear();
         }
         let result = handle_stash_list();
@@ -1113,7 +1123,7 @@ mod tests {
     #[test]
     fn test_stash_drop_empty() {
         {
-            let mut stash = CONVERSATION_STASH.write().unwrap();
+            let mut stash = rw_write_or_recover(&CONVERSATION_STASH);
             stash.clear();
         }
         let result = handle_stash_drop("");
@@ -1126,7 +1136,7 @@ mod tests {
     #[test]
     fn test_stash_drop_out_of_range() {
         {
-            let mut stash = CONVERSATION_STASH.write().unwrap();
+            let mut stash = rw_write_or_recover(&CONVERSATION_STASH);
             stash.clear();
         }
         let result = handle_stash_drop("5");
