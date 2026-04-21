@@ -58,6 +58,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "/docs",
     "/export",
     "/explain",
+    "/extended",
     "/find",
     "/fix",
     "/forget",

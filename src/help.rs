@@ -207,6 +207,21 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /explain src/main.rs:50-100\n\
              \x20 /explain Cargo.toml:1-20",
         ),
+        "extended" => Some(
+            "/extended <task> [--turns N] — Run the agent autonomously on a long task\n\n\
+             Usage:\n\
+             \x20 /extended <task description>\n\
+             \x20 /extended <task description> --turns 30\n\n\
+             Enters extended autonomous mode: the agent works step by step on\n\
+             the given task without asking questions. It will run tests after\n\
+             making changes and summarize results when done.\n\n\
+             Options:\n\
+             \x20 --turns N    Maximum turns (default: 20)\n\n\
+             Examples:\n\
+             \x20 /extended add error handling to the parser module\n\
+             \x20 /extended refactor the auth system --turns 30\n\
+             \x20 /extended build a REST API for the todo app",
+        ),
         "move" => Some(
             "/move <SourceType>::<method> [file::]<TargetType> — Relocate a method between impl blocks\n\n\
              Usage:\n\
@@ -944,6 +959,7 @@ pub fn help_text() -> String {
     out.push_str(
         "                     The model can ask you questions mid-task using the ask_user tool.\n",
     );
+    out.push_str("  /extended <task>   Run the agent autonomously on a long task (--turns N)\n");
     out.push_str("  /teach [on|off]    Toggle teach mode — explains reasoning as it works\n");
     out.push_str(
         "  /remember <note>   Save a project-specific memory (persists across sessions)\n",
@@ -1010,6 +1026,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "exit" => Some("Exit yoyo"),
         "export" => Some("Export conversation as markdown"),
         "explain" => Some("Ask the agent to explain code from a file"),
+        "extended" => Some("Run the agent autonomously on a long task"),
         "extract" => Some("Extract a function/block to a new file"),
         "find" => Some("Find files by name pattern"),
         "fix" => Some("Auto-fix build/lint errors"),
@@ -1115,6 +1132,7 @@ mod tests {
             "/model",
             "/think",
             "/spawn",
+            "/extended",
             "/remember",
             "/memories",
             "/forget",
@@ -1228,6 +1246,7 @@ mod tests {
             "/model",
             "/think",
             "/spawn",
+            "/extended",
             "/remember",
             "/memories",
             "/forget",

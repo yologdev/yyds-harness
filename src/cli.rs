@@ -526,6 +526,10 @@ pub fn help_text() -> String {
     let _ = writeln!(s, "    /spawn <task>      Spawn a subagent for a task");
     let _ = writeln!(
         s,
+        "    /extended <task>   Autonomous mode for long tasks (--turns N)"
+    );
+    let _ = writeln!(
+        s,
         "    /teach [on|off]    Toggle teach mode (explains reasoning)"
     );
     let _ = writeln!(s, "    /remember <note>   Save a project-specific memory");
@@ -1178,6 +1182,13 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
             "memories" => {
                 let input = quote_args_as_command(args);
                 crate::commands_memory::handle_memories(&input);
+                return Some(None);
+            }
+            "extended" => {
+                // Extended mode requires an active agent session — print usage and
+                // suggest starting yoyo interactively.
+                eprintln!("{YELLOW}  /extended requires an interactive session.{RESET}");
+                eprintln!("{DIM}  Start yoyo and use: /extended <task> [--turns N]{RESET}\n");
                 return Some(None);
             }
             _ => {}
