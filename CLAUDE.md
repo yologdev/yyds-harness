@@ -55,7 +55,8 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `config.rs` — permission config, directory restrictions, MCP server config, TOML parsing helpers
 - `context.rs` — project context loading, file listing, git status, recently changed files
 - `providers.rs` — provider constants (KNOWN_PROVIDERS), API key env vars, default/known models per provider
-- `format/mod.rs` — Color, constants, utility functions, test output filtering, re-exports
+- `format/mod.rs` — Color, constants, utility functions, re-exports
+- `format/output.rs` — tool output compression, filtering, truncation, batch summary, indentation
 - `format/highlight.rs` — syntax highlighting for code, JSON, YAML, TOML
 - `format/cost.rs` — pricing, cost display, token formatting
 - `format/markdown.rs` — MarkdownRenderer for streaming markdown output
