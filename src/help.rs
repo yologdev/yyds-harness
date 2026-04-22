@@ -723,6 +723,24 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /provider openai\n\
              \x20 /provider google",
         ),
+        "checkpoint" => Some(
+            "/checkpoint — Named file-state snapshots within a session\n\n\
+             Usage:\n\
+             \x20 /checkpoint <name>         Save a named checkpoint\n\
+             \x20 /checkpoint save <name>    Save a named checkpoint\n\
+             \x20 /checkpoint list           List all checkpoints\n\
+             \x20 /checkpoint restore <name> Restore files to checkpoint state\n\
+             \x20 /checkpoint diff <name>    Show changes since checkpoint\n\
+             \x20 /checkpoint delete <name>  Delete a checkpoint\n\n\
+             Creates named snapshots of all modified files so you can\n\
+             return to a known-good state. Session-scoped (not persisted).\n\
+             Names must use only letters, numbers, hyphens, underscores.\n\n\
+             Examples:\n\
+             \x20 /checkpoint before-refactor\n\
+             \x20 /checkpoint list\n\
+             \x20 /checkpoint restore before-refactor\n\
+             \x20 /checkpoint diff before-refactor",
+        ),
         "changes" => Some(
             "/changes — Show files modified during this session\n\n\
              Lists all files that were written or edited by the AI during\n\
@@ -887,6 +905,9 @@ pub fn help_text() -> String {
         "  /jump <name>       Restore conversation to a bookmark (discards messages after it)\n",
     );
     out.push_str("  /marks             List all saved bookmarks\n");
+    out.push_str(
+        "  /checkpoint [sub]  Named file-state snapshots (save, list, restore, diff, delete)\n",
+    );
     out.push_str("  /changes [--diff]  Show files modified (written/edited) during this session\n");
     out.push_str("  /changelog [N]     Show recent git commit history (default: 15, max: 100)\n");
     out.push_str(
@@ -1037,6 +1058,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "blame" => Some("Show git blame with colored output"),
         "changes" => Some("Show files modified during this session"),
         "changelog" => Some("Show recent git commit history"),
+        "checkpoint" => Some("Named file-state snapshots (save, list, restore, diff, delete)"),
         "clear" => Some("Clear conversation history"),
         "clear!" => Some("Force-clear without confirmation"),
         "commit" => Some("Commit staged changes"),
@@ -1137,6 +1159,7 @@ mod tests {
             "/mark",
             "/jump",
             "/marks",
+            "/checkpoint",
             "/git",
             "/diff",
             "/undo",
@@ -1216,6 +1239,7 @@ mod tests {
             "/mark",
             "/jump",
             "/marks",
+            "/checkpoint",
             "/changes",
             "/stash",
             "/todo",

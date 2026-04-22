@@ -1,5 +1,5 @@
 //! Session-related command handlers: /save, /load, /compact, /history, /search,
-//! /mark, /jump, /marks, /export, /stash.
+//! /mark, /jump, /marks, /export, /stash, /checkpoint.
 
 use crate::format::*;
 use crate::prompt::*;
@@ -690,6 +690,275 @@ pub fn clear_confirmation_message(message_count: usize, token_count: u64) -> Opt
     ))
 }
 
+// ── Checkpoint ──────────────────────────────────────────────────────────────
+
+/// A named snapshot of file contents at a point in time.
+pub struct Checkpoint {
+    pub name: String,
+    pub created: std::time::Instant,
+    pub files: HashMap<String, String>, // path -> content at checkpoint time
+}
+
+/// In-session store of named file-state checkpoints.
+pub struct CheckpointStore {
+    checkpoints: HashMap<String, Checkpoint>,
+}
+
+/// Subcommands for `/checkpoint`.
+const CHECKPOINT_SUBCOMMANDS: &[&str] = &["save", "list", "restore", "diff", "delete"];
+
+impl CheckpointStore {
+    /// Create a new empty store.
+    pub fn new() -> Self {
+        Self {
+            checkpoints: HashMap::new(),
+        }
+    }
+
+    /// Save a named checkpoint by reading current file contents from `changes`.
+    pub fn save(&mut self, name: &str, changes: &SessionChanges) {
+        let snapshot = changes.snapshot();
+        let mut files = HashMap::new();
+        for fc in &snapshot {
+            if let Ok(content) = std::fs::read_to_string(&fc.path) {
+                files.insert(fc.path.clone(), content);
+            }
+        }
+        self.checkpoints.insert(
+            name.to_string(),
+            Checkpoint {
+                name: name.to_string(),
+                created: std::time::Instant::now(),
+                files,
+            },
+        );
+    }
+
+    /// Restore files to their state at the named checkpoint.
+    /// Returns a list of action descriptions, or an error message.
+    pub fn restore(&self, name: &str) -> Result<Vec<String>, String> {
+        let cp = self
+            .checkpoints
+            .get(name)
+            .ok_or_else(|| format!("No checkpoint named '{name}'"))?;
+        let mut actions = Vec::new();
+        for (path, content) in &cp.files {
+            if std::path::Path::new(path).exists() {
+                if let Err(e) = std::fs::write(path, content) {
+                    actions.push(format!("  ✗ {path}: {e}"));
+                } else {
+                    actions.push(format!("  ✓ restored {path}"));
+                }
+            } else {
+                // File was deleted since checkpoint — recreate it
+                if let Some(parent) = std::path::Path::new(path).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(path, content) {
+                    actions.push(format!("  ✗ {path} (recreate): {e}"));
+                } else {
+                    actions.push(format!("  ⚠ recreated {path} (was deleted)"));
+                }
+            }
+        }
+        Ok(actions)
+    }
+
+    /// List all checkpoints: (name, file_count, created).
+    pub fn list(&self) -> Vec<(&str, usize, std::time::Instant)> {
+        let mut entries: Vec<_> = self
+            .checkpoints
+            .values()
+            .map(|cp| (cp.name.as_str(), cp.files.len(), cp.created))
+            .collect();
+        // Sort by creation time (oldest first)
+        entries.sort_by_key(|e| e.2);
+        entries
+    }
+
+    /// Diff current file state against the named checkpoint.
+    pub fn diff(&self, name: &str) -> Result<String, String> {
+        let cp = self
+            .checkpoints
+            .get(name)
+            .ok_or_else(|| format!("No checkpoint named '{name}'"))?;
+        let mut out = String::new();
+        for (path, saved) in &cp.files {
+            let current = std::fs::read_to_string(path).unwrap_or_default();
+            if current == *saved {
+                continue;
+            }
+            out.push_str(&format!("{}── {path} ──{}\n", BOLD, RESET));
+            // Simple line diff
+            let saved_lines: Vec<&str> = saved.lines().collect();
+            let current_lines: Vec<&str> = current.lines().collect();
+            for line in &saved_lines {
+                if !current_lines.contains(line) {
+                    out.push_str(&format!("{RED}- {line}{RESET}\n"));
+                }
+            }
+            for line in &current_lines {
+                if !saved_lines.contains(line) {
+                    out.push_str(&format!("{GREEN}+ {line}{RESET}\n"));
+                }
+            }
+        }
+        if out.is_empty() {
+            Ok(format!("No changes since checkpoint '{name}'."))
+        } else {
+            Ok(out)
+        }
+    }
+
+    /// Delete a named checkpoint. Returns true if it existed.
+    pub fn delete(&mut self, name: &str) -> bool {
+        self.checkpoints.remove(name).is_some()
+    }
+
+    /// Return the number of stored checkpoints.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.checkpoints.len()
+    }
+}
+
+/// Returns true if a name is valid: non-empty, only alphanumeric, hyphens, underscores.
+fn is_valid_checkpoint_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Format a duration as a human-readable relative time (e.g., "2m ago").
+fn format_checkpoint_age(created: std::time::Instant) -> String {
+    let elapsed = created.elapsed();
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else {
+        format!("{}h {}m ago", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// Handle the `/checkpoint` command.
+pub fn handle_checkpoint(input: &str, store: &mut CheckpointStore, changes: &SessionChanges) {
+    let rest = if input == "/checkpoint" {
+        ""
+    } else {
+        input.strip_prefix("/checkpoint ").unwrap_or("").trim()
+    };
+
+    if rest.is_empty() {
+        println!(
+            "{BOLD}Usage:{RESET} /checkpoint <name>       Save a named checkpoint\n\
+             \x20      /checkpoint save <name>  Save a named checkpoint\n\
+             \x20      /checkpoint list         List all checkpoints\n\
+             \x20      /checkpoint restore <n>  Restore files to checkpoint state\n\
+             \x20      /checkpoint diff <name>  Show changes since checkpoint\n\
+             \x20      /checkpoint delete <n>   Delete a checkpoint"
+        );
+        return;
+    }
+
+    let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+    let subcmd = parts[0];
+    let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
+
+    match subcmd {
+        "list" => {
+            let entries = store.list();
+            if entries.is_empty() {
+                println!("{DIM}No checkpoints saved yet.{RESET}");
+            } else {
+                println!("{BOLD}Checkpoints:{RESET}");
+                for (name, file_count, created) in &entries {
+                    let age = format_checkpoint_age(*created);
+                    println!("  {GREEN}{name}{RESET}  ({file_count} files, {age})");
+                }
+            }
+        }
+        "restore" => {
+            if arg.is_empty() {
+                println!("{RED}Usage: /checkpoint restore <name>{RESET}");
+                return;
+            }
+            match store.restore(arg) {
+                Ok(actions) => {
+                    println!("{GREEN}Restored checkpoint '{arg}':{RESET}");
+                    for a in &actions {
+                        println!("{a}");
+                    }
+                }
+                Err(e) => println!("{RED}{e}{RESET}"),
+            }
+        }
+        "diff" => {
+            if arg.is_empty() {
+                println!("{RED}Usage: /checkpoint diff <name>{RESET}");
+                return;
+            }
+            match store.diff(arg) {
+                Ok(output) => print!("{output}"),
+                Err(e) => println!("{RED}{e}{RESET}"),
+            }
+        }
+        "delete" => {
+            if arg.is_empty() {
+                println!("{RED}Usage: /checkpoint delete <name>{RESET}");
+                return;
+            }
+            if store.delete(arg) {
+                println!("{GREEN}Deleted checkpoint '{arg}'.{RESET}");
+            } else {
+                println!("{RED}No checkpoint named '{arg}'.{RESET}");
+            }
+        }
+        "save" => {
+            if arg.is_empty() {
+                println!("{RED}Usage: /checkpoint save <name>{RESET}");
+                return;
+            }
+            if !is_valid_checkpoint_name(arg) {
+                println!(
+                    "{RED}Invalid name. Use only letters, numbers, hyphens, underscores.{RESET}"
+                );
+                return;
+            }
+            store.save(arg, changes);
+            let count = store
+                .checkpoints
+                .get(arg)
+                .map(|cp| cp.files.len())
+                .unwrap_or(0);
+            println!("{GREEN}Checkpoint '{arg}' saved ({count} files).{RESET}");
+        }
+        // Bare name: treat as save
+        name => {
+            if !is_valid_checkpoint_name(name) {
+                println!(
+                    "{RED}Unknown subcommand '{name}'. Use: save, list, restore, diff, delete.{RESET}"
+                );
+                return;
+            }
+            store.save(name, changes);
+            let count = store
+                .checkpoints
+                .get(name)
+                .map(|cp| cp.files.len())
+                .unwrap_or(0);
+            println!("{GREEN}Checkpoint '{name}' saved ({count} files).{RESET}");
+        }
+    }
+}
+
+/// Subcommand completions for `/checkpoint`.
+pub fn checkpoint_subcommands() -> &'static [&'static str] {
+    CHECKPOINT_SUBCOMMANDS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1325,5 +1594,141 @@ mod tests {
         assert!(jump_matches("/jump checkpoint"));
         assert!(!jump_matches("/jumping"));
         assert!(!jump_matches("/jumped"));
+    }
+
+    #[test]
+    fn test_checkpoint_save_and_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "hello").unwrap();
+
+        let changes = SessionChanges::new();
+        changes.record(file_path.to_str().unwrap(), ChangeKind::Write);
+
+        let mut store = CheckpointStore::new();
+        store.save("v1", &changes);
+
+        let entries = store.list();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "v1");
+        assert_eq!(entries[0].1, 1); // 1 file
+    }
+
+    #[test]
+    fn test_checkpoint_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "original").unwrap();
+
+        let changes = SessionChanges::new();
+        changes.record(file_path.to_str().unwrap(), ChangeKind::Write);
+
+        let mut store = CheckpointStore::new();
+        store.save("snap", &changes);
+
+        // Modify the file
+        std::fs::write(&file_path, "modified").unwrap();
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "modified");
+
+        // Restore
+        let actions = store.restore("snap").unwrap();
+        assert!(!actions.is_empty());
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "original");
+    }
+
+    #[test]
+    fn test_checkpoint_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "line1\nline2\n").unwrap();
+
+        let changes = SessionChanges::new();
+        changes.record(file_path.to_str().unwrap(), ChangeKind::Write);
+
+        let mut store = CheckpointStore::new();
+        store.save("before", &changes);
+
+        // Modify the file
+        std::fs::write(&file_path, "line1\nline3\n").unwrap();
+
+        let diff = store.diff("before").unwrap();
+        assert!(diff.contains("line2")); // removed line
+        assert!(diff.contains("line3")); // added line
+    }
+
+    #[test]
+    fn test_checkpoint_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "data").unwrap();
+
+        let changes = SessionChanges::new();
+        changes.record(file_path.to_str().unwrap(), ChangeKind::Write);
+
+        let mut store = CheckpointStore::new();
+        store.save("temp", &changes);
+        assert_eq!(store.len(), 1);
+
+        assert!(store.delete("temp"));
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn test_checkpoint_duplicate_name_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+
+        // Save first checkpoint
+        std::fs::write(&file_path, "v1").unwrap();
+        let changes = SessionChanges::new();
+        changes.record(file_path.to_str().unwrap(), ChangeKind::Write);
+        let mut store = CheckpointStore::new();
+        store.save("cp", &changes);
+
+        // Overwrite with different content
+        std::fs::write(&file_path, "v2").unwrap();
+        store.save("cp", &changes);
+
+        assert_eq!(store.len(), 1);
+
+        // Restore should give v2, not v1
+        std::fs::write(&file_path, "v3").unwrap();
+        store.restore("cp").unwrap();
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "v2");
+    }
+
+    #[test]
+    fn test_checkpoint_restore_nonexistent() {
+        let store = CheckpointStore::new();
+        let result = store.restore("nope");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("nope"));
+    }
+
+    #[test]
+    fn test_valid_checkpoint_names() {
+        assert!(is_valid_checkpoint_name("before-refactor"));
+        assert!(is_valid_checkpoint_name("v1"));
+        assert!(is_valid_checkpoint_name("snap_2"));
+        assert!(is_valid_checkpoint_name("ABC123"));
+        assert!(!is_valid_checkpoint_name(""));
+        assert!(!is_valid_checkpoint_name("has space"));
+        assert!(!is_valid_checkpoint_name("bad!name"));
+    }
+
+    #[test]
+    fn test_checkpoint_diff_no_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "same").unwrap();
+
+        let changes = SessionChanges::new();
+        changes.record(file_path.to_str().unwrap(), ChangeKind::Write);
+
+        let mut store = CheckpointStore::new();
+        store.save("cp", &changes);
+
+        let diff = store.diff("cp").unwrap();
+        assert!(diff.contains("No changes"));
     }
 }

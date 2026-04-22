@@ -304,6 +304,7 @@ async fn dispatch_command(
     last_input: &mut Option<String>,
     last_error: &mut Option<String>,
     bookmarks: &mut commands::Bookmarks,
+    checkpoint_store: &mut commands::CheckpointStore,
     session_start: Instant,
     turn_count: usize,
     cwd: &str,
@@ -484,6 +485,10 @@ async fn dispatch_command(
         s if s == "/stash" || s.starts_with("/stash ") => {
             let result = commands::handle_stash(agent, s);
             print!("{result}");
+            CommandResult::Continue
+        }
+        s if s == "/checkpoint" || s.starts_with("/checkpoint ") => {
+            commands::handle_checkpoint(s, checkpoint_store, session_changes);
             CommandResult::Continue
         }
         s if s == "/diff" || s.starts_with("/diff ") => {
@@ -983,6 +988,7 @@ pub async fn run_repl(
     let spawn_tracker = commands::SpawnTracker::new();
     let bg_tracker = commands::BackgroundJobTracker::new();
     let mut undo_context: Option<String> = None;
+    let mut checkpoint_store = commands::CheckpointStore::new();
 
     loop {
         let prompt = if let Some(branch) = git_branch() {
@@ -1034,6 +1040,7 @@ pub async fn run_repl(
             &mut last_input,
             &mut last_error,
             &mut bookmarks,
+            &mut checkpoint_store,
             session_start,
             turn_count,
             &cwd,

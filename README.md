@@ -353,6 +353,7 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 | `/load [path]` | Load session from file |
 | `/mark <name>` | Bookmark current point in conversation |
 | `/marks` | List all conversation bookmarks |
+| `/checkpoint [sub]` | Named file-state snapshots (save, list, restore, diff, delete) |
 | `/memories` | List project-specific memories |
 | `/model <name>` | Switch model mid-session |
 | `/pr [subcmd]` | PR workflow: list, view, create, diff, comment, checkout |

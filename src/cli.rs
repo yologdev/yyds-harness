@@ -394,6 +394,10 @@ pub fn help_text() -> String {
     let _ = writeln!(s, "    /mark <name>       Bookmark conversation state");
     let _ = writeln!(s, "    /jump <name>       Restore to a bookmark");
     let _ = writeln!(s, "    /marks             List saved bookmarks");
+    let _ = writeln!(
+        s,
+        "    /checkpoint [sub]  Named file-state snapshots (save/list/restore/diff/delete)"
+    );
     let _ = writeln!(s, "    /changes           Show files modified this session");
     let _ = writeln!(s, "    /changelog [N]     Show recent git commit history");
     let _ = writeln!(s, "    /export [path]     Export conversation as markdown");

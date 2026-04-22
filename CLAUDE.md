@@ -56,6 +56,7 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `context.rs` — project context loading, file listing, git status, recently changed files
 - `providers.rs` — provider constants (KNOWN_PROVIDERS), API key env vars, default/known models per provider
 - `format/mod.rs` — Color, constants, utility functions, re-exports
+- `format/diff.rs` — LCS-based line diff algorithm, colored unified diff rendering
 - `format/output.rs` — tool output compression, filtering, truncation, batch summary, indentation
 - `format/highlight.rs` — syntax highlighting for code, JSON, YAML, TOML
 - `format/cost.rs` — pricing, cost display, token formatting
