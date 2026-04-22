@@ -208,18 +208,21 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /explain Cargo.toml:1-20",
         ),
         "extended" => Some(
-            "/extended <task> [--turns N] — Run the agent autonomously on a long task\n\n\
+            "/extended <task> [--turns N] [--budget N] — Run the agent autonomously on a long task\n\n\
              Usage:\n\
              \x20 /extended <task description>\n\
-             \x20 /extended <task description> --turns 30\n\n\
+             \x20 /extended <task description> --turns 30\n\
+             \x20 /extended <task description> --budget 15\n\n\
              Enters extended autonomous mode: the agent works step by step on\n\
              the given task without asking questions. It will run tests after\n\
              making changes and summarize results when done.\n\n\
              Options:\n\
-             \x20 --turns N    Maximum turns (default: 20)\n\n\
+             \x20 --turns N     Maximum turns (default: 20)\n\
+             \x20 --budget N    Wall-clock time limit in minutes\n\n\
              Examples:\n\
              \x20 /extended add error handling to the parser module\n\
              \x20 /extended refactor the auth system --turns 30\n\
+             \x20 /extended rebuild the test suite --budget 15\n\
              \x20 /extended build a REST API for the todo app",
         ),
         "move" => Some(
@@ -959,7 +962,9 @@ pub fn help_text() -> String {
     out.push_str(
         "                     The model can ask you questions mid-task using the ask_user tool.\n",
     );
-    out.push_str("  /extended <task>   Run the agent autonomously on a long task (--turns N)\n");
+    out.push_str(
+        "  /extended <task>   Run the agent autonomously on a long task (--turns N, --budget N)\n",
+    );
     out.push_str("  /teach [on|off]    Toggle teach mode — explains reasoning as it works\n");
     out.push_str(
         "  /remember <note>   Save a project-specific memory (persists across sessions)\n",

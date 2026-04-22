@@ -1,6 +1,6 @@
 //! Interactive REPL loop and related helpers (tab-completion, multi-line input).
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::cli::*;
 use crate::commands::{
@@ -1406,19 +1406,22 @@ fn extract_image_label(summary: &str, fallback_mime: &str) -> String {
 /// Default maximum turns for extended autonomous mode.
 const DEFAULT_EXTENDED_TURNS: usize = 20;
 
-/// Parse the `/extended` command input, extracting the prompt and optional `--turns N`.
+/// Parse the `/extended` command input, extracting the prompt, optional `--turns N`,
+/// and optional `--budget N` (time limit in minutes).
 ///
-/// Returns `(prompt, max_turns)`. If `--turns N` is present, it is stripped from
-/// the prompt and used as the turn limit. Otherwise `DEFAULT_EXTENDED_TURNS` is used.
-fn parse_extended_args(input: &str) -> (String, usize) {
+/// Returns `(prompt, max_turns, budget)`. If `--turns N` is present, it is stripped
+/// from the prompt and used as the turn limit. If `--budget N` is present, it is
+/// stripped and returned as `Some(Duration)`. Otherwise defaults apply.
+fn parse_extended_args(input: &str) -> (String, usize, Option<Duration>) {
     let raw = input
         .strip_prefix("/extended")
         .unwrap_or(input)
         .trim()
         .to_string();
 
-    // Look for --turns N anywhere in the string
+    // Look for --turns N and --budget N anywhere in the string
     let mut turns = DEFAULT_EXTENDED_TURNS;
+    let mut budget: Option<Duration> = None;
     let mut prompt_parts: Vec<&str> = Vec::new();
     let words: Vec<&str> = raw.split_whitespace().collect();
     let mut skip_next = false;
@@ -1437,11 +1440,22 @@ fn parse_extended_args(input: &str) -> (String, usize) {
                 }
             }
         }
+        if *word == "--budget" {
+            if let Some(next) = words.get(i + 1) {
+                if let Ok(mins) = next.parse::<u64>() {
+                    if mins > 0 {
+                        budget = Some(Duration::from_secs(mins * 60));
+                    }
+                    skip_next = true;
+                    continue;
+                }
+            }
+        }
         prompt_parts.push(word);
     }
 
     let prompt = prompt_parts.join(" ");
-    (prompt, turns)
+    (prompt, turns, budget)
 }
 
 /// Build the system-level instruction for extended autonomous mode.
@@ -1467,38 +1481,80 @@ async fn handle_extended(
     model: &str,
     session_changes: &SessionChanges,
 ) -> Option<String> {
-    let (prompt, max_turns) = parse_extended_args(input);
+    let (prompt, max_turns, budget) = parse_extended_args(input);
 
     if prompt.is_empty() {
         eprintln!(
-            "{YELLOW}  Usage: /extended <task description> [--turns N]{RESET}\n\
+            "{YELLOW}  Usage: /extended <task description> [--turns N] [--budget N]{RESET}\n\
              {DIM}  Run the agent autonomously on a task (default: {DEFAULT_EXTENDED_TURNS} turns).\n\
+             {DIM}  --budget N sets a wall-clock time limit in minutes.\n\
              \n\
              {DIM}  Examples:\n\
              {DIM}    /extended add error handling to the parser module\n\
-             {DIM}    /extended refactor the auth system --turns 30{RESET}\n"
+             {DIM}    /extended refactor the auth system --turns 30\n\
+             {DIM}    /extended rebuild the test suite --budget 15{RESET}\n"
         );
         return None;
     }
 
+    let budget_label = if let Some(dur) = budget {
+        format!(" | budget: {} min", dur.as_secs() / 60)
+    } else {
+        String::new()
+    };
+
     eprintln!(
-        "\n{BOLD_CYAN}  🐙 Extended mode{RESET} — working autonomously ({max_turns} turns max)\n\
+        "\n{BOLD_CYAN}  🐙 Extended mode{RESET} — working autonomously ({max_turns} turns max{budget_label})\n\
          {DIM}  Task: {prompt}{RESET}\n"
     );
 
     let extended_prompt = build_extended_system_prompt(&prompt, max_turns);
 
-    // Run the task using the existing prompt infrastructure with auto-retry
+    // Run the task using the existing prompt infrastructure with auto-retry.
+    // If a budget is set, wrap in tokio::time::timeout.
     let prompt_start = Instant::now();
-    let outcome = run_prompt_auto_retry(
-        agent,
-        &extended_prompt,
-        session_total,
-        model,
-        session_changes,
-    )
-    .await;
+    let timed_out;
+
+    if let Some(dur) = budget {
+        match tokio::time::timeout(
+            dur,
+            run_prompt_auto_retry(
+                agent,
+                &extended_prompt,
+                session_total,
+                model,
+                session_changes,
+            ),
+        )
+        .await
+        {
+            Ok(_outcome) => {
+                timed_out = false;
+            }
+            Err(_elapsed) => {
+                timed_out = true;
+            }
+        }
+    } else {
+        let _outcome = run_prompt_auto_retry(
+            agent,
+            &extended_prompt,
+            session_total,
+            model,
+            session_changes,
+        )
+        .await;
+        timed_out = false;
+    }
+
     let elapsed = prompt_start.elapsed();
+
+    if timed_out {
+        let budget_mins = budget.map(|d| d.as_secs() / 60).unwrap_or(0);
+        eprintln!(
+            "\n{YELLOW}  🐙 Extended mode — time budget exhausted ({budget_mins} min){RESET}"
+        );
+    }
 
     // Summary
     let files_changed = session_changes.snapshot().len();
@@ -1506,10 +1562,6 @@ async fn handle_extended(
         "\n{BOLD_CYAN}  🐙 Extended mode complete{RESET}\n\
          {DIM}  Time: {elapsed:.1?} | Files modified: {files_changed}{RESET}\n"
     );
-
-    if let Some(ref err) = outcome.last_tool_error {
-        eprintln!("{YELLOW}  ⚠ Last tool error: {err}{RESET}\n");
-    }
 
     // Return the prompt so it can be set as last_input for /retry
     Some(extended_prompt)
@@ -2100,58 +2152,114 @@ mod tests {
 
     #[test]
     fn test_parse_extended_args_basic_prompt() {
-        let (prompt, turns) = parse_extended_args("/extended build a REST API");
+        let (prompt, turns, budget) = parse_extended_args("/extended build a REST API");
         assert_eq!(prompt, "build a REST API");
         assert_eq!(turns, DEFAULT_EXTENDED_TURNS);
+        assert!(budget.is_none());
     }
 
     #[test]
     fn test_parse_extended_args_with_turns() {
-        let (prompt, turns) = parse_extended_args("/extended refactor auth --turns 10");
+        let (prompt, turns, budget) = parse_extended_args("/extended refactor auth --turns 10");
         assert_eq!(prompt, "refactor auth");
         assert_eq!(turns, 10);
+        assert!(budget.is_none());
     }
 
     #[test]
     fn test_parse_extended_args_turns_at_start() {
-        let (prompt, turns) = parse_extended_args("/extended --turns 5 fix all bugs");
+        let (prompt, turns, budget) = parse_extended_args("/extended --turns 5 fix all bugs");
         assert_eq!(prompt, "fix all bugs");
         assert_eq!(turns, 5);
+        assert!(budget.is_none());
     }
 
     #[test]
     fn test_parse_extended_args_turns_in_middle() {
-        let (prompt, turns) = parse_extended_args("/extended add tests --turns 15 for parser");
+        let (prompt, turns, budget) =
+            parse_extended_args("/extended add tests --turns 15 for parser");
         assert_eq!(prompt, "add tests for parser");
         assert_eq!(turns, 15);
+        assert!(budget.is_none());
     }
 
     #[test]
     fn test_parse_extended_args_no_prompt() {
-        let (prompt, turns) = parse_extended_args("/extended");
+        let (prompt, turns, budget) = parse_extended_args("/extended");
         assert!(prompt.is_empty());
         assert_eq!(turns, DEFAULT_EXTENDED_TURNS);
+        assert!(budget.is_none());
     }
 
     #[test]
     fn test_parse_extended_args_turns_minimum_one() {
-        let (prompt, turns) = parse_extended_args("/extended do stuff --turns 0");
+        let (prompt, turns, budget) = parse_extended_args("/extended do stuff --turns 0");
         assert_eq!(prompt, "do stuff");
         assert_eq!(turns, 1); // Clamped to 1
+        assert!(budget.is_none());
     }
 
     #[test]
     fn test_parse_extended_args_invalid_turns_kept_as_prompt() {
-        let (prompt, turns) = parse_extended_args("/extended do stuff --turns abc");
+        let (prompt, turns, budget) = parse_extended_args("/extended do stuff --turns abc");
         assert_eq!(prompt, "do stuff --turns abc");
         assert_eq!(turns, DEFAULT_EXTENDED_TURNS);
+        assert!(budget.is_none());
     }
 
     #[test]
     fn test_parse_extended_args_turns_without_value() {
-        let (prompt, turns) = parse_extended_args("/extended do stuff --turns");
+        let (prompt, turns, budget) = parse_extended_args("/extended do stuff --turns");
         assert_eq!(prompt, "do stuff --turns");
         assert_eq!(turns, DEFAULT_EXTENDED_TURNS);
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_budget() {
+        let (prompt, turns, budget) = parse_extended_args("/extended do stuff --budget 10");
+        assert_eq!(prompt, "do stuff");
+        assert_eq!(turns, DEFAULT_EXTENDED_TURNS);
+        assert_eq!(budget, Some(Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn test_parse_extended_turns_and_budget() {
+        let (prompt, turns, budget) =
+            parse_extended_args("/extended rebuild tests --turns 30 --budget 15");
+        assert_eq!(prompt, "rebuild tests");
+        assert_eq!(turns, 30);
+        assert_eq!(budget, Some(Duration::from_secs(900)));
+    }
+
+    #[test]
+    fn test_parse_extended_no_budget() {
+        let (prompt, turns, budget) = parse_extended_args("/extended simple task");
+        assert_eq!(prompt, "simple task");
+        assert_eq!(turns, DEFAULT_EXTENDED_TURNS);
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_budget_zero_ignored() {
+        let (prompt, _turns, budget) = parse_extended_args("/extended task --budget 0");
+        assert_eq!(prompt, "task");
+        // --budget 0 is consumed (skip_next fires) but budget stays None
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_budget_invalid_kept_as_prompt() {
+        let (prompt, _turns, budget) = parse_extended_args("/extended task --budget abc");
+        assert_eq!(prompt, "task --budget abc");
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_budget_without_value() {
+        let (prompt, _turns, budget) = parse_extended_args("/extended task --budget");
+        assert_eq!(prompt, "task --budget");
+        assert!(budget.is_none());
     }
 
     #[test]
