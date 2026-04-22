@@ -58,8 +58,10 @@ pub fn find_symbol_block(source: &str, symbol: &str) -> Option<(usize, usize, St
                 // Make sure the character after the symbol name is a word boundary
                 let after = pos + pat.len();
                 if after >= trimmed.len()
-                    || !trimmed.as_bytes()[after].is_ascii_alphanumeric()
-                        && trimmed.as_bytes()[after] != b'_'
+                    || trimmed[after..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| !c.is_ascii_alphanumeric() && c != '_')
                 {
                     // Also verify the keyword is at line start (possibly after pub/pub(crate)/etc.)
                     let before = &trimmed[..pos];
@@ -394,20 +396,26 @@ fn is_word_boundary_char(c: char) -> bool {
 
 /// Check if position `pos` in `text` is at a word boundary start.
 /// A word boundary exists at the start of the string or when the preceding char
-/// is not a word character.
+/// is not a word character. Returns `false` if `pos` is not on a char boundary.
 fn is_word_start(text: &str, pos: usize) -> bool {
     if pos == 0 {
         return true;
+    }
+    if !text.is_char_boundary(pos) {
+        return false;
     }
     text[..pos].chars().last().is_none_or(is_word_boundary_char)
 }
 
 /// Check if position `pos` in `text` is at a word boundary end.
 /// A word boundary exists at the end of the string or when the following char
-/// is not a word character.
+/// is not a word character. Returns `false` if `pos` is not on a char boundary.
 fn is_word_end(text: &str, pos: usize) -> bool {
     if pos >= text.len() {
         return true;
+    }
+    if !text.is_char_boundary(pos) {
+        return false;
     }
     text[pos..].chars().next().is_none_or(is_word_boundary_char)
 }
@@ -535,7 +543,12 @@ pub fn find_word_boundary_matches(text: &str, pattern: &str) -> Vec<usize> {
                 positions.push(abs_pos);
             }
 
+            // Advance past the match start — but ensure we land on a char boundary
+            // to avoid panicking on text[start..] with multi-byte characters.
             start = abs_pos + 1;
+            while start < text.len() && !text.is_char_boundary(start) {
+                start += 1;
+            }
         } else {
             break;
         }
@@ -667,11 +680,19 @@ pub fn replace_word_boundary(text: &str, old: &str, new: &str) -> String {
     let mut last_end = 0;
 
     for pos in positions {
+        // Safety: positions come from find() which returns char-boundary offsets,
+        // and last_end = pos + old.len() is always at the end of a valid UTF-8 match.
+        // Defensive check anyway to avoid panics on corrupted positions.
+        if !text.is_char_boundary(pos) || !text.is_char_boundary(last_end) {
+            continue;
+        }
         result.push_str(&text[last_end..pos]);
         result.push_str(new);
         last_end = pos + old.len();
     }
-    result.push_str(&text[last_end..]);
+    if text.is_char_boundary(last_end) {
+        result.push_str(&text[last_end..]);
+    }
 
     result
 }
@@ -914,11 +935,13 @@ pub fn find_method_in_impl(
         if let Some(pos) = trimmed.find(&fn_pattern) {
             // Check word boundary after method name
             let after = pos + fn_pattern.len();
-            if after < trimmed.len() {
-                let next_char = trimmed.as_bytes()[after];
-                if next_char.is_ascii_alphanumeric() || next_char == b'_' {
-                    continue;
-                }
+            let is_word_char_after = after < trimmed.len()
+                && trimmed[after..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+            if is_word_char_after {
+                continue;
             }
             // Check valid prefix (pub, pub(crate), async, etc.)
             let before = &trimmed[..pos];
@@ -1055,7 +1078,11 @@ pub fn move_method(
     let target_indent = if *target_impl_end > *target_impl_start + 1 {
         let sample_line = target_lines[target_impl_start + 1];
         let indent_len = sample_line.len() - sample_line.trim_start().len();
-        &sample_line[..indent_len]
+        if sample_line.is_char_boundary(indent_len) {
+            &sample_line[..indent_len]
+        } else {
+            "    "
+        }
     } else {
         "    "
     };
@@ -1176,7 +1203,7 @@ fn reindent_method(method_text: &str, target_indent: &str) -> String {
             if line.trim().is_empty() {
                 String::new()
             } else {
-                let stripped = if line.len() >= min_indent {
+                let stripped = if line.len() >= min_indent && line.is_char_boundary(min_indent) {
                     &line[min_indent..]
                 } else {
                     line.trim_start()
@@ -2567,5 +2594,126 @@ impl B {
             help.contains("/refactor"),
             "/refactor should appear in help text"
         );
+    }
+
+    // --- Multi-byte / Unicode safety tests ---
+
+    #[test]
+    fn find_word_boundary_with_multibyte_context() {
+        // Pattern surrounded by multi-byte chars (✓ is 3 bytes)
+        let text = "let ✓ foo ✓ bar";
+        let matches = find_word_boundary_matches(text, "foo");
+        assert_eq!(matches.len(), 1);
+    }
+
+    #[test]
+    fn find_word_boundary_multibyte_no_panic() {
+        // Ensure no panic when text has multi-byte chars throughout
+        let text = "café résumé naïve";
+        let matches = find_word_boundary_matches(text, "résumé");
+        assert_eq!(matches.len(), 1);
+    }
+
+    #[test]
+    fn find_word_boundary_multibyte_pattern_repeated() {
+        // Pattern starting with multi-byte char, appearing twice at word boundaries.
+        // Regression: start = abs_pos + 1 could land mid-char and panic.
+        let text = "x é_thing y é_thing z";
+        let matches = find_word_boundary_matches(text, "é_thing");
+        assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn find_word_boundary_multibyte_pattern_no_boundary() {
+        // Multi-byte pattern NOT at word boundary — no match expected
+        let text = "aé_thing bé_thing";
+        let matches = find_word_boundary_matches(text, "é_thing");
+        assert_eq!(matches.len(), 0);
+    }
+
+    #[test]
+    fn find_word_boundary_empty_inputs() {
+        assert!(find_word_boundary_matches("", "foo").is_empty());
+        assert!(find_word_boundary_matches("foo", "").is_empty());
+        assert!(find_word_boundary_matches("", "").is_empty());
+    }
+
+    #[test]
+    fn replace_word_boundary_multibyte() {
+        let text = "let ✓ foo ✓ bar";
+        let result = replace_word_boundary(text, "foo", "baz");
+        assert_eq!(result, "let ✓ baz ✓ bar");
+    }
+
+    #[test]
+    fn replace_word_boundary_multibyte_pattern() {
+        // Pattern itself contains multi-byte chars
+        let text = "use café in code";
+        let result = replace_word_boundary(text, "café", "coffee");
+        assert_eq!(result, "use coffee in code");
+    }
+
+    #[test]
+    fn is_word_start_end_at_boundaries() {
+        // These functions should not panic on valid char boundary positions
+        let text = "hello ✓ world";
+        // Position 0 is always word start
+        assert!(is_word_start(text, 0));
+        // Position at text.len() is always word end
+        assert!(is_word_end(text, text.len()));
+    }
+
+    #[test]
+    fn find_symbol_block_multibyte_comments() {
+        // Source with multi-byte chars in comments shouldn't panic
+        let source = r#"
+/// Process café data — résumé handler
+fn process_data() {
+    println!("✓ done");
+}
+"#;
+        let result = find_symbol_block(source, "process_data");
+        assert!(result.is_some());
+        let (_, _, block) = result.unwrap();
+        assert!(block.contains("fn process_data"));
+    }
+
+    #[test]
+    fn reindent_method_multibyte() {
+        let method = "    fn foo() {\n        println!(\"café ✓\");\n    }";
+        let result = reindent_method(method, "        ");
+        assert!(result.contains("fn foo()"));
+        assert!(result.contains("café ✓"));
+    }
+
+    #[test]
+    fn reindent_method_empty() {
+        assert_eq!(reindent_method("", "    "), "");
+    }
+
+    #[test]
+    fn find_impl_blocks_multibyte_content() {
+        let source = r#"
+/// A struct with café
+impl MyStruct {
+    fn method(&self) -> String {
+        "résumé ✓".to_string()
+    }
+}
+"#;
+        let blocks = find_impl_blocks(source, "MyStruct");
+        assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn find_method_in_impl_multibyte() {
+        let impl_text = r#"impl MyStruct {
+    /// Returns a café string
+    fn get_cafe(&self) -> String {
+        "café ✓".to_string()
+    }
+}"#;
+        let result = find_method_in_impl(impl_text, "get_cafe");
+        assert!(result.is_some());
     }
 }
