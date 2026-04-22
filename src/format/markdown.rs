@@ -562,7 +562,10 @@ impl MarkdownRenderer {
         if no_spaces.len() < 3 {
             return false;
         }
-        let first = no_spaces.chars().next().unwrap();
+        let first = match no_spaces.chars().next() {
+            Some(c) => c,
+            None => return false,
+        };
         (first == '-' || first == '*' || first == '_') && no_spaces.chars().all(|c| c == first)
     }
 
@@ -2833,5 +2836,29 @@ mod tests {
             !out2.is_empty(),
             "'100m' should flush — letter after digits means not a list, got empty"
         );
+    }
+
+    #[test]
+    fn test_empty_string_render() {
+        // Empty string should not panic and produce no output
+        let mut r = MarkdownRenderer::new();
+        let out = r.render_delta("");
+        let flushed = r.flush();
+        assert!(
+            out.is_empty() && flushed.is_empty(),
+            "Empty input should produce empty output"
+        );
+    }
+
+    #[test]
+    fn test_horizontal_rule_edge_cases() {
+        // Horizontal rules should work and not panic on edge cases.
+        // "---" is a horizontal rule
+        let out = render_full("---\n");
+        assert!(out.contains("─"), "--- should render as horizontal rule");
+
+        // Spaces-only line: not a rule, no panic
+        let out2 = render_full("   \n");
+        assert!(!out2.contains("─"), "Spaces-only should not be a rule");
     }
 }

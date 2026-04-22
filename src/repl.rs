@@ -23,13 +23,13 @@ use yoagent::context::total_tokens;
 use yoagent::*;
 
 /// Result of dispatching a slash command in the REPL.
-#[allow(dead_code)]
 enum CommandResult {
     /// Command handled, go to next prompt.
     Continue,
     /// User wants to exit.
     Quit,
-    /// Command produced a prompt to send to the agent.
+    /// Command produced a prompt to send to the agent (reserved for future use).
+    #[expect(dead_code)]
     SendToAgent(String),
     /// Input isn't a slash command, fall through to agent.
     NotACommand,

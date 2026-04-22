@@ -584,7 +584,10 @@ pub fn handle_stash_pop(agent: &mut Agent) -> String {
         return format!("{DIM}  (stash is empty — nothing to pop){RESET}\n");
     }
 
-    let entry = stash.pop().unwrap();
+    let entry = match stash.pop() {
+        Some(e) => e,
+        None => return format!("{DIM}  (stash is empty — nothing to pop){RESET}\n"),
+    };
     drop(stash); // release lock before restoring
 
     match agent.restore_messages(&entry.messages_json) {
@@ -1150,6 +1153,25 @@ mod tests {
     fn test_stash_drop_invalid_index() {
         let result = handle_stash_drop("abc");
         assert!(result.contains("invalid"), "Should report invalid index");
+    }
+
+    #[test]
+    fn test_stash_pop_empty() {
+        use yoagent::provider::AnthropicProvider;
+        // Clear the global stash, then pop — should return a graceful message, not panic
+        {
+            let mut stash = rw_write_or_recover(&CONVERSATION_STASH);
+            stash.clear();
+        }
+        let mut agent = Agent::new(AnthropicProvider)
+            .with_system_prompt("test")
+            .with_model("test-model")
+            .with_api_key("test-key");
+        let result = handle_stash_pop(&mut agent);
+        assert!(
+            result.contains("empty"),
+            "Pop on empty stash should say so, got: {result}"
+        );
     }
 
     // ── Tests moved from commands.rs — session command tests ──────────
