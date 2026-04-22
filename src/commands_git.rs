@@ -167,6 +167,7 @@ pub fn format_diff_stat(summary: &DiffStatSummary) -> String {
 pub struct DiffOptions {
     pub staged_only: bool,
     pub name_only: bool,
+    pub stat_only: bool,
     pub file: Option<String>,
 }
 
@@ -183,12 +184,14 @@ pub fn parse_diff_args(input: &str) -> DiffOptions {
     let parts: Vec<&str> = rest.split_whitespace().collect();
     let mut staged_only = false;
     let mut name_only = false;
+    let mut stat_only = false;
     let mut file = None;
 
     for part in parts {
         match part {
             "--staged" | "--cached" => staged_only = true,
             "--name-only" => name_only = true,
+            "--stat" => stat_only = true,
             _ => file = Some(part.to_string()),
         }
     }
@@ -196,6 +199,7 @@ pub fn parse_diff_args(input: &str) -> DiffOptions {
     DiffOptions {
         staged_only,
         name_only,
+        stat_only,
         file,
     }
 }
@@ -257,6 +261,52 @@ pub fn handle_diff(input: &str) {
                         println!("    {f}");
                     }
                     println!();
+                }
+                return;
+            }
+
+            // --stat: show compact diffstat summary without full diff
+            if opts.stat_only {
+                let mut args = vec!["diff", "--stat"];
+                if opts.staged_only {
+                    args.push("--cached");
+                }
+                let file_ref;
+                if let Some(ref f) = opts.file {
+                    args.push("--");
+                    file_ref = f.as_str();
+                    args.push(file_ref);
+                }
+                let stat_text = run_git(&args).unwrap_or_default();
+
+                // If not staged-only, also grab staged stat
+                if !opts.staged_only {
+                    let mut staged_args = vec!["diff", "--cached", "--stat"];
+                    let staged_file_ref;
+                    if let Some(ref f) = opts.file {
+                        staged_args.push("--");
+                        staged_file_ref = f.as_str();
+                        staged_args.push(staged_file_ref);
+                    }
+                    let staged_stat = run_git(&staged_args).unwrap_or_default();
+                    let combined = combine_stats(&stat_text, &staged_stat);
+                    if combined.trim().is_empty() {
+                        println!("{DIM}  (no changes){RESET}\n");
+                    } else {
+                        let summary = parse_diff_stat(&combined);
+                        let formatted = format_diff_stat(&summary);
+                        if !formatted.is_empty() {
+                            print!("{formatted}");
+                        }
+                    }
+                } else if stat_text.trim().is_empty() {
+                    println!("{DIM}  (no staged changes){RESET}\n");
+                } else {
+                    let summary = parse_diff_stat(&stat_text);
+                    let formatted = format_diff_stat(&summary);
+                    if !formatted.is_empty() {
+                        print!("{formatted}");
+                    }
                 }
                 return;
             }
@@ -1660,6 +1710,7 @@ mod tests {
         let opts = parse_diff_args("/diff");
         assert!(!opts.staged_only);
         assert!(!opts.name_only);
+        assert!(!opts.stat_only);
         assert_eq!(opts.file, None);
     }
 
@@ -1705,10 +1756,37 @@ mod tests {
 
     #[test]
     fn test_parse_diff_args_all_flags() {
-        let opts = parse_diff_args("/diff --staged --name-only src/main.rs");
+        let opts = parse_diff_args("/diff --staged --name-only --stat src/main.rs");
         assert!(opts.staged_only);
         assert!(opts.name_only);
+        assert!(opts.stat_only);
         assert_eq!(opts.file, Some("src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_diff_args_stat() {
+        let opts = parse_diff_args("/diff --stat");
+        assert!(!opts.staged_only);
+        assert!(!opts.name_only);
+        assert!(opts.stat_only);
+        assert_eq!(opts.file, None);
+    }
+
+    #[test]
+    fn test_parse_diff_args_staged_stat() {
+        let opts = parse_diff_args("/diff --staged --stat");
+        assert!(opts.staged_only);
+        assert!(!opts.name_only);
+        assert!(opts.stat_only);
+        assert_eq!(opts.file, None);
+    }
+
+    #[test]
+    fn test_parse_diff_args_stat_with_file() {
+        let opts = parse_diff_args("/diff --stat src/tools.rs");
+        assert!(!opts.staged_only);
+        assert!(opts.stat_only);
+        assert_eq!(opts.file, Some("src/tools.rs".to_string()));
     }
 
     // ── PR tests (moved from commands.rs) ───────────────────────────────

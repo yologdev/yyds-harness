@@ -342,8 +342,10 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /diff                    Show all uncommitted changes\n\
              \x20 /diff --staged           Show only staged changes\n\
              \x20 /diff --name-only        List changed filenames only\n\
+             \x20 /diff --stat             Show compact diffstat summary only\n\
              \x20 /diff src/main.rs        Show changes for a specific file\n\
-             \x20 /diff --staged main.rs   Staged changes for a specific file\n\n\
+             \x20 /diff --staged main.rs   Staged changes for a specific file\n\
+             \x20 /diff --stat --staged    Diffstat for staged changes only\n\n\
              Aliases: --staged, --cached\n\n\
              Displays file summary, change stats, and colored diff output.\n\
              Works in any git repository.",

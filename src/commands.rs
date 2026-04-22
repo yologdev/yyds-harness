@@ -152,7 +152,7 @@ pub const UNDO_OPTIONS: &[&str] = &["--all", "--last-commit"];
 pub const REFACTOR_SUBCOMMANDS: &[&str] = &["rename", "extract", "move"];
 
 /// Diff flag names for `/diff <Tab>` completion.
-pub const DIFF_FLAGS: &[&str] = &["--staged", "--cached", "--name-only"];
+pub const DIFF_FLAGS: &[&str] = &["--staged", "--cached", "--name-only", "--stat"];
 
 pub const BG_SUBCOMMANDS: &[&str] = &["run", "list", "output", "kill"];
 
