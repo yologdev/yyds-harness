@@ -1303,9 +1303,14 @@ pub async fn run_repl(
     // Auto-save session on exit (always — crash recovery for everyone)
     commands::auto_save_on_exit(agent);
 
-    // Show session changes summary if any files were modified
-    if let Some(summary) = commands::format_exit_summary(&session_changes) {
-        println!("\n{DIM}  {summary}{RESET}");
+    // Show session summary (files, tokens, cost, duration)
+    if let Some(summary) = commands::format_exit_summary(
+        &session_changes,
+        &session_total,
+        &agent_config.model,
+        session_start,
+    ) {
+        println!("\n{summary}");
         println!("{DIM}  bye 👋{RESET}\n");
     } else {
         println!("\n{DIM}  bye 👋{RESET}\n");

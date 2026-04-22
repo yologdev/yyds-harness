@@ -12,10 +12,9 @@ use crate::format::*;
 use crate::git::{colorize_diff, run_git};
 use crate::prompt::{build_retry_prompt, format_changes, run_prompt, ChangeKind, SessionChanges};
 
+use std::time::Instant;
 use yoagent::agent::Agent;
 use yoagent::*;
-
-// ── /retry ───────────────────────────────────────────────────────────────
 
 pub async fn handle_retry(
     agent: &mut Agent,
@@ -43,44 +42,92 @@ pub async fn handle_retry(
     }
 }
 
-// ── exit summary ─────────────────────────────────────────────────────────
-
-/// Returns a compact one-line summary of session changes for display on REPL
-/// exit, or `None` if no files were modified during the session.
+/// Returns a compact multi-line session summary for display on REPL exit, or
+/// `None` if neither files were modified nor tokens were used (i.e., no real
+/// interaction happened).
 ///
-/// Example output: `"Session: 3 files changed"`
-pub fn format_exit_summary(changes: &SessionChanges) -> Option<String> {
+/// Example output:
+/// ```text
+///   ─── Session Summary ───
+///   Duration: 4m 32s
+///   Tokens:   12,450 in / 3,200 out
+///   Cost:     ~$0.05
+///   Files:    3 changed (2 edited, 1 written)
+///   ────────────────────────
+/// ```
+pub fn format_exit_summary(
+    changes: &SessionChanges,
+    session_total: &Usage,
+    model: &str,
+    session_start: Instant,
+) -> Option<String> {
     let snapshot = changes.snapshot();
-    if snapshot.is_empty() {
+    let has_files = !snapshot.is_empty();
+    let has_tokens = session_total.input > 0 || session_total.output > 0;
+
+    if !has_files && !has_tokens {
         return None;
     }
-    let n = snapshot.len();
-    let edits = snapshot
-        .iter()
-        .filter(|c| c.kind == ChangeKind::Edit)
-        .count();
-    let writes = snapshot
-        .iter()
-        .filter(|c| c.kind == ChangeKind::Write)
-        .count();
 
-    let mut parts = Vec::new();
-    if writes > 0 {
-        parts.push(format!("{writes} written"));
-    }
-    if edits > 0 {
-        parts.push(format!("{edits} edited"));
+    let mut lines = Vec::new();
+    lines.push(format!("{DIM}  ─── Session Summary ───{RESET}"));
+
+    // Duration
+    let elapsed = session_start.elapsed();
+    lines.push(format!(
+        "{DIM}  Duration:{RESET} {GREEN}{}{RESET}",
+        format_duration(elapsed)
+    ));
+
+    // Tokens
+    if has_tokens {
+        lines.push(format!(
+            "{DIM}  Tokens:{RESET}   {GREEN}{} in / {} out{RESET}",
+            format_token_count(session_total.input),
+            format_token_count(session_total.output),
+        ));
     }
 
-    Some(format!(
-        "Session: {} {} changed ({})",
-        n,
-        pluralize(n, "file", "files"),
-        parts.join(", "),
-    ))
+    // Cost (only if model pricing is available)
+    if let Some(cost) = estimate_cost(session_total, model) {
+        lines.push(format!(
+            "{DIM}  Cost:{RESET}     {GREEN}~{}{RESET}",
+            format_cost(cost)
+        ));
+    }
+
+    // Files
+    if has_files {
+        let n = snapshot.len();
+        let edits = snapshot
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Edit)
+            .count();
+        let writes = snapshot
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Write)
+            .count();
+
+        let mut parts = Vec::new();
+        if writes > 0 {
+            parts.push(format!("{writes} written"));
+        }
+        if edits > 0 {
+            parts.push(format!("{edits} edited"));
+        }
+
+        lines.push(format!(
+            "{DIM}  Files:{RESET}    {GREEN}{} {} changed ({}){RESET}",
+            n,
+            pluralize(n, "file", "files"),
+            parts.join(", "),
+        ));
+    }
+
+    lines.push(format!("{DIM}  ────────────────────────{RESET}"));
+
+    Some(lines.join("\n"))
 }
-
-// ── /changes ─────────────────────────────────────────────────────────────
 
 /// Returns `true` if the raw `/changes` input contains the `--diff` flag.
 fn wants_diff(input: &str) -> bool {
@@ -144,10 +191,19 @@ pub fn handle_changes(changes: &SessionChanges, input: &str) {
 mod tests {
     use super::*;
 
+    /// Helper: create a Usage with given input/output token counts.
+    fn make_usage(input: u64, output: u64) -> Usage {
+        Usage {
+            input,
+            output,
+            ..Usage::default()
+        }
+    }
+
     #[test]
     fn test_handle_changes_empty_does_not_panic() {
         let changes = SessionChanges::new();
-        // Should not panic — just prints a message
+        // Should not panic -- just prints a message
         handle_changes(&changes, "/changes");
     }
 
@@ -171,7 +227,7 @@ mod tests {
     fn test_handle_changes_diff_flag_with_entries_does_not_panic() {
         let changes = SessionChanges::new();
         changes.record("src/main.rs", ChangeKind::Write);
-        // With files and --diff — may not produce real diffs in test env, but shouldn't panic
+        // With files and --diff -- may not produce real diffs in test env, but shouldn't panic
         handle_changes(&changes, "/changes --diff");
     }
 
@@ -187,23 +243,33 @@ mod tests {
     #[test]
     fn test_format_exit_summary_empty_returns_none() {
         let changes = SessionChanges::new();
-        assert_eq!(format_exit_summary(&changes), None);
+        let usage = Usage::default();
+        assert!(format_exit_summary(&changes, &usage, "unknown-model", Instant::now()).is_none());
     }
 
     #[test]
     fn test_format_exit_summary_single_write() {
         let changes = SessionChanges::new();
         changes.record("src/main.rs", ChangeKind::Write);
-        let summary = format_exit_summary(&changes).unwrap();
-        assert_eq!(summary, "Session: 1 file changed (1 written)");
+        let usage = make_usage(1000, 200);
+        let summary =
+            format_exit_summary(&changes, &usage, "unknown-model", Instant::now()).unwrap();
+        assert!(summary.contains("1 file changed"));
+        assert!(summary.contains("1 written"));
+        assert!(summary.contains("Session Summary"));
+        assert!(summary.contains("Duration:"));
+        assert!(summary.contains("Tokens:"));
     }
 
     #[test]
     fn test_format_exit_summary_single_edit() {
         let changes = SessionChanges::new();
         changes.record("src/cli.rs", ChangeKind::Edit);
-        let summary = format_exit_summary(&changes).unwrap();
-        assert_eq!(summary, "Session: 1 file changed (1 edited)");
+        let usage = make_usage(500, 100);
+        let summary =
+            format_exit_summary(&changes, &usage, "unknown-model", Instant::now()).unwrap();
+        assert!(summary.contains("1 file changed"));
+        assert!(summary.contains("1 edited"));
     }
 
     #[test]
@@ -212,8 +278,12 @@ mod tests {
         changes.record("src/main.rs", ChangeKind::Write);
         changes.record("src/cli.rs", ChangeKind::Edit);
         changes.record("src/tools.rs", ChangeKind::Edit);
-        let summary = format_exit_summary(&changes).unwrap();
-        assert_eq!(summary, "Session: 3 files changed (1 written, 2 edited)");
+        let usage = make_usage(5000, 1500);
+        let summary =
+            format_exit_summary(&changes, &usage, "unknown-model", Instant::now()).unwrap();
+        assert!(summary.contains("3 files changed"));
+        assert!(summary.contains("1 written"));
+        assert!(summary.contains("2 edited"));
     }
 
     #[test]
@@ -221,11 +291,60 @@ mod tests {
         let changes = SessionChanges::new();
         changes.record("a.rs", ChangeKind::Write);
         changes.record("b.rs", ChangeKind::Write);
-        let summary = format_exit_summary(&changes).unwrap();
-        assert_eq!(summary, "Session: 2 files changed (2 written)");
+        let usage = make_usage(100, 50);
+        let summary =
+            format_exit_summary(&changes, &usage, "unknown-model", Instant::now()).unwrap();
+        assert!(summary.contains("2 files changed"));
+        assert!(summary.contains("2 written"));
     }
 
-    // ── Tests moved from commands.rs — /changes command tests ────────
+    #[test]
+    fn test_exit_summary_with_tokens_no_files() {
+        // Pure Q&A session: tokens used but no file changes -- should still
+        // produce a summary showing duration/tokens/cost.
+        let changes = SessionChanges::new();
+        let usage = make_usage(12_450, 3_200);
+        let summary =
+            format_exit_summary(&changes, &usage, "claude-sonnet-4-20250514", Instant::now())
+                .unwrap();
+        assert!(summary.contains("Session Summary"));
+        assert!(summary.contains("Duration:"));
+        assert!(summary.contains("Tokens:"));
+        // Should NOT contain a Files: line
+        assert!(!summary.contains("Files:"));
+        // Known model should produce a cost line
+        assert!(summary.contains("Cost:"));
+    }
+
+    #[test]
+    fn test_exit_summary_with_files_and_cost() {
+        let changes = SessionChanges::new();
+        changes.record("src/main.rs", ChangeKind::Write);
+        changes.record("src/cli.rs", ChangeKind::Edit);
+        let usage = make_usage(50_000, 10_000);
+        let summary =
+            format_exit_summary(&changes, &usage, "claude-sonnet-4-20250514", Instant::now())
+                .unwrap();
+        assert!(summary.contains("Session Summary"));
+        assert!(summary.contains("Duration:"));
+        assert!(summary.contains("Tokens:"));
+        assert!(summary.contains("Cost:"));
+        assert!(summary.contains("Files:"));
+        assert!(summary.contains("2 files changed"));
+        assert!(summary.contains("1 written"));
+        assert!(summary.contains("1 edited"));
+    }
+
+    #[test]
+    fn test_exit_summary_unknown_model_omits_cost() {
+        let changes = SessionChanges::new();
+        let usage = make_usage(1000, 500);
+        let summary =
+            format_exit_summary(&changes, &usage, "totally-unknown-model", Instant::now()).unwrap();
+        assert!(summary.contains("Tokens:"));
+        // Unknown model has no pricing -- cost line should be absent
+        assert!(!summary.contains("Cost:"));
+    }
 
     #[test]
     fn test_changes_command_recognized() {
