@@ -868,6 +868,10 @@ async fn dispatch_command(
             }
             CommandResult::Continue
         }
+        s if s == "/side" || s.starts_with("/side ") => {
+            handle_side(input, agent_config).await;
+            CommandResult::Continue
+        }
         s if s.starts_with('/') && is_unknown_command(s) => {
             let cmd = s.split_whitespace().next().unwrap_or(s);
             eprintln!("{RED}  unknown command: {cmd}{RESET}");
@@ -1399,6 +1403,105 @@ fn extract_image_label(summary: &str, fallback_mime: &str) -> String {
 
     // Fallback
     format!("image ({fallback_mime})")
+}
+
+// ── Side conversations ──
+
+/// Parse a `/side` question from the input. Returns `None` if no question provided.
+fn parse_side_question(input: &str) -> Option<String> {
+    let question = input.strip_prefix("/side").unwrap_or("").trim().to_string();
+    if question.is_empty() {
+        None
+    } else {
+        Some(question)
+    }
+}
+
+/// Handle a `/side <question>` command — quick Q&A without touching main context.
+async fn handle_side(input: &str, agent_config: &AgentConfig) {
+    let question = match parse_side_question(input) {
+        Some(q) => q,
+        None => {
+            eprintln!(
+                "{YELLOW}  Usage: /side <question>{RESET}\n\
+                 {DIM}  Ask a quick question without affecting the main conversation.\n\
+                 {DIM}  No tools — just text Q&A. Fast and cheap.\n\n\
+                 {DIM}  Examples:\n\
+                 {DIM}    /side what's the syntax for a match guard in Rust?\n\
+                 {DIM}    /side explain the difference between clone and copy{RESET}\n"
+            );
+            return;
+        }
+    };
+
+    eprintln!("{DIM}  [side] thinking...{RESET}");
+
+    let mut side_agent = agent_config.build_side_agent();
+    let mut rx = side_agent.prompt(&question).await;
+
+    let mut md_renderer = MarkdownRenderer::new();
+    let mut collected_text = String::new();
+    let mut started = false;
+
+    loop {
+        match rx.recv().await {
+            Some(AgentEvent::MessageUpdate {
+                delta: StreamDelta::Text { delta },
+                ..
+            }) => {
+                if !started {
+                    // Print a side-conversation header on first text
+                    print!("\n{DIM}[side]{RESET} ");
+                    started = true;
+                }
+                collected_text.push_str(&delta);
+                let rendered = md_renderer.render_delta(&delta);
+                if !rendered.is_empty() {
+                    print!("{rendered}");
+                }
+            }
+            Some(AgentEvent::MessageEnd { .. }) => {
+                let tail = md_renderer.flush();
+                if !tail.is_empty() {
+                    print!("{tail}");
+                }
+            }
+            Some(AgentEvent::AgentEnd { .. }) => break,
+            None => break,
+            _ => {}
+        }
+    }
+
+    side_agent.finish().await;
+
+    if !started {
+        eprintln!("{DIM}  [side] (no response){RESET}");
+    } else {
+        println!(); // newline after streamed text
+    }
+
+    // Show side conversation cost
+    let messages = side_agent.messages();
+    let mut side_usage = Usage::default();
+    for msg in messages {
+        if let AgentMessage::Llm(yoagent::types::Message::Assistant { usage, .. }) = msg {
+            side_usage.input += usage.input;
+            side_usage.output += usage.output;
+            side_usage.cache_read += usage.cache_read;
+            side_usage.cache_write += usage.cache_write;
+        }
+    }
+    let total_tokens = side_usage.input + side_usage.output;
+    if total_tokens > 0 {
+        let cost = estimate_cost(&side_usage, &agent_config.model);
+        if let Some(c) = cost {
+            eprintln!("{DIM}  [side] {} tokens, ${:.4}{RESET}\n", total_tokens, c);
+        } else {
+            eprintln!("{DIM}  [side] {} tokens{RESET}\n", total_tokens);
+        }
+    } else {
+        eprintln!();
+    }
 }
 
 // ── Extended mode ──
@@ -2269,5 +2372,31 @@ mod tests {
         assert!(prompt.contains("20"));
         assert!(prompt.contains("EXTENDED AUTONOMOUS MODE"));
         assert!(prompt.contains("do NOT ask the user questions"));
+    }
+
+    // ── /side parsing tests ──
+
+    #[test]
+    fn test_parse_side_question_basic() {
+        let q = parse_side_question("/side what is a monad?");
+        assert_eq!(q.unwrap(), "what is a monad?");
+    }
+
+    #[test]
+    fn test_parse_side_question_empty() {
+        assert!(parse_side_question("/side").is_none());
+        assert!(parse_side_question("/side   ").is_none());
+    }
+
+    #[test]
+    fn test_parse_side_question_preserves_whitespace_in_question() {
+        let q = parse_side_question("/side   what   is   this  ");
+        assert_eq!(q.unwrap(), "what   is   this");
+    }
+
+    #[test]
+    fn test_parse_side_question_multiword() {
+        let q = parse_side_question("/side how do I convert Vec<u8> to String in Rust?");
+        assert_eq!(q.unwrap(), "how do I convert Vec<u8> to String in Rust?");
     }
 }

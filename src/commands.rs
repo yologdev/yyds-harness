@@ -105,6 +105,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "/extract",
     "/move",
     "/refactor",
+    "/side",
     "/watch",
     "/ast",
     "/changelog",

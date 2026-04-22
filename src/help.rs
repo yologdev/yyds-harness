@@ -439,6 +439,20 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /search error handling\n\
              \x20 /search TODO",
         ),
+        "side" => Some(
+            "/side <question> — Ask a quick question without affecting the main conversation\n\n\
+             Usage:\n\
+             \x20 /side <question>    Ask a quick side question\n\n\
+             Opens a disposable one-shot conversation with the same model.\n\
+             The side question and answer are NOT added to the main conversation\n\
+             history, so they won't consume your main context window.\n\n\
+             Side conversations have no tool access — they're pure text Q&A\n\
+             for quick lookups, syntax checks, or concept clarifications.\n\n\
+             Examples:\n\
+             \x20 /side what's the syntax for a match guard in Rust?\n\
+             \x20 /side explain the difference between clone and copy\n\
+             \x20 /side how do I convert a Vec<u8> to a String?",
+        ),
         "skill" => Some(
             "/skill [subcommand] — List and inspect loaded skills\n\n\
              Usage:\n\
@@ -967,6 +981,9 @@ pub fn help_text() -> String {
     );
     out.push_str("  /teach [on|off]    Toggle teach mode — explains reasoning as it works\n");
     out.push_str(
+        "  /side <question>   Quick question without affecting main conversation (no tools)\n",
+    );
+    out.push_str(
         "  /remember <note>   Save a project-specific memory (persists across sessions)\n",
     );
     out.push_str("  /memories          List project-specific memories for this directory\n");
@@ -1068,6 +1085,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "run" => Some("Run a shell command"),
         "save" => Some("Save session to file"),
         "search" => Some("Search conversation history"),
+        "side" => Some("Ask a quick question without affecting conversation"),
         "skill" => Some("List and inspect loaded skills"),
         "spawn" => Some("Run a task in a sub-agent"),
         "stash" => Some("Stash conversation and start fresh"),
@@ -1137,6 +1155,7 @@ mod tests {
             "/model",
             "/think",
             "/spawn",
+            "/side",
             "/extended",
             "/remember",
             "/memories",
@@ -1252,6 +1271,7 @@ mod tests {
             "/think",
             "/spawn",
             "/extended",
+            "/side",
             "/remember",
             "/memories",
             "/forget",

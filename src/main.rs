@@ -430,6 +430,45 @@ impl AgentConfig {
         }
     }
 
+    /// Build a minimal agent for `/side` conversations — same provider/model/API key,
+    /// but no tools, no skills, and a concise system prompt. The agent is one-shot
+    /// (1 turn max) so it answers the question and stops.
+    pub fn build_side_agent(&self) -> Agent {
+        let base_url = self.base_url.as_deref();
+        let side_prompt = "You are a helpful assistant answering a quick side question. \
+            Be concise and direct. This is a one-shot question — answer it completely in one response.";
+
+        let agent = if self.provider == "anthropic" && base_url.is_none() {
+            let mut model_config = ModelConfig::anthropic(&self.model, &self.model);
+            insert_client_headers(&mut model_config);
+            Agent::new(AnthropicProvider).with_model_config(model_config)
+        } else if self.provider == "google" {
+            let model_config = create_model_config(&self.provider, &self.model, base_url);
+            Agent::new(GoogleProvider).with_model_config(model_config)
+        } else if self.provider == "bedrock" {
+            let model_config = create_model_config(&self.provider, &self.model, base_url);
+            Agent::new(BedrockProvider).with_model_config(model_config)
+        } else {
+            let model_config = create_model_config(&self.provider, &self.model, base_url);
+            Agent::new(OpenAiCompatProvider).with_model_config(model_config)
+        };
+
+        let mut agent = agent
+            .with_system_prompt(side_prompt)
+            .with_model(&self.model)
+            .with_api_key(&self.api_key)
+            .with_execution_limits(ExecutionLimits {
+                max_turns: 1,
+                ..ExecutionLimits::default()
+            });
+
+        if let Some(temp) = self.temperature {
+            agent.temperature = Some(temp);
+        }
+
+        agent
+    }
+
     /// Attempt to switch to the fallback provider.
     ///
     /// Returns `true` if the switch was made (caller should rebuild the agent

@@ -532,6 +532,10 @@ pub fn help_text() -> String {
         s,
         "    /teach [on|off]    Toggle teach mode (explains reasoning)"
     );
+    let _ = writeln!(
+        s,
+        "    /side <question>   Quick question (no tools, no context impact)"
+    );
     let _ = writeln!(s, "    /remember <note>   Save a project-specific memory");
     let _ = writeln!(s, "    /memories          List project memories");
     let _ = writeln!(s, "    /forget <n>        Remove a project memory by index");
