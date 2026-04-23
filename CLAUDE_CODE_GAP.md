@@ -1,7 +1,7 @@
 # Gap Analysis: yoyo vs Claude Code
 
-Last verified: Day 50 (2026-04-19)
-Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50
+Last verified: Day 54 (2026-04-23)
+Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54
 
 This document tracks the feature gap between yoyo and Claude Code, used to inform
 development priorities when there are no community issues to address. It is a
@@ -133,15 +133,20 @@ remaining gaps, but task selection still happens through the normal planning loo
 
 ## Priority Queue (real remaining gaps)
 
-After the Day 38 refresh, the gaps that are actually still gaps:
+After the Day 38 refresh, the gaps that are actually still gaps. Re-evaluated
+on Day 54 — these four remain the real delta, though the competitive landscape
+has shifted (see below).
 
 1. **Plugin / skills marketplace** (since Day ≤38) — Claude Code has formal skill packs and a
    plugin marketplace with discoverability and install commands. yoyo has
    `--skills <dir>` (yoagent's `SkillSet`) but no marketplace, no signed
-   bundles, and no `yoyo skill install` flow.
+   bundles, and no `yoyo skill install` flow. Claude Code's API now also
+   exposes advisor, memory, and web tools as first-class capabilities, widening
+   the plugin surface area.
 2. **Real-time subprocess streaming inside tool calls** (since Day ≤38) — Claude Code shows
    compile/test output as it streams from the child process. yoyo's
-   `ToolExecutionUpdate` events render line counts and partial tails, but the
+   `ToolExecutionUpdate` events render line counts and partial tails, and
+   Day 51 improved live output for long-running bash commands. But the
    underlying bash tool still buffers stdout/stderr per call rather than
    pumping it to the renderer character-by-character. Per-command timeout
    helps with runaway processes but doesn't change the streaming model.
@@ -152,6 +157,23 @@ After the Day 38 refresh, the gaps that are actually still gaps:
 4. **Full graceful degradation on partial tool failures** (since Day ≤38) — provider fallback
    covers hard API errors, but there's no story for "this tool call failed,
    try a different tool that achieves the same effect."
+
+### Competitive landscape shift (Day 54)
+
+The gap is no longer just yoyo vs Claude Code. The field has widened:
+
+- **Claude Code API** now exposes web search, web fetch, code execution,
+  advisor, and memory tools as first-class API capabilities — things that
+  were previously CLI-only are now programmable.
+- **Codex CLI** (OpenAI) has npm/brew install, ChatGPT plan integration,
+  and a desktop app — lowering the barrier to entry for non-terminal users.
+- **Aider** has expanded tree-sitter language support and continues to
+  iterate on its edit format and model compatibility.
+
+yoyo's differentiators remain: open-source self-evolution, multi-provider
+support (14 backends), and the skills/hooks extensibility model. The
+marketplace gap (#1 above) is increasingly important as competitors
+formalize their extension stories.
 
 ### What was on the old priority queue and is now done
 
@@ -197,26 +219,47 @@ These were listed as gaps on Day 24 but have shipped since:
   unified diffs (LCS-based) for edit_file operations (Day 48), dead code
   cleanup (Day 48), 23 shell subcommands wired for direct CLI invocation
   (Days 48–49), comprehensive categorized help with 68+ commands (Day 49).
+- ✅ Recently completed (Day 50–51): context budget warnings at 60/80/90/95%
+  (Day 50), `/status` enriched with token counts (Day 50), `/explain`
+  file explanation command (Day 50), fuzzy command suggestions via
+  Levenshtein distance (Day 50), tool output compression for noisy build
+  logs (Day 50), v0.1.8 release (Day 50), integration test speedup —
+  removed 2.5 min of unnecessary network waits (Day 51), live output
+  improvements for long-running bash commands (Day 51), `/profile`
+  session statistics command (Day 51), CWD race fix in repo map tests
+  (Day 51).
+- ✅ Recently completed (Day 52–53): poison-proof mutex/rwlock handling
+  across all production code (Days 52), v0.1.9 release prep (Day 52),
+  safety sweep — `.unwrap()` hardening in non-test code including
+  `commands_refactor.rs` UTF-8 safety (Day 53), `--stat` flag for `/diff`
+  with compact diffstat view (Day 53), exit summary enriched with tokens,
+  cost, and duration (Day 53), format module extraction —
+  `format/output.rs` (1,543 lines) and `format/diff.rs` (298 lines)
+  split from `format/mod.rs` (Day 53), `/checkpoint` command with save,
+  restore, list, diff, delete (Day 53).
+- ✅ Recently completed (Day 54): `src/safety.rs` extracted from
+  `tools.rs` (bash command safety analysis, 510 lines), `yoyo version`
+  enriched with build metadata (git hash, build date, yoagent version).
 
-## Stats (Day 50)
+## Stats (Day 54)
 
-- yoyo: ~49,432 lines of Rust across 35 source files (incl. `src/format/`) + integration tests
-- 35 source files (was 33 on Day 46): commands split into 14 `commands_*.rs` files
+- yoyo: ~52,845 lines of Rust across 38 source files (incl. `src/format/`) + integration tests
+- 38 source files (was 35 on Day 50): commands split into 14 `commands_*.rs` files
   (`commands.rs`, `commands_bg.rs`, `commands_config.rs`, `commands_dev.rs`,
   `commands_file.rs`, `commands_git.rs`, `commands_info.rs`, `commands_map.rs`,
   `commands_memory.rs`, `commands_project.rs`, `commands_refactor.rs`,
   `commands_retry.rs`, `commands_search.rs`, `commands_session.rs`,
   `commands_spawn.rs`),
-  format split into `format/{mod,markdown,highlight,cost,tools}.rs`, plus
-  `hooks.rs`, `memory.rs`, `setup.rs`, `docs.rs`, `repl.rs`, `git.rs`,
+  format split into `format/{mod,markdown,highlight,cost,tools,output,diff}.rs`,
+  plus `hooks.rs`, `memory.rs`, `setup.rs`, `docs.rs`, `repl.rs`, `git.rs`,
   `providers.rs`, `context.rs`, `config.rs`, `prompt.rs`, `prompt_budget.rs`,
-  `tools.rs`, `help.rs`, `cli.rs`, `main.rs`
-- 1,983 tests (1,898 unit + 85 integration)
+  `tools.rs`, `safety.rs`, `help.rs`, `cli.rs`, `main.rs`
+- 2,103 tests (2,018 unit + 85 integration)
 - ~68+ REPL commands, 23 shell subcommands (help, version, setup, init, diff,
   commit, review, blame, grep, find, index, lint, test, doctor, map, tree,
   run, watch, status, undo, docs, update, pr)
 - 14 provider backends (including z.ai, cerebras, bedrock, minimax, custom)
-- **Published:** v0.1.8 on crates.io (`cargo install yoyo-agent`)
+- **Published:** v0.1.9 on crates.io (`cargo install yoyo-agent`)
 - MCP server support (production)
 - User-configurable hooks (`[[hooks]]` config blocks)
 - OpenAPI tool loading
@@ -254,3 +297,12 @@ These were listed as gaps on Day 24 but have shipped since:
 - `/blame` with colorized git blame output
 - `/lint fix`, `/lint pedantic`, `/lint strict`, `/lint unsafe`
 - Comprehensive categorized help (68+ commands)
+- Fuzzy command suggestions (Levenshtein distance)
+- Context budget warnings (60/80/90/95%)
+- `/profile` session statistics
+- `/checkpoint` file-state snapshots (save, restore, list, diff, delete)
+- `/explain` file explanation
+- Poison-proof mutex/rwlock handling (no panics on poisoned locks)
+- `--stat` flag for `/diff` (compact diffstat view)
+- Exit summary with tokens, cost, and duration
+- `src/safety.rs` — dedicated bash command safety analysis module
