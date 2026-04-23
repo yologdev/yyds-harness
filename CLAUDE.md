@@ -53,6 +53,7 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `main.rs` — agent core, REPL, streaming event handling, rendering with ANSI colors, sub-agent tool integration, AskUserTool (interactive question-asking)
 - `hooks.rs` — Hook trait, HookRegistry, AuditHook, HookedTool wrapper, maybe_hook helper
 - `tools.rs` — StreamingBashTool, RenameSymbolTool, AskUserTool, TodoTool, tool builders, RTK proxy integration
+- `update.rs` — version comparison (`version_is_newer`) and update checking (`check_for_update`) against GitHub releases
 - `safety.rs` — bash command safety analysis, destructive pattern detection
 - `cli.rs` — CLI argument parsing, subcommands, configuration
 - `config.rs` — permission config, directory restrictions, MCP server config, TOML parsing helpers
@@ -65,8 +66,9 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `format/cost.rs` — pricing, cost display, token formatting
 - `format/markdown.rs` — MarkdownRenderer for streaming markdown output
 - `format/tools.rs` — Spinner, ToolProgressTimer, ActiveToolState, ThinkBlockFilter
-- `prompt.rs` — prompt construction for evolution sessions
+- `prompt.rs` — prompt execution, agent interaction, streaming event handling, auto-retry logic
 - `prompt_budget.rs` — session wall-clock budget + audit log helpers (extracted from `prompt.rs`)
+- `session.rs` — session tracking types: SessionChanges, TurnSnapshot, TurnHistory, format_changes (extracted from `prompt.rs`)
 
 Uses `yoagent::Agent` with `AnthropicProvider`, `default_tools()`, and an optional `SkillSet`.
 

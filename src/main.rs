@@ -64,8 +64,10 @@ mod prompt_budget;
 mod providers;
 mod repl;
 mod safety;
+mod session;
 mod setup;
 mod tools;
+mod update;
 
 use cli::*;
 use format::*;
@@ -1095,7 +1097,7 @@ async fn main() {
     // Interactive REPL mode
     // Check for updates (non-blocking, skipped if --no-update-check or env var)
     let update_available = if !no_update_check {
-        cli::check_for_update()
+        update::check_for_update(cli::VERSION)
     } else {
         None
     };

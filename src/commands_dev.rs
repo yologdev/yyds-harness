@@ -47,7 +47,7 @@ pub fn handle_update() -> Result<(), String> {
 
     // version_is_newer(current, latest) — current is our version, latest is the tag
     let tag_version = tag_name.strip_prefix('v').unwrap_or(tag_name);
-    if !cli::version_is_newer(current_version, tag_version) {
+    if !crate::update::version_is_newer(current_version, tag_version) {
         println!(
             "Already on the latest version (v{}). No update needed.",
             current_version
@@ -1738,9 +1738,9 @@ mod tests {
     #[test]
     fn update_version_comparison() {
         // Sanity check version_is_newer works as expected for our use case
-        assert!(cli::version_is_newer("0.1.5", "0.2.0"));
-        assert!(!cli::version_is_newer("0.2.0", "0.2.0"));
-        assert!(!cli::version_is_newer("0.3.0", "0.2.0"));
+        assert!(crate::update::version_is_newer("0.1.5", "0.2.0"));
+        assert!(!crate::update::version_is_newer("0.2.0", "0.2.0"));
+        assert!(!crate::update::version_is_newer("0.3.0", "0.2.0"));
     }
 
     #[test]
