@@ -973,7 +973,7 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
         return Some(None);
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("yoyo v{VERSION}");
+        println!("{}", crate::commands_info::version_line());
         return Some(None);
     }
 
@@ -1011,7 +1011,20 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 return Some(None);
             }
             "version" => {
-                println!("yoyo v{VERSION}");
+                let verbose = args.iter().any(|a| a == "-v" || a == "--verbose");
+                if verbose {
+                    let (file_config, _) = load_config_file();
+                    let provider = flag_value(args, &["--provider"])
+                        .or_else(|| file_config.get("provider").cloned())
+                        .unwrap_or_else(|| "anthropic".into())
+                        .to_lowercase();
+                    let model = flag_value(args, &["--model"])
+                        .or_else(|| file_config.get("model").cloned())
+                        .unwrap_or_else(|| default_model_for_provider(&provider));
+                    crate::commands_info::handle_version_verbose(&provider, &model);
+                } else {
+                    println!("{}", crate::commands_info::version_line());
+                }
                 return Some(None);
             }
             "setup" => {

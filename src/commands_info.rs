@@ -20,8 +20,29 @@ use yoagent::*;
 
 // ── /version ─────────────────────────────────────────────────────────────
 
+/// Build a compact version string: `yoyo v0.1.9 (abc1234 2026-04-23) linux-x86_64`
+///
+/// Uses compile-time env vars `GIT_HASH` and `BUILD_DATE` (set by `build.rs`
+/// or overridden in CI/release builds).
+pub fn version_line() -> String {
+    let hash = option_env!("GIT_HASH").unwrap_or("dev");
+    let date = option_env!("BUILD_DATE").unwrap_or("dev");
+    let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+
+    format!("yoyo v{VERSION} ({hash} {date}) {target}")
+}
+
 pub fn handle_version() {
-    println!("{DIM}  yoyo v{VERSION}{RESET}\n");
+    println!("{DIM}  {}{RESET}\n", version_line());
+}
+
+/// Print enriched version output. When verbose, also shows provider,
+/// model, and yoagent version.
+pub fn handle_version_verbose(provider: &str, model: &str) {
+    println!("{DIM}  {}", version_line());
+    println!("  provider: {provider}  model: {model}");
+    let yoagent_ver = option_env!("YOAGENT_VERSION").unwrap_or("unknown");
+    println!("  yoagent:  v{yoagent_ver}{RESET}\n");
 }
 
 // ── /status ──────────────────────────────────────────────────────────────
@@ -521,5 +542,49 @@ mod tests {
             Instant::now(),
             &usage,
         );
+    }
+
+    #[test]
+    fn test_version_line_contains_version() {
+        let line = version_line();
+        assert!(
+            line.contains(&format!("v{VERSION}")),
+            "version_line should contain the version: {line}"
+        );
+    }
+
+    #[test]
+    fn test_version_line_contains_target() {
+        let line = version_line();
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+        assert!(
+            line.contains(&format!("{os}-{arch}")),
+            "version_line should contain target triple: {line}"
+        );
+    }
+
+    #[test]
+    fn test_version_line_format() {
+        let line = version_line();
+        // Should match: yoyo vX.Y.Z (HASH DATE) OS-ARCH
+        assert!(
+            line.starts_with("yoyo v"),
+            "should start with 'yoyo v': {line}"
+        );
+        assert!(line.contains('('), "should contain '(': {line}");
+        assert!(line.contains(')'), "should contain ')': {line}");
+    }
+
+    #[test]
+    fn test_handle_version_no_panic() {
+        // Basic version should not panic
+        handle_version();
+    }
+
+    #[test]
+    fn test_handle_version_verbose_no_panic() {
+        // Verbose version with provider/model should not panic
+        handle_version_verbose("anthropic", "claude-sonnet-4-20250514");
     }
 }

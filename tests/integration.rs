@@ -1068,12 +1068,14 @@ fn version_output_matches_semver_pattern() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let trimmed = stdout.trim();
-    // Should match "yoyo vX.Y.Z" pattern
+    // Should match "yoyo vX.Y.Z (HASH DATE) OS-ARCH" pattern
     assert!(
         trimmed.starts_with("yoyo v"),
         "version should start with 'yoyo v': {trimmed}"
     );
-    let version_part = &trimmed["yoyo v".len()..];
+    // Extract just the semver part (before the first space after 'v')
+    let after_v = &trimmed["yoyo v".len()..];
+    let version_part = after_v.split_whitespace().next().unwrap_or(after_v);
     let parts: Vec<&str> = version_part.split('.').collect();
     assert!(
         parts.len() >= 2,
@@ -1086,6 +1088,18 @@ fn version_output_matches_semver_pattern() {
             "version component '{part}' should be numeric in '{version_part}'"
         );
     }
+    // Should also contain build metadata in parentheses
+    assert!(
+        trimmed.contains('(') && trimmed.contains(')'),
+        "version should contain build metadata in parens: {trimmed}"
+    );
+    // Should contain OS-ARCH target
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    assert!(
+        trimmed.contains(&format!("{os}-{arch}")),
+        "version should contain target '{os}-{arch}': {trimmed}"
+    );
 }
 
 #[test]

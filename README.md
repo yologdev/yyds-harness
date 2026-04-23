@@ -374,7 +374,7 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 | `/tree [depth]` | Show project directory tree |
 | `/undo` | Revert all uncommitted changes |
 | `/update` | Self-update to the latest release |
-| `/version` | Show yoyo version |
+| `/version` | Show version, build metadata, and target |
 | `/web <url>` | Fetch a web page and display readable text |
 
 ## Grow Your Own
