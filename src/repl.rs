@@ -192,8 +192,16 @@ impl Hinter for YoyoHelper {
         if typed.is_empty() {
             return None; // Don't hint on bare "/"
         }
-        // Don't hint if there's already a space (user is typing arguments)
+        // If user typed a command + space, show argument hints
         if typed.contains(' ') {
+            if let Some((cmd_part, arg_part)) = typed.split_once(' ') {
+                if arg_part.is_empty() {
+                    // User just typed "/cmd " — show available args
+                    if let Some(hint) = crate::commands::command_arg_hint(cmd_part) {
+                        return Some(hint.to_string());
+                    }
+                }
+            }
             return None;
         }
         // Find the first matching command
@@ -2226,12 +2234,47 @@ mod tests {
     }
 
     #[test]
-    fn test_hinter_no_hint_for_arguments() {
+    fn test_hinter_no_hint_when_typing_argument() {
         let helper = YoyoHelper;
         let history = rustyline::history::DefaultHistory::new();
         let ctx = rustyline::Context::new(&history);
-        // After space (typing arguments), no hint
+        // When user is already typing an argument, no hint
         let hint = helper.hint("/add src/", 9, &ctx);
+        assert!(hint.is_none());
+    }
+
+    #[test]
+    fn test_hinter_shows_arg_hint_after_command_space() {
+        let helper = YoyoHelper;
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        // "/diff " should show argument hints
+        let hint = helper.hint("/diff ", 6, &ctx);
+        assert!(hint.is_some(), "Should show arg hint for /diff ");
+        let hint_text = hint.unwrap();
+        assert!(
+            hint_text.contains("--stat"),
+            "Diff arg hint should contain --stat: {hint_text}"
+        );
+    }
+
+    #[test]
+    fn test_hinter_shows_arg_hint_for_help() {
+        let helper = YoyoHelper;
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        let hint = helper.hint("/help ", 6, &ctx);
+        assert!(hint.is_some(), "Should show arg hint for /help ");
+        assert!(hint.unwrap().contains("command"));
+    }
+
+    #[test]
+    fn test_hinter_no_arg_hint_for_no_arg_command() {
+        let helper = YoyoHelper;
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        // /version takes no args, so trailing space should give no hint
+        let hint = helper.hint("/version ", 9, &ctx);
         assert!(hint.is_none());
     }
 

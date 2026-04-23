@@ -160,6 +160,63 @@ pub const BG_SUBCOMMANDS: &[&str] = &["run", "list", "output", "kill"];
 /// Config subcommand names for `/config <Tab>` completion.
 pub const CONFIG_SUBCOMMANDS: &[&str] = &["show", "edit"];
 
+/// Return a hint string showing available arguments/subcommands for a command.
+///
+/// Used by the hinter to display dim text after the user types a command + space.
+/// Returns `None` for commands that take no arguments.
+pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
+    match cmd {
+        "diff" => Some("[file] [--stat] [--cached] [--staged] [--name-only]"),
+        "model" => Some("<model-name>"),
+        "think" => Some("off | low | medium | high"),
+        "git" => Some("status | log | add | diff | branch | stash"),
+        "pr" => Some("create | describe | status | diff"),
+        "help" => Some("<command>"),
+        "config" => Some("show | edit"),
+        "save" => Some("<filename.json>"),
+        "load" => Some("<filename.json>"),
+        "add" => Some("<file-or-url> ..."),
+        "apply" => Some("<patch-file> [--check]"),
+        "bg" => Some("run | list | output | kill"),
+        "checkpoint" => Some("save | list | restore | diff | delete"),
+        "undo" => Some("[--all] [--last-commit]"),
+        "refactor" => Some("rename | extract | move"),
+        "watch" => Some("off | status"),
+        "lint" => Some("fix | pedantic | strict | unsafe"),
+        "provider" => Some("<provider-name>"),
+        "context" => Some("show | files | clear"),
+        "skill" => Some("list | show | path"),
+        "spawn" => Some("<prompt>"),
+        "grep" => Some("<pattern> [path] [-i] [-n]"),
+        "find" => Some("<filename-pattern>"),
+        "blame" => Some("<file> [line-range]"),
+        "review" => Some("[branch]"),
+        "web" => Some("<url>"),
+        "run" => Some("<command>"),
+        "test" => Some("[args...]"),
+        "export" => Some("[filename]"),
+        "search" => Some("<query>"),
+        "remember" => Some("<note>"),
+        "forget" => Some("<id>"),
+        "explain" => Some("<file>"),
+        "map" => Some("[path] [--depth N]"),
+        "stash" => Some("push | pop | list | drop"),
+        "mark" => Some("<name>"),
+        "jump" => Some("<name>"),
+        "ast" => Some("<pattern> [path]"),
+        "todo" => Some("add | done | list | clear"),
+        "docs" => Some("<crate-name>"),
+        "rename" => Some("<old> <new> [path]"),
+        "side" => Some("<prompt>"),
+        "changelog" => Some("[count]"),
+        "extended" | "ext" => Some("<prompt>"),
+        "plan" => Some("<description>"),
+        "tree" => Some("[path] [--depth N]"),
+        "index" => Some("[path]"),
+        _ => None,
+    }
+}
+
 /// Return context-aware argument completions for a given command and partial argument.
 ///
 /// `cmd` is the slash command (e.g. "/model"), `partial_arg` is what the user has typed
@@ -1023,5 +1080,77 @@ mod tests {
         // Should extract just the command part, ignoring args
         assert_eq!(suggest_command("/hlep commands"), Some("/help"));
         assert_eq!(suggest_command("/savee myfile.json"), Some("/save"));
+    }
+
+    #[test]
+    fn test_command_arg_hint_diff_contains_stat() {
+        let hint = command_arg_hint("diff");
+        assert!(hint.is_some());
+        assert!(
+            hint.unwrap().contains("--stat"),
+            "diff hint should contain --stat"
+        );
+    }
+
+    #[test]
+    fn test_command_arg_hint_help_contains_command() {
+        let hint = command_arg_hint("help");
+        assert!(hint.is_some());
+        assert!(
+            hint.unwrap().contains("command"),
+            "help hint should contain 'command'"
+        );
+    }
+
+    #[test]
+    fn test_command_arg_hint_version_returns_none() {
+        // /version takes no arguments
+        assert!(command_arg_hint("version").is_none());
+    }
+
+    #[test]
+    fn test_command_arg_hint_model_shows_placeholder() {
+        let hint = command_arg_hint("model");
+        assert!(hint.is_some());
+        assert!(
+            hint.unwrap().contains("model"),
+            "model hint should reference model-name"
+        );
+    }
+
+    #[test]
+    fn test_command_arg_hint_think_shows_levels() {
+        let hint = command_arg_hint("think");
+        assert!(hint.is_some());
+        let h = hint.unwrap();
+        assert!(h.contains("off"), "think hint should contain 'off'");
+        assert!(h.contains("high"), "think hint should contain 'high'");
+    }
+
+    #[test]
+    fn test_command_arg_hint_no_args_commands() {
+        // Commands with no arguments
+        for cmd in &[
+            "version", "quit", "exit", "clear", "status", "tokens", "cost", "marks",
+        ] {
+            assert!(
+                command_arg_hint(cmd).is_none(),
+                "{cmd} should have no arg hint"
+            );
+        }
+    }
+
+    #[test]
+    fn test_command_arg_hint_git_shows_subcommands() {
+        let hint = command_arg_hint("git").unwrap();
+        assert!(hint.contains("status"));
+        assert!(hint.contains("log"));
+    }
+
+    #[test]
+    fn test_command_arg_hint_pr_shows_subcommands() {
+        let hint = command_arg_hint("pr").unwrap();
+        assert!(hint.contains("create"));
+        assert!(hint.contains("diff"));
     }
 }
