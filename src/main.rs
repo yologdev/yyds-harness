@@ -63,6 +63,7 @@ mod prompt;
 mod prompt_budget;
 mod providers;
 mod repl;
+mod safety;
 mod setup;
 mod tools;
 
