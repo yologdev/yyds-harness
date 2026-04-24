@@ -455,6 +455,19 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /side explain the difference between clone and copy\n\
              \x20 /side how do I convert a Vec<u8> to a String?",
         ),
+        "quick" => Some(
+            "/quick <question> — Fast single-turn answer without tools or agent loop\n\n\
+             Usage:\n\
+             \x20 /quick <question>    Get a fast answer to a simple question\n\n\
+             Sends your question directly to the model without tool access.\n\
+             The response is streamed back immediately — no agent loop, no tools.\n\
+             Great for quick lookups, error explanations, and syntax help.\n\n\
+             Like /side, the exchange is NOT added to the main conversation.\n\n\
+             Examples:\n\
+             \x20 /quick what does this error mean: borrow of moved value?\n\
+             \x20 /quick how do I use sed to replace X with Y?\n\
+             \x20 /quick explain the difference between async and threading",
+        ),
         "skill" => Some(
             "/skill [subcommand] — List and inspect loaded skills\n\n\
              Usage:\n\
@@ -1019,6 +1032,7 @@ pub fn help_text() -> String {
     out.push_str(
         "  /side <question>   Quick question without affecting main conversation (no tools)\n",
     );
+    out.push_str("  /quick <question>  Fast single-turn answer — no tools, no agent loop\n");
     out.push_str(
         "  /remember <note>   Save a project-specific memory (persists across sessions)\n",
     );
@@ -1114,6 +1128,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "pr" => Some("List, view, or create pull requests"),
         "profile" => Some("Show session statistics (tokens, cost, time, turns)"),
         "provider" => Some("Switch or show current provider"),
+        "quick" => Some("Fast answer without tools (single-turn, no agent loop)"),
         "quit" => Some("Exit yoyo"),
         "refactor" => Some("Refactoring tools (extract, rename, move)"),
         "remember" => Some("Save a memory note"),
@@ -1195,6 +1210,7 @@ mod tests {
             "/think",
             "/spawn",
             "/side",
+            "/quick",
             "/extended",
             "/remember",
             "/memories",
@@ -1312,6 +1328,7 @@ mod tests {
             "/spawn",
             "/extended",
             "/side",
+            "/quick",
             "/remember",
             "/memories",
             "/forget",

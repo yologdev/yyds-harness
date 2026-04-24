@@ -228,6 +228,8 @@ Features:
 |---------|-------------|
 | `/plan <task>` | Create a step-by-step plan for a task without executing anything (architect mode) |
 | `/spawn <task>` | Spawn a subagent with a fresh context to handle a task |
+| `/side <question>` | Quick question without tools — doesn't affect main conversation |
+| `/quick <question>` | Fast single-turn answer — no tools, no agent loop |
 
 ### `/plan` — Architect mode
 

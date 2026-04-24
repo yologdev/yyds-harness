@@ -545,6 +545,10 @@ pub fn help_text() -> String {
         s,
         "    /side <question>   Quick question (no tools, no context impact)"
     );
+    let _ = writeln!(
+        s,
+        "    /quick <question>  Fast single-turn answer (no tools, no agent loop)"
+    );
     let _ = writeln!(s, "    /remember <note>   Save a project-specific memory");
     let _ = writeln!(s, "    /memories          List project memories");
     let _ = writeln!(s, "    /forget <n>        Remove a project memory by index");

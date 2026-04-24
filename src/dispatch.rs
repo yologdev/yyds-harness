@@ -986,6 +986,10 @@ pub(crate) async fn dispatch_command(
             crate::repl::handle_side(input, agent_config).await;
             CommandResult::Continue
         }
+        s if s == "/quick" || s.starts_with("/quick ") => {
+            crate::repl::handle_quick(input, agent_config).await;
+            CommandResult::Continue
+        }
         s if s.starts_with('/') && is_unknown_command(s) => {
             let cmd = s.split_whitespace().next().unwrap_or(s);
             eprintln!("{RED}  unknown command: {cmd}{RESET}");

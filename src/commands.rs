@@ -118,6 +118,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "/mcp",
     "/permissions",
     "/profile",
+    "/quick",
 ];
 
 /// Well-known model names for `/model <Tab>` completion.
@@ -209,6 +210,7 @@ pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
         "docs" => Some("<crate-name>"),
         "rename" => Some("<old> <new> [path]"),
         "side" => Some("<prompt>"),
+        "quick" => Some("<question>"),
         "changelog" => Some("[count]"),
         "evolution" => Some("[count]"),
         "extended" | "ext" => Some("<prompt>"),
@@ -1154,5 +1156,26 @@ mod tests {
         let hint = command_arg_hint("pr").unwrap();
         assert!(hint.contains("create"));
         assert!(hint.contains("diff"));
+    }
+
+    #[test]
+    fn test_quick_in_known_commands() {
+        assert!(
+            KNOWN_COMMANDS.contains(&"/quick"),
+            "/quick should be in KNOWN_COMMANDS"
+        );
+    }
+
+    #[test]
+    fn test_quick_arg_hint() {
+        let hint = command_arg_hint("quick");
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("question"));
+    }
+
+    #[test]
+    fn test_quick_not_unknown() {
+        assert!(!is_unknown_command("/quick"));
+        assert!(!is_unknown_command("/quick how do I reverse a list?"));
     }
 }

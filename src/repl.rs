@@ -900,6 +900,108 @@ pub(crate) async fn handle_side(input: &str, agent_config: &AgentConfig) {
     }
 }
 
+// ── Quick mode ──
+
+fn parse_quick_question(input: &str) -> Option<String> {
+    let question = input
+        .strip_prefix("/quick")
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if question.is_empty() {
+        None
+    } else {
+        Some(question)
+    }
+}
+
+/// Handle a `/quick <question>` command — fast single-turn answer without tools or agent loop.
+pub(crate) async fn handle_quick(input: &str, agent_config: &AgentConfig) {
+    let question = match parse_quick_question(input) {
+        Some(q) => q,
+        None => {
+            eprintln!(
+                "{YELLOW}  Usage: /quick <question>{RESET}\n\
+                 {DIM}  Fast single-turn answer without tools or agent loop.\n\
+                 {DIM}  Great for quick lookups, syntax help, and explanations.\n\n\
+                 {DIM}  Examples:\n\
+                 {DIM}    /quick what does this error mean: borrow of moved value?\n\
+                 {DIM}    /quick how do I use sed to replace X with Y?\n\
+                 {DIM}    /quick explain the difference between async and threading{RESET}\n"
+            );
+            return;
+        }
+    };
+
+    eprintln!("{DIM}  [quick] thinking...{RESET}");
+
+    let mut side_agent = agent_config.build_side_agent();
+    let mut rx = side_agent.prompt(&question).await;
+
+    let mut md_renderer = MarkdownRenderer::new();
+    let mut collected_text = String::new();
+    let mut started = false;
+
+    loop {
+        match rx.recv().await {
+            Some(AgentEvent::MessageUpdate {
+                delta: StreamDelta::Text { delta },
+                ..
+            }) => {
+                if !started {
+                    print!("\n{DIM}[quick]{RESET} ");
+                    started = true;
+                }
+                collected_text.push_str(&delta);
+                let rendered = md_renderer.render_delta(&delta);
+                if !rendered.is_empty() {
+                    print!("{rendered}");
+                }
+            }
+            Some(AgentEvent::MessageEnd { .. }) => {
+                let tail = md_renderer.flush();
+                if !tail.is_empty() {
+                    print!("{tail}");
+                }
+            }
+            Some(AgentEvent::AgentEnd { .. }) => break,
+            None => break,
+            _ => {}
+        }
+    }
+
+    side_agent.finish().await;
+
+    if !started {
+        eprintln!("{DIM}  [quick] (no response){RESET}");
+    } else {
+        println!(); // newline after streamed text
+    }
+
+    // Show quick query cost
+    let messages = side_agent.messages();
+    let mut quick_usage = Usage::default();
+    for msg in messages {
+        if let AgentMessage::Llm(yoagent::types::Message::Assistant { usage, .. }) = msg {
+            quick_usage.input += usage.input;
+            quick_usage.output += usage.output;
+            quick_usage.cache_read += usage.cache_read;
+            quick_usage.cache_write += usage.cache_write;
+        }
+    }
+    let total_tokens = quick_usage.input + quick_usage.output;
+    if total_tokens > 0 {
+        let cost = estimate_cost(&quick_usage, &agent_config.model);
+        if let Some(c) = cost {
+            eprintln!("{DIM}  [quick] {} tokens, ${:.4}{RESET}\n", total_tokens, c);
+        } else {
+            eprintln!("{DIM}  [quick] {} tokens{RESET}\n", total_tokens);
+        }
+    } else {
+        eprintln!();
+    }
+}
+
 // ── Extended mode ──
 
 /// Default maximum turns for extended autonomous mode.
@@ -1829,5 +1931,29 @@ mod tests {
     fn test_parse_side_question_multiword() {
         let q = parse_side_question("/side how do I convert Vec<u8> to String in Rust?");
         assert_eq!(q.unwrap(), "how do I convert Vec<u8> to String in Rust?");
+    }
+
+    #[test]
+    fn test_parse_quick_question_basic() {
+        let q = parse_quick_question("/quick what does borrow of moved value mean?");
+        assert_eq!(q.unwrap(), "what does borrow of moved value mean?");
+    }
+
+    #[test]
+    fn test_parse_quick_question_empty() {
+        assert!(parse_quick_question("/quick").is_none());
+        assert!(parse_quick_question("/quick   ").is_none());
+    }
+
+    #[test]
+    fn test_parse_quick_question_preserves_content() {
+        let q = parse_quick_question("/quick   how do I use sed?  ");
+        assert_eq!(q.unwrap(), "how do I use sed?");
+    }
+
+    #[test]
+    fn test_parse_quick_question_multiword() {
+        let q = parse_quick_question("/quick explain async vs threading in Rust");
+        assert_eq!(q.unwrap(), "explain async vs threading in Rust");
     }
 }
