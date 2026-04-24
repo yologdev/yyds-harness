@@ -222,6 +222,7 @@ Anthropic · OpenAI · Google · Ollama · OpenRouter · xAI · Groq · DeepSeek
 - Config file support via `[permissions]` and `[directories]` sections
 
 ### 🧩 Extensibility
+- **Custom slash commands** — drop `.md` files in `.yoyo/commands/` (project) or `~/.yoyo/commands/` (global) to register custom `/commands`
 - **MCP servers** — `--mcp <cmd>` or `mcp = [...]` in `.yoyo.toml` connects to MCP servers via stdio transport
 - **OpenAPI tools** — `--openapi <spec>` registers tools from OpenAPI specifications
 - **Skills system** — `--skills <dir>` loads markdown skill files with YAML frontmatter
@@ -396,7 +397,7 @@ src/                    29 modules, ~43,000 lines of Rust
   main.rs               Entry point, agent config, tool building
   hooks.rs              Hook trait, registry, AuditHook, tool wrapping
   cli.rs                CLI parsing, config files, permissions
-  commands.rs           Slash command dispatch, grouped /help
+  commands.rs           Slash command dispatch, grouped /help, custom command loading
   commands_bg.rs        /bg — background process management (run, list, output, kill)
   commands_info.rs      /version, /status, /tokens, /cost, /changelog, /model, /provider, /think (read-only)
   commands_git.rs       /diff, /blame, /commit, /pr, /review, /git

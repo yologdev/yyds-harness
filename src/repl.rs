@@ -35,7 +35,7 @@ impl Completer for YoyoHelper {
 
         // Slash command completion: starts with '/' and no space yet
         if prefix.starts_with('/') && !prefix.contains(' ') {
-            let matches: Vec<Pair> = KNOWN_COMMANDS
+            let mut matches: Vec<Pair> = KNOWN_COMMANDS
                 .iter()
                 .filter(|cmd| cmd.starts_with(prefix))
                 .map(|cmd| {
@@ -54,6 +54,18 @@ impl Completer for YoyoHelper {
                     }
                 })
                 .collect();
+
+            // Add custom commands from .yoyo/commands/ and ~/.yoyo/commands/
+            for name in crate::commands::custom_command_names() {
+                let slash_name = format!("/{name}");
+                if slash_name.starts_with(prefix) {
+                    matches.push(Pair {
+                        display: format!("{slash_name:<14} (custom)"),
+                        replacement: slash_name,
+                    });
+                }
+            }
+
             return Ok((0, matches));
         }
 
@@ -209,6 +221,16 @@ impl Hinter for YoyoHelper {
                     return Some(format!(" — {desc}"));
                 }
             }
+        }
+        // Check custom commands for hints
+        for name in crate::commands::custom_command_names() {
+            if name.starts_with(typed) && name != typed {
+                let rest = &name[typed.len()..];
+                return Some(format!("{rest} (custom)"));
+            }
+        }
+        if crate::commands::is_custom_command(typed) {
+            return Some(" (custom)".to_string());
         }
         None
     }

@@ -288,7 +288,16 @@ fn list_json_files(partial: &str) -> Vec<String> {
 /// Extracts the first word and checks against known commands.
 pub fn is_unknown_command(input: &str) -> bool {
     let cmd = input.split_whitespace().next().unwrap_or(input);
-    !KNOWN_COMMANDS.contains(&cmd)
+    if KNOWN_COMMANDS.contains(&cmd) {
+        return false;
+    }
+    // Check custom commands: strip leading '/' and check
+    if let Some(name) = cmd.strip_prefix('/') {
+        if is_custom_command(name) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Compute Levenshtein edit distance between two strings.
@@ -468,6 +477,113 @@ pub use crate::commands_spawn::{handle_spawn, SpawnTracker};
 // Moved to commands_config.rs (issue #260 slice). Re-exported at the top
 // of this file so `commands::handle_teach`, `commands::handle_mcp`, etc.
 // still resolve.
+
+// ---------------------------------------------------------------------------
+// Custom slash commands — load user-defined .md files from
+//   .yoyo/commands/  (project-local, higher priority)
+//   ~/.yoyo/commands/ (global/user-level)
+// ---------------------------------------------------------------------------
+
+/// Discover custom slash commands from `.yoyo/commands/` and `~/.yoyo/commands/`.
+/// Returns `Vec<(name, content)>` — project-local commands override global ones
+/// with the same name. Silently returns an empty vec if directories don't exist.
+pub fn discover_custom_commands() -> Vec<(String, String)> {
+    discover_custom_commands_from(None)
+}
+
+/// Discover custom slash commands from explicit directories (for testing).
+/// If `override_dirs` is `None`, uses the default project + home paths.
+pub(crate) fn discover_custom_commands_from(
+    override_dirs: Option<(&std::path::Path, &std::path::Path)>,
+) -> Vec<(String, String)> {
+    let project_dir;
+    let global_dir;
+    let (proj_path, glob_path) = match override_dirs {
+        Some((p, g)) => (p, g),
+        None => {
+            project_dir = std::path::PathBuf::from(".yoyo/commands");
+            global_dir = match std::env::var("HOME") {
+                Ok(h) => std::path::PathBuf::from(h).join(".yoyo/commands"),
+                Err(_) => {
+                    return load_single_dir_commands(&std::path::PathBuf::from(".yoyo/commands"))
+                }
+            };
+            (project_dir.as_path(), global_dir.as_path())
+        }
+    };
+
+    let mut commands: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    // Load global commands first (lower priority)
+    load_commands_from_dir(glob_path, &mut commands);
+    // Load project-local commands second (higher priority — overwrites global)
+    load_commands_from_dir(proj_path, &mut commands);
+
+    let mut result: Vec<(String, String)> = commands.into_iter().collect();
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+    result
+}
+
+/// Helper: load commands from a single dir and return as a sorted vec.
+fn load_single_dir_commands(dir: &std::path::Path) -> Vec<(String, String)> {
+    let mut commands = std::collections::HashMap::new();
+    load_commands_from_dir(dir, &mut commands);
+    let mut result: Vec<(String, String)> = commands.into_iter().collect();
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+    result
+}
+
+fn load_commands_from_dir(
+    dir: &std::path::Path,
+    commands: &mut std::collections::HashMap<String, String>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                commands.insert(stem.to_string(), content);
+            }
+        }
+    }
+}
+
+/// Check if a slash command name (without leading `/`) matches a custom command.
+pub fn is_custom_command(cmd: &str) -> bool {
+    get_custom_command_content(cmd).is_some()
+}
+
+/// Get the content of a custom command by name (without leading `/`).
+/// Checks project-local `.yoyo/commands/` first, then global `~/.yoyo/commands/`.
+pub fn get_custom_command_content(cmd: &str) -> Option<String> {
+    // Check project-local first
+    let project_path = std::path::PathBuf::from(format!(".yoyo/commands/{cmd}.md"));
+    if let Ok(content) = std::fs::read_to_string(&project_path) {
+        return Some(content);
+    }
+    // Check global
+    if let Ok(home) = std::env::var("HOME") {
+        let global_path = std::path::PathBuf::from(home).join(format!(".yoyo/commands/{cmd}.md"));
+        if let Ok(content) = std::fs::read_to_string(&global_path) {
+            return Some(content);
+        }
+    }
+    None
+}
+
+/// Return names of all discovered custom commands (for tab-completion).
+pub fn custom_command_names() -> Vec<String> {
+    discover_custom_commands()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
@@ -1177,5 +1293,59 @@ mod tests {
     fn test_quick_not_unknown() {
         assert!(!is_unknown_command("/quick"));
         assert!(!is_unknown_command("/quick how do I reverse a list?"));
+    }
+
+    #[test]
+    fn test_discover_custom_commands_empty() {
+        // Non-existent directories should return empty vec
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project_cmds");
+        let global = tmp.path().join("global_cmds");
+        let result = discover_custom_commands_from(Some((project.as_path(), global.as_path())));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_discover_custom_commands_finds_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project_cmds");
+        let global = tmp.path().join("global_cmds");
+        std::fs::create_dir_all(&project).unwrap();
+
+        std::fs::write(project.join("review.md"), "Review the diff").unwrap();
+        std::fs::write(project.join("deploy.md"), "Deploy to prod").unwrap();
+        // Non-.md files should be ignored
+        std::fs::write(project.join("notes.txt"), "not a command").unwrap();
+
+        let result = discover_custom_commands_from(Some((project.as_path(), global.as_path())));
+        assert_eq!(result.len(), 2);
+        assert!(result
+            .iter()
+            .any(|(n, c)| n == "review" && c == "Review the diff"));
+        assert!(result
+            .iter()
+            .any(|(n, c)| n == "deploy" && c == "Deploy to prod"));
+    }
+
+    #[test]
+    fn test_custom_command_project_overrides_global() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project_cmds");
+        let global = tmp.path().join("global_cmds");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&global).unwrap();
+
+        std::fs::write(project.join("review.md"), "project review").unwrap();
+        std::fs::write(global.join("review.md"), "global review").unwrap();
+        std::fs::write(global.join("lint.md"), "global lint").unwrap();
+
+        let result = discover_custom_commands_from(Some((project.as_path(), global.as_path())));
+        assert_eq!(result.len(), 2);
+        // Project-local should override global for same name
+        let review = result.iter().find(|(n, _)| n == "review").unwrap();
+        assert_eq!(review.1, "project review");
+        // Global-only command should still be present
+        let lint = result.iter().find(|(n, _)| n == "lint").unwrap();
+        assert_eq!(lint.1, "global lint");
     }
 }

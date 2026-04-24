@@ -760,6 +760,41 @@ Use `/memories <query>` to filter by keyword when you have many memories. The se
 
 Use `/remember` any time you find yourself repeating the same instruction to the agent. The memory will be there next time you start a session in this project directory.
 
+## Custom Slash Commands
+
+You can define your own slash commands by placing `.md` files in a commands directory. yoyo looks in two locations:
+
+| Location | Scope | Priority |
+|----------|-------|----------|
+| `.yoyo/commands/` | Project-local | Higher (overrides global) |
+| `~/.yoyo/commands/` | Global (all projects) | Lower |
+
+The filename (without `.md`) becomes the command name. For example, creating `.yoyo/commands/review.md` registers a `/review` custom command. When you type `/review`, the file's content is sent as the user message to the agent.
+
+### Example
+
+Create a custom `/summarize` command:
+
+```bash
+mkdir -p .yoyo/commands
+cat > .yoyo/commands/summarize.md << 'EOF'
+Read the current codebase and provide a high-level summary of:
+1. What this project does
+2. Key architectural decisions
+3. Main dependencies
+4. Areas that could use improvement
+EOF
+```
+
+Now typing `/summarize` in the REPL sends that prompt to the agent.
+
+### Tips
+
+- **Project-local commands** (`.yoyo/commands/`) override global ones (`~/.yoyo/commands/`) with the same name
+- **Share with your team** — commit `.yoyo/commands/` to version control so everyone gets the same custom commands
+- **Global commands** are great for personal workflows you use across all projects (e.g., `/standup`, `/changelog-draft`)
+- Custom commands appear alongside built-in commands — if a custom command has the same name as a built-in, the built-in takes precedence
+
 ## Unknown commands
 
 If you type a `/command` that yoyo doesn't recognize, it will tell you:

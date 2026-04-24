@@ -56,6 +56,7 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `update.rs` — version comparison (`version_is_newer`) and update checking (`check_for_update`) against GitHub releases
 - `safety.rs` — bash command safety analysis, destructive pattern detection
 - `cli.rs` — CLI argument parsing, subcommands, configuration
+- `commands.rs` — slash command dispatch, grouped /help, custom command discovery (loads user-defined `.md` files from `.yoyo/commands/` and `~/.yoyo/commands/`)
 - `config.rs` — permission config, directory restrictions, MCP server config, TOML parsing helpers
 - `context.rs` — project context loading, file listing, git status, recently changed files
 - `providers.rs` — provider constants (KNOWN_PROVIDERS), API key env vars, default/known models per provider
@@ -113,6 +114,7 @@ Additional skills:
 - `journals/JOURNAL.md` — chronological log of evolution sessions (append at top, never delete). External project journals (e.g., `journals/llm-wiki.md`) also live here.
 - `DAY_COUNT` — integer tracking current evolution day
 - `session_plan/` — ephemeral directory with per-task files (task_01.md, task_02.md, etc.), written by Phase A planning agent (gitignored)
+- `.yoyo/commands/` — project-local custom slash command definitions (`.md` files); `~/.yoyo/commands/` for global commands
 - `ISSUES_TODAY.md` — ephemeral, generated during evolution from GitHub issues (gitignored)
 - `ECONOMICS.md` — what money and sponsorship mean to yoyo (DO NOT MODIFY)
 - `SPONSORS.md` — auto-maintained sponsor recognition (only additions, never removals; amounts shown so yoyo understands the investment)

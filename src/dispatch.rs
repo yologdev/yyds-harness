@@ -34,8 +34,7 @@ pub(crate) enum CommandResult {
     Continue,
     /// User wants to exit.
     Quit,
-    /// Command produced a prompt to send to the agent (reserved for future use).
-    #[expect(dead_code)]
+    /// Command produced a prompt to send to the agent.
     SendToAgent(String),
     /// Input isn't a slash command, fall through to agent.
     NotACommand,
@@ -990,14 +989,25 @@ pub(crate) async fn dispatch_command(
             crate::repl::handle_quick(input, agent_config).await;
             CommandResult::Continue
         }
-        s if s.starts_with('/') && is_unknown_command(s) => {
-            let cmd = s.split_whitespace().next().unwrap_or(s);
-            eprintln!("{RED}  unknown command: {cmd}{RESET}");
-            if let Some(suggestion) = suggest_command(s) {
-                eprintln!("{YELLOW}  did you mean {suggestion}?{RESET}");
+        // Custom slash commands: loaded from .yoyo/commands/ and ~/.yoyo/commands/
+        // Also catches unknown commands (anything starting with '/' not matched above)
+        s if s.starts_with('/') => {
+            let cmd_name = s[1..].split_whitespace().next().unwrap_or(&s[1..]);
+            if let Some(content) = crate::commands::get_custom_command_content(cmd_name) {
+                eprintln!("{DIM}  running custom command /{cmd_name}{RESET}");
+                CommandResult::SendToAgent(content)
+            } else if is_unknown_command(s) {
+                let cmd = s.split_whitespace().next().unwrap_or(s);
+                eprintln!("{RED}  unknown command: {cmd}{RESET}");
+                if let Some(suggestion) = suggest_command(s) {
+                    eprintln!("{YELLOW}  did you mean {suggestion}?{RESET}");
+                }
+                eprintln!("{DIM}  type /help for available commands{RESET}\n");
+                CommandResult::Continue
+            } else {
+                // Shouldn't happen — known command not matched above
+                CommandResult::Continue
             }
-            eprintln!("{DIM}  type /help for available commands{RESET}\n");
-            CommandResult::Continue
         }
         _ => CommandResult::NotACommand,
     }
