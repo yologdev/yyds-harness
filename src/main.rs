@@ -53,6 +53,7 @@ mod commands_session;
 mod commands_spawn;
 mod config;
 mod context;
+mod dispatch;
 mod docs;
 mod format;
 mod git;

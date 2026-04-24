@@ -335,6 +335,7 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 | `/context [system]` | Show loaded project context files or system prompt sections |
 | `/cost` | Show session cost breakdown |
 | `/changelog [N]` | Show recent git commit history (default: 15) |
+| `/evolution [N]` | Show evolution history and session stats |
 | `/diff` | Git diff summary of uncommitted changes |
 | `/blame <file>` | Git blame with colored output (`/blame file:10-20` for ranges) |
 | `/docs <crate>` | Look up docs.rs documentation |

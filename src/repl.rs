@@ -369,6 +369,10 @@ async fn dispatch_command(
             commands::handle_changelog(input);
             CommandResult::Continue
         }
+        s if s == "/evolution" || s.starts_with("/evolution ") => {
+            commands::handle_evolution(input);
+            CommandResult::Continue
+        }
         "/clear" => {
             let messages = agent.messages();
             let msg_count = messages.len();

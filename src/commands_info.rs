@@ -2,7 +2,7 @@
 //!
 //! These handlers print state without mutating anything: `/version`, `/status`,
 //! `/tokens`, `/cost`, `/profile`, `/model` (show), `/provider` (show),
-//! `/think` (show), `/changelog`.
+//! `/think` (show), `/changelog`, `/evolution`.
 //!
 //! Extracted from `commands.rs` as the first slice of issue #260, which tracks
 //! splitting the 3,500-line `commands.rs` into focused modules. Read-only
@@ -340,6 +340,232 @@ pub fn handle_changelog(input: &str) {
     }
 }
 
+/// A parsed evolution session from a git tag like `day54-15-04`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvolutionSession {
+    pub day: u32,
+    pub hour: u32,
+    pub minute: u32,
+    pub title: Option<String>,
+}
+
+/// Parse a git tag like `day54-15-04` into an `EvolutionSession`.
+pub fn parse_evolution_tag(tag: &str) -> Option<EvolutionSession> {
+    let rest = tag.strip_prefix("day")?;
+    let parts: Vec<&str> = rest.splitn(3, '-').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let day = parts[0].parse::<u32>().ok()?;
+    let hour = parts[1].parse::<u32>().ok()?;
+    let minute = parts[2].parse::<u32>().ok()?;
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    Some(EvolutionSession {
+        day,
+        hour,
+        minute,
+        title: None,
+    })
+}
+
+/// Parse journal titles from JOURNAL.md content.
+/// Returns a map of (day, hour, minute) → title.
+pub fn parse_journal_titles(content: &str) -> std::collections::HashMap<(u32, u32, u32), String> {
+    let mut titles = std::collections::HashMap::new();
+    for line in content.lines() {
+        // Format: ## Day NN — HH:MM — Title text
+        if let Some(rest) = line.strip_prefix("## Day ") {
+            let parts: Vec<&str> = rest.splitn(3, " — ").collect();
+            if parts.len() == 3 {
+                if let Ok(day) = parts[0].parse::<u32>() {
+                    let time_parts: Vec<&str> = parts[1].splitn(2, ':').collect();
+                    if time_parts.len() == 2 {
+                        if let (Ok(hour), Ok(minute)) =
+                            (time_parts[0].parse::<u32>(), time_parts[1].parse::<u32>())
+                        {
+                            titles.insert((day, hour, minute), parts[2].to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    titles
+}
+
+/// Parse optional count from `/evolution [N]`.
+pub fn parse_evolution_count(input: &str) -> usize {
+    let arg = input.strip_prefix("/evolution").unwrap_or("").trim();
+    if arg.is_empty() {
+        return 10;
+    }
+    arg.parse::<usize>().unwrap_or(10).clamp(1, 100)
+}
+
+/// Compute sessions-per-day stats: (avg, max_day, max_count, current_streak).
+/// current_streak = consecutive days with at least one session ending at current_day.
+pub fn session_stats(sessions: &[EvolutionSession], current_day: u32) -> (f64, u32, u32, u32) {
+    if sessions.is_empty() {
+        return (0.0, 0, 0, 0);
+    }
+
+    // Count sessions per day
+    let mut day_counts: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    for s in sessions {
+        *day_counts.entry(s.day).or_insert(0) += 1;
+    }
+
+    let total_days = day_counts.len() as f64;
+    let total_sessions = sessions.len() as f64;
+    let avg = total_sessions / total_days;
+
+    let (max_day, max_count) = day_counts
+        .iter()
+        .max_by_key(|(_, &count)| count)
+        .map(|(&day, &count)| (day, count))
+        .unwrap_or((0, 0));
+
+    // Compute current streak (consecutive days ending at current_day)
+    let mut streak = 0u32;
+    let mut check_day = current_day;
+    loop {
+        if day_counts.contains_key(&check_day) {
+            streak += 1;
+            if check_day == 0 {
+                break;
+            }
+            check_day -= 1;
+        } else {
+            break;
+        }
+    }
+
+    (avg, max_day, max_count, streak)
+}
+
+/// Handle the `/evolution` command — show evolution history and stats.
+pub fn handle_evolution(input: &str) {
+    let count = parse_evolution_count(input);
+
+    // Read DAY_COUNT
+    let current_day = std::fs::read_to_string("DAY_COUNT")
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+
+    // Fetch git tags
+    let tag_output = std::process::Command::new("git")
+        .args(["tag", "--sort=-creatordate"])
+        .output();
+
+    let tags_text = match tag_output {
+        Ok(result) if result.status.success() => {
+            String::from_utf8_lossy(&result.stdout).to_string()
+        }
+        Ok(_) => {
+            println!("{DIM}  (not in a git repository){RESET}\n");
+            return;
+        }
+        Err(_) => {
+            println!("{DIM}  (git not available){RESET}\n");
+            return;
+        }
+    };
+
+    // Parse tags into sessions
+    let mut sessions: Vec<EvolutionSession> =
+        tags_text.lines().filter_map(parse_evolution_tag).collect();
+
+    // Try to load journal titles
+    let journal_titles = std::fs::read_to_string("journals/JOURNAL.md")
+        .map(|content| parse_journal_titles(&content))
+        .unwrap_or_default();
+
+    // Attach titles to sessions
+    for session in &mut sessions {
+        if let Some(title) = journal_titles.get(&(session.day, session.hour, session.minute)) {
+            session.title = Some(title.clone());
+        }
+    }
+
+    // Get test count
+    let test_count = std::process::Command::new("cargo")
+        .args(["test", "--", "--list"])
+        .output()
+        .ok()
+        .and_then(|r| {
+            if r.status.success() {
+                let text = String::from_utf8_lossy(&r.stdout).to_string();
+                Some(text.lines().filter(|l| l.ends_with(": test")).count())
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+
+    let total_sessions = sessions.len();
+
+    // Header
+    println!("\n  {BOLD}🐙 Evolution History — Day {current_day}{RESET}");
+    println!();
+
+    // Summary line
+    let test_str = if test_count > 0 {
+        format!(" | {CYAN}{test_count}{RESET} tests")
+    } else {
+        String::new()
+    };
+    println!(
+        "  {DIM}{current_day} days{RESET} | {GREEN}{total_sessions}{RESET} sessions{test_str}"
+    );
+
+    // Stats
+    let (avg, max_day, max_count, streak) = session_stats(&sessions, current_day);
+    if total_sessions > 0 {
+        println!(
+            "  {DIM}avg {avg:.1}/day | peak {max_count} sessions (day {max_day}) | streak {streak} days{RESET}"
+        );
+    }
+    println!();
+
+    // Recent sessions
+    if sessions.is_empty() {
+        println!("{DIM}  (no evolution sessions found){RESET}\n");
+        return;
+    }
+
+    let show_count = count.min(sessions.len());
+    println!("  {BOLD}Recent sessions:{RESET}");
+    for session in sessions.iter().take(show_count) {
+        let today_marker = if session.day == current_day {
+            format!(" {GREEN}(today){RESET}")
+        } else {
+            String::new()
+        };
+
+        let title_str = session
+            .title
+            .as_deref()
+            .map(|t| format!("  {DIM}{t}{RESET}"))
+            .unwrap_or_default();
+
+        println!(
+            "    {CYAN}Day {:>3}{RESET}  {:02}:{:02}{today_marker}{title_str}",
+            session.day, session.hour, session.minute
+        );
+    }
+
+    if total_sessions > show_count {
+        let remaining = total_sessions - show_count;
+        println!(
+            "    {DIM}... and {remaining} more (use /evolution {total_sessions} to see all){RESET}"
+        );
+    }
+    println!();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,5 +812,178 @@ mod tests {
     fn test_handle_version_verbose_no_panic() {
         // Verbose version with provider/model should not panic
         handle_version_verbose("anthropic", "claude-sonnet-4-20250514");
+    }
+
+    // === /evolution tests ===
+
+    #[test]
+    fn test_parse_evolution_tag_valid() {
+        let s = parse_evolution_tag("day54-15-04").unwrap();
+        assert_eq!(s.day, 54);
+        assert_eq!(s.hour, 15);
+        assert_eq!(s.minute, 4);
+        assert!(s.title.is_none());
+    }
+
+    #[test]
+    fn test_parse_evolution_tag_single_digits() {
+        let s = parse_evolution_tag("day1-0-0").unwrap();
+        assert_eq!(s.day, 1);
+        assert_eq!(s.hour, 0);
+        assert_eq!(s.minute, 0);
+    }
+
+    #[test]
+    fn test_parse_evolution_tag_invalid_no_prefix() {
+        assert!(parse_evolution_tag("v0.1.9").is_none());
+    }
+
+    #[test]
+    fn test_parse_evolution_tag_invalid_bad_time() {
+        assert!(parse_evolution_tag("day5-25-00").is_none()); // hour > 23
+        assert!(parse_evolution_tag("day5-12-60").is_none()); // minute > 59
+    }
+
+    #[test]
+    fn test_parse_evolution_tag_invalid_not_numbers() {
+        assert!(parse_evolution_tag("dayX-12-30").is_none());
+        assert!(parse_evolution_tag("day5-ab-30").is_none());
+    }
+
+    #[test]
+    fn test_parse_evolution_tag_too_few_parts() {
+        assert!(parse_evolution_tag("day5-12").is_none());
+        assert!(parse_evolution_tag("day5").is_none());
+    }
+
+    #[test]
+    fn test_parse_journal_titles() {
+        let content = "\
+# Journal
+
+## Day 54 — 15:04 — Five sessions of standing still
+
+Some text here.
+
+## Day 54 — 04:40 — Knowing where you were built
+
+More text.
+
+## Day 53 — 19:11 — The file that was three things pretending to be one
+";
+        let titles = parse_journal_titles(content);
+        assert_eq!(titles.len(), 3);
+        assert_eq!(
+            titles.get(&(54, 15, 4)),
+            Some(&"Five sessions of standing still".to_string())
+        );
+        assert_eq!(
+            titles.get(&(54, 4, 40)),
+            Some(&"Knowing where you were built".to_string())
+        );
+        assert_eq!(
+            titles.get(&(53, 19, 11)),
+            Some(&"The file that was three things pretending to be one".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_journal_titles_empty() {
+        let titles = parse_journal_titles("");
+        assert!(titles.is_empty());
+    }
+
+    #[test]
+    fn test_parse_journal_titles_no_entries() {
+        let titles = parse_journal_titles("# Journal\n\nSome other content.\n");
+        assert!(titles.is_empty());
+    }
+
+    #[test]
+    fn test_parse_evolution_count_default() {
+        assert_eq!(parse_evolution_count("/evolution"), 10);
+    }
+
+    #[test]
+    fn test_parse_evolution_count_custom() {
+        assert_eq!(parse_evolution_count("/evolution 20"), 20);
+        assert_eq!(parse_evolution_count("/evolution 1"), 1);
+    }
+
+    #[test]
+    fn test_parse_evolution_count_clamped() {
+        assert_eq!(parse_evolution_count("/evolution 0"), 1);
+        assert_eq!(parse_evolution_count("/evolution 999"), 100);
+    }
+
+    #[test]
+    fn test_parse_evolution_count_invalid() {
+        assert_eq!(parse_evolution_count("/evolution abc"), 10);
+    }
+
+    #[test]
+    fn test_session_stats_empty() {
+        let (avg, max_day, max_count, streak) = session_stats(&[], 55);
+        assert_eq!(avg, 0.0);
+        assert_eq!(max_day, 0);
+        assert_eq!(max_count, 0);
+        assert_eq!(streak, 0);
+    }
+
+    #[test]
+    fn test_session_stats_basic() {
+        let sessions = vec![
+            EvolutionSession {
+                day: 54,
+                hour: 4,
+                minute: 40,
+                title: None,
+            },
+            EvolutionSession {
+                day: 54,
+                hour: 15,
+                minute: 4,
+                title: None,
+            },
+            EvolutionSession {
+                day: 53,
+                hour: 19,
+                minute: 11,
+                title: None,
+            },
+        ];
+        let (avg, max_day, max_count, streak) = session_stats(&sessions, 54);
+        assert!((avg - 1.5).abs() < 0.01); // 3 sessions / 2 days
+        assert_eq!(max_day, 54);
+        assert_eq!(max_count, 2);
+        assert_eq!(streak, 2); // days 54 and 53 are consecutive
+    }
+
+    #[test]
+    fn test_session_stats_streak_with_gap() {
+        let sessions = vec![
+            EvolutionSession {
+                day: 55,
+                hour: 1,
+                minute: 0,
+                title: None,
+            },
+            // gap: no day 54
+            EvolutionSession {
+                day: 53,
+                hour: 10,
+                minute: 0,
+                title: None,
+            },
+        ];
+        let (_avg, _max_day, _max_count, streak) = session_stats(&sessions, 55);
+        assert_eq!(streak, 1); // only day 55, gap before 53
+    }
+
+    #[test]
+    fn test_handle_evolution_no_panic() {
+        // Should not panic regardless of environment
+        handle_evolution("/evolution");
+        handle_evolution("/evolution 5");
     }
 }

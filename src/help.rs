@@ -787,6 +787,18 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /export chat-log.md\n\
              \x20 /export output/session.md",
         ),
+        "evolution" => Some(
+            "/evolution [count] — Show evolution history and session stats\n\n\
+             Usage:\n\
+             \x20 /evolution           Show last 10 sessions (default)\n\
+             \x20 /evolution 20        Show last 20 sessions\n\
+             \x20 /evolution 100       Show up to 100 sessions\n\n\
+             Reads DAY_COUNT and git tags (dayNN-HH-MM format) to show\n\
+             the evolution timeline. Matches journal entries from\n\
+             journals/JOURNAL.md to display session titles.\n\n\
+             Output includes current day, total sessions, tests count,\n\
+             average sessions/day, peak day, and current streak.",
+        ),
         "watch" => Some(
             "/watch [command|off|status] — Auto-run tests after agent edits\n\n\
              Usage:\n\
@@ -1070,6 +1082,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "doctor" => Some("Run environment diagnostics"),
         "docs" => Some("Look up crate documentation"),
         "exit" => Some("Exit yoyo"),
+        "evolution" => Some("Show evolution history and session stats"),
         "export" => Some("Export conversation as markdown"),
         "explain" => Some("Ask the agent to explain code from a file"),
         "extended" => Some("Run the agent autonomously on a long task"),
