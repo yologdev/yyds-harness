@@ -445,6 +445,190 @@ pub fn session_stats(sessions: &[EvolutionSession], current_day: u32) -> (f64, u
     (avg, max_day, max_count, streak)
 }
 
+// --- CI run status for /evolution ---
+
+/// A single CI workflow run parsed from `gh run list` JSON output.
+#[derive(Debug, Clone)]
+pub struct CiRun {
+    pub status: String,      // "completed", "in_progress", "queued"
+    pub conclusion: String,  // "success", "failure", "cancelled", "" (when in progress)
+    pub name: String,        // workflow name
+    pub created_at: String,  // ISO 8601 timestamp
+    pub head_branch: String, // branch name
+}
+
+/// Format a CI run status as a colored emoji indicator.
+pub fn format_ci_status(status: &str, conclusion: &str) -> &'static str {
+    match (status, conclusion) {
+        (_, "success") => "✅",
+        (_, "failure") => "❌",
+        (_, "cancelled") => "⏹️",
+        ("in_progress", _) => "🔄",
+        ("queued", _) => "🕐",
+        _ => "❓",
+    }
+}
+
+/// Format a CI run's created_at timestamp as a relative time string (e.g. "2h ago").
+/// Falls back to the raw timestamp if parsing fails.
+pub fn format_ci_time_ago(created_at: &str) -> String {
+    // Parse ISO 8601 like "2026-04-24T10:30:00Z"
+    // Simple parsing: extract date and time components
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Try to parse the timestamp manually (avoid adding chrono dependency)
+    if let Some(secs) = parse_iso8601_to_epoch(created_at) {
+        let diff = now.saturating_sub(secs);
+        if diff < 60 {
+            "just now".to_string()
+        } else if diff < 3600 {
+            format!("{}m ago", diff / 60)
+        } else if diff < 86400 {
+            format!("{}h ago", diff / 3600)
+        } else {
+            format!("{}d ago", diff / 86400)
+        }
+    } else {
+        // Fallback: show the date portion
+        created_at
+            .split('T')
+            .next()
+            .unwrap_or(created_at)
+            .to_string()
+    }
+}
+
+/// Parse a simplified ISO 8601 timestamp (e.g. "2026-04-24T10:30:00Z") to Unix epoch seconds.
+/// Returns None if parsing fails.
+pub fn parse_iso8601_to_epoch(ts: &str) -> Option<u64> {
+    // Expected format: YYYY-MM-DDTHH:MM:SSZ
+    let ts = ts.trim().trim_end_matches('Z');
+    let (date_part, time_part) = ts.split_once('T')?;
+
+    let date_parts: Vec<&str> = date_part.split('-').collect();
+    if date_parts.len() != 3 {
+        return None;
+    }
+    let year: u64 = date_parts[0].parse().ok()?;
+    let month: u64 = date_parts[1].parse().ok()?;
+    let day: u64 = date_parts[2].parse().ok()?;
+
+    let time_parts: Vec<&str> = time_part.split(':').collect();
+    if time_parts.len() != 3 {
+        return None;
+    }
+    let hour: u64 = time_parts[0].parse().ok()?;
+    let min: u64 = time_parts[1].parse().ok()?;
+    let sec: u64 = time_parts[2].parse().ok()?;
+
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || min > 59 || sec > 59 {
+        return None;
+    }
+
+    // Days from year 1970 to the given year (simplified, ignoring leap seconds)
+    let mut total_days: u64 = 0;
+    for y in 1970..year {
+        total_days += if is_leap_year(y) { 366 } else { 365 };
+    }
+
+    // Days from months in current year
+    let days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for m in 1..month {
+        total_days += days_in_month[(m - 1) as usize] as u64;
+        if m == 2 && is_leap_year(year) {
+            total_days += 1;
+        }
+    }
+
+    total_days += day - 1;
+
+    Some(total_days * 86400 + hour * 3600 + min * 60 + sec)
+}
+
+fn is_leap_year(y: u64) -> bool {
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
+}
+
+/// Parse `gh run list --json ...` JSON output into a list of `CiRun`s.
+/// Uses serde_json for robust parsing.
+pub fn parse_ci_runs(json_str: &str) -> Vec<CiRun> {
+    let parsed: Result<Vec<serde_json::Value>, _> = serde_json::from_str(json_str);
+    let items = match parsed {
+        Ok(items) => items,
+        Err(_) => return Vec::new(),
+    };
+
+    items
+        .into_iter()
+        .filter_map(|obj| {
+            let status = obj.get("status")?.as_str()?.to_string();
+            let conclusion = obj
+                .get("conclusion")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let name = obj.get("name")?.as_str()?.to_string();
+            let created_at = obj.get("createdAt")?.as_str()?.to_string();
+            let head_branch = obj
+                .get("headBranch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Some(CiRun {
+                status,
+                conclusion,
+                name,
+                created_at,
+                head_branch,
+            })
+        })
+        .collect()
+}
+
+/// Fetch recent CI runs via `gh run list`. Returns an empty vec if `gh` is unavailable.
+pub fn fetch_ci_runs(limit: usize) -> Vec<CiRun> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "run",
+            "list",
+            "--limit",
+            &limit.to_string(),
+            "--json",
+            "status,conclusion,name,createdAt,headBranch",
+        ])
+        .output();
+
+    match output {
+        Ok(result) if result.status.success() => {
+            let json_str = String::from_utf8_lossy(&result.stdout);
+            parse_ci_runs(&json_str)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Format a list of CI runs for display.
+pub fn format_ci_runs(runs: &[CiRun]) -> Vec<String> {
+    runs.iter()
+        .map(|run| {
+            let icon = format_ci_status(&run.status, &run.conclusion);
+            let time_ago = format_ci_time_ago(&run.created_at);
+            let branch = if run.head_branch == "main" {
+                String::new()
+            } else {
+                format!(" {DIM}({})  {RESET}", run.head_branch)
+            };
+            format!(
+                "    {icon} {name:<20} {DIM}{time_ago:<10}{RESET}{branch}",
+                name = safe_truncate(&run.name, 20),
+            )
+        })
+        .collect()
+}
+
 /// Handle the `/evolution` command — show evolution history and stats.
 pub fn handle_evolution(input: &str) {
     let count = parse_evolution_count(input);
@@ -564,6 +748,16 @@ pub fn handle_evolution(input: &str) {
         );
     }
     println!();
+
+    // --- Recent CI runs ---
+    let ci_runs = fetch_ci_runs(10);
+    if !ci_runs.is_empty() {
+        println!("  {BOLD}Recent CI runs:{RESET}");
+        for line in format_ci_runs(&ci_runs) {
+            println!("{line}");
+        }
+        println!();
+    }
 }
 
 #[cfg(test)]
@@ -985,5 +1179,184 @@ More text.
         // Should not panic regardless of environment
         handle_evolution("/evolution");
         handle_evolution("/evolution 5");
+    }
+
+    // === CI run tests ===
+
+    #[test]
+    fn test_parse_ci_runs_valid_json() {
+        let json = r#"[
+            {
+                "status": "completed",
+                "conclusion": "success",
+                "name": "CI",
+                "createdAt": "2026-04-24T10:30:00Z",
+                "headBranch": "main"
+            },
+            {
+                "status": "completed",
+                "conclusion": "failure",
+                "name": "Evolve",
+                "createdAt": "2026-04-24T08:00:00Z",
+                "headBranch": "main"
+            },
+            {
+                "status": "in_progress",
+                "conclusion": "",
+                "name": "CI",
+                "createdAt": "2026-04-24T11:00:00Z",
+                "headBranch": "feature-branch"
+            }
+        ]"#;
+        let runs = parse_ci_runs(json);
+        assert_eq!(runs.len(), 3);
+
+        assert_eq!(runs[0].status, "completed");
+        assert_eq!(runs[0].conclusion, "success");
+        assert_eq!(runs[0].name, "CI");
+        assert_eq!(runs[0].head_branch, "main");
+
+        assert_eq!(runs[1].conclusion, "failure");
+        assert_eq!(runs[1].name, "Evolve");
+
+        assert_eq!(runs[2].status, "in_progress");
+        assert_eq!(runs[2].conclusion, "");
+        assert_eq!(runs[2].head_branch, "feature-branch");
+    }
+
+    #[test]
+    fn test_parse_ci_runs_empty_array() {
+        let runs = parse_ci_runs("[]");
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_ci_runs_invalid_json() {
+        let runs = parse_ci_runs("not json at all");
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_ci_runs_missing_fields() {
+        // Missing 'name' should skip that entry
+        let json = r#"[
+            {
+                "status": "completed",
+                "conclusion": "success",
+                "createdAt": "2026-04-24T10:30:00Z"
+            }
+        ]"#;
+        let runs = parse_ci_runs(json);
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_ci_runs_null_conclusion() {
+        // conclusion can be null for in-progress runs
+        let json = r#"[
+            {
+                "status": "in_progress",
+                "conclusion": null,
+                "name": "CI",
+                "createdAt": "2026-04-24T10:30:00Z",
+                "headBranch": "main"
+            }
+        ]"#;
+        let runs = parse_ci_runs(json);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].conclusion, "");
+    }
+
+    #[test]
+    fn test_format_ci_status_icons() {
+        assert_eq!(format_ci_status("completed", "success"), "✅");
+        assert_eq!(format_ci_status("completed", "failure"), "❌");
+        assert_eq!(format_ci_status("completed", "cancelled"), "⏹️");
+        assert_eq!(format_ci_status("in_progress", ""), "🔄");
+        assert_eq!(format_ci_status("queued", ""), "🕐");
+        assert_eq!(format_ci_status("weird", "weird"), "❓");
+    }
+
+    #[test]
+    fn test_format_ci_runs_output() {
+        let runs = vec![
+            CiRun {
+                status: "completed".to_string(),
+                conclusion: "success".to_string(),
+                name: "CI".to_string(),
+                created_at: "2026-04-24T10:30:00Z".to_string(),
+                head_branch: "main".to_string(),
+            },
+            CiRun {
+                status: "completed".to_string(),
+                conclusion: "failure".to_string(),
+                name: "Evolve".to_string(),
+                created_at: "2026-04-24T08:00:00Z".to_string(),
+                head_branch: "feature-x".to_string(),
+            },
+        ];
+        let lines = format_ci_runs(&runs);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("✅"));
+        assert!(lines[0].contains("CI"));
+        // main branch should NOT show branch name
+        assert!(!lines[0].contains("(main)"));
+        // non-main branch should show branch name
+        assert!(lines[1].contains("❌"));
+        assert!(lines[1].contains("feature-x"));
+    }
+
+    #[test]
+    fn test_format_ci_runs_empty() {
+        let lines = format_ci_runs(&[]);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_fetch_ci_runs_graceful_when_gh_unavailable() {
+        // If gh is not installed or not in a repo, should return empty vec, not panic
+        let runs = fetch_ci_runs(5);
+        // We can't assert the exact result since it depends on environment,
+        // but it must not panic
+        let _ = runs;
+    }
+
+    #[test]
+    fn test_parse_iso8601_to_epoch_valid() {
+        // 2026-01-01T00:00:00Z should be calculable
+        let epoch = parse_iso8601_to_epoch("2026-01-01T00:00:00Z");
+        assert!(epoch.is_some());
+        let secs = epoch.unwrap();
+        // Rough check: 2026 is ~56 years after 1970, so > 56*365*86400
+        assert!(secs > 56 * 365 * 86400);
+    }
+
+    #[test]
+    fn test_parse_iso8601_to_epoch_known_value() {
+        // 1970-01-01T00:00:00Z should be epoch 0
+        let epoch = parse_iso8601_to_epoch("1970-01-01T00:00:00Z");
+        assert_eq!(epoch, Some(0));
+    }
+
+    #[test]
+    fn test_parse_iso8601_to_epoch_with_time() {
+        // 1970-01-01T01:00:00Z = 3600
+        let epoch = parse_iso8601_to_epoch("1970-01-01T01:00:00Z");
+        assert_eq!(epoch, Some(3600));
+    }
+
+    #[test]
+    fn test_parse_iso8601_to_epoch_invalid() {
+        assert!(parse_iso8601_to_epoch("not a date").is_none());
+        assert!(parse_iso8601_to_epoch("2026-13-01T00:00:00Z").is_none()); // month 13
+        assert!(parse_iso8601_to_epoch("2026-01-32T00:00:00Z").is_none()); // day 32
+        assert!(parse_iso8601_to_epoch("").is_none());
+    }
+
+    #[test]
+    fn test_format_ci_time_ago_fallback() {
+        // Invalid timestamp should fallback gracefully
+        let result = format_ci_time_ago("not-a-date");
+        assert!(!result.is_empty());
     }
 }
