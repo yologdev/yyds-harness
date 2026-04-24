@@ -154,9 +154,32 @@ pub(crate) fn list_project_files() -> Vec<String> {
         }
     }
 
-    // Last resort: recursive listing of current directory (respecting common ignores)
-    walk_directory(".", 8)
+    // Last resort: recursive listing of current directory (respecting common ignores).
+    // Depth 4 is plenty for a non-git fallback — depth 8 was excessive and caused hangs
+    // when run from ~ (see issue #333).
+    walk_directory(".", 4)
 }
+
+/// Maximum number of files returned by `walk_directory`. Prevents hangs when
+/// accidentally walking a huge tree like `~` (see issue #333).
+const WALK_DIR_FILE_CAP: usize = 10_000;
+
+/// Non-hidden directory names to skip during fallback directory walks.
+/// Hidden directories (starting with `.`) are already excluded by the
+/// `name.starts_with('.')` check.
+const WALK_DIR_IGNORE: &[&str] = &[
+    "node_modules",
+    "target",
+    "go",
+    "Library",
+    "__pycache__",
+    "venv",
+    "vendor",
+    "dist",
+    "build",
+    "coverage",
+    "bower_components",
+];
 
 /// Simple recursive directory walk (fallback when not in a git repo).
 fn walk_directory(dir: &str, max_depth: usize) -> Vec<String> {
@@ -166,7 +189,7 @@ fn walk_directory(dir: &str, max_depth: usize) -> Vec<String> {
 }
 
 fn walk_directory_inner(dir: &str, max_depth: usize, depth: usize, files: &mut Vec<String>) {
-    if depth > max_depth {
+    if depth > max_depth || files.len() >= WALK_DIR_FILE_CAP {
         return;
     }
     let entries = match std::fs::read_dir(dir) {
@@ -174,9 +197,12 @@ fn walk_directory_inner(dir: &str, max_depth: usize, depth: usize, files: &mut V
         Err(_) => return,
     };
     for entry in entries.flatten() {
+        if files.len() >= WALK_DIR_FILE_CAP {
+            return;
+        }
         let name = entry.file_name().to_string_lossy().to_string();
         // Skip hidden dirs and common ignore patterns
-        if name.starts_with('.') || name == "node_modules" || name == "target" {
+        if name.starts_with('.') || WALK_DIR_IGNORE.iter().any(|&ign| name == ign) {
             continue;
         }
         let path = if dir == "." {
@@ -1089,6 +1115,51 @@ mod tests {
         assert!(files.iter().any(|f| f.ends_with("shallow.txt")));
         // At max_depth=1, we go dir->a (depth 1)->files, but a/b is depth 2
         assert!(!files.iter().any(|f| f.ends_with("deep.txt")));
+    }
+
+    #[test]
+    fn walk_directory_respects_file_cap() {
+        let dir = TempDir::new().unwrap();
+        // Create more files than WALK_DIR_FILE_CAP
+        let count = WALK_DIR_FILE_CAP + 500;
+        for i in 0..count {
+            fs::write(dir.path().join(format!("file_{i}.txt")), "").unwrap();
+        }
+        let files = walk_directory(dir.path().to_str().unwrap(), 3);
+        assert!(
+            files.len() <= WALK_DIR_FILE_CAP,
+            "walk_directory returned {} files, expected at most {}",
+            files.len(),
+            WALK_DIR_FILE_CAP,
+        );
+        // Should still return a substantial number of files
+        assert!(files.len() >= WALK_DIR_FILE_CAP - 1);
+    }
+
+    #[test]
+    fn walk_directory_skips_expanded_ignore_dirs() {
+        let dir = TempDir::new().unwrap();
+        // Create directories that should be ignored
+        for ignored in &[
+            "go",
+            "vendor",
+            "__pycache__",
+            "venv",
+            "build",
+            "dist",
+            "Library",
+        ] {
+            fs::create_dir(dir.path().join(ignored)).unwrap();
+            fs::write(dir.path().join(format!("{ignored}/should_skip.txt")), "").unwrap();
+        }
+        fs::write(dir.path().join("keep.txt"), "").unwrap();
+
+        let files = walk_directory(dir.path().to_str().unwrap(), 3);
+        assert!(files.iter().any(|f| f.ends_with("keep.txt")));
+        assert!(
+            !files.iter().any(|f| f.contains("should_skip")),
+            "walk_directory should skip expanded ignore dirs, got: {files:?}"
+        );
     }
 
     // ── /grep tests ─────────────────────────────────────────────────────
