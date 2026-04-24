@@ -26,6 +26,16 @@ fn main() {
         }
     }
 
+    // Expose evolution day count at compile time (only present in yoyo's own repo)
+    if std::env::var("DAY_COUNT").is_err() {
+        if let Ok(content) = std::fs::read_to_string("DAY_COUNT") {
+            if let Ok(day) = content.trim().parse::<u32>() {
+                println!("cargo:rustc-env=DAY_COUNT={day}");
+            }
+        }
+    }
+    println!("cargo:rerun-if-changed=DAY_COUNT");
+
     // Read yoagent version from Cargo.lock (more reliable than parsing Cargo.toml)
     if let Ok(lock_content) = std::fs::read_to_string("Cargo.lock") {
         for chunk in lock_content.split("\n[[package]]") {

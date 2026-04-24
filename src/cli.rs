@@ -620,11 +620,12 @@ pub fn help_text() -> String {
 }
 
 pub fn print_banner() {
-    let day_suffix = std::fs::read_to_string("DAY_COUNT")
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .map(|d| format!(" — Day {d}"))
-        .unwrap_or_default();
+    let day_str = option_env!("DAY_COUNT").unwrap_or("");
+    let day_suffix = if day_str.is_empty() {
+        String::new()
+    } else {
+        format!(" — Day {day_str}")
+    };
     println!(
         "\n{BOLD}{CYAN}  yoyo{RESET} v{VERSION}{day_suffix} {DIM}— a coding agent growing up in public{RESET}"
     );
@@ -3226,26 +3227,11 @@ command = "server-two"
     }
 
     #[test]
-    fn test_print_banner_without_day_count() {
-        // print_banner should not panic when DAY_COUNT file is missing.
-        // We run from a temp directory where no DAY_COUNT exists.
-        let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
-        // Should not panic
+    fn test_print_banner_does_not_panic() {
+        // print_banner uses compile-time DAY_COUNT via option_env!().
+        // When built from yoyo's repo, DAY_COUNT is baked in.
+        // When built externally, option_env! returns None gracefully.
+        // Either way, it must not panic.
         print_banner();
-        std::env::set_current_dir(&original).unwrap();
-    }
-
-    #[test]
-    fn test_print_banner_with_day_count() {
-        // When DAY_COUNT exists with a valid number, print_banner should include it.
-        let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
-        std::fs::write(tmp.path().join("DAY_COUNT"), "55\n").unwrap();
-        // Should not panic — the day is included in output
-        print_banner();
-        std::env::set_current_dir(&original).unwrap();
     }
 }

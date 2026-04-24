@@ -47,7 +47,7 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 
 ## Architecture
 
-**Build** (`build.rs`): Sets compile-time env vars `GIT_HASH`, `BUILD_DATE`, and `YOAGENT_VERSION` from git/Cargo.lock. Overridable by CI/release builds.
+**Build** (`build.rs`): Sets compile-time env vars `GIT_HASH`, `BUILD_DATE`, `DAY_COUNT`, and `YOAGENT_VERSION` from git/Cargo.lock/DAY_COUNT file. All overridable by env var at build time (CI/release builds).
 
 **Multi-file agent** (`src/`):
 - `main.rs` — agent core, REPL, streaming event handling, rendering with ANSI colors, sub-agent tool integration, AskUserTool (interactive question-asking)
