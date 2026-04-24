@@ -93,7 +93,7 @@ pub fn handle_update() -> Result<(), String> {
 
     // Step 3: Confirm with user
     print!("This will download and replace the current binary.\nContinue? [y/N] ");
-    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    let _ = std::io::Write::flush(&mut std::io::stdout());
 
     let mut input = String::new();
     std::io::stdin()
