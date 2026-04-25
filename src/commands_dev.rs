@@ -556,6 +556,31 @@ pub fn run_doctor_checks(provider: &str, model: &str) -> Vec<DoctorCheck> {
         });
     }
 
+    // 11. RTK (Rust Token Killer) — optional tool output compression
+    {
+        let rtk_available = crate::tools::detect_rtk();
+        let rtk_disabled = crate::tools::is_rtk_disabled();
+        if rtk_available && !rtk_disabled {
+            checks.push(DoctorCheck {
+                name: "RTK".to_string(),
+                status: DoctorStatus::Pass,
+                detail: "installed (auto-compressing tool output)".to_string(),
+            });
+        } else if rtk_available && rtk_disabled {
+            checks.push(DoctorCheck {
+                name: "RTK".to_string(),
+                status: DoctorStatus::Warn,
+                detail: "installed but disabled (--no-rtk flag)".to_string(),
+            });
+        } else {
+            checks.push(DoctorCheck {
+                name: "RTK".to_string(),
+                status: DoctorStatus::Pass,
+                detail: "not installed (optional — compresses build output)".to_string(),
+            });
+        }
+    }
+
     checks
 }
 
@@ -1605,6 +1630,22 @@ mod tests {
     fn health_checks_unknown_empty() {
         let checks = health_checks_for_project(&ProjectType::Unknown);
         assert!(checks.is_empty());
+    }
+
+    #[test]
+    fn doctor_checks_include_rtk() {
+        let checks = run_doctor_checks("anthropic", "test-model");
+        assert!(
+            checks.iter().any(|c| c.name == "RTK"),
+            "doctor checks should include an RTK entry"
+        );
+        // RTK check should always be Pass (never Fail), since it's optional
+        let rtk_check = checks.iter().find(|c| c.name == "RTK").unwrap();
+        assert_ne!(
+            rtk_check.status,
+            DoctorStatus::Fail,
+            "RTK should never be Fail — it's optional"
+        );
     }
 
     // ── build_fix_prompt ────────────────────────────────────────────
