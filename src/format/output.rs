@@ -611,6 +611,45 @@ pub fn indent_tool_output(output: &str) -> String {
         .join("\n")
 }
 
+/// Maximum lines to include when auto-truncating a large file for /add.
+pub const ADD_MAX_LINES: usize = 500;
+
+/// Truncate file content for context injection (used by /add).
+/// Preserves head (40%) and tail (20%) with a clear omission marker
+/// showing how many lines were skipped.
+/// Returns `(truncated_content, was_truncated, original_line_count)`.
+pub fn smart_truncate_for_context(content: &str, max_lines: usize) -> (String, bool, usize) {
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+
+    if total <= max_lines {
+        return (content.to_string(), false, total);
+    }
+
+    // 40% head, 20% tail — gives more context at the top (imports, types, structs)
+    let head_count = (max_lines * 2) / 5;
+    let tail_count = max_lines / 5;
+    let omitted = total - head_count - tail_count;
+
+    let mut result = String::new();
+    for line in &lines[..head_count] {
+        result.push_str(line);
+        result.push('\n');
+    }
+    result.push_str(&format!(
+        "\n[... {} lines omitted ({} total) — use /add file:START-END for specific sections ...]\n\n",
+        omitted, total
+    ));
+    for (i, line) in lines[total - tail_count..].iter().enumerate() {
+        result.push_str(line);
+        if i < tail_count - 1 {
+            result.push('\n');
+        }
+    }
+
+    (result, true, total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1539,5 +1578,106 @@ mod tests {
             result.contains("passing tests omitted"),
             "should filter test output, got: {result}"
         );
+    }
+
+    #[test]
+    fn test_smart_truncate_under_limit() {
+        let content = (0..100)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (result, truncated, total) = smart_truncate_for_context(&content, 500);
+        assert!(!truncated);
+        assert_eq!(total, 100);
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_smart_truncate_at_limit() {
+        let content = (0..500)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (result, truncated, total) = smart_truncate_for_context(&content, 500);
+        assert!(!truncated);
+        assert_eq!(total, 500);
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_smart_truncate_over_limit() {
+        let content = (0..1000)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (result, truncated, total) = smart_truncate_for_context(&content, 500);
+        assert!(truncated);
+        assert_eq!(total, 1000);
+        // Head: 200 lines (40% of 500)
+        assert!(result.contains("line 0"));
+        assert!(result.contains("line 199"));
+        // Tail: 100 lines (20% of 500)
+        assert!(result.contains("line 900"));
+        assert!(result.contains("line 999"));
+        // Omission marker
+        assert!(result.contains("[... 700 lines omitted (1000 total)"));
+        assert!(result.contains("use /add file:START-END"));
+        // Middle should be gone
+        assert!(!result.contains("line 500"));
+    }
+
+    #[test]
+    fn test_smart_truncate_omission_counts() {
+        let content = (0..600)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (result, truncated, total) = smart_truncate_for_context(&content, 500);
+        assert!(truncated);
+        assert_eq!(total, 600);
+        // Head: 200, Tail: 100, Omitted: 300
+        assert!(result.contains("300 lines omitted (600 total)"));
+    }
+
+    #[test]
+    fn test_smart_truncate_empty_content() {
+        let (result, truncated, total) = smart_truncate_for_context("", 500);
+        assert!(!truncated);
+        assert_eq!(total, 0);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_smart_truncate_one_over_limit() {
+        let content = (0..501)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (result, truncated, total) = smart_truncate_for_context(&content, 500);
+        assert!(truncated);
+        assert_eq!(total, 501);
+        // Head: 200, Tail: 100, Omitted: 201
+        assert!(result.contains("201 lines omitted (501 total)"));
+    }
+
+    #[test]
+    fn test_smart_truncate_preserves_head_and_tail_content() {
+        let mut lines: Vec<String> = Vec::new();
+        lines.push("// FILE HEADER".to_string());
+        lines.push("use std::io;".to_string());
+        for i in 2..998 {
+            lines.push(format!("    middle_line_{i}();"));
+        }
+        lines.push("fn last_function() {}".to_string());
+        lines.push("// EOF".to_string());
+        let content = lines.join("\n");
+        let (result, truncated, _) = smart_truncate_for_context(&content, 500);
+        assert!(truncated);
+        // Head should have the file header
+        assert!(result.contains("// FILE HEADER"));
+        assert!(result.contains("use std::io;"));
+        // Tail should have the end
+        assert!(result.contains("fn last_function() {}"));
+        assert!(result.contains("// EOF"));
     }
 }

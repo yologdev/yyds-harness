@@ -519,6 +519,15 @@ pub fn handle_add(input: &str) -> Vec<AddResult> {
 
             match read_file_for_add(path, range) {
                 Ok((content, line_count)) => {
+                    // Apply smart truncation for large files when no line range specified
+                    let (content, was_truncated, original_lines) = if range.is_none() {
+                        let (truncated, did_truncate, total) =
+                            smart_truncate_for_context(&content, ADD_MAX_LINES);
+                        (truncated, did_truncate, total)
+                    } else {
+                        (content, false, line_count)
+                    };
+
                     let formatted = format_add_content(path, &content);
                     let word = crate::format::pluralize(line_count, "line", "lines");
                     let range_info = if let Some((s, e)) = range {
@@ -526,8 +535,15 @@ pub fn handle_add(input: &str) -> Vec<AddResult> {
                     } else {
                         String::new()
                     };
-                    let summary =
-                        format!("{GREEN}  ✓ added {path}{range_info} ({line_count} {word}){RESET}");
+                    let summary = if was_truncated {
+                        let head_count = (ADD_MAX_LINES * 2) / 5;
+                        let tail_count = ADD_MAX_LINES / 5;
+                        format!(
+                            "{GREEN}  📎 added {path} (truncated: {head_count} head + {tail_count} tail of {original_lines} lines){RESET}\n{DIM}     use /add {path}:START-END to add specific sections{RESET}"
+                        )
+                    } else {
+                        format!("{GREEN}  ✓ added {path}{range_info} ({line_count} {word}){RESET}")
+                    };
                     results.push(AddResult::Text {
                         summary,
                         content: formatted,
@@ -1874,5 +1890,90 @@ mod tests {
             result2.is_none(),
             "Whitespace-only input should return None"
         );
+    }
+
+    #[test]
+    fn test_handle_add_large_file_truncated() {
+        // Create a temp file with more than ADD_MAX_LINES (500) lines
+        let dir = tempfile::tempdir().unwrap();
+        let big_file = dir.path().join("big.rs");
+        let mut content = String::new();
+        for i in 0..800 {
+            content.push_str(&format!("fn function_{i}() {{ }}\n"));
+        }
+        std::fs::write(&big_file, &content).unwrap();
+
+        let path = big_file.to_str().unwrap();
+        let results = handle_add(&format!("/add {path}"));
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            AddResult::Text { summary, content } => {
+                // Summary should mention truncation
+                assert!(
+                    summary.contains("truncated"),
+                    "Summary should mention truncation: {summary}"
+                );
+                assert!(
+                    summary.contains("800 lines"),
+                    "Summary should mention original line count: {summary}"
+                );
+                // Content should have the omission marker
+                assert!(
+                    content.contains("lines omitted"),
+                    "Content should have omission marker"
+                );
+                // Should have head content
+                assert!(
+                    content.contains("function_0"),
+                    "Should include head content"
+                );
+                // Should have tail content
+                assert!(
+                    content.contains("function_799"),
+                    "Should include tail content"
+                );
+                // Should NOT have middle content
+                assert!(
+                    !content.contains("function_500"),
+                    "Should not include middle content"
+                );
+            }
+            _ => panic!("Expected Text result"),
+        }
+    }
+
+    #[test]
+    fn test_handle_add_line_range_skips_truncation() {
+        // Even for a large file, a line range should not be truncated
+        let dir = tempfile::tempdir().unwrap();
+        let big_file = dir.path().join("big2.rs");
+        let mut content = String::new();
+        for i in 0..800 {
+            content.push_str(&format!("fn function_{i}() {{ }}\n"));
+        }
+        std::fs::write(&big_file, &content).unwrap();
+
+        let path = big_file.to_str().unwrap();
+        let results = handle_add(&format!("/add {path}:1-600"));
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            AddResult::Text { summary, content } => {
+                // Should NOT be truncated since a range was specified
+                assert!(
+                    !summary.contains("truncated"),
+                    "Line-range add should not truncate: {summary}"
+                );
+                // Should have all 600 lines
+                assert!(content.contains("function_0"), "Should include start");
+                assert!(content.contains("function_599"), "Should include end");
+                assert!(
+                    content.contains("function_300"),
+                    "Should include middle (no truncation)"
+                );
+            }
+            _ => panic!("Expected Text result"),
+        }
     }
 }

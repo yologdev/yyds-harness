@@ -563,7 +563,8 @@ The `/add` command reads files and injects their contents directly into the conv
 
 ```
 /add src/main.rs
-  ✓ added src/main.rs (850 lines)
+  📎 added src/main.rs (truncated: 200 head + 100 tail of 2286 lines)
+     use /add src/main.rs:START-END to add specific sections
   (1 file added to conversation)
 
 /add src/main.rs:1-50
@@ -584,6 +585,7 @@ The `/add` command reads files and injects their contents directly into the conv
 
 Features:
 - **Line ranges** — `/add path:start-end` injects only the specified lines
+- **Smart truncation** — files over 500 lines are automatically truncated, preserving the head (200 lines) and tail (100 lines) with a clear omission marker. Use `/add path:start-end` to inject specific sections of large files without truncation
 - **Glob patterns** — `/add src/*.rs` expands to all matching files
 - **Multiple files** — `/add file1 file2` adds both in one message
 - **Syntax highlighting** — content is wrapped in fenced code blocks with language detection
