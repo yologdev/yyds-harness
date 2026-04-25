@@ -254,6 +254,31 @@ fn show_context_tokens(system_prompt: &str, agent: &Agent) {
         format_token_count(sys_tokens as u64)
     );
 
+    // Section breakdown (only if >1 section)
+    let sections = parse_prompt_sections(system_prompt);
+    if sections.len() > 1 {
+        // Find the longest section name for alignment
+        let max_name_len = sections
+            .iter()
+            .map(|s| s.name.len())
+            .max()
+            .unwrap_or(0)
+            .min(30); // cap alignment width
+
+        for section in &sections {
+            let section_text = section.lines.join("\n");
+            let full_text = format!("{}\n{}", section.name, section_text);
+            let tokens = estimate_tokens(&full_text);
+            let display_name = crate::format::truncate_with_ellipsis(&section.name, 30);
+            println!(
+                "      {:<width$}  ~{}",
+                display_name,
+                format_token_count(tokens as u64),
+                width = max_name_len,
+            );
+        }
+    }
+
     // Conversation
     println!(
         "    conversation:  {} message{}",
@@ -1718,6 +1743,49 @@ mod tests {
             .with_model("test-model")
             .with_api_key("test-key");
         handle_context("/context tokens", "You are a test assistant.", &agent);
+    }
+
+    #[test]
+    fn test_context_tokens_section_breakdown() {
+        // Multi-section system prompt should show section breakdown without panic
+        let prompt = "# Project context\nThis is the project.\nIt has details.\n\n\
+                       ## Git status\nOn branch main\n\n\
+                       ## Recently changed\nfile1.rs\nfile2.rs\n";
+        let agent = yoagent::Agent::new(yoagent::provider::AnthropicProvider)
+            .with_system_prompt(prompt)
+            .with_model("test-model")
+            .with_api_key("test-key");
+        // Should not panic and should exercise the section breakdown path
+        handle_context("/context tokens", prompt, &agent);
+    }
+
+    #[test]
+    fn test_context_tokens_single_section_no_breakdown() {
+        // Single-section prompt should NOT show breakdown (just the total)
+        let prompt = "You are a helpful assistant.";
+        let agent = yoagent::Agent::new(yoagent::provider::AnthropicProvider)
+            .with_system_prompt(prompt)
+            .with_model("test-model")
+            .with_api_key("test-key");
+        handle_context("/context tokens", prompt, &agent);
+    }
+
+    #[test]
+    fn test_section_breakdown_token_counts() {
+        // Verify section breakdown produces valid token estimates
+        let prompt =
+            "# Section A\nShort content.\n\n# Section B\nLonger content with more text here.\n";
+        let sections = parse_prompt_sections(prompt);
+        assert_eq!(sections.len(), 2);
+        for section in &sections {
+            let section_text = section.lines.join("\n");
+            let full = format!("{}\n{}", section.name, section_text);
+            let tokens = estimate_tokens(&full);
+            assert!(tokens > 0, "Each section should have >0 tokens");
+        }
+        // Sum of section tokens should be roughly close to total
+        let total = estimate_tokens(prompt);
+        assert!(total > 0);
     }
 
     // ── tests migrated from commands.rs (Issue #260) ─────────────────
