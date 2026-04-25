@@ -810,6 +810,8 @@ Now typing `/summarize` in the REPL sends that prompt to the agent.
 - **Share with your team** — commit `.yoyo/commands/` to version control so everyone gets the same custom commands
 - **Global commands** are great for personal workflows you use across all projects (e.g., `/standup`, `/changelog-draft`)
 - Custom commands appear alongside built-in commands — if a custom command has the same name as a built-in, the built-in takes precedence
+- Custom commands show up in `/help` under a "Custom" section, and `/help <custom-cmd>` displays the full `.md` file content
+- Tab-completing `/help ` includes custom command names
 
 ## Unknown commands
 

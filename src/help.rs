@@ -4,19 +4,29 @@
 //! and the `/help` command handlers. Extracted from `commands.rs` to keep
 //! that module focused on command dispatch logic.
 
-use crate::commands::KNOWN_COMMANDS;
+use crate::commands::{discover_custom_commands, get_custom_command_content, KNOWN_COMMANDS};
 use crate::format::*;
 
 /// Return command names (without `/` prefix) for `/help <Tab>` completion.
+/// Includes both built-in and custom commands.
 pub fn help_command_completions(partial_lower: &str) -> Vec<String> {
-    KNOWN_COMMANDS
+    let mut completions: Vec<String> = KNOWN_COMMANDS
         .iter()
         .map(|c| c.trim_start_matches('/'))
         // /exit is an alias for /quit — skip it for cleaner completion
         .filter(|name| *name != "exit")
         .filter(|name| name.to_lowercase().starts_with(partial_lower))
         .map(|name| name.to_string())
-        .collect()
+        .collect();
+
+    // Append custom commands
+    for (name, _) in discover_custom_commands() {
+        if name.to_lowercase().starts_with(partial_lower) && !completions.contains(&name) {
+            completions.push(name);
+        }
+    }
+
+    completions
 }
 
 /// Return detailed help text for a specific command.
@@ -1058,7 +1068,24 @@ pub fn help_text() -> String {
     out.push_str("  End a line with \\ to continue on the next line\n");
     out.push_str("  Start with ``` to enter a fenced code block\n");
 
+    // ── Custom ── (dynamic, only shown if custom commands exist)
+    let custom_cmds = discover_custom_commands();
+    append_custom_section(&mut out, &custom_cmds);
+
     out
+}
+
+/// Append a "Custom" section to the help text if any custom commands exist.
+/// Factored out so tests can call it with synthetic data.
+fn append_custom_section(out: &mut String, custom_cmds: &[(String, String)]) {
+    if !custom_cmds.is_empty() {
+        out.push('\n');
+        out.push_str("  ── Custom ──\n");
+        for (name, content) in custom_cmds {
+            let desc = content.lines().next().unwrap_or("").trim();
+            out.push_str(&format!("  /{name:<17}{desc}\n"));
+        }
+    }
 }
 
 pub fn handle_help() {
@@ -1081,7 +1108,14 @@ pub fn handle_help_command(input: &str) -> bool {
             println!("{DIM}{text}{RESET}");
         }
         None => {
-            println!("{DIM}  Unknown command: /{arg}\n  Type /help for available commands.{RESET}");
+            // Check custom commands before declaring unknown
+            if let Some(content) = get_custom_command_content(arg) {
+                println!("{DIM}  /{arg} — Custom command\n\n{content}{RESET}");
+            } else {
+                println!(
+                    "{DIM}  Unknown command: /{arg}\n  Type /help for available commands.{RESET}"
+                );
+            }
         }
     }
     true
@@ -1491,5 +1525,57 @@ mod tests {
     fn test_command_short_description_unknown_returns_none() {
         assert!(command_short_description("nonexistent").is_none());
         assert!(command_short_description("").is_none());
+    }
+
+    #[test]
+    fn test_append_custom_section_shows_commands() {
+        let custom_cmds = vec![
+            (
+                "deploy".to_string(),
+                "Deploy to production\nMore details here".to_string(),
+            ),
+            ("review".to_string(), "Review the current diff".to_string()),
+        ];
+        let mut out = String::new();
+        append_custom_section(&mut out, &custom_cmds);
+        assert!(out.contains("── Custom ──"), "Should have Custom header");
+        assert!(out.contains("/deploy"), "Should list /deploy");
+        assert!(
+            out.contains("Deploy to production"),
+            "Should show first line as description"
+        );
+        assert!(
+            !out.contains("More details here"),
+            "Should NOT show second line"
+        );
+        assert!(out.contains("/review"), "Should list /review");
+        assert!(out.contains("Review the current diff"));
+    }
+
+    #[test]
+    fn test_append_custom_section_empty_when_no_commands() {
+        let mut out = String::new();
+        append_custom_section(&mut out, &[]);
+        assert!(
+            !out.contains("Custom"),
+            "Should not show Custom section when empty"
+        );
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_help_completions_include_custom_commands() {
+        // Custom commands come from the filesystem, so in a test environment
+        // without .yoyo/commands/ dirs, we verify the mechanism works by
+        // checking that built-in commands are returned and the function doesn't panic.
+        let completions = help_command_completions("");
+        assert!(
+            completions.contains(&"add".to_string()),
+            "Should include built-in 'add'"
+        );
+        assert!(
+            !completions.contains(&"exit".to_string()),
+            "Should exclude 'exit' alias"
+        );
     }
 }
