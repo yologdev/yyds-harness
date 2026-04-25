@@ -272,13 +272,18 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 return Some(None);
             }
             "config" => {
-                // Only `yoyo config show` (or bare `yoyo config`) works without
-                // an interactive session. Other config subcommands (edit, hooks,
-                // teach) require agent state.
+                // `yoyo config show`, `yoyo config get <key>`, and bare `yoyo config`
+                // work without an interactive session. `set` and `edit` require agent state.
                 let sub2 = args.get(2).map(|s| s.as_str());
                 match sub2 {
                     None | Some("show") => {
                         crate::commands_config::handle_config_show();
+                    }
+                    Some("get") => {
+                        // Reconstruct as /config get <key>
+                        let key = args.get(3).map(|s| s.as_str()).unwrap_or("");
+                        let input = format!("/config get {key}");
+                        crate::commands_config::handle_config_get(&input);
                     }
                     Some(other) => {
                         eprintln!(
@@ -708,6 +713,14 @@ pub(crate) async fn dispatch_command(
         }
         s if s == "/config edit" || s.starts_with("/config edit ") => {
             commands::handle_config_edit();
+            CommandResult::Continue
+        }
+        s if s.starts_with("/config set") => {
+            commands::handle_config_set(input, agent_config, agent);
+            CommandResult::Continue
+        }
+        s if s == "/config get" || s.starts_with("/config get ") => {
+            commands::handle_config_get(input);
             CommandResult::Continue
         }
         "/hooks" => {

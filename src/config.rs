@@ -445,6 +445,178 @@ pub struct McpServerConfig {
     pub env: Vec<(String, String)>,
 }
 
+/// Keys that `/config set` understands. Each entry is a key name and a
+/// human-readable description used in error messages.
+pub const SETTABLE_KEYS: &[(&str, &str)] = &[
+    ("model", "AI model name"),
+    ("provider", "AI provider"),
+    ("thinking", "thinking level (none/low/medium/high)"),
+    ("temperature", "sampling temperature (0.0–2.0)"),
+    ("max_tokens", "maximum response tokens"),
+    ("max_turns", "maximum agent turns per prompt"),
+];
+
+/// Validate a config value for a given key. Returns `Ok(canonical_value)`
+/// on success or `Err(message)` on invalid input.
+pub fn validate_config_value(key: &str, value: &str) -> Result<String, String> {
+    match key {
+        "model" | "provider" => {
+            if value.is_empty() {
+                return Err(format!("{key} cannot be empty"));
+            }
+            Ok(value.to_string())
+        }
+        "thinking" => {
+            let lower = value.to_ascii_lowercase();
+            match lower.as_str() {
+                "none" | "off" | "disabled" => Ok("none".to_string()),
+                "low" | "minimal" => Ok("low".to_string()),
+                "medium" | "med" => Ok("medium".to_string()),
+                "high" | "max" => Ok("high".to_string()),
+                _ => Err(format!(
+                    "invalid thinking level '{value}' — use none, low, medium, or high"
+                )),
+            }
+        }
+        "temperature" => match value.parse::<f32>() {
+            Ok(t) if (0.0..=2.0).contains(&t) => Ok(format!("{t}")),
+            Ok(t) => Err(format!("temperature {t} out of range (0.0–2.0)")),
+            Err(_) => Err(format!("'{value}' is not a valid number")),
+        },
+        "max_tokens" => match value.parse::<u32>() {
+            Ok(n) if n > 0 => Ok(n.to_string()),
+            Ok(_) => Err("max_tokens must be positive".to_string()),
+            Err(_) => Err(format!("'{value}' is not a valid integer")),
+        },
+        "max_turns" => match value.parse::<usize>() {
+            Ok(n) if n > 0 => Ok(n.to_string()),
+            Ok(_) => Err("max_turns must be positive".to_string()),
+            Err(_) => Err(format!("'{value}' is not a valid integer")),
+        },
+        _ => Err(format!(
+            "unknown config key '{key}' — settable keys: {}",
+            SETTABLE_KEYS
+                .iter()
+                .map(|(k, _)| *k)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// Write a single key=value pair to a TOML config file.
+///
+/// If the file exists, the key is either replaced in-place (preserving
+/// comments and surrounding lines) or appended. If the file doesn't exist,
+/// it's created with a header comment. Values are always quoted.
+///
+/// When `project_local` is true, writes to `.yoyo.toml` in the current
+/// directory. Otherwise writes to `~/.yoyo.toml`.
+///
+/// Returns the path that was written to on success.
+pub fn write_config_value(
+    key: &str,
+    value: &str,
+    project_local: bool,
+) -> Result<std::path::PathBuf, String> {
+    let path = if project_local {
+        std::path::PathBuf::from(".yoyo.toml")
+    } else {
+        crate::cli::home_config_path()
+            .ok_or_else(|| "could not determine home directory".to_string())?
+    };
+
+    write_config_value_to(key, value, &path)
+}
+
+/// Write a config value to a specific path. Factored out of
+/// [`write_config_value`] so tests can target a temp file.
+pub fn write_config_value_to(
+    key: &str,
+    value: &str,
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create directory {}: {e}", parent.display()))?;
+        }
+    }
+
+    // Read existing content or start fresh
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+
+    let new_content = set_toml_key(&existing, key, value);
+
+    std::fs::write(path, &new_content)
+        .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+
+    Ok(path.to_path_buf())
+}
+
+/// Pure function: insert or replace `key = "value"` in a flat TOML string.
+/// Preserves comments, blank lines, and other keys. If the key already
+/// exists (matched by `^key\s*=`), replaces that line. Otherwise appends.
+///
+/// Values that look like numbers or booleans are written unquoted; everything
+/// else is quoted.
+pub fn set_toml_key(content: &str, key: &str, value: &str) -> String {
+    let formatted_value = format_toml_value(value);
+    let new_line = format!("{key} = {formatted_value}");
+
+    let mut found = false;
+    let mut lines: Vec<String> = content
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            // Match `key = ...` at the start of a non-comment line
+            if !trimmed.starts_with('#') {
+                if let Some((k, _)) = trimmed.split_once('=') {
+                    if k.trim() == key {
+                        found = true;
+                        return new_line.clone();
+                    }
+                }
+            }
+            line.to_string()
+        })
+        .collect();
+
+    if !found {
+        // Ensure there's a trailing newline before appending
+        if !lines.is_empty() {
+            let last = lines.last().unwrap();
+            if !last.is_empty() {
+                // Only add a blank line if the file doesn't already end with one
+            }
+        }
+        lines.push(new_line);
+    }
+
+    let mut result = lines.join("\n");
+    // Ensure file ends with a newline
+    if !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
+/// Format a value for TOML: numbers and booleans go unquoted,
+/// everything else gets double-quoted.
+fn format_toml_value(value: &str) -> String {
+    // Check if it's a number (integer or float)
+    if value.parse::<i64>().is_ok() || value.parse::<f64>().is_ok() {
+        return value.to_string();
+    }
+    // Check for booleans
+    if value == "true" || value == "false" {
+        return value.to_string();
+    }
+    // Default: quote it
+    format!("\"{value}\"")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,5 +735,162 @@ env = { API_KEY = "secret" }
         assert!(path_is_under("/etc", "/etc"));
         assert!(!path_is_under("/etcetc", "/etc"));
         assert!(!path_is_under("/tmp/file", "/etc"));
+    }
+
+    // --- write_config_value / set_toml_key tests ---
+
+    #[test]
+    fn test_set_toml_key_creates_new_key() {
+        let content = "# yoyo config\nprovider = \"anthropic\"\n";
+        let result = set_toml_key(content, "model", "claude-sonnet-4-6");
+        assert!(result.contains("model = \"claude-sonnet-4-6\""));
+        // Original key should still be there
+        assert!(result.contains("provider = \"anthropic\""));
+        // Comment should be preserved
+        assert!(result.contains("# yoyo config"));
+    }
+
+    #[test]
+    fn test_set_toml_key_replaces_existing_key() {
+        let content = "provider = \"anthropic\"\nmodel = \"old-model\"\n";
+        let result = set_toml_key(content, "model", "new-model");
+        assert!(result.contains("model = \"new-model\""));
+        assert!(!result.contains("old-model"));
+        assert!(result.contains("provider = \"anthropic\""));
+    }
+
+    #[test]
+    fn test_set_toml_key_preserves_comments() {
+        let content = "# My config\n# model choice\nmodel = \"old\"\n# end\n";
+        let result = set_toml_key(content, "model", "new");
+        assert!(result.contains("# My config"));
+        assert!(result.contains("# model choice"));
+        assert!(result.contains("# end"));
+        assert!(result.contains("model = \"new\""));
+    }
+
+    #[test]
+    fn test_set_toml_key_numeric_value_unquoted() {
+        let result = set_toml_key("", "max_tokens", "8192");
+        assert!(result.contains("max_tokens = 8192"));
+        assert!(!result.contains("\"8192\""));
+    }
+
+    #[test]
+    fn test_set_toml_key_string_value_quoted() {
+        let result = set_toml_key("", "model", "claude-opus-4-6");
+        assert!(result.contains("model = \"claude-opus-4-6\""));
+    }
+
+    #[test]
+    fn test_set_toml_key_empty_content() {
+        let result = set_toml_key("", "provider", "anthropic");
+        assert!(result.contains("provider = \"anthropic\""));
+        assert!(result.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_validate_config_value_valid_keys() {
+        assert!(validate_config_value("model", "claude-sonnet-4-6").is_ok());
+        assert!(validate_config_value("provider", "anthropic").is_ok());
+        assert!(validate_config_value("thinking", "high").is_ok());
+        assert!(validate_config_value("thinking", "off").is_ok());
+        assert!(validate_config_value("temperature", "0.7").is_ok());
+        assert!(validate_config_value("max_tokens", "4096").is_ok());
+        assert!(validate_config_value("max_turns", "50").is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_value_invalid() {
+        assert!(validate_config_value("model", "").is_err());
+        assert!(validate_config_value("thinking", "extreme").is_err());
+        assert!(validate_config_value("temperature", "5.0").is_err());
+        assert!(validate_config_value("temperature", "abc").is_err());
+        assert!(validate_config_value("max_tokens", "0").is_err());
+        assert!(validate_config_value("max_tokens", "-1").is_err());
+        assert!(validate_config_value("unknown_key", "val").is_err());
+    }
+
+    #[test]
+    fn test_validate_config_thinking_aliases() {
+        assert_eq!(validate_config_value("thinking", "off").unwrap(), "none");
+        assert_eq!(validate_config_value("thinking", "minimal").unwrap(), "low");
+        assert_eq!(validate_config_value("thinking", "med").unwrap(), "medium");
+        assert_eq!(validate_config_value("thinking", "max").unwrap(), "high");
+    }
+
+    #[test]
+    fn test_write_config_value_to_creates_file() {
+        let tmp = std::env::temp_dir().join("yoyo_test_write_config_create");
+        let _ = std::fs::create_dir_all(&tmp);
+        let path = tmp.join(".yoyo.toml");
+        let _ = std::fs::remove_file(&path);
+
+        let result = write_config_value_to("model", "test-model", &path);
+        assert!(result.is_ok());
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("model = \"test-model\""));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_write_config_value_to_updates_existing() {
+        let tmp = std::env::temp_dir().join("yoyo_test_write_config_update");
+        let _ = std::fs::create_dir_all(&tmp);
+        let path = tmp.join(".yoyo.toml");
+        std::fs::write(
+            &path,
+            "# config\nprovider = \"anthropic\"\nmodel = \"old-model\"\n",
+        )
+        .unwrap();
+
+        let result = write_config_value_to("model", "new-model", &path);
+        assert!(result.is_ok());
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("model = \"new-model\""));
+        assert!(!content.contains("old-model"));
+        assert!(content.contains("provider = \"anthropic\""));
+        assert!(content.contains("# config"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_write_config_value_to_preserves_other_keys() {
+        let tmp = std::env::temp_dir().join("yoyo_test_write_config_preserve");
+        let _ = std::fs::create_dir_all(&tmp);
+        let path = tmp.join(".yoyo.toml");
+        std::fs::write(
+            &path,
+            "provider = \"anthropic\"\nthinking = \"high\"\ntemperature = 0.5\n",
+        )
+        .unwrap();
+
+        let result = write_config_value_to("model", "new-model", &path);
+        assert!(result.is_ok());
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("model = \"new-model\""));
+        assert!(content.contains("provider = \"anthropic\""));
+        assert!(content.contains("thinking = \"high\""));
+        assert!(content.contains("temperature = 0.5"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_format_toml_value() {
+        assert_eq!(format_toml_value("hello"), "\"hello\"");
+        assert_eq!(format_toml_value("42"), "42");
+        assert_eq!(format_toml_value("3.14"), "3.14");
+        assert_eq!(format_toml_value("true"), "true");
+        assert_eq!(format_toml_value("false"), "false");
+        assert_eq!(
+            format_toml_value("claude-sonnet-4-6"),
+            "\"claude-sonnet-4-6\""
+        );
     }
 }

@@ -11,10 +11,38 @@ pub use crate::commands_refactor::{
     handle_extract, handle_move, handle_refactor, handle_rename, rename_in_project,
 };
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 
 use yoagent::agent::Agent;
 use yoagent::*;
+
+// ---------------------------------------------------------------------------
+// Plan mode — a session toggle that restricts the agent to read-only operations.
+// When active, a constraint instruction is prepended to each user message so
+// the agent reads and thinks but does not modify files or run destructive commands.
+// ---------------------------------------------------------------------------
+
+static PLAN_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable plan mode.
+pub fn set_plan_mode(enabled: bool) {
+    PLAN_MODE.store(enabled, Ordering::Relaxed);
+}
+
+/// Check whether plan mode is currently active.
+pub fn is_plan_mode() -> bool {
+    PLAN_MODE.load(Ordering::Relaxed)
+}
+
+/// Instruction prepended to user messages when plan mode is on.
+pub const PLAN_MODE_PROMPT: &str = "\
+[PLAN MODE] You are in planning mode. You may read files, search, and analyze the codebase, \
+but you MUST NOT modify any files or run destructive commands. Specifically:
+- DO NOT use write_file or edit_file
+- DO NOT use bash commands that create, modify, or delete files
+- You MAY use read_file, list_files, search, and read-only bash commands (cat, grep, find, git log, git status, git diff)
+Analyze the codebase, explain your plan, and describe what changes you WOULD make without making them.";
 
 /// Acquire a read-guard, recovering from a poisoned RwLock instead of panicking.
 fn rw_read_or_recover<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -751,14 +779,21 @@ pub fn detect_project_type(dir: &std::path::Path) -> ProjectType {
 
 // ── /plan ────────────────────────────────────────────────────────────────
 
+/// Subcommand names for `/plan <Tab>` completion.
+pub const PLAN_SUBCOMMANDS: &[&str] = &["on", "off", "open", "close"];
+
 /// Parse a `/plan` command and extract the task description.
-/// Returns None if no task was provided.
+/// Returns None if no task was provided or if the input is a mode toggle keyword.
 pub fn parse_plan_task(input: &str) -> Option<String> {
     let task = input.strip_prefix("/plan").unwrap_or("").trim().to_string();
     if task.is_empty() {
         None
     } else {
-        Some(task)
+        // Don't treat mode toggle keywords as plan tasks
+        match task.as_str() {
+            "on" | "off" | "open" | "close" => None,
+            _ => Some(task),
+        }
     }
 }
 
@@ -786,21 +821,61 @@ Keep the plan actionable — someone (or you, in the next step) should be able t
     )
 }
 
-/// Handle the `/plan` command: create a structured plan for a task without executing tools.
-/// The plan gets injected into conversation context so the user can review and say "go ahead."
-/// Returns Some(plan_prompt) if a plan was requested, None otherwise.
+/// Handle the `/plan` command: toggle plan mode or create a structured plan.
+///
+/// - `/plan on` or `/plan open` — enable plan mode (read-only)
+/// - `/plan off` or `/plan close` — disable plan mode
+/// - `/plan` (no args) — show current mode + usage
+/// - `/plan <task>` — existing single-shot plan behavior (unchanged)
+///
+/// Returns Some(plan_prompt) if a single-shot plan was requested, None otherwise.
 pub async fn handle_plan(
     input: &str,
     agent: &mut Agent,
     session_total: &mut Usage,
     model: &str,
 ) -> Option<String> {
+    let arg = input.strip_prefix("/plan").unwrap_or("").trim();
+
+    // Handle mode toggle subcommands
+    match arg {
+        "on" | "open" => {
+            set_plan_mode(true);
+            println!(
+                "{GREEN}  📋 Plan mode ON — agent will read and think but not modify files or run commands.{RESET}"
+            );
+            println!("{DIM}  Use /plan off to return to normal mode.{RESET}\n");
+            return None;
+        }
+        "off" | "close" => {
+            set_plan_mode(false);
+            println!("{DIM}  Plan mode OFF — normal operation resumed.{RESET}\n");
+            return None;
+        }
+        "" => {
+            // No args: show status + usage
+            if is_plan_mode() {
+                println!("{GREEN}  📋 Plan mode is ON{RESET}");
+                println!("{DIM}  The agent can read and search but will not modify files.{RESET}");
+                println!("{DIM}  Use /plan off to return to normal mode.{RESET}\n");
+            } else {
+                println!("{DIM}  📋 Plan mode is OFF (normal operation){RESET}");
+                println!("{DIM}  usage: /plan on         Enter plan mode (read-only){RESET}");
+                println!("{DIM}         /plan off        Return to normal mode{RESET}");
+                println!(
+                    "{DIM}         /plan <task>     One-shot plan without executing tools{RESET}\n"
+                );
+            }
+            return None;
+        }
+        _ => {}
+    }
+
+    // Fall through to single-shot planning
     let task = match parse_plan_task(input) {
         Some(t) => t,
         None => {
-            println!("{DIM}  usage: /plan <task description>{RESET}");
-            println!("{DIM}  Creates a step-by-step plan without executing any tools.{RESET}");
-            println!("{DIM}  Review the plan, then say \"go ahead\" to execute it.{RESET}\n");
+            // Shouldn't reach here given the match above, but be safe
             return None;
         }
     };
@@ -1975,6 +2050,56 @@ mod tests {
         assert!(prompt.contains("Do NOT execute any tools"));
         assert!(prompt.contains("Files to examine"));
         assert!(prompt.contains("Step-by-step"));
+    }
+
+    #[test]
+    fn test_plan_mode_toggle() {
+        // Ensure clean state
+        set_plan_mode(false);
+        assert!(!is_plan_mode());
+
+        set_plan_mode(true);
+        assert!(is_plan_mode());
+
+        set_plan_mode(false);
+        assert!(!is_plan_mode());
+    }
+
+    #[test]
+    fn test_parse_plan_task_skips_mode_keywords() {
+        // Mode toggle keywords should NOT be treated as plan tasks
+        assert!(parse_plan_task("/plan on").is_none());
+        assert!(parse_plan_task("/plan off").is_none());
+        assert!(parse_plan_task("/plan open").is_none());
+        assert!(parse_plan_task("/plan close").is_none());
+
+        // But actual task descriptions should still work
+        assert_eq!(
+            parse_plan_task("/plan add error handling"),
+            Some("add error handling".to_string())
+        );
+        assert_eq!(
+            parse_plan_task("/plan on-boarding flow"),
+            Some("on-boarding flow".to_string())
+        );
+    }
+
+    #[test]
+    fn test_plan_mode_prompt_content() {
+        // The plan mode prompt should instruct the agent not to modify files
+        assert!(PLAN_MODE_PROMPT.contains("PLAN MODE"));
+        assert!(PLAN_MODE_PROMPT.contains("MUST NOT"));
+        assert!(PLAN_MODE_PROMPT.contains("write_file"));
+        assert!(PLAN_MODE_PROMPT.contains("edit_file"));
+        assert!(PLAN_MODE_PROMPT.contains("read_file"));
+    }
+
+    #[test]
+    fn test_plan_subcommands() {
+        assert!(PLAN_SUBCOMMANDS.contains(&"on"));
+        assert!(PLAN_SUBCOMMANDS.contains(&"off"));
+        assert!(PLAN_SUBCOMMANDS.contains(&"open"));
+        assert!(PLAN_SUBCOMMANDS.contains(&"close"));
     }
 
     // ── Tests moved from commands.rs — /docs and /plan command tests ─

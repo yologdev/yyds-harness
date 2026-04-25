@@ -226,14 +226,28 @@ Features:
 
 | Command | Description |
 |---------|-------------|
-| `/plan <task>` | Create a step-by-step plan for a task without executing anything (architect mode) |
+| `/plan [on\|off\|task]` | Plan mode toggle or one-shot task plan (architect mode) |
 | `/spawn <task>` | Spawn a subagent with a fresh context to handle a task |
 | `/side <question>` | Quick question without tools — doesn't affect main conversation |
 | `/quick <question>` | Fast single-turn answer — no tools, no agent loop |
 
-### `/plan` — Architect mode
+### `/plan` — Architect mode & plan mode toggle
 
-The `/plan` command asks the AI to create a detailed, structured plan for a task **without executing any tools**. This is the "architect mode" equivalent — you see exactly what the agent intends to do before it does anything.
+The `/plan` command has two modes:
+
+**Plan mode toggle** — enter a sustained read-only mode where the agent can read, search, and analyze but won't modify files or run destructive commands:
+
+```
+> /plan on
+  📋 Plan mode ON — agent will read and think but not modify files or run commands.
+  Use /plan off to return to normal mode.
+
+main 📋 🐙 ›
+```
+
+When plan mode is on, every message you send is prefixed with a constraint telling the agent to think and analyze without writing. The REPL prompt shows a 📋 indicator. Use `/plan off` (or `/plan close`) to return to normal operation.
+
+**One-shot planning** — ask the AI to create a detailed, structured plan for a task **without executing any tools**:
 
 ```
 > /plan add caching to the database layer

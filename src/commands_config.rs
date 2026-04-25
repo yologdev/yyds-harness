@@ -377,6 +377,191 @@ pub fn handle_config_edit() {
     }
 }
 
+// ── /config set & /config get ──────────────────────────────────────
+
+/// Parse `/config set <key> <value> [--global]` input.
+///
+/// Returns `(key, value, is_global)` or an error message.
+pub fn parse_config_set_args(input: &str) -> Result<(String, String, bool), String> {
+    // Strip "/config set " prefix
+    let rest = input
+        .strip_prefix("/config set ")
+        .or_else(|| input.strip_prefix("/config set"))
+        .unwrap_or("")
+        .trim();
+
+    if rest.is_empty() {
+        return Err("usage: /config set <key> <value> [--global]".to_string());
+    }
+
+    let parts: Vec<&str> = rest.split_whitespace().collect();
+    if parts.len() < 2 {
+        return Err("usage: /config set <key> <value> [--global]".to_string());
+    }
+
+    let key = parts[0].to_string();
+    let is_global = parts.contains(&"--global");
+
+    // Value is everything between key and --global (or all remaining)
+    let value_parts: Vec<&&str> = parts[1..].iter().filter(|p| **p != "--global").collect();
+
+    if value_parts.is_empty() {
+        return Err("usage: /config set <key> <value> [--global]".to_string());
+    }
+
+    let value = value_parts
+        .iter()
+        .map(|p| **p)
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    Ok((key, value, is_global))
+}
+
+/// Handle `/config set <key> <value> [--global]`.
+///
+/// Validates the key/value, writes to the config file, and updates the
+/// live `AgentConfig` so the change takes effect immediately within the
+/// current session.
+pub fn handle_config_set(input: &str, agent_config: &mut crate::AgentConfig, agent: &mut Agent) {
+    let (key, value, is_global) = match parse_config_set_args(input) {
+        Ok(parsed) => parsed,
+        Err(msg) => {
+            println!("{YELLOW}  {msg}{RESET}");
+            println!("{DIM}  settable keys: {}{RESET}", settable_keys_list());
+            return;
+        }
+    };
+
+    // Validate the value for this key
+    let canonical = match crate::config::validate_config_value(&key, &value) {
+        Ok(v) => v,
+        Err(msg) => {
+            println!("{RED}  {msg}{RESET}");
+            return;
+        }
+    };
+
+    // Write to disk
+    let project_local = !is_global;
+    match crate::config::write_config_value(&key, &canonical, project_local) {
+        Ok(path) => {
+            println!(
+                "{GREEN}  ✓ Set {key} = {canonical} in {}{RESET}",
+                path.display()
+            );
+        }
+        Err(msg) => {
+            println!("{RED}  {msg}{RESET}");
+            return;
+        }
+    }
+
+    // Apply to live runtime so it takes effect immediately
+    apply_config_to_runtime(&key, &canonical, agent_config, agent);
+}
+
+/// Apply a validated config key/value to the live runtime state.
+fn apply_config_to_runtime(
+    key: &str,
+    value: &str,
+    agent_config: &mut crate::AgentConfig,
+    agent: &mut Agent,
+) {
+    match key {
+        "model" => {
+            agent_config.model = value.to_string();
+            let saved = agent.save_messages().ok();
+            *agent = agent_config.build_agent();
+            if let Some(json) = saved {
+                let _ = agent.restore_messages(&json);
+            }
+        }
+        "provider" => {
+            crate::commands::handle_provider_switch(value, agent_config, agent);
+        }
+        "thinking" => {
+            let level = crate::cli::parse_thinking_level(value);
+            agent_config.thinking = level;
+            let saved = agent.save_messages().ok();
+            *agent = agent_config.build_agent();
+            if let Some(json) = saved {
+                let _ = agent.restore_messages(&json);
+            }
+        }
+        "temperature" => {
+            if let Ok(t) = value.parse::<f32>() {
+                agent_config.temperature = Some(t);
+            }
+        }
+        "max_tokens" => {
+            if let Ok(n) = value.parse::<u32>() {
+                agent_config.max_tokens = Some(n);
+            }
+        }
+        "max_turns" => {
+            if let Ok(n) = value.parse::<usize>() {
+                agent_config.max_turns = Some(n);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handle `/config get <key>`.
+///
+/// Shows the current runtime value for a single config key.
+pub fn handle_config_get(input: &str) {
+    let key = input
+        .strip_prefix("/config get ")
+        .or_else(|| input.strip_prefix("/config get"))
+        .unwrap_or("")
+        .trim();
+
+    if key.is_empty() {
+        println!("{YELLOW}  usage: /config get <key>{RESET}");
+        println!("{DIM}  settable keys: {}{RESET}", settable_keys_list());
+        return;
+    }
+
+    // Read from the detected config file
+    let path = detect_loaded_config_path();
+    let config = match path.as_ref() {
+        Some(p) => match std::fs::read_to_string(p) {
+            Ok(content) => crate::cli::parse_config_file(&content),
+            Err(_) => std::collections::HashMap::new(),
+        },
+        None => std::collections::HashMap::new(),
+    };
+
+    match config.get(key) {
+        Some(value) => {
+            let display = if is_secret_key(key) {
+                "***".to_string()
+            } else {
+                value.clone()
+            };
+            let source = path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "defaults".to_string());
+            println!("{DIM}  {key} = {display}  ({source}){RESET}");
+        }
+        None => {
+            println!("{DIM}  {key} is not set in config file (using default){RESET}");
+        }
+    }
+}
+
+/// Helper: comma-separated list of settable key names.
+fn settable_keys_list() -> String {
+    crate::config::SETTABLE_KEYS
+        .iter()
+        .map(|(k, _)| *k)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 // ── /hooks ───────────────────────────────────────────────────────────────
 
 pub fn handle_hooks(hooks: &[crate::hooks::ShellHook]) {
@@ -1023,5 +1208,49 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // --- /config set argument parsing tests ---
+
+    #[test]
+    fn test_parse_config_set_args_basic() {
+        let (key, value, global) =
+            parse_config_set_args("/config set model claude-sonnet-4-6").unwrap();
+        assert_eq!(key, "model");
+        assert_eq!(value, "claude-sonnet-4-6");
+        assert!(!global);
+    }
+
+    #[test]
+    fn test_parse_config_set_args_with_global() {
+        let (key, value, global) =
+            parse_config_set_args("/config set model claude-opus-4-6 --global").unwrap();
+        assert_eq!(key, "model");
+        assert_eq!(value, "claude-opus-4-6");
+        assert!(global);
+    }
+
+    #[test]
+    fn test_parse_config_set_args_numeric() {
+        let (key, value, _) = parse_config_set_args("/config set max_tokens 8192").unwrap();
+        assert_eq!(key, "max_tokens");
+        assert_eq!(value, "8192");
+    }
+
+    #[test]
+    fn test_parse_config_set_args_empty() {
+        assert!(parse_config_set_args("/config set").is_err());
+        assert!(parse_config_set_args("/config set ").is_err());
+    }
+
+    #[test]
+    fn test_parse_config_set_args_missing_value() {
+        assert!(parse_config_set_args("/config set model").is_err());
+    }
+
+    #[test]
+    fn test_parse_config_set_args_global_only_no_value() {
+        // "/config set model --global" — --global is filtered out, no value remains
+        assert!(parse_config_set_args("/config set model --global").is_err());
     }
 }

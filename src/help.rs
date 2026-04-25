@@ -522,7 +522,15 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
                               questions at runtime.\n\
                /config edit — Open the config file in $EDITOR (or $VISUAL, vi).\n\
                               Opens project-level .yoyo.toml if it exists,\n\
-                              otherwise falls back to ~/.config/yoyo/config.toml.",
+                              otherwise falls back to ~/.config/yoyo/config.toml.\n\
+               /config set <key> <value> [--global]\n\
+                              Persist a config value to .yoyo.toml (project-local\n\
+                              by default) or ~/.yoyo.toml (with --global). Also\n\
+                              applies the change to the current session immediately.\n\
+                              Keys: model, provider, thinking, temperature,\n\
+                              max_tokens, max_turns.\n\
+               /config get <key>\n\
+                              Show the on-disk value for a single config key.",
         ),
         "context" => Some(
             "/context — Show loaded project context files\n\n\
@@ -691,13 +699,17 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              including their names and the message count at each point.",
         ),
         "plan" => Some(
-            "/plan <task> — Plan a task step-by-step (architect mode)\n\n\
+            "/plan — Plan mode toggle & one-shot planning (architect mode)\n\n\
              Usage:\n\
-             \x20 /plan <task description>\n\n\
-             Asks the AI to create a detailed plan for the given task\n\
-             without executing any tools. The AI analyzes the codebase\n\
-             and produces a step-by-step implementation plan.\n\n\
+             \x20 /plan on|open        Enter plan mode (read-only, agent thinks but won't modify)\n\
+             \x20 /plan off|close      Exit plan mode (return to normal operation)\n\
+             \x20 /plan                Show current plan mode status\n\
+             \x20 /plan <task>         One-shot plan: create a step-by-step plan without tools\n\n\
+             Plan mode restricts the agent to read-only operations — it can read files,\n\
+             search, and analyze, but will not modify files or run destructive commands.\n\
+             Useful for understanding a codebase before making changes.\n\n\
              Examples:\n\
+             \x20 /plan on\n\
              \x20 /plan add authentication to the API\n\
              \x20 /plan migrate database from SQLite to PostgreSQL",
         ),
@@ -920,6 +932,8 @@ pub fn help_text() -> String {
         "  /config show       Show loaded config file path and merged key-value pairs (secrets masked)\n",
     );
     out.push_str("  /config edit       Open config file in $EDITOR\n");
+    out.push_str("  /config set        Persist a config key=value to .yoyo.toml [--global]\n");
+    out.push_str("  /config get        Show the on-disk value for a config key\n");
     out.push_str("  /hooks             Show active hooks (pre/post tool execution)\n");
     out.push_str("  /permissions       Show active security and permission configuration\n");
     out.push_str("  /version           Show yoyo version\n");
@@ -1015,9 +1029,7 @@ pub fn help_text() -> String {
     out.push_str("  /model <name>      Switch model (preserves conversation)\n");
     out.push_str("  /provider <name>   Switch provider (resets model to provider default)\n");
     out.push_str("  /think [level]     Show or change thinking level (off/low/medium/high)\n");
-    out.push_str(
-        "  /plan <task>       Plan a task step-by-step without executing (architect mode)\n",
-    );
+    out.push_str("  /plan [on|off|task] Plan mode toggle or one-shot task plan (architect mode)\n");
     out.push_str("  /spawn <task>      Spawn a subagent to handle a task (separate context)\n");
     out.push_str(
         "                     The model can also delegate subtasks to sub-agents automatically.\n",
@@ -1123,7 +1135,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "memories" => Some("List or search project memories"),
         "model" => Some("Switch or show current model"),
         "move" => Some("Move a method between files"),
-        "plan" => Some("AI-generate a task plan"),
+        "plan" => Some("Plan mode toggle or one-shot task plan"),
         "permissions" => Some("Show active security and permission configuration"),
         "pr" => Some("List, view, or create pull requests"),
         "profile" => Some("Show session statistics (tokens, cost, time, turns)"),

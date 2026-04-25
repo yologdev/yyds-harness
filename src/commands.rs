@@ -33,8 +33,8 @@ pub use crate::commands_memory::{handle_forget, handle_memories, handle_remember
 // Re-export config, hooks, permissions, teach, and MCP handlers extracted
 // to commands_config.rs (issue #260 slice). Same stability contract as above.
 pub use crate::commands_config::{
-    handle_config, handle_config_edit, handle_config_show, handle_hooks, handle_mcp,
-    handle_permissions, handle_teach, is_teach_mode, TEACH_MODE_PROMPT,
+    handle_config, handle_config_edit, handle_config_get, handle_config_set, handle_config_show,
+    handle_hooks, handle_mcp, handle_permissions, handle_teach, is_teach_mode, TEACH_MODE_PROMPT,
 };
 
 use yoagent::agent::Agent;
@@ -160,7 +160,7 @@ pub const DIFF_FLAGS: &[&str] = &["--staged", "--cached", "--name-only", "--stat
 pub const BG_SUBCOMMANDS: &[&str] = &["run", "list", "output", "kill"];
 
 /// Config subcommand names for `/config <Tab>` completion.
-pub const CONFIG_SUBCOMMANDS: &[&str] = &["show", "edit"];
+pub const CONFIG_SUBCOMMANDS: &[&str] = &["show", "edit", "set", "get"];
 
 /// Return a hint string showing available arguments/subcommands for a command.
 ///
@@ -174,7 +174,7 @@ pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
         "git" => Some("status | log | add | diff | branch | stash"),
         "pr" => Some("create | describe | status | diff"),
         "help" => Some("<command>"),
-        "config" => Some("show | edit"),
+        "config" => Some("show | edit | set <key> <value> | get <key>"),
         "save" => Some("<filename.json>"),
         "load" => Some("<filename.json>"),
         "add" => Some("<file-or-url> ..."),
@@ -214,7 +214,7 @@ pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
         "changelog" => Some("[count]"),
         "evolution" => Some("[count]"),
         "extended" | "ext" => Some("<prompt>"),
-        "plan" => Some("<description>"),
+        "plan" => Some("on | off | open | close | <description>"),
         "tree" => Some("[path] [--depth N]"),
         "index" => Some("[path]"),
         _ => None,
@@ -250,6 +250,7 @@ pub fn command_arg_completions(cmd: &str, partial_arg: &str) -> Vec<String> {
             &partial_lower,
         ),
         "/skill" => filter_candidates(crate::commands_project::SKILL_SUBCOMMANDS, &partial_lower),
+        "/plan" => filter_candidates(crate::commands_project::PLAN_SUBCOMMANDS, &partial_lower),
         _ => Vec::new(),
     }
 }
@@ -441,7 +442,7 @@ pub use crate::commands_git::{
 // Project-related handlers
 pub use crate::commands_project::{
     handle_context, handle_docs, handle_extract, handle_init, handle_move, handle_plan,
-    handle_refactor, handle_rename, handle_skill, handle_todo,
+    handle_refactor, handle_rename, handle_skill, handle_todo, is_plan_mode, PLAN_MODE_PROMPT,
 };
 
 pub use crate::commands_map::handle_map;
@@ -1145,7 +1146,15 @@ mod tests {
             candidates.contains(&"edit".to_string()),
             "Should include 'edit': {candidates:?}"
         );
-        assert_eq!(candidates.len(), 2);
+        assert!(
+            candidates.contains(&"set".to_string()),
+            "Should include 'set': {candidates:?}"
+        );
+        assert!(
+            candidates.contains(&"get".to_string()),
+            "Should include 'get': {candidates:?}"
+        );
+        assert_eq!(candidates.len(), 4);
     }
 
     #[test]
@@ -1153,7 +1162,7 @@ mod tests {
         let candidates = command_arg_completions("/config", "e");
         assert_eq!(candidates, vec!["edit"]);
         let candidates = command_arg_completions("/config", "s");
-        assert_eq!(candidates, vec!["show"]);
+        assert_eq!(candidates, vec!["show", "set"]);
     }
 
     #[test]

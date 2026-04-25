@@ -398,7 +398,13 @@ pub async fn run_repl(
 
     loop {
         let prompt = if let Some(branch) = git_branch() {
-            format!("{BOLD}{GREEN}{branch}{RESET} {BOLD}{GREEN}🐙 › {RESET}")
+            if commands::is_plan_mode() {
+                format!("{BOLD}{GREEN}{branch}{RESET} {BOLD}{YELLOW}📋{RESET} {BOLD}{GREEN}🐙 › {RESET}")
+            } else {
+                format!("{BOLD}{GREEN}{branch}{RESET} {BOLD}{GREEN}🐙 › {RESET}")
+            }
+        } else if commands::is_plan_mode() {
+            format!("{BOLD}{YELLOW}📋{RESET} {BOLD}{GREEN}🐙 › {RESET}")
         } else {
             format!("{BOLD}{GREEN}🐙 › {RESET}")
         };
@@ -494,6 +500,13 @@ pub async fn run_repl(
             format!("{}\n\n{}", commands::TEACH_MODE_PROMPT, cleaned_text)
         } else {
             cleaned_text.clone()
+        };
+
+        // If plan mode is active, prepend the planning constraint to the user message
+        let effective_input = if commands::is_plan_mode() {
+            format!("{}\n\n{}", commands::PLAN_MODE_PROMPT, effective_input)
+        } else {
+            effective_input
         };
 
         // If /undo was run since the last turn, prepend context so the agent
