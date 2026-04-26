@@ -105,7 +105,7 @@ Additional skills (`origin: yoyo`, eligible for skill-evolve to refine/retire):
 **Discussion categories**: General, Journal Club, The Show, Ideas, and `yoyobook` (family discussions for yoyo forks — registration address book, introductions, cross-fork conversation). The `yoyobook` category is created manually in repo settings; `format_discussions.py` fetches all categories automatically.
 
 **Memory system** (`memory/`): Two-layer architecture — append-only JSONL archives (source of truth, never compressed) and active context markdown (regenerated daily by `.github/workflows/synthesize.yml` with time-weighted compression tiers):
-- `memory/learnings.jsonl` — self-reflection archive. Each line: `{"type":"lesson","day":N,"ts":"ISO8601","source":"...","title":"...","context":"...","takeaway":"..."}`
+- `memory/learnings.jsonl` — self-reflection archive. Each line: `{"type":"lesson","day":N,"ts":"ISO8601","source":"...","title":"...","context":"...","takeaway":"...","pattern_key":"..."}`. The `pattern_key` field is **optional** and follows kebab-case `<verb>.<object>` form (e.g. `tests.add_before_change`); skill-evolve and analyze-trajectory cluster recurring patterns by it. Omit when the lesson is one-off.
 - `memory/social_learnings.jsonl` — social insight archive. Each line: `{"type":"social","day":N,"ts":"ISO8601","source":"...","who":"@user","insight":"..."}`
 - `memory/active_learnings.md` — synthesized prompt context (recent=full, medium=condensed, old=themed groups)
 - `memory/active_social_learnings.md` — synthesized social prompt context
@@ -150,7 +150,7 @@ This is enforced both by HARD RULE #1 in the meta-skill (LLM-side) and by the di
 **Skill scoring inputs** — `origin: yoyo` skills carry an additional `keywords:` list in their frontmatter (e.g., `keywords: ["gh api graphql", "discussion"]` for `social`). skill-evolve uses these to detect "this skill was used in session N" by grepping each session's `audit.jsonl` for any keyword. `last_used`, `uses`, and `wins` are computed from this signal.
 
 **Trajectory awareness** (harness-side, Phase A1+A2 only):
-- `scripts/extract_trajectory.py` — aggregates audit-log session outcomes + git log + recent CI runs into a `YOUR TRAJECTORY` markdown block (~50–100 lines, capped at 2KB)
+- `scripts/extract_trajectory.py` — aggregates audit-log session outcomes + git log + recent CI runs into a `YOUR TRAJECTORY` markdown block. Hard-capped at 100 lines / 2KB; typical output 1–2KB. Stderr is captured to `$SESSION_STAGING/trajectory.stderr.log` and surfaced (head -20) in the cron's stderr if non-empty, so `warn()` diagnostics actually reach operators.
 - `scripts/evolve.sh` Step 1c — runs the extractor at session start (read-only worktree fetch from `audit-log` branch); inline cleanup, no EXIT trap
 - The block is injected into Phase A1 (assess) and Phase A2 (plan) prompts only — Phases B (impl), C (issue response), D (journal) prompts are unchanged
 - Five sub-sections: recent session outcomes, per-task activity from git log, reverts in window, recurring CI error fingerprints (clustered via `gh run view --log-failed`), provider/API health from audit.jsonl

@@ -43,12 +43,31 @@ def warn(msg: str) -> None:
 
 
 def run_cmd(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
-    """Run a command, capture output. Returns (rc, stdout, stderr). Never raises."""
+    """Run a command, capture output. Returns (rc, stdout, stderr). Never raises.
+    Uses start_new_session=True so a TimeoutExpired SIGKILLs the entire process
+    group (including grandchildren like git/curl spawned by gh), not just the
+    immediate child — prevents zombie buildup over many sessions."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            start_new_session=True,
+        )
         return r.returncode, r.stdout, r.stderr
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
-        warn(f"command failed: {cmd[:3]}... — {e}")
+    except subprocess.TimeoutExpired as e:
+        warn(f"timed out after {timeout}s: {' '.join(cmd[:3])}...")
+        # Best-effort kill of the whole process group; subprocess.run already
+        # killed the immediate child but grandchildren may persist.
+        try:
+            if e.pid is not None:
+                os.killpg(os.getpgid(e.pid), 9)  # SIGKILL
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        return 124, "", "timeout"
+    except (FileNotFoundError, OSError) as e:
+        warn(f"command failed: {' '.join(cmd[:3])}... — {e}")
         return 1, "", str(e)
 
 
@@ -67,10 +86,13 @@ def truncate_lines(s: str, n: int) -> str:
 
 
 def load_outcomes(audit_dir: Path) -> list[dict]:
-    """Read last N outcome.json files, sorted newest-first by mtime."""
+    """Read last N outcome.json files, sorted newest-first by mtime.
+    Returns dicts unchanged from outcome.json — sort metadata is kept on a
+    side tuple, never mutated into the parsed object (defends against keys
+    like `_mtime` colliding with future schema additions)."""
     if not audit_dir.exists() or not audit_dir.is_dir():
         return []
-    candidates = []
+    triples: list[tuple[float, str, dict]] = []
     for child in audit_dir.iterdir():
         if not child.is_dir():
             continue
@@ -78,14 +100,19 @@ def load_outcomes(audit_dir: Path) -> list[dict]:
         if not outcome.is_file():
             continue
         try:
-            data = json.loads(outcome.read_text())
-            data["_session_dir"] = child.name
-            data["_mtime"] = outcome.stat().st_mtime
-            candidates.append(data)
-        except (OSError, json.JSONDecodeError) as e:
+            data = json.loads(outcome.read_text(errors="replace"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
             warn(f"skipped malformed {outcome}: {e}")
-    candidates.sort(key=lambda d: d.get("_mtime", 0), reverse=True)
-    return candidates[:WINDOW_SESSIONS]
+            continue
+        try:
+            mtime = outcome.stat().st_mtime
+        except OSError as e:
+            warn(f"could not stat {outcome}: {e}")
+            mtime = 0.0
+        triples.append((mtime, child.name, data))
+    triples.sort(key=lambda t: t[0], reverse=True)
+    # Return only the data dicts, but keep the original keys intact.
+    return [t[2] for t in triples[:WINDOW_SESSIONS]]
 
 
 def render_outcomes(outcomes: list[dict]) -> str:
@@ -225,10 +252,14 @@ def fingerprint_error_line(line: str) -> str:
 
 
 def collect_failed_ci_fingerprints(repo: str) -> list[tuple[str, list[str]]]:
-    """Return [(fingerprint, [run_ids_seen_at])]. Capped at MAX_FAILED_RUNS fetches."""
+    """Return [(fingerprint, [run_ids_seen_at])]. Capped at MAX_FAILED_RUNS fetches.
+    Silent return-empty paths now warn() so a misconfigured token / rate-limit
+    doesn't masquerade as 'no failed runs' (would defeat the recurring-error
+    detection this section exists for)."""
     if not repo:
+        warn("YOYO_REPO empty — skipping recurring-CI-error section")
         return []
-    rc, stdout, _ = run_cmd(
+    rc, stdout, stderr = run_cmd(
         [
             "gh", "run", "list", "--repo", repo,
             "--status", "failure", "--limit", str(MAX_FAILED_RUNS),
@@ -237,26 +268,30 @@ def collect_failed_ci_fingerprints(repo: str) -> list[tuple[str, list[str]]]:
         timeout=GH_RUN_LIST_TIMEOUT,
     )
     if rc != 0:
+        warn(f"gh run list rc={rc}: {(stderr or '').strip()[:200]}")
         return []
     try:
         runs = json.loads(stdout)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        warn(f"gh run list returned non-JSON: {e}")
         return []
     if not runs:
         return []
 
     fingerprints: defaultdict[str, list[str]] = defaultdict(list)
+    fetch_errors = 0
     for run in runs:
         run_id = str(run.get("databaseId") or "")
         if not run_id:
             continue
-        rc2, log_stdout, _ = run_cmd(
+        rc2, log_stdout, stderr2 = run_cmd(
             ["gh", "run", "view", run_id, "--repo", repo, "--log-failed"],
             timeout=GH_RUN_VIEW_TIMEOUT,
         )
         if rc2 != 0:
+            fetch_errors += 1
+            warn(f"gh run view {run_id} rc={rc2}: {(stderr2 or '').strip()[:120]}")
             continue
-        # Find error-bearing lines in the LAST 50 lines (most recent failure context)
         tail = log_stdout.splitlines()[-50:]
         seen_in_run = set()
         for ln in tail:
@@ -265,7 +300,8 @@ def collect_failed_ci_fingerprints(repo: str) -> list[tuple[str, list[str]]]:
                 if fp and fp not in seen_in_run:
                     fingerprints[fp].append(run_id)
                     seen_in_run.add(fp)
-    # Sort fingerprints by frequency descending
+    if fetch_errors and not fingerprints:
+        warn(f"all {fetch_errors} gh run view fetch(es) failed — section will be empty")
     return sorted(fingerprints.items(), key=lambda kv: -len(kv[1]))
 
 
@@ -288,8 +324,13 @@ def render_ci_errors(clusters: list[tuple[str, list[str]]]) -> str:
 PROVIDER_ERROR_RE = re.compile(r'"type"\s*:\s*"error"|provider_error|rate_limit', re.IGNORECASE)
 
 
+AUDIT_FILE_SIZE_CAP = 10 * 1024 * 1024  # 10MB per file — guard against runaway audit.jsonl
+
+
 def collect_provider_errors(audit_dir: Path) -> tuple[int, int]:
-    """Return (sessions_examined, total_provider_error_hits)."""
+    """Return (sessions_examined, total_provider_error_hits).
+    Streams audit.jsonl line-by-line so a multi-MB file doesn't slurp into
+    memory. Per-file size cap (10MB) protects against pathological cases."""
     if not audit_dir.exists():
         return 0, 0
     sessions = 0
@@ -302,9 +343,17 @@ def collect_provider_errors(audit_dir: Path) -> tuple[int, int]:
             continue
         sessions += 1
         try:
-            for line in audit.read_text(errors="replace").splitlines():
-                if PROVIDER_ERROR_RE.search(line):
-                    hits += 1
+            size = audit.stat().st_size
+            if size > AUDIT_FILE_SIZE_CAP:
+                warn(f"{audit} is {size} bytes (>{AUDIT_FILE_SIZE_CAP}); scanning first {AUDIT_FILE_SIZE_CAP}B only")
+            with audit.open(encoding="utf-8", errors="replace") as f:
+                bytes_read = 0
+                for line in f:
+                    bytes_read += len(line)
+                    if bytes_read > AUDIT_FILE_SIZE_CAP:
+                        break
+                    if PROVIDER_ERROR_RE.search(line):
+                        hits += 1
         except OSError as e:
             warn(f"skipped {audit}: {e}")
         if sessions >= WINDOW_SESSIONS:
@@ -332,6 +381,16 @@ def main() -> int:
     )
     out_path = Path(out_path_str)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Drop any stale output from a prior session — guards against the case
+    # where extractor errors mid-run and a partial file survives. Matches
+    # the contract evolve.sh expects: file present iff this run wrote it.
+    try:
+        out_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        warn(f"could not unlink stale {out_path}: {e}")
 
     audit_dir = Path(audit_dir_str) if audit_dir_str else Path("/dev/null")
 
@@ -370,16 +429,21 @@ def main() -> int:
         body = "\n\n".join(sections)
 
     output = header + "\n" + body + "\n"
-    # Hard-cap: lines and bytes
+    # Hard-cap: lines and bytes. Bytes-cap reserves room for the truncation
+    # marker so the FINAL output stays under TOTAL_BYTE_CAP (the marker
+    # itself was previously appended after the cap, allowing the file to
+    # exceed it by ~37 bytes).
     output = truncate_lines(output, TOTAL_LINE_CAP)
+    truncation_marker = "\n... (truncated to fit token budget)\n"
+    marker_bytes = len(truncation_marker.encode("utf-8"))
     if len(output.encode("utf-8")) > TOTAL_BYTE_CAP:
-        # Find safe utf-8 boundary
-        b = output.encode("utf-8")[:TOTAL_BYTE_CAP]
-        # Back off to last newline within b
+        budget = TOTAL_BYTE_CAP - marker_bytes
+        b = output.encode("utf-8")[:budget]
+        # Back off to last newline within b for clean cut
         idx = b.rfind(b"\n")
         if idx > 0:
             b = b[:idx]
-        output = b.decode("utf-8", errors="ignore") + "\n... (truncated to fit token budget)\n"
+        output = b.decode("utf-8", errors="ignore") + truncation_marker
 
     try:
         out_path.write_text(output)

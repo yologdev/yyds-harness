@@ -273,26 +273,57 @@ SESSION_REVERTED="false"
 # Aggregates audit-log session outcomes + git log + recent CI runs into a
 # structured markdown summary, injected ONLY into Phase A1 (assess) and
 # Phase A2 (plan) prompts. Phases B/C/D are unchanged. Fail-soft: never
-# blocks the session — produces "(no trajectory data yet)" on any failure.
-# No EXIT trap — inline cleanup only (avoids trap-overwrite fragility).
+# blocks the session.
+#
+# Why no EXIT trap: a future maintainer adding `trap '…' EXIT` elsewhere in
+# evolve.sh would silently overwrite ours (bash trap is REPLACE, not append).
+# Inline cleanup is robust to that risk; PID-suffixed worktree paths bound
+# leakage to one run if the script is killed mid-step.
+#
+# Diagnostics: extractor stderr is captured to a session-local log so
+# operators (and post-mortem analysis) can see degraded paths. /dev/null
+# would have made warn() output dead code.
 TRAJECTORY_FILE="$SESSION_STAGING/trajectory.md"
 TRAJ_WT="/tmp/evolve-trajectory-$$"
+TRAJ_STDERR="$SESSION_STAGING/trajectory.stderr.log"
 YOYO_TRAJECTORY=""
 
-if git fetch --depth 50 origin audit-log:audit-log 2>/dev/null && \
-   git worktree add "$TRAJ_WT" audit-log 2>/dev/null; then
-    YOYO_AUDIT_DIR="$TRAJ_WT/sessions" \
-    YOYO_REPO="$REPO" \
-    YOYO_DAY="$DAY" \
-    YOYO_TRAJECTORY_OUT="$TRAJECTORY_FILE" \
-    python3 scripts/extract_trajectory.py 2>/dev/null && \
-    YOYO_TRAJECTORY=$(cat "$TRAJECTORY_FILE" 2>/dev/null || echo "")
-
-    git worktree remove --force "$TRAJ_WT" 2>/dev/null || true
-    rm -rf "$TRAJ_WT" 2>/dev/null || true
-    git worktree prune 2>/dev/null || true
+# Fetch audit-log first; capture rc so we can surface fetch-specific failures.
+if git fetch --depth 50 origin audit-log:audit-log 2>>"$TRAJ_STDERR"; then
+    if git worktree add "$TRAJ_WT" audit-log 2>>"$TRAJ_STDERR"; then
+        YOYO_AUDIT_DIR="$TRAJ_WT/sessions" \
+        YOYO_REPO="$REPO" \
+        YOYO_DAY="$DAY" \
+        YOYO_TRAJECTORY_OUT="$TRAJECTORY_FILE" \
+        python3 scripts/extract_trajectory.py 2>>"$TRAJ_STDERR" && \
+        YOYO_TRAJECTORY=$(cat "$TRAJECTORY_FILE" 2>/dev/null || echo "")
+    else
+        echo "  trajectory: worktree add failed (will run without trajectory data)" >&2
+    fi
+else
+    echo "  trajectory: audit-log fetch failed (will run without trajectory data)" >&2
 fi
-[ -z "$YOYO_TRAJECTORY" ] && YOYO_TRAJECTORY="(no trajectory data yet)"
+
+# Cleanup runs UNCONDITIONALLY — even if fetch succeeded but worktree-add
+# failed (stale registration in .git/worktrees/), or if extractor crashed
+# leaving a busy worktree directory. Each command is fail-soft.
+git worktree remove --force "$TRAJ_WT" 2>/dev/null || true
+rm -rf "$TRAJ_WT" 2>/dev/null || true
+git worktree prune 2>/dev/null || true
+
+# Surface any extractor warnings to the cron's stderr (visible in GH Actions
+# logs and in local terminal). Cap at 20 lines so a verbose extractor run
+# doesn't flood the wrap-up.
+if [ -s "$TRAJ_STDERR" ]; then
+    echo "  trajectory diagnostics:" >&2
+    head -20 "$TRAJ_STDERR" | sed 's/^/    /' >&2
+fi
+
+# Whitespace-only treated as empty — defends against truncation edge cases
+# where the extractor wrote only newlines.
+if [ -z "$(echo "$YOYO_TRAJECTORY" | tr -d '[:space:]')" ]; then
+    YOYO_TRAJECTORY="(no trajectory data yet)"
+fi
 
 # ── Helper: refresh GitHub App token (tokens expire after 1 hour) ──
 # Uses APP_ID, APP_PRIVATE_KEY, and APP_INSTALLATION_ID env vars.
