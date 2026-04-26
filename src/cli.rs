@@ -91,6 +91,7 @@ pub struct Config {
     pub json_output: bool,
     pub audit: bool,
     pub print_system_prompt: bool,
+    pub auto_watch: bool,
 }
 
 /// Whether verbose output is enabled. Set once at startup.
@@ -888,6 +889,7 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         json_output: of.json_output,
         audit: of.audit,
         print_system_prompt: of.print_system_prompt,
+        auto_watch: crate::config::parse_auto_watch_from_config(&file_config),
     })
 }
 

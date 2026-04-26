@@ -421,6 +421,7 @@ fn clone_agent_config(config: &crate::AgentConfig) -> crate::AgentConfig {
         shell_hooks: config.shell_hooks.clone(),
         fallback_provider: config.fallback_provider.clone(),
         fallback_model: config.fallback_model.clone(),
+        auto_watch: config.auto_watch,
     }
 }
 

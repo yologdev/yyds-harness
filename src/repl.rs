@@ -370,6 +370,16 @@ pub async fn run_repl(
         );
     }
 
+    // Auto-enable watch mode if a project type is detected and config allows it
+    if get_watch_command().is_none() && agent_config.auto_watch {
+        if let Some(cmd) = crate::commands_dev::auto_detect_watch_command() {
+            set_watch_command(&cmd);
+            println!(
+                "{DIM}  👀 Auto-watch: `{cmd}` (disable with /watch off or auto_watch = false){RESET}\n"
+            );
+        }
+    }
+
     // Set up rustyline editor with slash-command tab-completion
     let config = rustyline::config::Builder::new()
         .completion_type(rustyline::config::CompletionType::List)

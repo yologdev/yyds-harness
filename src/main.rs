@@ -473,6 +473,7 @@ pub struct AgentConfig {
     pub shell_hooks: Vec<hooks::ShellHook>,
     pub fallback_provider: Option<String>,
     pub fallback_model: Option<String>,
+    pub auto_watch: bool,
 }
 
 impl AgentConfig {
@@ -1113,6 +1114,7 @@ async fn main() {
         shell_hooks: config.shell_hooks,
         fallback_provider: config.fallback_provider,
         fallback_model: config.fallback_model,
+        auto_watch: config.auto_watch,
     };
 
     if !run_setup_wizard_if_needed(is_interactive, &mut agent_config) {
@@ -1353,6 +1355,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         assert_eq!(config.model, "claude-opus-4-6");
         assert_eq!(config.api_key, "test-key");
@@ -1390,6 +1393,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         let agent = config.build_agent();
         // Agent should have 6 tools (bash, read, write, edit, list, search)
@@ -1420,6 +1424,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         let agent = config.build_agent();
         // Agent created successfully — verify it has empty message history
@@ -1450,6 +1455,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         let agent = config.build_agent();
         // Agent created successfully — verify it has empty message history
@@ -1479,6 +1485,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         let agent = config.build_agent();
         // Agent created successfully — verify it has empty message history
@@ -1508,6 +1515,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         let agent1 = config.build_agent();
         let agent2 = config.build_agent();
@@ -1539,6 +1547,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         assert_eq!(config.model, "claude-opus-4-6");
         config.model = "claude-haiku-35".to_string();
@@ -1569,6 +1578,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         assert_eq!(config.thinking, ThinkingLevel::Off);
         config.thinking = ThinkingLevel::High;
@@ -1700,6 +1710,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         let agent = config.build_agent();
         assert_eq!(agent.messages().len(), 0);
@@ -1778,6 +1789,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         let agent = config.build_agent();
         assert_eq!(agent.messages().len(), 0);
@@ -1831,6 +1843,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         let agent = config.build_agent();
         // If this compiles and runs, BedrockProvider is correctly wired
@@ -1860,6 +1873,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         // Verify the anthropic ModelConfig would have headers set
         // (We test the helper directly since Agent doesn't expose model_config)
@@ -1895,6 +1909,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         }
     }
 
@@ -1975,6 +1990,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         // This should not panic — context config and execution limits are wired
         let agent =
@@ -2006,6 +2022,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         // Should not panic — limits are set with defaults
         let agent = config_no_turns
@@ -2033,6 +2050,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         };
         let agent = config_with_turns
             .configure_agent(Agent::new(yoagent::provider::AnthropicProvider), 200_000);
@@ -2051,6 +2069,7 @@ mod tests {
         let mut config = AgentConfig {
             fallback_provider: Some("google".to_string()),
             fallback_model: Some("gemini-2.0-flash".to_string()),
+            auto_watch: true,
             ..test_agent_config("anthropic", "claude-opus-4-6")
         };
         assert!(config.try_switch_to_fallback());
@@ -2064,6 +2083,7 @@ mod tests {
         let mut config = AgentConfig {
             fallback_provider: Some("anthropic".to_string()),
             fallback_model: Some("claude-opus-4-6".to_string()),
+            auto_watch: true,
             ..test_agent_config("anthropic", "claude-opus-4-6")
         };
         assert!(!config.try_switch_to_fallback());
@@ -2087,6 +2107,7 @@ mod tests {
         let mut config = AgentConfig {
             fallback_provider: Some("openai".to_string()),
             fallback_model: None,
+            auto_watch: true,
             ..test_agent_config("anthropic", "claude-opus-4-6")
         };
         assert!(config.try_switch_to_fallback());
@@ -2100,6 +2121,7 @@ mod tests {
         let mut config = AgentConfig {
             fallback_provider: Some("openai".to_string()),
             fallback_model: Some("gpt-4-turbo".to_string()),
+            auto_watch: true,
             ..test_agent_config("anthropic", "claude-opus-4-6")
         };
         assert!(config.try_switch_to_fallback());
@@ -2118,6 +2140,7 @@ mod tests {
         let mut config = AgentConfig {
             fallback_provider: Some("google".to_string()),
             fallback_model: Some("gemini-2.0-flash".to_string()),
+            auto_watch: true,
             ..test_agent_config("anthropic", "claude-opus-4-6")
         };
         assert_eq!(config.api_key, "test-key"); // original
@@ -2140,6 +2163,7 @@ mod tests {
         let mut config = AgentConfig {
             fallback_provider: Some("xai".to_string()),
             fallback_model: Some("grok-3".to_string()),
+            auto_watch: true,
             ..test_agent_config("anthropic", "claude-opus-4-6")
         };
         let original_key = config.api_key.clone();
@@ -2155,6 +2179,7 @@ mod tests {
         let mut config = AgentConfig {
             fallback_provider: Some("google".to_string()),
             fallback_model: Some("gemini-2.0-flash".to_string()),
+            auto_watch: true,
             ..test_agent_config("anthropic", "claude-opus-4-6")
         };
         assert!(config.try_switch_to_fallback());
@@ -2173,6 +2198,7 @@ mod tests {
         let config = AgentConfig {
             fallback_provider: Some("google".to_string()),
             fallback_model: Some("gemini-2.0-flash".to_string()),
+            auto_watch: true,
             ..test_agent_config("anthropic", "claude-opus-4-6")
         };
         // Simulate: response has no API error
@@ -2212,6 +2238,7 @@ mod tests {
         let mut config = AgentConfig {
             fallback_provider: Some("google".to_string()),
             fallback_model: Some("gemini-2.0-flash".to_string()),
+            auto_watch: true,
             ..test_agent_config("anthropic", "claude-opus-4-6")
         };
 

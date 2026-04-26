@@ -1349,6 +1349,7 @@ mod tests {
             shell_hooks: vec![],
             fallback_provider: None,
             fallback_model: None,
+            auto_watch: true,
         }
     }
 

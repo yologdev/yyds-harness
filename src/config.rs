@@ -445,6 +445,18 @@ pub struct McpServerConfig {
     pub env: Vec<(String, String)>,
 }
 
+/// Check whether auto-watch is enabled in the config.
+///
+/// Reads `auto_watch` from the given config map. Defaults to `true`
+/// when the key is absent — watch mode is on by default for detected
+/// projects so new users get Aider-style edit→test→fix automatically.
+pub fn parse_auto_watch_from_config(config: &std::collections::HashMap<String, String>) -> bool {
+    match config.get("auto_watch").map(|v| v.as_str()) {
+        Some("false") | Some("0") | Some("no") | Some("off") => false,
+        _ => true, // default: enabled
+    }
+}
+
 /// Keys that `/config set` understands. Each entry is a key name and a
 /// human-readable description used in error messages.
 pub const SETTABLE_KEYS: &[(&str, &str)] = &[
@@ -454,6 +466,7 @@ pub const SETTABLE_KEYS: &[(&str, &str)] = &[
     ("temperature", "sampling temperature (0.0–2.0)"),
     ("max_tokens", "maximum response tokens"),
     ("max_turns", "maximum agent turns per prompt"),
+    ("auto_watch", "auto-enable watch mode on start (true/false)"),
 ];
 
 /// Validate a config value for a given key. Returns `Ok(canonical_value)`
@@ -493,6 +506,16 @@ pub fn validate_config_value(key: &str, value: &str) -> Result<String, String> {
             Ok(_) => Err("max_turns must be positive".to_string()),
             Err(_) => Err(format!("'{value}' is not a valid integer")),
         },
+        "auto_watch" => {
+            let lower = value.to_ascii_lowercase();
+            match lower.as_str() {
+                "true" | "1" | "yes" | "on" => Ok("true".to_string()),
+                "false" | "0" | "no" | "off" => Ok("false".to_string()),
+                _ => Err(format!(
+                    "invalid auto_watch value '{value}' — use true or false"
+                )),
+            }
+        }
         _ => Err(format!(
             "unknown config key '{key}' — settable keys: {}",
             SETTABLE_KEYS
@@ -892,5 +915,53 @@ env = { API_KEY = "secret" }
             format_toml_value("claude-sonnet-4-6"),
             "\"claude-sonnet-4-6\""
         );
+    }
+
+    #[test]
+    fn auto_watch_defaults_to_true() {
+        let config = std::collections::HashMap::new();
+        assert!(parse_auto_watch_from_config(&config));
+    }
+
+    #[test]
+    fn auto_watch_respects_false() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("auto_watch".to_string(), "false".to_string());
+        assert!(!parse_auto_watch_from_config(&config));
+    }
+
+    #[test]
+    fn auto_watch_respects_off() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("auto_watch".to_string(), "off".to_string());
+        assert!(!parse_auto_watch_from_config(&config));
+    }
+
+    #[test]
+    fn auto_watch_explicit_true() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("auto_watch".to_string(), "true".to_string());
+        assert!(parse_auto_watch_from_config(&config));
+    }
+
+    #[test]
+    fn validate_auto_watch_values() {
+        assert_eq!(
+            validate_config_value("auto_watch", "true"),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            validate_config_value("auto_watch", "false"),
+            Ok("false".to_string())
+        );
+        assert_eq!(
+            validate_config_value("auto_watch", "yes"),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            validate_config_value("auto_watch", "no"),
+            Ok("false".to_string())
+        );
+        assert!(validate_config_value("auto_watch", "maybe").is_err());
     }
 }

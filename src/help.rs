@@ -837,17 +837,20 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              CI workflow runs (via gh CLI, if available).",
         ),
         "watch" => Some(
-            "/watch [command|off|status] — Auto-run tests after agent edits\n\n\
+            "/watch [command|all|off|status] — Auto-run tests after agent edits\n\n\
              Usage:\n\
              \x20 /watch              Auto-detect and enable test watching\n\
+             \x20 /watch all          Auto-detect lint + test, run both in sequence\n\
              \x20 /watch cargo test   Watch with a specific command\n\
              \x20 /watch off          Disable watching\n\
              \x20 /watch status       Show current watch state\n\n\
-             When enabled, yoyo automatically runs the test command after every\n\
-             agent turn that modifies files. On success, a brief pass message is\n\
-             shown. On failure, the last 20 lines of output are displayed.\n\n\
+             When enabled, yoyo automatically runs the watch command after every\n\
+             agent turn that modifies files. On failure, yoyo auto-fixes up to 3 times.\n\n\
+             `/watch all` chains the project's lint and test commands with `&&` so the\n\
+             first failure stops execution — e.g. `cargo clippy -- -D warnings && cargo test`.\n\n\
              Examples:\n\
              \x20 /watch\n\
+             \x20 /watch all\n\
              \x20 /watch npm test\n\
              \x20 /watch pytest -x\n\
              \x20 /watch off",
@@ -1134,7 +1137,7 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
-        "  watch             Toggle watch mode (e.g. yoyo watch cargo test)"
+        "  watch             Toggle watch mode (e.g. yoyo watch all, yoyo watch cargo test)"
     );
     let _ = writeln!(
         s,
@@ -1321,7 +1324,10 @@ pub fn cli_help_text() -> String {
         s,
         "    /web <url>         Fetch and display web page content"
     );
-    let _ = writeln!(s, "    /watch [cmd]       Auto-run tests after agent edits");
+    let _ = writeln!(
+        s,
+        "    /watch [cmd|all]   Auto-run tests (or lint+test) after agent edits"
+    );
     let _ = writeln!(
         s,
         "    /ast <pattern>     Structural code search (ast-grep)"
@@ -1536,7 +1542,7 @@ pub fn help_text() -> String {
     );
     out.push_str("  /tree [depth]      Show project directory tree (default depth: 3)\n");
     out.push_str("  /web <url>         Fetch a web page and display clean readable text content\n");
-    out.push_str("  /watch [cmd]       Auto-run tests after agent edits (off/status to control)\n");
+    out.push_str("  /watch [cmd|all]   Auto-run tests (or lint+test) after agent edits (off/status to control)\n");
     out.push_str(
         "  /ast <pattern>     Structural code search using ast-grep (--lang, --in flags)\n",
     );
