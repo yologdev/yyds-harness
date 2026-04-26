@@ -1,5 +1,8 @@
-//! Search & navigation command handlers: /find, /grep, /index, /ast.
+//! Search & navigation command handlers: /find, /grep, /index, /ast, /outline.
 
+#[cfg(test)]
+use crate::commands_map::Symbol;
+use crate::commands_map::{build_repo_map, FileSymbols, SymbolKind};
 use crate::format::*;
 
 // ── shell-like tokenizer ─────────────────────────────────────────────────
@@ -408,6 +411,171 @@ pub fn handle_index() {
 }
 
 // ── /grep ────────────────────────────────────────────────────────────────
+
+// ---------------------------------------------------------------------------
+// /outline — lightweight symbol search across the codebase
+// ---------------------------------------------------------------------------
+
+/// Maximum outline results shown by default (use `--all` for unlimited).
+const OUTLINE_DEFAULT_LIMIT: usize = 30;
+
+/// A single outline search result.
+#[derive(Debug, Clone)]
+struct OutlineMatch {
+    kind: SymbolKind,
+    name: String,
+    path: String,
+    line: usize,
+    score: i32,
+}
+
+/// Score a symbol name against a query.
+///
+/// Returns `None` if the symbol doesn't match at all.
+/// Higher scores mean better matches:
+///   exact name match  > prefix match > substring match
+fn outline_score(name: &str, query: &str) -> Option<i32> {
+    let name_lower = name.to_lowercase();
+    let query_lower = query.to_lowercase();
+
+    if !name_lower.contains(&query_lower) {
+        return None;
+    }
+
+    let mut score: i32 = 100;
+
+    // Exact match (case-insensitive)
+    if name_lower == query_lower {
+        score += 100;
+    }
+    // Prefix match
+    else if name_lower.starts_with(&query_lower) {
+        score += 50;
+    }
+
+    // Bonus for exact case match (respects original casing)
+    if name.contains(query) {
+        score += 20;
+    }
+
+    // Shorter names are slightly preferred (more specific)
+    let len_diff = (name.len() as i32 - query.len() as i32).unsigned_abs() as i32;
+    score -= len_diff / 2;
+
+    Some(score)
+}
+
+/// Collect outline matches from a set of file symbols, filtered by query.
+fn collect_outline_matches(entries: &[FileSymbols], query: &str) -> Vec<OutlineMatch> {
+    let mut matches = Vec::new();
+    for entry in entries {
+        for sym in &entry.symbols {
+            if let Some(score) = outline_score(&sym.name, query) {
+                matches.push(OutlineMatch {
+                    kind: sym.kind.clone(),
+                    name: sym.name.clone(),
+                    path: entry.path.clone(),
+                    line: sym.line,
+                    score,
+                });
+            }
+        }
+    }
+    // Sort by score descending, then by name alphabetically for ties
+    matches.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.name.cmp(&b.name)));
+    matches
+}
+
+/// Format a single outline match as a colored string.
+fn format_outline_match(m: &OutlineMatch) -> String {
+    let kind_str = match m.kind {
+        SymbolKind::Function => format!("{GREEN}fn{RESET}"),
+        SymbolKind::Struct => format!("{YELLOW}struct{RESET}"),
+        SymbolKind::Enum => format!("{YELLOW}enum{RESET}"),
+        SymbolKind::Trait => format!("{YELLOW}trait{RESET}"),
+        SymbolKind::Interface => format!("{YELLOW}interface{RESET}"),
+        SymbolKind::Class => format!("{YELLOW}class{RESET}"),
+        SymbolKind::Type => format!("{YELLOW}type{RESET}"),
+        SymbolKind::Const => format!("{CYAN}const{RESET}"),
+        SymbolKind::Impl => format!("{MAGENTA}impl{RESET}"),
+        SymbolKind::Module => format!("{MAGENTA}mod{RESET}"),
+    };
+    // Pad kind keyword for alignment (longest is "interface" = 9 chars)
+    let kind_plain = match m.kind {
+        SymbolKind::Function => "fn",
+        SymbolKind::Struct => "struct",
+        SymbolKind::Enum => "enum",
+        SymbolKind::Trait => "trait",
+        SymbolKind::Interface => "interface",
+        SymbolKind::Class => "class",
+        SymbolKind::Type => "type",
+        SymbolKind::Const => "const",
+        SymbolKind::Impl => "impl",
+        SymbolKind::Module => "mod",
+    };
+    let pad = " ".repeat(9_usize.saturating_sub(kind_plain.len()));
+    format!(
+        "  {kind_str}{pad} {:<30} {DIM}{}:{}{RESET}",
+        m.name, m.path, m.line
+    )
+}
+
+/// Handle the `/outline <query> [--all]` command.
+pub fn handle_outline(input: &str) {
+    let rest = input.strip_prefix("/outline").unwrap_or(input).trim();
+
+    // Parse --all flag
+    let (query, show_all) = if rest.ends_with(" --all") {
+        (rest.trim_end_matches(" --all").trim(), true)
+    } else if rest == "--all" {
+        ("", true)
+    } else {
+        (rest, false)
+    };
+
+    if query.is_empty() {
+        println!(
+            "{DIM}  Usage: /outline <query> [--all]{RESET}\n  \
+             Search for functions, structs, enums, and traits across the project.\n\n  \
+             Examples:\n    \
+             /outline parse\n    \
+             /outline Config\n    \
+             /outline handle --all"
+        );
+        return;
+    }
+
+    // Build symbol map (include all symbols, not just public)
+    let entries = build_repo_map(None, false);
+    let matches = collect_outline_matches(&entries, query);
+
+    if matches.is_empty() {
+        println!("{DIM}  No symbols matching \"{query}\" found.{RESET}");
+        return;
+    }
+
+    let total = matches.len();
+    let limit = if show_all {
+        total
+    } else {
+        total.min(OUTLINE_DEFAULT_LIMIT)
+    };
+
+    println!();
+    for m in &matches[..limit] {
+        println!("{}", format_outline_match(m));
+    }
+
+    if !show_all && total > OUTLINE_DEFAULT_LIMIT {
+        println!(
+            "\n{DIM}  ... {} more — use /outline {query} --all to show all{RESET}",
+            total - OUTLINE_DEFAULT_LIMIT
+        );
+    } else {
+        println!();
+    }
+    println!("{DIM}  {} symbol(s) matching \"{query}\"{RESET}", total);
+}
 
 /// Maximum matches to display before truncating.
 const GREP_MAX_MATCHES: usize = 50;
@@ -1698,5 +1866,167 @@ mod tests {
         }];
         let result = format_project_index(&entries);
         assert!(result.contains("1 file, 1 total lines"));
+    }
+
+    // ── /outline tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn outline_score_exact_match() {
+        let score = outline_score("Config", "Config").unwrap();
+        assert!(score > 200, "exact match should score high: {score}");
+    }
+
+    #[test]
+    fn outline_score_prefix_match() {
+        let score = outline_score("parse_args", "parse").unwrap();
+        assert!(score > 150, "prefix match should score well: {score}");
+    }
+
+    #[test]
+    fn outline_score_substring_match() {
+        let score = outline_score("handle_outline", "outline").unwrap();
+        assert!(score >= 100, "substring match should score: {score}");
+    }
+
+    #[test]
+    fn outline_score_no_match() {
+        assert!(outline_score("Config", "zzz").is_none());
+    }
+
+    #[test]
+    fn outline_score_case_insensitive() {
+        assert!(outline_score("Config", "config").is_some());
+        assert!(outline_score("config", "Config").is_some());
+    }
+
+    #[test]
+    fn outline_score_case_bonus() {
+        let case_match = outline_score("Config", "Config").unwrap();
+        let case_mismatch = outline_score("Config", "config").unwrap();
+        assert!(
+            case_match > case_mismatch,
+            "exact case should score higher: {case_match} vs {case_mismatch}"
+        );
+    }
+
+    #[test]
+    fn outline_score_exact_beats_prefix() {
+        let exact = outline_score("parse", "parse").unwrap();
+        let prefix = outline_score("parse_args", "parse").unwrap();
+        assert!(
+            exact > prefix,
+            "exact should beat prefix: {exact} vs {prefix}"
+        );
+    }
+
+    #[test]
+    fn outline_collect_matches_filters() {
+        let entries = vec![FileSymbols {
+            path: "src/main.rs".to_string(),
+            lines: 100,
+            symbols: vec![
+                Symbol {
+                    name: "parse_args".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 10,
+                },
+                Symbol {
+                    name: "Config".to_string(),
+                    kind: SymbolKind::Struct,
+                    is_public: true,
+                    line: 20,
+                },
+                Symbol {
+                    name: "run_server".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: false,
+                    line: 30,
+                },
+            ],
+        }];
+
+        let matches = collect_outline_matches(&entries, "parse");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "parse_args");
+
+        let matches = collect_outline_matches(&entries, "Config");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "Config");
+
+        let matches = collect_outline_matches(&entries, "zzz");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn outline_collect_matches_sorts_by_score() {
+        let entries = vec![FileSymbols {
+            path: "src/cli.rs".to_string(),
+            lines: 200,
+            symbols: vec![
+                Symbol {
+                    name: "parse_config_file".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 100,
+                },
+                Symbol {
+                    name: "parse".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 50,
+                },
+                Symbol {
+                    name: "parse_args".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 10,
+                },
+            ],
+        }];
+
+        let matches = collect_outline_matches(&entries, "parse");
+        // Exact match "parse" should be first, then prefix "parse_args", then longer
+        assert_eq!(matches[0].name, "parse");
+        assert_eq!(matches[1].name, "parse_args");
+        assert_eq!(matches[2].name, "parse_config_file");
+    }
+
+    #[test]
+    fn outline_format_match_contains_path_and_line() {
+        let m = OutlineMatch {
+            kind: SymbolKind::Function,
+            name: "hello_world".to_string(),
+            path: "src/main.rs".to_string(),
+            line: 42,
+            score: 100,
+        };
+        let formatted = format_outline_match(&m);
+        assert!(formatted.contains("hello_world"));
+        assert!(formatted.contains("src/main.rs"));
+        assert!(formatted.contains("42"));
+    }
+
+    #[test]
+    fn outline_result_limit() {
+        // With > 30 results, the default should limit to 30
+        let symbols: Vec<Symbol> = (0..40)
+            .map(|i| Symbol {
+                name: format!("parse_{i}"),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: i + 1,
+            })
+            .collect();
+        let entries = vec![FileSymbols {
+            path: "src/test.rs".to_string(),
+            lines: 500,
+            symbols,
+        }];
+        let matches = collect_outline_matches(&entries, "parse");
+        assert_eq!(matches.len(), 40);
+        // The limit is applied in handle_outline, not collect_outline_matches
+        let limit = matches.len().min(OUTLINE_DEFAULT_LIMIT);
+        assert_eq!(limit, 30);
     }
 }

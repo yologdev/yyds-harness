@@ -158,6 +158,11 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 crate::commands_map::handle_map(&input);
                 return Some(None);
             }
+            "outline" => {
+                let input = quote_args_as_command(args);
+                crate::commands_search::handle_outline(&input);
+                return Some(None);
+            }
             "run" => {
                 let input = quote_args_as_command(args);
                 crate::commands_dev::handle_run(&input);
@@ -837,6 +842,10 @@ pub(crate) async fn dispatch_command(
         }
         s if s == "/map" || s.starts_with("/map ") => {
             commands::handle_map(input);
+            CommandResult::Continue
+        }
+        s if s == "/outline" || s.starts_with("/outline ") => {
+            commands::handle_outline(input);
             CommandResult::Continue
         }
         "/retry" => {
