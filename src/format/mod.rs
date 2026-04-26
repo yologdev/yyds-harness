@@ -10,6 +10,22 @@ use std::time::Duration;
 /// Whether color output has been disabled (via NO_COLOR env or --no-color flag).
 static COLOR_DISABLED: OnceLock<bool> = OnceLock::new();
 
+// --- Quiet mode support with --quiet / -q ---
+
+/// Whether informational stderr output has been suppressed (via --quiet/-q flag or
+/// YOYO_QUIET env). Suppresses `config:` and `context:` progress lines for scripted usage.
+static QUIET: OnceLock<bool> = OnceLock::new();
+
+/// Enable quiet mode. Call from CLI arg parsing when -q/--quiet is encountered.
+pub fn enable_quiet() {
+    let _ = QUIET.set(true);
+}
+
+/// Check if quiet mode is active. Respects YOYO_QUIET env var.
+pub fn is_quiet() -> bool {
+    *QUIET.get_or_init(|| std::env::var("YOYO_QUIET").is_ok())
+}
+
 // --- Bell notification support with YOYO_NO_BELL and --no-bell ---
 
 /// Whether bell notification has been disabled (via --no-bell flag or YOYO_NO_BELL env).
@@ -1294,5 +1310,27 @@ mod tests {
         let result = stderr_is_terminal();
         // Call again to verify caching works (OnceLock returns same value)
         assert_eq!(result, stderr_is_terminal());
+    }
+
+    #[test]
+    fn test_is_quiet_returns_bool() {
+        // is_quiet() should return a bool without panicking.
+        // Since OnceLock is global and test ordering is non-deterministic,
+        // we just verify it's callable and stable.
+        let result = is_quiet();
+        assert_eq!(result, is_quiet());
+    }
+
+    #[test]
+    fn test_enable_quiet_is_callable() {
+        // enable_quiet() should not panic even if called after is_quiet()
+        // has already initialized the OnceLock. The set() is a no-op if
+        // the lock is already initialized.
+        enable_quiet();
+        // After calling enable_quiet, is_quiet should be true
+        // (unless a prior test already initialized it to false — OnceLock is global).
+        // We verify it's at least callable and stable.
+        let result = is_quiet();
+        assert_eq!(result, is_quiet());
     }
 }

@@ -208,6 +208,8 @@ const KNOWN_FLAGS: &[&str] = &[
     "--audit",
     "--auto-commit",
     "--print-system-prompt",
+    "--quiet",
+    "-q",
     "--help",
     "-h",
     "--version",
@@ -369,21 +371,27 @@ pub(crate) fn load_config_file() -> (HashMap<String, String>, String) {
     // Check project-level config first
     for name in CONFIG_FILE_NAMES {
         if let Ok(content) = std::fs::read_to_string(name) {
-            eprintln!("{DIM}  config: {name}{RESET}");
+            if !is_quiet() {
+                eprintln!("{DIM}  config: {name}{RESET}");
+            }
             return (parse_config_file(&content), content);
         }
     }
     // Check ~/.yoyo.toml (home directory shorthand)
     if let Some(path) = home_config_path() {
         if let Ok(content) = std::fs::read_to_string(&path) {
-            eprintln!("{DIM}  config: {}{RESET}", path.display());
+            if !is_quiet() {
+                eprintln!("{DIM}  config: {}{RESET}", path.display());
+            }
             return (parse_config_file(&content), content);
         }
     }
     // Check user-level config (XDG)
     if let Some(path) = user_config_path() {
         if let Ok(content) = std::fs::read_to_string(&path) {
-            eprintln!("{DIM}  config: {}{RESET}", path.display());
+            if !is_quiet() {
+                eprintln!("{DIM}  config: {}{RESET}", path.display());
+            }
             return (parse_config_file(&content), content);
         }
     }
@@ -662,6 +670,17 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
     // Handle early-exit subcommands (--help, --version) before anything else.
     if let Some(result) = crate::dispatch::try_dispatch_subcommand(args) {
         return result;
+    }
+
+    // Enable quiet mode early so config/context loading can check it.
+    // Also auto-enable when both stdin and stdout are non-terminal (fully piped).
+    if args.iter().any(|a| a == "--quiet" || a == "-q")
+        || std::env::var("YOYO_QUIET")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        || (!std::io::stdin().is_terminal() && !std::io::stdout().is_terminal())
+    {
+        crate::format::enable_quiet();
     }
 
     // Load config file defaults (CLI flags override these)
@@ -1218,6 +1237,20 @@ mod tests {
         let args = ["yoyo".to_string(), "--no-bell".to_string()];
         assert!(args.iter().any(|a| a == "--no-bell"));
         assert!(KNOWN_FLAGS.contains(&"--no-bell"));
+    }
+
+    #[test]
+    fn test_quiet_flag_recognized() {
+        let args_long = ["yoyo".to_string(), "--quiet".to_string()];
+        assert!(args_long.iter().any(|a| a == "--quiet" || a == "-q"));
+        assert!(KNOWN_FLAGS.contains(&"--quiet"));
+    }
+
+    #[test]
+    fn test_quiet_short_flag_recognized() {
+        let args_short = ["yoyo".to_string(), "-q".to_string()];
+        assert!(args_short.iter().any(|a| a == "--quiet" || a == "-q"));
+        assert!(KNOWN_FLAGS.contains(&"-q"));
     }
 
     #[test]

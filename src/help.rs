@@ -1031,6 +1031,14 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "  --quiet, -q       Suppress informational stderr output (config/context loading messages)"
+    );
+    let _ = writeln!(
+        s,
+        "                    Auto-enabled when both stdin and stdout are piped. Also respects YOYO_QUIET=1 env"
+    );
+    let _ = writeln!(
+        s,
         "  --yes, -y         Auto-approve all tool executions (skip confirmation prompts)"
     );
     let _ = writeln!(

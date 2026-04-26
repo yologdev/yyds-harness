@@ -41,6 +41,17 @@ yoyo detects piped mode automatically by checking if stdin is a terminal. If it 
 
 If piped input is empty, yoyo exits with an error: `No input on stdin.`
 
+## Quiet mode
+
+When both stdin and stdout are piped (fully scripted usage), yoyo automatically enables quiet mode, suppressing informational `config:` and `context:` loading messages on stderr. You can also enable this explicitly with `--quiet` or `-q`:
+
+```bash
+echo "fix the test" | yoyo -q > result.md  # explicit quiet
+echo "fix the test" | yoyo > result.md     # auto-quiet (both pipes detected)
+```
+
+The `YOYO_QUIET=1` environment variable also enables quiet mode.
+
 ## Slash commands aren't dispatched in piped mode
 
 Slash commands (`/doctor`, `/status`, `/help`, etc.) belong to the interactive REPL — they depend on REPL state that piped mode doesn't have. If you pipe a slash command into yoyo, it won't run it; it would only get sent to the model as a literal string and waste a turn of tokens.

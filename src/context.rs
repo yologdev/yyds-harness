@@ -2,7 +2,7 @@
 //!
 //! Extracted from `cli.rs` to keep context assembly separate from CLI argument parsing.
 
-use crate::format::{DIM, RESET};
+use crate::format::{is_quiet, DIM, RESET};
 
 /// Project instruction files, checked in order. All found files are concatenated.
 /// YOYO.md is the canonical name; CLAUDE.md is a compatibility alias.
@@ -125,7 +125,7 @@ pub fn load_project_context() -> Option<String> {
         }
         context.push_str("## Project Files\n\n");
         context.push_str(&file_listing);
-        if found.is_empty() {
+        if found.is_empty() && !is_quiet() {
             // Even without context files, file listing alone is useful
             eprintln!("{DIM}  context: project file listing{RESET}");
         }
@@ -164,20 +164,22 @@ pub fn load_project_context() -> Option<String> {
     if found.is_empty() && context.is_empty() {
         None
     } else {
-        for name in &found {
-            eprintln!("{DIM}  context: {name}{RESET}");
-        }
-        if context.contains("## Recently Changed Files") {
-            eprintln!("{DIM}  context: recently changed files{RESET}");
-        }
-        if let Some(branch) = &git_branch_name {
-            eprintln!("{DIM}  context: git status (branch: {branch}){RESET}");
-        }
-        if !memory.entries.is_empty() {
-            eprintln!(
-                "{DIM}  context: {} project memories{RESET}",
-                memory.entries.len()
-            );
+        if !is_quiet() {
+            for name in &found {
+                eprintln!("{DIM}  context: {name}{RESET}");
+            }
+            if context.contains("## Recently Changed Files") {
+                eprintln!("{DIM}  context: recently changed files{RESET}");
+            }
+            if let Some(branch) = &git_branch_name {
+                eprintln!("{DIM}  context: git status (branch: {branch}){RESET}");
+            }
+            if !memory.entries.is_empty() {
+                eprintln!(
+                    "{DIM}  context: {} project memories{RESET}",
+                    memory.entries.len()
+                );
+            }
         }
         Some(context)
     }
