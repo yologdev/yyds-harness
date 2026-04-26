@@ -84,13 +84,14 @@ Uses `yoagent::Agent` with `AnthropicProvider`, `default_tools()`, and an option
 
 **Wall-clock budget** (opt-in): The hourly cron can fire while a previous session is still running, causing GH Actions to cancel the in-flight run (#262). Set `YOYO_SESSION_BUDGET_SECS=2700` (45 min default if set but unparseable) to enable a soft, agent-side wall-clock budget. The helper `prompt::session_budget_remaining()` returns `Some(remaining)` when the env var is set and `None` otherwise (sessions are unbounded by default for interactive use). The timer starts on the first call, not at process startup, so cold-start time doesn't eat into agent work. `session_budget_remaining()` is now consulted at the top of each retry attempt in `run_prompt_auto_retry`, `run_prompt_auto_retry_with_content`, and the watch-mode fix loop via `session_budget_exhausted(30)`; when ≤30s remain, retries stop early and the current outcome is returned. The shell-side export in `scripts/evolve.sh` is a separate (human-approved) follow-up — until then the env var stays unset and behavior is unchanged.
 
-**Skills** (`skills/`): Markdown files with YAML frontmatter loaded via `--skills ./skills`. Six core skills (immutable, `core: true` + `origin: creator`) define the agent's foundational capabilities:
+**Skills** (`skills/`): Markdown files with YAML frontmatter loaded via `--skills ./skills`. Seven core skills (immutable, `core: true` + `origin: creator`) define the agent's foundational capabilities:
 - `self-assess` — read own code, try tasks, find bugs/gaps
 - `evolve` — safely modify source, test, revert on failure
 - `communicate` — write journal entries and issue responses
 - `research` — internet lookups and knowledge caching
 - `skill-evolve` — autonomous meta-skill: refines/creates/retires non-core skills based on past-session evidence (cron-driven, gated)
 - `skill-creator` — on-demand meta-skill: scaffolds a new skill when the human creator or a community issue explicitly asks for one (interview-driven, no autonomous gating)
+- `analyze-trajectory` — on-demand RLM-style deep dive: when YOUR TRAJECTORY shows a recurring failure (STUCK task / clustered CI error fingerprint / frequent reverts), dispatches sub-agents to digest CI logs without bloating main context
 
 Additional skills (`origin: yoyo`, eligible for skill-evolve to refine/retire):
 - `social` — community interaction via GitHub Discussions
@@ -147,6 +148,15 @@ Additional skills (`origin: yoyo`, eligible for skill-evolve to refine/retire):
 This is enforced both by HARD RULE #1 in the meta-skill (LLM-side) and by the diff-scope guard in `scripts/skill_evolve.sh` (harness-side).
 
 **Skill scoring inputs** — `origin: yoyo` skills carry an additional `keywords:` list in their frontmatter (e.g., `keywords: ["gh api graphql", "discussion"]` for `social`). skill-evolve uses these to detect "this skill was used in session N" by grepping each session's `audit.jsonl` for any keyword. `last_used`, `uses`, and `wins` are computed from this signal.
+
+**Trajectory awareness** (harness-side, Phase A1+A2 only):
+- `scripts/extract_trajectory.py` — aggregates audit-log session outcomes + git log + recent CI runs into a `YOUR TRAJECTORY` markdown block (~50–100 lines, capped at 2KB)
+- `scripts/evolve.sh` Step 1c — runs the extractor at session start (read-only worktree fetch from `audit-log` branch); inline cleanup, no EXIT trap
+- The block is injected into Phase A1 (assess) and Phase A2 (plan) prompts only — Phases B (impl), C (issue response), D (journal) prompts are unchanged
+- Five sub-sections: recent session outcomes, per-task activity from git log, reverts in window, recurring CI error fingerprints (clustered via `gh run view --log-failed`), provider/API health from audit.jsonl
+- Fail-soft: never blocks the session; emits `(no trajectory data yet)` if any input is missing
+- Complementary to skill-evolve: skill-evolve mines audit-log for *skill-level* signals; trajectory awareness is *task-level*. Both consume audit-log, neither writes to it.
+- For deep dives into a single recurring failure, the agent loads the `analyze-trajectory` skill (RLM-style sub-agent recursion, depth cap 3)
 
 
 ## MCP gotchas

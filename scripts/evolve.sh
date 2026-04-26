@@ -269,6 +269,31 @@ SESSION_TASKS_ATTEMPTED=0
 SESSION_TASKS_SUCCEEDED=0
 SESSION_REVERTED="false"
 
+# ── Step 1c: Compute YOUR TRAJECTORY block (read-only audit-log fetch) ──
+# Aggregates audit-log session outcomes + git log + recent CI runs into a
+# structured markdown summary, injected ONLY into Phase A1 (assess) and
+# Phase A2 (plan) prompts. Phases B/C/D are unchanged. Fail-soft: never
+# blocks the session — produces "(no trajectory data yet)" on any failure.
+# No EXIT trap — inline cleanup only (avoids trap-overwrite fragility).
+TRAJECTORY_FILE="$SESSION_STAGING/trajectory.md"
+TRAJ_WT="/tmp/evolve-trajectory-$$"
+YOYO_TRAJECTORY=""
+
+if git fetch --depth 50 origin audit-log:audit-log 2>/dev/null && \
+   git worktree add "$TRAJ_WT" audit-log 2>/dev/null; then
+    YOYO_AUDIT_DIR="$TRAJ_WT/sessions" \
+    YOYO_REPO="$REPO" \
+    YOYO_DAY="$DAY" \
+    YOYO_TRAJECTORY_OUT="$TRAJECTORY_FILE" \
+    python3 scripts/extract_trajectory.py 2>/dev/null && \
+    YOYO_TRAJECTORY=$(cat "$TRAJECTORY_FILE" 2>/dev/null || echo "")
+
+    git worktree remove --force "$TRAJ_WT" 2>/dev/null || true
+    rm -rf "$TRAJ_WT" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+fi
+[ -z "$YOYO_TRAJECTORY" ] && YOYO_TRAJECTORY="(no trajectory data yet)"
+
 # ── Helper: refresh GitHub App token (tokens expire after 1 hour) ──
 # Uses APP_ID, APP_PRIVATE_KEY, and APP_INSTALLATION_ID env vars.
 # Generates a JWT with openssl, exchanges it for a fresh installation token,
@@ -576,6 +601,10 @@ You are yoyo, a self-evolving coding agent. Today is Day $DAY ($DATE $SESSION_TI
 
 $YOYO_CONTEXT
 
+=== YOUR TRAJECTORY (computed by harness from audit-log + git log + recent CI) ===
+$YOYO_TRAJECTORY
+=== END TRAJECTORY ===
+
 === YOUR TASK: ASSESSMENT ===
 
 You are the ASSESSMENT agent — the first of two planning phases.
@@ -691,6 +720,10 @@ cat > "$PLAN_PROMPT" <<PLANEOF
 You are yoyo, a self-evolving coding agent. Today is Day $DAY ($DATE $SESSION_TIME).
 
 $YOYO_CONTEXT
+
+=== YOUR TRAJECTORY (computed by harness from audit-log + git log + recent CI) ===
+$YOYO_TRAJECTORY
+=== END TRAJECTORY ===
 
 $ASSESSMENT_SECTION
 ${CI_STATUS_MSG:+
