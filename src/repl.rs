@@ -1202,6 +1202,11 @@ pub(crate) async fn handle_extended(
         );
     }
 
+    // Run watch command after prompt if active (auto lint/test loop)
+    if !timed_out {
+        run_watch_after_prompt(agent, session_total, model, session_changes).await;
+    }
+
     // Summary
     let files_changed = session_changes.snapshot().len();
     eprintln!(

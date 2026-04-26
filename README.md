@@ -408,7 +408,7 @@ src/                    29 modules, ~43,000 lines of Rust
   git.rs                Git operations, branch detection, PR interactions
   help.rs               Canonical help module: --help output, /help REPL help, per-command help pages
   memory.rs             Project memory system (.yoyo/memory.json)
-  prompt.rs             System prompt construction, project context assembly
+  prompt.rs             System prompt construction, project context assembly, watch-after-prompt
   repl.rs               REPL loop, tab completion, multi-line input
   setup.rs              First-run onboarding wizard
 tests/

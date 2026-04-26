@@ -784,7 +784,17 @@ async fn run_single_prompt(
             agent_config.model
         );
     }
+
+    // Auto-enable watch mode if a project type is detected and config allows it
+    if get_watch_command().is_none() && agent_config.auto_watch {
+        if let Some(cmd) = commands_dev::auto_detect_watch_command() {
+            set_watch_command(&cmd);
+            eprintln!("{DIM}  👀 Auto-watch: `{cmd}` (disable with auto_watch = false){RESET}");
+        }
+    }
+
     let mut session_total = Usage::default();
+    let session_changes = SessionChanges::new();
     let prompt_start = Instant::now();
     let response = if let Some(ref img_path) = image_path {
         // Multi-modal prompt: text + image
@@ -877,6 +887,16 @@ async fn run_single_prompt(
         }
         final_response
     };
+
+    // Run watch command after prompt if active (auto lint/test loop)
+    run_watch_after_prompt(
+        agent,
+        &mut session_total,
+        &agent_config.model,
+        &session_changes,
+    )
+    .await;
+
     format::maybe_ring_bell(prompt_start.elapsed());
     if json_output {
         println!(
@@ -931,7 +951,17 @@ async fn run_piped_mode(
         "{DIM}  yoyo (piped mode) — model: {}{RESET}",
         agent_config.model
     );
+
+    // Auto-enable watch mode if a project type is detected and config allows it
+    if get_watch_command().is_none() && agent_config.auto_watch {
+        if let Some(cmd) = commands_dev::auto_detect_watch_command() {
+            set_watch_command(&cmd);
+            eprintln!("{DIM}  👀 Auto-watch: `{cmd}` (disable with auto_watch = false){RESET}");
+        }
+    }
+
     let mut session_total = Usage::default();
+    let session_changes = SessionChanges::new();
     let prompt_start = Instant::now();
     let initial = run_prompt(agent, input, &mut session_total, &agent_config.model).await;
     // Fallback retry for piped mode
@@ -943,6 +973,18 @@ async fn run_piped_mode(
         initial,
     )
     .await;
+
+    // Run watch command after prompt if active (auto lint/test loop)
+    if !should_exit_error {
+        run_watch_after_prompt(
+            agent,
+            &mut session_total,
+            &agent_config.model,
+            &session_changes,
+        )
+        .await;
+    }
+
     format::maybe_ring_bell(prompt_start.elapsed());
     if json_output {
         println!(

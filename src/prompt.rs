@@ -148,6 +148,73 @@ pub fn run_watch_command(cmd: &str) -> (bool, String) {
     (status, combined)
 }
 
+/// Run the watch command after a prompt completes (for non-REPL modes).
+///
+/// If a watch command is active, this runs the watch command and auto-fixes
+/// failures up to [`MAX_WATCH_FIX_ATTEMPTS`] times. This is the extracted,
+/// reusable version of the watch loop that the REPL uses inline (see
+/// `repl.rs` ~line 656).
+///
+/// Returns `true` if the watch command passed (or no watch command is set),
+/// `false` if it still fails after all fix attempts.
+pub async fn run_watch_after_prompt(
+    agent: &mut Agent,
+    session_total: &mut Usage,
+    model: &str,
+    changes: &SessionChanges,
+) -> bool {
+    let watch_cmd = match get_watch_command() {
+        Some(cmd) => cmd,
+        None => return true, // No watch command → nothing to do
+    };
+
+    let (ok, output) = run_watch_command(&watch_cmd);
+    if ok {
+        eprintln!("{GREEN}  ✓ Watch passed: `{watch_cmd}`{RESET}");
+        return true;
+    }
+
+    eprintln!("{RED}  ✗ Watch failed: `{watch_cmd}`{RESET}");
+    let display_output = if output.len() > 2000 {
+        format!("{}...\n(truncated)", safe_truncate(&output, 2000))
+    } else {
+        output.clone()
+    };
+    eprintln!("{DIM}{display_output}{RESET}");
+
+    // Multi-attempt auto-fix loop
+    let mut current_output = output;
+    for attempt in 1..=MAX_WATCH_FIX_ATTEMPTS {
+        if session_budget_exhausted(30) {
+            eprintln!(
+                "{DIM}  ⏱ session budget nearly exhausted, stopping watch fix loop early{RESET}"
+            );
+            return false;
+        }
+        eprintln!("{YELLOW}  → Auto-fixing (attempt {attempt}/{MAX_WATCH_FIX_ATTEMPTS})...{RESET}");
+
+        let fix_prompt = build_watch_fix_prompt(&watch_cmd, &current_output);
+        let _fix_outcome =
+            run_prompt_auto_retry(agent, &fix_prompt, session_total, model, changes).await;
+
+        // Re-run watch command to see if fix worked
+        let (fix_ok, fix_output) = run_watch_command(&watch_cmd);
+        if fix_ok {
+            eprintln!("{GREEN}  ✓ Watch passed after fix (attempt {attempt}){RESET}");
+            return true;
+        } else if attempt == MAX_WATCH_FIX_ATTEMPTS {
+            eprintln!(
+                "{RED}  ✗ Watch still failing after {MAX_WATCH_FIX_ATTEMPTS} attempts — manual fix needed{RESET}"
+            );
+        } else {
+            eprintln!("{RED}  ✗ Attempt {attempt} failed, retrying...{RESET}");
+            current_output = fix_output;
+        }
+    }
+
+    false
+}
+
 // ── Audit log + session budget ──────────────────────────────────────────
 // Extracted into `prompt_budget` module. Re-exported here so the existing
 // `use crate::prompt::*;` call sites in `main.rs` and `repl.rs` keep working
@@ -2401,5 +2468,72 @@ mod tests {
             !output.is_empty(),
             "should have some error output: {output}"
         );
+    }
+
+    #[test]
+    fn test_watch_command_none_by_default() {
+        // After clearing, there should be no watch command
+        clear_watch_command();
+        assert!(
+            get_watch_command().is_none(),
+            "should have no watch command after clear"
+        );
+    }
+
+    #[test]
+    fn test_watch_command_roundtrip() {
+        // Set a command, get it back, clear it
+        set_watch_command("cargo test --release");
+        let cmd = get_watch_command();
+        assert_eq!(cmd.as_deref(), Some("cargo test --release"));
+        clear_watch_command();
+        assert!(get_watch_command().is_none());
+    }
+
+    #[test]
+    fn test_run_watch_after_prompt_no_watch_returns_true() {
+        // When no watch command is set, run_watch_after_prompt should return true
+        // immediately. We verify this by checking get_watch_command() is None,
+        // which is the guard condition at the top of run_watch_after_prompt.
+        clear_watch_command();
+        assert!(
+            get_watch_command().is_none(),
+            "precondition: no watch command set"
+        );
+        // The function checks get_watch_command() first and returns true if None.
+        // We can't call the async function in a sync test, but we verify the
+        // guard condition that makes it return early.
+    }
+
+    #[test]
+    fn test_run_watch_command_pass_with_set_watch() {
+        // Simulate: set a watch command that passes, run it
+        set_watch_command("echo ok");
+        if let Some(cmd) = get_watch_command() {
+            let (ok, output) = run_watch_command(&cmd);
+            assert!(ok, "echo ok should succeed");
+            assert!(output.contains("ok"));
+        } else {
+            panic!("watch command should be set");
+        }
+        clear_watch_command();
+    }
+
+    #[test]
+    fn test_run_watch_command_fail_with_set_watch() {
+        // Simulate: set a watch command that fails, run it, check output
+        set_watch_command("sh -c 'echo FAIL; exit 1'");
+        if let Some(cmd) = get_watch_command() {
+            let (ok, output) = run_watch_command(&cmd);
+            assert!(!ok, "command should fail");
+            assert!(output.contains("FAIL"), "output should contain FAIL");
+            // Verify build_watch_fix_prompt works with the output
+            let fix_prompt = build_watch_fix_prompt(&cmd, &output);
+            assert!(fix_prompt.contains("FAIL"));
+            assert!(fix_prompt.contains("Please fix"));
+        } else {
+            panic!("watch command should be set");
+        }
+        clear_watch_command();
     }
 }

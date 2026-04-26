@@ -68,7 +68,7 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `format/cost.rs` — pricing, cost display, token formatting
 - `format/markdown.rs` — MarkdownRenderer for streaming markdown output
 - `format/tools.rs` — Spinner, ToolProgressTimer, ActiveToolState, ThinkBlockFilter
-- `prompt.rs` — prompt execution, agent interaction, streaming event handling, auto-retry logic
+- `prompt.rs` — prompt execution, agent interaction, streaming event handling, auto-retry logic, watch-after-prompt for non-REPL modes
 - `prompt_budget.rs` — session wall-clock budget + audit log helpers (extracted from `prompt.rs`)
 - `session.rs` — session tracking types: SessionChanges, TurnSnapshot, TurnHistory, format_changes (extracted from `prompt.rs`)
 
