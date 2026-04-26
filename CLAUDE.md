@@ -55,8 +55,9 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `tools.rs` — StreamingBashTool, RenameSymbolTool, AskUserTool, TodoTool, tool builders, RTK proxy integration
 - `update.rs` — version comparison (`version_is_newer`) and update checking (`check_for_update`) against GitHub releases
 - `safety.rs` — bash command safety analysis, destructive pattern detection
-- `cli.rs` — CLI argument parsing, subcommands, configuration
+- `cli.rs` — CLI argument parsing, subcommands, configuration (delegates `--help` text to `help.rs`)
 - `commands.rs` — slash command dispatch, grouped /help, custom command discovery (loads user-defined `.md` files from `.yoyo/commands/` and `~/.yoyo/commands/`)
+- `help.rs` — canonical source for all help content: `cli_help_text()` (`--help` output), `/help` REPL help, per-command detailed help
 - `config.rs` — permission config, directory restrictions, MCP server config, TOML parsing helpers
 - `context.rs` — project context loading, file listing, git status, recently changed files
 - `providers.rs` — provider constants (KNOWN_PROVIDERS), API key env vars, default/known models per provider

@@ -396,7 +396,7 @@ Everything else auto-detects. See the [full guide](https://yologdev.github.io/yo
 src/                    29 modules, ~43,000 lines of Rust
   main.rs               Entry point, agent config, tool building
   hooks.rs              Hook trait, registry, AuditHook, tool wrapping
-  cli.rs                CLI parsing, config files, permissions
+  cli.rs                CLI parsing, config files, permissions (--help delegates to help.rs)
   commands.rs           Slash command dispatch, grouped /help, custom command loading
   commands_bg.rs        /bg — background process management (run, list, output, kill)
   commands_info.rs      /version, /status, /tokens, /cost, /changelog, /model, /provider, /think (read-only)
@@ -406,7 +406,7 @@ src/                    29 modules, ~43,000 lines of Rust
   docs.rs               Crate documentation lookup
   format.rs             ANSI formatting, markdown rendering, syntax highlighting
   git.rs                Git operations, branch detection, PR interactions
-  help.rs               Per-command help pages and command metadata
+  help.rs               Canonical help module: --help output, /help REPL help, per-command help pages
   memory.rs             Project memory system (.yoyo/memory.json)
   prompt.rs             System prompt construction, project context assembly
   repl.rs               REPL loop, tab completion, multi-line input
