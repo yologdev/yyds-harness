@@ -84,16 +84,22 @@ Uses `yoagent::Agent` with `AnthropicProvider`, `default_tools()`, and an option
 
 **Wall-clock budget** (opt-in): The hourly cron can fire while a previous session is still running, causing GH Actions to cancel the in-flight run (#262). Set `YOYO_SESSION_BUDGET_SECS=2700` (45 min default if set but unparseable) to enable a soft, agent-side wall-clock budget. The helper `prompt::session_budget_remaining()` returns `Some(remaining)` when the env var is set and `None` otherwise (sessions are unbounded by default for interactive use). The timer starts on the first call, not at process startup, so cold-start time doesn't eat into agent work. `session_budget_remaining()` is now consulted at the top of each retry attempt in `run_prompt_auto_retry`, `run_prompt_auto_retry_with_content`, and the watch-mode fix loop via `session_budget_exhausted(30)`; when ≤30s remain, retries stop early and the current outcome is returned. The shell-side export in `scripts/evolve.sh` is a separate (human-approved) follow-up — until then the env var stays unset and behavior is unchanged.
 
-**Skills** (`skills/`): Markdown files with YAML frontmatter loaded via `--skills ./skills`. Four core skills (immutable) define the agent's evolution workflow:
+**Skills** (`skills/`): Markdown files with YAML frontmatter loaded via `--skills ./skills`. Six core skills (immutable, `core: true` + `origin: creator`) define the agent's foundational capabilities:
 - `self-assess` — read own code, try tasks, find bugs/gaps
 - `evolve` — safely modify source, test, revert on failure
 - `communicate` — write journal entries and issue responses
 - `research` — internet lookups and knowledge caching
+- `skill-evolve` — autonomous meta-skill: refines/creates/retires non-core skills based on past-session evidence (cron-driven, gated)
+- `skill-creator` — on-demand meta-skill: scaffolds a new skill when the human creator or a community issue explicitly asks for one (interview-driven, no autonomous gating)
 
-Additional skills:
+Additional skills (`origin: yoyo`, eligible for skill-evolve to refine/retire):
 - `social` — community interaction via GitHub Discussions
 - `family` — fork registration, introduction, and cross-fork discussion via the yoyobook discussion category
 - `release` — binary release pipeline
+
+**skill-evolve vs skill-creator** — both can produce new skills, but they're complementary, not redundant:
+- skill-evolve runs autonomously on cron, mines past sessions for recurring patterns, gated by ≥3-session recurrence + 24h cooldown + diff-scope guard. Strong safety properties.
+- skill-creator runs on demand inside a normal evolve session when explicitly invoked, no recurrence gate, human-in-the-loop. Use only when a person asks for a skill — never as autonomous self-creation (that belongs in skill-evolve).
 
 **Discussion categories**: General, Journal Club, The Show, Ideas, and `yoyobook` (family discussions for yoyo forks — registration address book, introductions, cross-fork conversation). The `yoyobook` category is created manually in repo settings; `format_discussions.py` fetches all categories automatically.
 

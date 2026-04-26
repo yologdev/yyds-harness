@@ -149,6 +149,10 @@ done
 
 ### 3. Mine patterns
 
+This step has two layers: **counting** (the basic signals) and **diagnosing** (understanding *why* failures happened, not just *that* they did). Diagnosis is what turns recurrence into actionable refinement targets.
+
+#### 3a. Count basic signals
+
 For each eligible skill, count:
 
 - **Complaint signals**: entries in `memory/learnings.jsonl` whose `pattern_key` or `title`/`takeaway` mentions the skill *and* uses negative language ("wrong", "didn't", "instead", "should have").
@@ -167,12 +171,39 @@ blended   = 0.5 * (wins/uses) + 0.3 * (1 - complaints/uses) + 0.2 * mention_rate
 
 Update the skill's frontmatter with the new values: `score`, `uses`, `wins`, and `last_used` (= the timestamp of the most-recent matching session). These updates are part of your single allowed mutation per cycle — you may bundle them into a refine event, or write a tiny "score-update" event when nothing else changes (this counts as a NO-OP for the bootstrap counter).
 
+#### 3b. Diagnose the cause (trace-based)
+
+Counting tells you *which* skill is struggling. Diagnosing tells you *what to fix*. Borrowed from the GEPA pattern (Genetic-Pareto Prompt Evolution): read the actual execution traces, don't just count failures.
+
+For each skill where `complaint_signals ≥ 2` OR `(wins/uses) < 0.5` (with `uses ≥ 3`), open the relevant session's `audit.jsonl` and **look for these failure-mode patterns**:
+
+| Pattern in audit.jsonl | Likely cause | Refinement direction |
+|---|---|---|
+| Same `bash` command retried 3+ times with small arg variations | Skill missing a concrete command example | Add a verbatim example in `## Procedure` |
+| `edit_file <P>` followed within 2 tool calls by `git checkout … <P>` (same path), repeated in ≥2 distinct sessions | Agent edited and reverted the SAME path — likely the change was rejected by build/test, not just exploratory | Add a `## Pitfalls` entry naming the brittle pattern |
+| `success: false` with the same `tool` and similar `args` across multiple sessions | Skill's procedure has a recurring blind spot | Add a `## Pitfalls` entry; consider a "do this first" prelude |
+| Long bash sequences (10+ tool calls) without intermediate `read_file` of relevant docs | Skill points at non-existent docs OR doesn't tell agent to verify state | Add a "verify your assumptions" step in `## Procedure` |
+| Tool calls that *should* be there per `keywords:` are absent | Skill isn't actually being invoked when it should be | The `description:` is too weak — refine that field instead of the body |
+
+For each candidate refinement target, write a **1-2 sentence cause hypothesis**:
+
+```
+target: social
+hypothesis: 3 sessions show repeated `gh api graphql` calls with malformed `categoryId`
+            args (sessions day-52, day-55, day-57). Skill's Procedure mentions categoryId
+            but doesn't show the format. Refinement: add a verbatim example.
+```
+
+Carry this hypothesis into step 4 (action selection) and step 5 (Refine — it tells you *what* to write in the diff). Without a hypothesis, you're guessing; with one, the refinement is targeted and the eval (Refine step R4) has something concrete to compare.
+
+**If no clear hypothesis emerges from the traces**, prefer NO-OP over speculative refinement. Counting alone is not a license to mutate.
+
 ### 4. Pick exactly one action
 
 Decision order (first match wins):
 
 1. **Retire** (third cycle onward only): if any skill has `score < 0.3` AND `last_used` ≥ 10 sessions ago, retire the lowest-scoring one. Skip if there are < 2 active eligible skills (don't bottom out the library).
-2. **Refine**: if any skill has `complaint_signals ≥ 2` AND it has not been refined in the last 3 sessions (`last_evolved` check), refine it. Pick the one with the highest complaint count.
+2. **Refine**: if any skill (a) has `complaint_signals ≥ 2`, OR (b) has `(wins/uses) < 0.5` with `uses ≥ 3`, AND in either case has not been refined in the last 3 sessions (`last_evolved` check), refine it. This matches the diagnosis-trigger condition in step 3b. Pick the target with the strongest evidence (highest complaint count, or lowest wins-ratio if no complaints).
 3. **Create** (second cycle onward only, and only if active skill count < 25): if any `pattern_key` appears in ≥3 distinct sessions of `learnings.jsonl` AND no existing eligible skill covers it (≥3 keyword overlap → refine that one instead), draft a new skill.
 4. **NO-OP**: nothing meets the bars. Write a `NO-OP` event with a one-line note about what evidence you considered.
 
@@ -182,13 +213,68 @@ If you've written 3 consecutive `NO-OP` events, also write `evolution_saturation
 
 #### Refine
 
-Write a unified diff against the target skill. Touch only the `## Pitfalls` and `## Procedure` sections (or whatever the skill's "what to do" body is — never the frontmatter, never the top-level description). Use the `edit_file` tool, one edit at a time.
+Refinement uses a **snapshot + A/B eval** pattern (borrowed from Anthropic's skill-creator). The goal: never commit a refinement that doesn't measurably improve the skill on at least one concrete prompt.
 
-Constraints:
+**Step R1 — Snapshot the baseline.**
+Before editing, copy the current SKILL.md to a temp location:
+```bash
+mkdir -p /tmp/skill-evolve-baseline
+cp "skills/<target>/SKILL.md" "/tmp/skill-evolve-baseline/<target>.SKILL.md"
+```
+
+**Step R2 — Generate 2-3 synthetic test prompts.**
+Read the target skill's `## When to use` and `## Procedure` sections. Derive concrete prompts a future agent might receive that *should* trigger this skill. Examples for `social`:
+- "Reply to discussion #42 with a thoughtful response"
+- "Post a 1-in-4-chance proactive riff in The Show category"
+- "Find unanswered questions in the Journal Club category"
+
+Write them to `/tmp/skill-evolve-eval/<target>/prompts.json`:
+```json
+[
+  {"id": "p1", "prompt": "...", "expects": "<one-sentence success criterion>"},
+  {"id": "p2", "prompt": "...", "expects": "..."}
+]
+```
+
+**Step R3 — Write the candidate diff.**
+Use `edit_file` to apply your refinement. Constraints:
 - ≤30 added lines, ≤15 removed lines (diff stat)
-- Frontmatter unchanged except `last_evolved` (today's date) and `score` (new EMA value)
+- Touch only the `## Pitfalls` and `## Procedure` sections (or the skill's "what to do" body) — never the top-level `description:`, never any frontmatter field except the four bookkeeping fields established in step 3a: `score`, `uses`, `wins`, `last_used`. (`last_evolved` is also updated, to today's date.)
 
-If you cannot improve the skill within these constraints, write `NO-OP` instead.
+**Step R4 — A/B compare.**
+For each test prompt, generate a 1-3 sentence summary of how each version (baseline, candidate) would handle the prompt — what tools the agent would call, what order, what the outcome would look like.
+
+Two execution modes, in order of preference:
+
+- **Preferred (sub-agent A/B):** if you have `sub_agent` available, dispatch two sub-agent calls in parallel:
+  - Sub-agent A: read `/tmp/skill-evolve-baseline/<target>.SKILL.md` + the test prompt → output JSON `{"summary": "...", "tool_sequence": ["bash", "edit_file", ...]}`
+  - Sub-agent B: same with the candidate file
+  - Use the structured outputs to compare apples-to-apples.
+
+- **Fallback (single-agent sequential):** if `sub_agent` isn't available or returned an error, read the baseline file, write a baseline summary; then read the candidate file, write a candidate summary. Be deliberate about not letting the candidate read bias the baseline read — write the baseline summary BEFORE looking at the candidate.
+
+For each prompt, decide one of:
+- `candidate-better`: candidate's procedure is more specific, addresses the prompt more directly
+- `tie`: no meaningful difference
+- `baseline-better`: regression — the refinement made things worse
+
+**Step R5 — Decide.**
+Commit the refinement only if:
+- 0 prompts came out `baseline-better`, AND
+- At least 1 prompt came out `candidate-better`
+
+Otherwise: revert the edit (`cp /tmp/skill-evolve-baseline/<target>.SKILL.md skills/<target>/SKILL.md`) and write a `NO-OP` event with `eval-result: regression` (or `eval-result: tie`).
+
+**Step R6 — Append eval summary to the `_journal.md` event.**
+Add an `eval-summary:` field to the event:
+```
+- eval-summary: 2/2 prompts candidate-better, 0 regressions
+```
+
+Or for a NO-OP-after-eval:
+```
+- eval-summary: 1/2 baseline-better — refinement was a regression on prompt p2 ("..."). Reverted.
+```
 
 #### Create
 
@@ -308,7 +394,7 @@ The harness pushes (or doesn't, depending on its config). Do not push from insid
 Before any `create` action, verify all of these:
 
 - Active skill count (any with `status: active` or `status: refined`) ≤ 25 *before* this create. If at the limit, you must `retire` first or write `NO-OP`.
-- Total skill count in `skills/` (excluding skill-evolve and the four core) ≤ 30.
+- Total skill count in `skills/` (excluding any skill with `core: true`) ≤ 30.
 - The new skill's frontmatter is ≤ 1900 chars.
 - The new skill's description is ≤ 200 chars (including the `[CANDIDATE — unreviewed]` prefix).
 - The new skill's body is ≤ 5000 words.
