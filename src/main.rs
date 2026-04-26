@@ -150,6 +150,166 @@ async fn fetch_mcp_tool_names(
     Ok(tools.into_iter().map(|t| t.name).collect())
 }
 
+/// Connect to external servers (MCP and OpenAPI) and return the updated agent
+/// plus the count of successfully connected MCP and OpenAPI servers.
+///
+/// This handles three categories:
+/// 1. `--mcp` flag servers (space-delimited command strings)
+/// 2. `[mcp_servers.*]` TOML-configured servers
+/// 3. `--openapi` flag specs
+///
+/// Each connection attempt follows the same pattern: pre-flight collision check
+/// (for MCP), then `with_mcp_server_stdio` / `with_openapi_file` which consumes
+/// the agent and returns a new one. On error, the agent is rebuilt from config.
+async fn connect_external_servers(
+    agent_config: &AgentConfig,
+    mut agent: Agent,
+    mcp_servers: &[String],
+    mcp_server_configs: &[config::McpServerConfig],
+    openapi_specs: &[String],
+) -> (Agent, u32, u32) {
+    let mut mcp_count = 0u32;
+
+    // Connect to MCP servers (--mcp flags)
+    for mcp_cmd in mcp_servers {
+        let parts: Vec<&str> = mcp_cmd.split_whitespace().collect();
+        if parts.is_empty() {
+            eprintln!("{YELLOW}warning:{RESET} Empty --mcp command, skipping");
+            continue;
+        }
+        let command = parts[0];
+        let args_slice: Vec<&str> = parts[1..].to_vec();
+        eprintln!("{DIM}  mcp: connecting to {mcp_cmd}...{RESET}");
+
+        // Pre-flight: enumerate tool names and detect collisions with yoyo
+        // builtins. yoagent would otherwise push colliding tools onto the
+        // agent and the Anthropic API would reject the first turn with
+        // "Tool names must be unique". See #MCP collision guard (Day 39).
+        match fetch_mcp_tool_names(command, &args_slice, None).await {
+            Ok(tool_names) => {
+                let collisions = detect_mcp_collisions(&tool_names, BUILTIN_TOOL_NAMES);
+                if !collisions.is_empty() {
+                    for tool in &collisions {
+                        eprintln!(
+                            "{YELLOW}warning:{RESET} MCP server '{command}' exposes tool '{tool}' which collides with yoyo's builtin; skipping this server"
+                        );
+                    }
+                    eprintln!(
+                        "{DIM}  mcp: skipping '{mcp_cmd}' — rename/exclude the colliding tool(s) or use a different server{RESET}"
+                    );
+                    continue;
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "{DIM}  mcp: pre-flight tool listing failed ({e}); proceeding to yoagent connect for diagnostics{RESET}"
+                );
+            }
+        }
+
+        // with_mcp_server_stdio consumes self; we must always update agent
+        let result = agent
+            .with_mcp_server_stdio(command, &args_slice, None)
+            .await;
+        match result {
+            Ok(updated) => {
+                agent = updated;
+                mcp_count += 1;
+                eprintln!("{GREEN}  ✓ mcp: {command} connected{RESET}");
+            }
+            Err(e) => {
+                eprintln!("{RED}  ✗ mcp: failed to connect to '{mcp_cmd}': {e}{RESET}");
+                // Agent was consumed on error — rebuild it with previous MCP connections lost
+                agent = agent_config.build_agent();
+                eprintln!("{DIM}  mcp: agent rebuilt (previous MCP connections lost){RESET}");
+            }
+        }
+    }
+
+    // Connect to structured MCP servers ([mcp_servers.*] config sections)
+    for server_cfg in mcp_server_configs {
+        let args_refs: Vec<&str> = server_cfg.args.iter().map(|s| s.as_str()).collect();
+        let env_map: Option<std::collections::HashMap<String, String>> =
+            if server_cfg.env.is_empty() {
+                None
+            } else {
+                Some(server_cfg.env.iter().cloned().collect())
+            };
+        eprintln!(
+            "{DIM}  mcp: connecting to {} ({})...{RESET}",
+            server_cfg.name, server_cfg.command
+        );
+
+        // Pre-flight collision check (see comment above).
+        match fetch_mcp_tool_names(&server_cfg.command, &args_refs, env_map.clone()).await {
+            Ok(tool_names) => {
+                let collisions = detect_mcp_collisions(&tool_names, BUILTIN_TOOL_NAMES);
+                if !collisions.is_empty() {
+                    for tool in &collisions {
+                        eprintln!(
+                            "{YELLOW}warning:{RESET} MCP server '{}' exposes tool '{tool}' which collides with yoyo's builtin; skipping this server",
+                            server_cfg.name
+                        );
+                    }
+                    eprintln!(
+                        "{DIM}  mcp: skipping '{}' — rename/exclude the colliding tool(s) or use a different server{RESET}",
+                        server_cfg.name
+                    );
+                    continue;
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "{DIM}  mcp: pre-flight tool listing failed ({e}); proceeding to yoagent connect for diagnostics{RESET}"
+                );
+            }
+        }
+
+        let result = agent
+            .with_mcp_server_stdio(&server_cfg.command, &args_refs, env_map)
+            .await;
+        match result {
+            Ok(updated) => {
+                agent = updated;
+                mcp_count += 1;
+                eprintln!("{GREEN}  ✓ mcp: {} connected{RESET}", server_cfg.name);
+            }
+            Err(e) => {
+                eprintln!(
+                    "{RED}  ✗ mcp: failed to connect to '{}': {e}{RESET}",
+                    server_cfg.name
+                );
+                agent = agent_config.build_agent();
+                eprintln!("{DIM}  mcp: agent rebuilt (previous MCP connections lost){RESET}");
+            }
+        }
+    }
+
+    // Load OpenAPI specs (--openapi flags)
+    let mut openapi_count = 0u32;
+    for spec_path in openapi_specs {
+        eprintln!("{DIM}  openapi: loading {spec_path}...{RESET}");
+        let result = agent
+            .with_openapi_file(spec_path, OpenApiConfig::default(), &OperationFilter::All)
+            .await;
+        match result {
+            Ok(updated) => {
+                agent = updated;
+                openapi_count += 1;
+                eprintln!("{GREEN}  ✓ openapi: {spec_path} loaded{RESET}");
+            }
+            Err(e) => {
+                eprintln!("{RED}  ✗ openapi: failed to load '{spec_path}': {e}{RESET}");
+                // Agent was consumed on error — rebuild it
+                agent = agent_config.build_agent();
+                eprintln!("{DIM}  openapi: agent rebuilt (previous connections lost){RESET}");
+            }
+        }
+    }
+
+    (agent, mcp_count, openapi_count)
+}
+
 /// Insert standard yoyo identification headers into a ModelConfig.
 /// All providers get User-Agent. OpenRouter also gets HTTP-Referer and X-Title.
 fn insert_client_headers(config: &mut ModelConfig) {
@@ -920,143 +1080,16 @@ async fn main() {
 
     let mut agent = agent_config.build_agent();
 
-    // Connect to MCP servers (--mcp flags)
-    let mut mcp_count = 0u32;
-    for mcp_cmd in &mcp_servers {
-        let parts: Vec<&str> = mcp_cmd.split_whitespace().collect();
-        if parts.is_empty() {
-            eprintln!("{YELLOW}warning:{RESET} Empty --mcp command, skipping");
-            continue;
-        }
-        let command = parts[0];
-        let args_slice: Vec<&str> = parts[1..].to_vec();
-        eprintln!("{DIM}  mcp: connecting to {mcp_cmd}...{RESET}");
-
-        // Pre-flight: enumerate tool names and detect collisions with yoyo
-        // builtins. yoagent would otherwise push colliding tools onto the
-        // agent and the Anthropic API would reject the first turn with
-        // "Tool names must be unique". See #MCP collision guard (Day 39).
-        match fetch_mcp_tool_names(command, &args_slice, None).await {
-            Ok(tool_names) => {
-                let collisions = detect_mcp_collisions(&tool_names, BUILTIN_TOOL_NAMES);
-                if !collisions.is_empty() {
-                    for tool in &collisions {
-                        eprintln!(
-                            "{YELLOW}warning:{RESET} MCP server '{command}' exposes tool '{tool}' which collides with yoyo's builtin; skipping this server"
-                        );
-                    }
-                    eprintln!(
-                        "{DIM}  mcp: skipping '{mcp_cmd}' — rename/exclude the colliding tool(s) or use a different server{RESET}"
-                    );
-                    continue;
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "{DIM}  mcp: pre-flight tool listing failed ({e}); proceeding to yoagent connect for diagnostics{RESET}"
-                );
-            }
-        }
-
-        // with_mcp_server_stdio consumes self; we must always update agent
-        let result = agent
-            .with_mcp_server_stdio(command, &args_slice, None)
-            .await;
-        match result {
-            Ok(updated) => {
-                agent = updated;
-                mcp_count += 1;
-                eprintln!("{GREEN}  ✓ mcp: {command} connected{RESET}");
-            }
-            Err(e) => {
-                eprintln!("{RED}  ✗ mcp: failed to connect to '{mcp_cmd}': {e}{RESET}");
-                // Agent was consumed on error — rebuild it with previous MCP connections lost
-                agent = agent_config.build_agent();
-                eprintln!("{DIM}  mcp: agent rebuilt (previous MCP connections lost){RESET}");
-            }
-        }
-    }
-
-    // Connect to structured MCP servers ([mcp_servers.*] config sections)
-    for server_cfg in &mcp_server_configs {
-        let args_refs: Vec<&str> = server_cfg.args.iter().map(|s| s.as_str()).collect();
-        let env_map: Option<std::collections::HashMap<String, String>> =
-            if server_cfg.env.is_empty() {
-                None
-            } else {
-                Some(server_cfg.env.iter().cloned().collect())
-            };
-        eprintln!(
-            "{DIM}  mcp: connecting to {} ({})...{RESET}",
-            server_cfg.name, server_cfg.command
-        );
-
-        // Pre-flight collision check (see comment above).
-        match fetch_mcp_tool_names(&server_cfg.command, &args_refs, env_map.clone()).await {
-            Ok(tool_names) => {
-                let collisions = detect_mcp_collisions(&tool_names, BUILTIN_TOOL_NAMES);
-                if !collisions.is_empty() {
-                    for tool in &collisions {
-                        eprintln!(
-                            "{YELLOW}warning:{RESET} MCP server '{}' exposes tool '{tool}' which collides with yoyo's builtin; skipping this server",
-                            server_cfg.name
-                        );
-                    }
-                    eprintln!(
-                        "{DIM}  mcp: skipping '{}' — rename/exclude the colliding tool(s) or use a different server{RESET}",
-                        server_cfg.name
-                    );
-                    continue;
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "{DIM}  mcp: pre-flight tool listing failed ({e}); proceeding to yoagent connect for diagnostics{RESET}"
-                );
-            }
-        }
-
-        let result = agent
-            .with_mcp_server_stdio(&server_cfg.command, &args_refs, env_map)
-            .await;
-        match result {
-            Ok(updated) => {
-                agent = updated;
-                mcp_count += 1;
-                eprintln!("{GREEN}  ✓ mcp: {} connected{RESET}", server_cfg.name);
-            }
-            Err(e) => {
-                eprintln!(
-                    "{RED}  ✗ mcp: failed to connect to '{}': {e}{RESET}",
-                    server_cfg.name
-                );
-                agent = agent_config.build_agent();
-                eprintln!("{DIM}  mcp: agent rebuilt (previous MCP connections lost){RESET}");
-            }
-        }
-    }
-
-    // Load OpenAPI specs (--openapi flags)
-    let mut openapi_count = 0u32;
-    for spec_path in &openapi_specs {
-        eprintln!("{DIM}  openapi: loading {spec_path}...{RESET}");
-        let result = agent
-            .with_openapi_file(spec_path, OpenApiConfig::default(), &OperationFilter::All)
-            .await;
-        match result {
-            Ok(updated) => {
-                agent = updated;
-                openapi_count += 1;
-                eprintln!("{GREEN}  ✓ openapi: {spec_path} loaded{RESET}");
-            }
-            Err(e) => {
-                eprintln!("{RED}  ✗ openapi: failed to load '{spec_path}': {e}{RESET}");
-                // Agent was consumed on error — rebuild it
-                agent = agent_config.build_agent();
-                eprintln!("{DIM}  openapi: agent rebuilt (previous connections lost){RESET}");
-            }
-        }
-    }
+    // Connect to external servers (MCP + OpenAPI)
+    let (updated_agent, mcp_count, openapi_count) = connect_external_servers(
+        &agent_config,
+        agent,
+        &mcp_servers,
+        &mcp_server_configs,
+        &openapi_specs,
+    )
+    .await;
+    agent = updated_agent;
 
     // --continue / -c: resume last saved session
     if continue_session {
