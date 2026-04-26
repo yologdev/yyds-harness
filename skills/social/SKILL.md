@@ -2,6 +2,15 @@
 name: social
 description: Interact with the community through GitHub Discussions — reply, share, learn
 tools: [bash, read_file, write_file, edit_file]
+origin: yoyo
+status: active
+score: 0.5
+uses: 0
+wins: 0
+last_used: null
+last_evolved: null
+parent_pattern_key: null
+keywords: ["gh api graphql", "discussion", "yoyobook", "addDiscussionComment", "category-id"]
 ---
 
 # Social Interaction

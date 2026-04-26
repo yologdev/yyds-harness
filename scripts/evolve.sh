@@ -255,6 +255,20 @@ YOYO_BIN="./target/debug/yoyo"
 echo "  Build OK."
 echo ""
 
+# ── Step 1b: Enable per-tool-call audit + set up session evidence staging ──
+# These streams are pushed to the audit-log branch at session end (see Step 7c2).
+# skill-evolve mines them for refine/create/retire/scoring signals.
+export YOYO_AUDIT=1
+SESSION_STAGING=".yoyo/session_staging"
+rm -rf "$SESSION_STAGING"
+mkdir -p "$SESSION_STAGING/transcripts"
+# Track session-level outcome flags (read by Step 7c2 to populate outcome.json).
+SESSION_BUILD_OK="false"
+SESSION_TEST_OK="false"
+SESSION_TASKS_ATTEMPTED=0
+SESSION_TASKS_SUCCEEDED=0
+SESSION_REVERTED="false"
+
 # ── Helper: refresh GitHub App token (tokens expire after 1 hour) ──
 # Uses APP_ID, APP_PRIVATE_KEY, and APP_INSTALLATION_ID env vars.
 # Generates a JWT with openssl, exchanges it for a fresh installation token,
@@ -333,14 +347,30 @@ run_agent_with_fallback() {
         fallback_flag="--fallback $FALLBACK_PROVIDER"
     fi
 
+    # Optional staging: caller may set STAGE_NAME=<slug> in env to preserve
+    # this transcript on the audit-log branch. Empty/unset → no-op.
+    local stage_path=""
+    if [ -n "${STAGE_NAME:-}" ] && [ -d "${SESSION_STAGING:-}/transcripts" ]; then
+        stage_path="${SESSION_STAGING}/transcripts/${STAGE_NAME}.log"
+    fi
+
     local exit_code=0
     # shellcheck disable=SC2086
-    ${TIMEOUT_CMD:+$TIMEOUT_CMD "$timeout_val"} "$YOYO_BIN" \
-        --model "$MODEL" \
-        --skills ./skills \
-        $fallback_flag \
-        $extra_flags \
-        < "$prompt_file" 2>&1 | tee "$log_file" || exit_code=$?
+    if [ -n "$stage_path" ]; then
+        ${TIMEOUT_CMD:+$TIMEOUT_CMD "$timeout_val"} "$YOYO_BIN" \
+            --model "$MODEL" \
+            --skills ./skills \
+            $fallback_flag \
+            $extra_flags \
+            < "$prompt_file" 2>&1 | tee "$log_file" "$stage_path" || exit_code=$?
+    else
+        ${TIMEOUT_CMD:+$TIMEOUT_CMD "$timeout_val"} "$YOYO_BIN" \
+            --model "$MODEL" \
+            --skills ./skills \
+            $fallback_flag \
+            $extra_flags \
+            < "$prompt_file" 2>&1 | tee "$log_file" || exit_code=$?
+    fi
 
     return "$exit_code"
 }
@@ -611,7 +641,7 @@ ASSESSEOF
 
 AGENT_LOG=$(mktemp)
 ASSESS_EXIT=0
-run_agent_with_fallback "$ASSESS_TIMEOUT" "$ASSESS_PROMPT" "$AGENT_LOG" || ASSESS_EXIT=$?
+STAGE_NAME=assess run_agent_with_fallback "$ASSESS_TIMEOUT" "$ASSESS_PROMPT" "$AGENT_LOG" || ASSESS_EXIT=$?
 
 rm -f "$ASSESS_PROMPT"
 
@@ -787,7 +817,7 @@ PLANEOF
 
 AGENT_LOG=$(mktemp)
 PLAN_EXIT=0
-run_agent_with_fallback "$PLAN_TIMEOUT" "$PLAN_PROMPT" "$AGENT_LOG" || PLAN_EXIT=$?
+STAGE_NAME=plan run_agent_with_fallback "$PLAN_TIMEOUT" "$PLAN_PROMPT" "$AGENT_LOG" || PLAN_EXIT=$?
 
 rm -f "$PLAN_PROMPT"
 
@@ -898,7 +928,8 @@ TEOF
 
         TASK_LOG=$(mktemp)
         TASK_EXIT=0
-        run_agent_with_fallback "$IMPL_TIMEOUT" "$TASK_PROMPT" "$TASK_LOG" "--context-strategy checkpoint" || TASK_EXIT=$?
+        STAGE_NAME="task_$(printf '%02d_attempt%d' "$TASK_NUM" "$ATTEMPT")" \
+            run_agent_with_fallback "$IMPL_TIMEOUT" "$TASK_PROMPT" "$TASK_LOG" "--context-strategy checkpoint" || TASK_EXIT=$?
         rm -f "$TASK_PROMPT"
 
         if [ "$TASK_EXIT" -eq 124 ]; then
@@ -1114,7 +1145,8 @@ After fixing, run: cargo fmt && cargo build && cargo test
 BFIXEOF
         BFIX_LOG=$(mktemp)
         BFIX_EXIT=0
-        run_agent_with_fallback "$BFIX_TIMEOUT" "$BFIX_PROMPT" "$BFIX_LOG" "--context-strategy checkpoint" || BFIX_EXIT=$?
+        STAGE_NAME="bfix_task${TASK_NUM}_attempt${BUILD_FIX_ATTEMPT}" \
+            run_agent_with_fallback "$BFIX_TIMEOUT" "$BFIX_PROMPT" "$BFIX_LOG" "--context-strategy checkpoint" || BFIX_EXIT=$?
         if [ "$BFIX_EXIT" -eq 124 ]; then
             echo "    WARNING: Build-fix agent timed out after ${BFIX_TIMEOUT}s."
         elif grep -q '"type":"error"' "$BFIX_LOG" 2>/dev/null; then
@@ -1205,7 +1237,8 @@ EVALEOF
 
         EVAL_LOG=$(mktemp)
         EVAL_EXIT=0
-        run_agent_with_fallback "$EVAL_TIMEOUT" "$EVAL_PROMPT" "$EVAL_LOG" || EVAL_EXIT=$?
+        STAGE_NAME="eval_task${TASK_NUM}_attempt${EVAL_ATTEMPT}" \
+            run_agent_with_fallback "$EVAL_TIMEOUT" "$EVAL_PROMPT" "$EVAL_LOG" || EVAL_EXIT=$?
         rm -f "$EVAL_PROMPT"
 
         # Check evaluator verdict
@@ -1240,7 +1273,8 @@ After fixing, run: cargo fmt && cargo clippy --all-targets -- -D warnings && car
 FIXEOF
                 FIX_LOG=$(mktemp)
                 FIX_EXIT=0
-                run_agent_with_fallback "$FIX_TIMEOUT" "$FIX_PROMPT" "$FIX_LOG" "--context-strategy checkpoint" || FIX_EXIT=$?
+                STAGE_NAME="fix_task${TASK_NUM}_attempt${EVAL_ATTEMPT}" \
+                    run_agent_with_fallback "$FIX_TIMEOUT" "$FIX_PROMPT" "$FIX_LOG" "--context-strategy checkpoint" || FIX_EXIT=$?
                 if [ "$FIX_EXIT" -eq 124 ]; then
                     echo "    WARNING: Fix agent timed out after ${FIX_TIMEOUT}s."
                 elif grep -q '"type":"error"' "$FIX_LOG" 2>/dev/null; then
@@ -1438,6 +1472,8 @@ for FIX_ROUND in $(seq 1 $FIX_ATTEMPTS); do
 
     if [ -z "$ERRORS" ]; then
         echo "  Build: PASS"
+        SESSION_BUILD_OK="true"
+        SESSION_TEST_OK="true"
         break
     fi
 
@@ -1467,6 +1503,7 @@ FIXEOF
         git checkout "$SESSION_START_SHA" -- src/ Cargo.toml Cargo.lock
         cargo fmt 2>/dev/null || true
         git add -A && git commit -m "Day $DAY ($SESSION_TIME): revert session changes (could not fix build)" || true
+        SESSION_REVERTED="true"
     fi
 done
 
@@ -1759,10 +1796,21 @@ ${ALREADY_RESPONDED:+- SKIP these issues (already responded today):${ALREADY_RES
 RESPONDEOF
 
     RESPOND_EXIT=0
-    ${TIMEOUT_CMD:+$TIMEOUT_CMD 180} "$YOYO_BIN" \
-        --model "$MODEL" \
-        --skills ./skills \
-        < "$RESPOND_PROMPT" 2>&1 | tee "$RESPOND_LOG" || RESPOND_EXIT=$?
+    RESPOND_STAGE_PATH=""
+    if [ -d "${SESSION_STAGING:-}/transcripts" ]; then
+        RESPOND_STAGE_PATH="${SESSION_STAGING}/transcripts/respond.log"
+    fi
+    if [ -n "$RESPOND_STAGE_PATH" ]; then
+        ${TIMEOUT_CMD:+$TIMEOUT_CMD 180} "$YOYO_BIN" \
+            --model "$MODEL" \
+            --skills ./skills \
+            < "$RESPOND_PROMPT" 2>&1 | tee "$RESPOND_LOG" "$RESPOND_STAGE_PATH" || RESPOND_EXIT=$?
+    else
+        ${TIMEOUT_CMD:+$TIMEOUT_CMD 180} "$YOYO_BIN" \
+            --model "$MODEL" \
+            --skills ./skills \
+            < "$RESPOND_PROMPT" 2>&1 | tee "$RESPOND_LOG" || RESPOND_EXIT=$?
+    fi
     rm -f "$RESPOND_PROMPT"
 
     # Check for API errors in the agent output
@@ -1810,6 +1858,120 @@ echo "$DAY" > DAY_COUNT
 git add DAY_COUNT
 if ! git diff --cached --quiet; then
     git commit -m "Day $DAY: update day counter"
+fi
+
+# ── Step 7c1: Bump skill-evolve session counter ──
+# The skill-evolve workflow reads .skill_evolve_counter and runs only when ≥ threshold.
+SESSION_TASKS_ATTEMPTED="${TASK_NUM:-0}"
+SESSION_TASKS_SUCCEEDED=$(( ${TASK_NUM:-0} - ${TASK_FAILURES:-0} ))
+[ "$SESSION_TASKS_SUCCEEDED" -lt 0 ] && SESSION_TASKS_SUCCEEDED=0
+
+skill_counter=$(cat .skill_evolve_counter 2>/dev/null || echo 0)
+skill_counter=${skill_counter//[^0-9]/}
+skill_counter=${skill_counter:-0}
+echo $((skill_counter + 1)) > .skill_evolve_counter
+git add .skill_evolve_counter
+if ! git diff --cached --quiet; then
+    git commit -m "Day $DAY: bump skill-evolve counter ($((skill_counter + 1)))" || true
+fi
+
+# ── Step 7c2: Write outcome.json + push session evidence to audit-log branch ──
+# Three streams pushed: audit.jsonl (per-tool-call), outcome.json (session summary),
+# transcripts/ (tee'd agent stdout). skill-evolve mines these for refine/create/retire.
+if [ -d "$SESSION_STAGING" ]; then
+    # Copy audit.jsonl (if any agent wrote one), then truncate so the next
+    # session starts with an empty file. Otherwise each session would re-push
+    # all prior sessions' tool calls under its own session dir.
+    if [ -f .yoyo/audit.jsonl ]; then
+        cp .yoyo/audit.jsonl "$SESSION_STAGING/audit.jsonl"
+        : > .yoyo/audit.jsonl
+    fi
+
+    # Write outcome.json (pass values via env to avoid heredoc quoting hazards).
+    # Wrapped in `|| { warn; }` so a python3 failure doesn't trip set -e and
+    # abort the rest of the session-end cleanup (audit push, tag, push).
+    if ! YOYO_OUT_DAY="$DAY" \
+        YOYO_OUT_SESSION_TIME="$SESSION_TIME" \
+        YOYO_OUT_BUILD_OK="${SESSION_BUILD_OK:-false}" \
+        YOYO_OUT_TEST_OK="${SESSION_TEST_OK:-false}" \
+        YOYO_OUT_TASKS_ATTEMPTED="${SESSION_TASKS_ATTEMPTED:-0}" \
+        YOYO_OUT_TASKS_SUCCEEDED="${SESSION_TASKS_SUCCEEDED:-0}" \
+        YOYO_OUT_REVERTED="${SESSION_REVERTED:-false}" \
+        YOYO_OUT_PATH="$SESSION_STAGING/outcome.json" \
+        python3 - <<'PYEOF'
+import json, os, time
+out = {
+    "day": int(os.environ.get("YOYO_OUT_DAY", "0") or 0),
+    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "session_type": "evolve",
+    "session_time": os.environ.get("YOYO_OUT_SESSION_TIME", ""),
+    "build_ok": os.environ.get("YOYO_OUT_BUILD_OK", "false") == "true",
+    "test_ok":  os.environ.get("YOYO_OUT_TEST_OK",  "false") == "true",
+    "tasks_attempted": int(os.environ.get("YOYO_OUT_TASKS_ATTEMPTED", "0") or 0),
+    "tasks_succeeded": int(os.environ.get("YOYO_OUT_TASKS_SUCCEEDED", "0") or 0),
+    "reverted": os.environ.get("YOYO_OUT_REVERTED", "false") == "true",
+}
+with open(os.environ["YOYO_OUT_PATH"], "w") as f:
+    json.dump(out, f, indent=2)
+PYEOF
+    then
+        echo "  WARNING: outcome.json write failed — continuing session-end cleanup anyway" >&2
+    fi
+
+    # Push to audit-log branch. Failures are non-fatal but tracked: after 3
+    # consecutive misses we emit a loud warning so a misconfigured token (push
+    # protection rule, missing branch perms, etc.) doesn't silently kill the
+    # observability stream forever. The counter lives at .yoyo/audit_push_failures.
+    SESSION_DIR="sessions/day-${DAY}-$(date -u +%Y%m%dT%H%M%SZ)"
+    AUDIT_PUSH_WT="/tmp/evolve-audit-push-$$"
+    AUDIT_FAIL_FILE=".yoyo/audit_push_failures"
+    AUDIT_PUSH_OK=0
+
+    if git fetch origin audit-log:audit-log 2>/dev/null; then
+        :  # branch existed remotely
+    else
+        git branch audit-log 2>/dev/null || true
+    fi
+    if git worktree add "$AUDIT_PUSH_WT" audit-log 2>/dev/null; then
+        mkdir -p "$AUDIT_PUSH_WT/$SESSION_DIR"
+        cp -R "$SESSION_STAGING/." "$AUDIT_PUSH_WT/$SESSION_DIR/" 2>/dev/null || true
+        if (
+            cd "$AUDIT_PUSH_WT" && \
+            git add . && \
+            git commit -m "audit: day $DAY ($SESSION_TIME)" 2>/dev/null && \
+            # Pull-rebase before push to absorb a concurrent session's audit
+            # commit (each session writes to its own day-N-<ts>/ subdir, so
+            # rebase conflicts are essentially impossible — both touched only
+            # disjoint paths). 2>/dev/null because failure is non-fatal here.
+            git pull --rebase origin audit-log 2>/dev/null && \
+            git push origin audit-log 2>/dev/null
+        ); then
+            AUDIT_PUSH_OK=1
+        fi
+        git worktree remove --force "$AUDIT_PUSH_WT" 2>/dev/null || true
+        rm -rf "$AUDIT_PUSH_WT" 2>/dev/null || true
+        git worktree prune 2>/dev/null || true
+    fi
+
+    if [ "$AUDIT_PUSH_OK" = "1" ]; then
+        # Reset failure counter on success
+        echo 0 > "$AUDIT_FAIL_FILE" 2>/dev/null || true
+    else
+        prev_fails=$(cat "$AUDIT_FAIL_FILE" 2>/dev/null || echo 0)
+        prev_fails=${prev_fails//[^0-9]/}
+        prev_fails=${prev_fails:-0}
+        new_fails=$((prev_fails + 1))
+        echo "$new_fails" > "$AUDIT_FAIL_FILE" 2>/dev/null || true
+        if [ "$new_fails" -ge 3 ]; then
+            echo "  ⚠⚠⚠ audit-log push has failed $new_fails consecutive sessions" >&2
+            echo "       skill-evolve cycles will run blind without this evidence stream" >&2
+            echo "       check: bot token branch-create permissions, push protection rules" >&2
+            echo "       reset the counter manually with: echo 0 > $AUDIT_FAIL_FILE" >&2
+        else
+            echo "  audit-log push failed (attempt $new_fails of 3 before escalation)" >&2
+        fi
+    fi
+    rm -rf "$SESSION_STAGING"
 fi
 
 # ── Step 7b: Tag known-good state ──

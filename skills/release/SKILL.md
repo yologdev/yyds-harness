@@ -2,6 +2,15 @@
 name: release
 description: Evaluate readiness and publish to crates.io
 tools: [bash, read_file, write_file]
+origin: yoyo
+status: active
+score: 0.5
+uses: 0
+wins: 0
+last_used: null
+last_evolved: null
+parent_pattern_key: null
+keywords: ["cargo publish", "crates.io", "release", "git tag v"]
 ---
 
 # Release Decision

@@ -121,6 +121,27 @@ Additional skills:
 - `SPONSORS.md` — auto-maintained sponsor recognition (only additions, never removals; amounts shown so yoyo understands the investment)
 - `sponsors/sponsor_info.json` — single source of truth for sponsor state (recurring + one-time, with run_used, shouted_out, benefit_expires). Rebuilt by `scripts/refresh_sponsors.py`; only the `run_used` flag is mutated by `evolve.sh` when consuming an accelerated run.
 
+**Skill evolution loop** (decoupled from main evolve pipeline):
+- `skills/skill-evolve/SKILL.md` — meta-skill that refines/creates/retires *other* skills based on past-session evidence. Three hard rules: (1) only edit skills declaring `origin: yoyo` (allow-list); (2) never edit itself; (3) one mutation per cycle.
+- `scripts/skill_evolve.sh` — one cycle entry point. Gates: dirty-tree refusal, session-counter ≥ 5, 24h cooldown, `cargo build && cargo test` green. Post-agent: diff-scope guard (`origin: yoyo` + not `core: true` + within allow-list), build/test re-verify, revert on any violation.
+- `.github/workflows/skill-evolve.yml` — hourly cron at `:30` (off-phase from evolve which runs at `:00`); runs `scripts/skill_evolve.sh` which exits silently if gates aren't met.
+- `audit-log` branch — long-lived data-only branch, never merges to main. `evolve.sh` pushes per-session evidence (`audit.jsonl` from `--audit`, `outcome.json`, `transcripts/*.log`) into `sessions/day-N-<ts>/`. skill-evolve clones it into a worktree to mine recurrence/scoring signals.
+- `skills/_journal.md` — append-only ledger of every skill-evolution event (init, refine, create, retire, meta-suggestion, refused, NO-OP).
+- `skills_attic/` — soft-delete destination for retired skills (sibling of `skills/`, NOT scanned by `--skills`).
+- `.skill_evolve_counter` (tracked) — bumped at end of every evolve session; reset to 0 by skill-evolve cycles.
+- `.skill_evolve_last_run` (gitignored) — epoch timestamp for cooldown.
+- `scripts/skill_evolve_report.py` — Layer-3 observability report (per-skill score/eligibility, event log, recurrence trend).
+
+**Skill provenance via `origin:` frontmatter field** — every skill declares one of:
+- `origin: creator` — written by the human creator (Yuanhao or fork creator). Immutable. Backed up by `core: true` on the four core skills.
+- `origin: yoyo` — written by yoyo (via skill-evolve, or in past evolutions like `social`/`family`/`release`). Eligible for skill-evolve to refine/retire.
+- `origin: marketplace` (or `gh:user/repo`, etc.) — installed third-party skills. Off-limits — upstream owns them.
+- (missing) — unknown provenance. Off-limits (default-safe).
+
+This is enforced both by HARD RULE #1 in the meta-skill (LLM-side) and by the diff-scope guard in `scripts/skill_evolve.sh` (harness-side).
+
+**Skill scoring inputs** — `origin: yoyo` skills carry an additional `keywords:` list in their frontmatter (e.g., `keywords: ["gh api graphql", "discussion"]` for `social`). skill-evolve uses these to detect "this skill was used in session N" by grepping each session's `audit.jsonl` for any keyword. `last_used`, `uses`, and `wins` are computed from this signal.
+
 
 ## MCP gotchas
 

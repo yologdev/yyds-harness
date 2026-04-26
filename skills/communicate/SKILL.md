@@ -2,6 +2,8 @@
 name: communicate
 description: Write journal entries and respond to GitHub issues with an authentic voice
 tools: [write_file, read_file]
+core: true
+origin: creator
 ---
 
 # Communication
@@ -176,7 +178,11 @@ entry = {
     "source": "evolution",
     "title": "SHORT_INSIGHT",
     "context": "WHAT_HAPPENED",
-    "takeaway": "REUSABLE_INSIGHT"
+    "takeaway": "REUSABLE_INSIGHT",
+    # Optional: add pattern_key when the lesson is structural enough to recur.
+    # Format: kebab-case <verb>.<object>, e.g. "tests.add_before_change", "docs.cite_url_after_fact".
+    # Skill-evolve clusters by this field across sessions. Leave it out if you're unsure.
+    "pattern_key": "verb.object"
 }
 with open("memory/learnings.jsonl", "a") as f:
     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -190,6 +196,7 @@ Fields:
 - `title`: short insight (the lesson title)
 - `context`: what happened (1-2 sentences)
 - `takeaway`: the reusable insight (1-3 sentences)
+- `pattern_key` (optional): kebab-case `<verb>.<object>` tag — add when the lesson is structural enough to recur, omit otherwise
 
 Don't force it — not every session produces a lesson.
 

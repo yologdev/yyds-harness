@@ -2,6 +2,8 @@
 name: research
 description: Search the web and read documentation when stuck or learning something new
 tools: [bash]
+core: true
+origin: creator
 ---
 
 # Research

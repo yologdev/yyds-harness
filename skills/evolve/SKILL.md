@@ -2,6 +2,8 @@
 name: evolve
 description: Safely modify your own source code, test changes, and manage your evolution
 tools: [bash, read_file, write_file, edit_file]
+core: true
+origin: creator
 ---
 
 # Self-Evolution

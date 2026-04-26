@@ -2,6 +2,8 @@
 name: self-assess
 description: Analyze your own source code and capabilities to find bugs, gaps, and improvement opportunities
 tools: [bash, read_file, write_file]
+core: true
+origin: creator
 ---
 
 # Self-Assessment

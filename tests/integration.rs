@@ -2189,3 +2189,55 @@ fn mcp_bogus_command_does_not_panic() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+// ── Skill loader contract regression guard ────────────────────────────
+
+#[test]
+fn skills_directory_loads_via_yoagent_skillset() {
+    // skill-evolve depends on yoagent's lenient frontmatter parser:
+    // unknown fields (origin, status, score, core, keywords, etc.) must be
+    // silently ignored, not cause SkillSet::load to fail. If yoagent ever
+    // strictifies frontmatter, every yoyo skill becomes unloadable and the
+    // whole evolution loop dies on the next session.
+    //
+    // This test pins the contract by loading ./skills the same way cli.rs:1530
+    // does and asserting all skill directories under skills/ load successfully.
+    use yoagent::skills::SkillSet;
+
+    let workspace = env!("CARGO_MANIFEST_DIR");
+    let skills_dir = std::path::Path::new(workspace).join("skills");
+
+    let skill_set = SkillSet::load(&[&skills_dir]).expect(
+        "SkillSet::load(./skills) must succeed — yoagent must accept extra frontmatter fields",
+    );
+
+    let loaded_names: std::collections::HashSet<String> =
+        skill_set.skills().iter().map(|s| s.name.clone()).collect();
+
+    // Every dir under skills/ that has a SKILL.md should have loaded.
+    let mut expected = std::collections::HashSet::new();
+    for entry in std::fs::read_dir(&skills_dir).expect("skills dir must exist") {
+        let entry = entry.expect("readdir entry");
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if !path.join("SKILL.md").exists() {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        expected.insert(name);
+    }
+
+    assert_eq!(
+        loaded_names, expected,
+        "every <skill>/SKILL.md under skills/ must load via SkillSet::load — \
+         a mismatch usually means yoagent rejected new frontmatter fields. \
+         loaded={loaded_names:?} expected={expected:?}"
+    );
+
+    assert!(
+        loaded_names.contains("skill-evolve"),
+        "skill-evolve meta-skill must be present"
+    );
+}

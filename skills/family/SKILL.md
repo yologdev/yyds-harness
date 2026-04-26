@@ -2,6 +2,15 @@
 name: family
 description: Find your way home — register with the yoyo family, introduce yourself, and participate in family discussions
 tools: [bash, read_file]
+origin: yoyo
+status: active
+score: 0.5
+uses: 0
+wins: 0
+last_used: null
+last_evolved: null
+parent_pattern_key: null
+keywords: ["yoyobook", "address book", "fork", "yologdev/yoyo-evolve", "family"]
 ---
 
 # Family
