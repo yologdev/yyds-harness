@@ -964,22 +964,19 @@ async fn run_piped_mode(
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let args: Vec<String> = std::env::args().collect();
-
-    // Check --no-color before any output (must happen before parse_args prints anything)
-    // Also auto-disable color when stdout is not a terminal (piped output)
+/// Apply early CLI flags that must take effect before `parse_args()` produces
+/// any output.  Handles `--no-color`, `--no-bell`, and `--no-rtk`.
+fn apply_cli_flags(args: &[String]) {
+    // Auto-disable color when stdout is not a terminal (piped output)
     if args.iter().any(|a| a == "--no-color") || !io::stdout().is_terminal() {
         disable_color();
     }
 
-    // Check --no-bell before any output
     if args.iter().any(|a| a == "--no-bell") {
         disable_bell();
     }
 
-    // Check --no-rtk before any tool execution (also respects YOYO_NO_RTK env)
+    // Also respects YOYO_NO_RTK env var
     if args.iter().any(|a| a == "--no-rtk")
         || std::env::var("YOYO_NO_RTK")
             .map(|v| v == "1")
@@ -987,15 +984,15 @@ async fn main() {
     {
         tools::disable_rtk();
     }
+}
 
-    let Some(config) = parse_args(&args) else {
-        return; // --help or --version was handled
-    };
-
-    // --print-system-prompt: print the fully assembled system prompt and exit
+/// Apply config-level flags that don't need the agent.  Handles
+/// `--print-system-prompt` (early exit), `--verbose`, and `--audit`.
+/// Returns `false` if main should exit immediately (early-exit path handled).
+fn apply_config_flags(config: &Config) -> bool {
     if config.print_system_prompt {
         println!("{}", config.system_prompt);
-        return;
+        return false;
     }
 
     if config.verbose {
@@ -1006,6 +1003,85 @@ async fn main() {
         prompt::enable_audit_log();
     }
 
+    true
+}
+
+/// Run the interactive setup wizard if needed and apply its results to `agent_config`.
+/// Returns `false` if the user cancelled and main should exit.
+fn run_setup_wizard_if_needed(is_interactive: bool, agent_config: &mut AgentConfig) -> bool {
+    if !is_interactive || !setup::needs_setup(&agent_config.provider) {
+        return true;
+    }
+
+    if let Some(result) = setup::run_setup_wizard() {
+        agent_config.provider = result.provider.clone();
+        agent_config.api_key = result.api_key.clone();
+        agent_config.model = result.model;
+        if result.base_url.is_some() {
+            agent_config.base_url = result.base_url;
+        }
+        // Set the env var so the provider builder picks it up
+        if let Some(env_var) = cli::provider_api_key_env(&result.provider) {
+            // SAFETY: This runs during setup, before any concurrent agent work.
+            // The env var is read later by the provider builder on the same thread.
+            unsafe {
+                std::env::set_var(env_var, &result.api_key);
+            }
+        }
+        true
+    } else {
+        // User cancelled — show the static welcome screen
+        cli::print_welcome();
+        false
+    }
+}
+
+/// Assemble combined AWS credentials for Bedrock if the api_key is a bare
+/// access key (no `:` separator).
+fn apply_bedrock_credentials(agent_config: &mut AgentConfig) {
+    if agent_config.provider != "bedrock" || agent_config.api_key.contains(':') {
+        return;
+    }
+    let access_key = agent_config.api_key.clone();
+    if let Ok(secret) = std::env::var("AWS_SECRET_ACCESS_KEY") {
+        agent_config.api_key = match std::env::var("AWS_SESSION_TOKEN") {
+            Ok(token) if !token.is_empty() => format!("{access_key}:{secret}:{token}"),
+            _ => format!("{access_key}:{secret}"),
+        };
+    }
+}
+
+/// Restore a previously-saved session into the agent.
+fn restore_session(agent: &mut Agent) {
+    let session_path = commands_session::continue_session_path();
+    match std::fs::read_to_string(session_path) {
+        Ok(json) => match agent.restore_messages(&json) {
+            Ok(_) => {
+                eprintln!(
+                    "{DIM}  resumed session: {} messages from {session_path}{RESET}",
+                    agent.messages().len()
+                );
+            }
+            Err(e) => eprintln!("{YELLOW}warning:{RESET} Failed to restore session: {e}"),
+        },
+        Err(_) => eprintln!("{DIM}  no previous session found ({session_path}){RESET}"),
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let args: Vec<String> = std::env::args().collect();
+
+    apply_cli_flags(&args);
+
+    let Some(config) = parse_args(&args) else {
+        return; // --help or --version was handled
+    };
+
+    if !apply_config_flags(&config) {
+        return;
+    }
+
     let continue_session = config.continue_session;
     let output_path = config.output_path;
     let mcp_servers = config.mcp_servers;
@@ -1014,7 +1090,6 @@ async fn main() {
     let image_path = config.image_path;
     let no_update_check = config.no_update_check;
     let json_output = config.json_output;
-    // Auto-approve in non-interactive modes (piped, --prompt) or when --yes is set
     let is_interactive = io::stdin().is_terminal() && config.prompt_arg.is_none();
     let auto_approve = config.auto_approve || !is_interactive;
 
@@ -1040,43 +1115,11 @@ async fn main() {
         fallback_model: config.fallback_model,
     };
 
-    // Interactive setup wizard: if no config file or API key is detected,
-    // walk the user through first-run onboarding before building the agent.
-    if is_interactive && setup::needs_setup(&agent_config.provider) {
-        if let Some(result) = setup::run_setup_wizard() {
-            // Override config with wizard results
-            agent_config.provider = result.provider.clone();
-            agent_config.api_key = result.api_key.clone();
-            agent_config.model = result.model;
-            if result.base_url.is_some() {
-                agent_config.base_url = result.base_url;
-            }
-            // Set the env var so the provider builder picks it up
-            if let Some(env_var) = cli::provider_api_key_env(&result.provider) {
-                // SAFETY: This runs during setup, before any concurrent agent work.
-                // The env var is read later by the provider builder on the same thread.
-                unsafe {
-                    std::env::set_var(env_var, &result.api_key);
-                }
-            }
-        } else {
-            // User cancelled — show the static welcome screen and exit
-            cli::print_welcome();
-            return;
-        }
+    if !run_setup_wizard_if_needed(is_interactive, &mut agent_config) {
+        return;
     }
 
-    // Bedrock needs combined AWS credentials: access_key:secret_key[:session_token]
-    // parse_args() only reads AWS_ACCESS_KEY_ID; combine with the rest here.
-    if agent_config.provider == "bedrock" && !agent_config.api_key.contains(':') {
-        let access_key = agent_config.api_key.clone();
-        if let Ok(secret) = std::env::var("AWS_SECRET_ACCESS_KEY") {
-            agent_config.api_key = match std::env::var("AWS_SESSION_TOKEN") {
-                Ok(token) if !token.is_empty() => format!("{access_key}:{secret}:{token}"),
-                _ => format!("{access_key}:{secret}"),
-            };
-        }
-    }
+    apply_bedrock_credentials(&mut agent_config);
 
     let mut agent = agent_config.build_agent();
 
@@ -1091,24 +1134,11 @@ async fn main() {
     .await;
     agent = updated_agent;
 
-    // --continue / -c: resume last saved session
     if continue_session {
-        let session_path = commands_session::continue_session_path();
-        match std::fs::read_to_string(session_path) {
-            Ok(json) => match agent.restore_messages(&json) {
-                Ok(_) => {
-                    eprintln!(
-                        "{DIM}  resumed session: {} messages from {session_path}{RESET}",
-                        agent.messages().len()
-                    );
-                }
-                Err(e) => eprintln!("{YELLOW}warning:{RESET} Failed to restore session: {e}"),
-            },
-            Err(_) => eprintln!("{DIM}  no previous session found ({session_path}){RESET}"),
-        }
+        restore_session(&mut agent);
     }
 
-    // --prompt / -p: single-shot mode with a prompt argument
+    // --prompt / -p: single-shot mode
     if let Some(prompt_text) = config.prompt_arg {
         run_single_prompt(
             &mut agent_config,
@@ -1129,7 +1159,6 @@ async fn main() {
     }
 
     // Interactive REPL mode
-    // Check for updates (non-blocking, skipped if --no-update-check or env var)
     let update_available = if !no_update_check {
         update::check_for_update(cli::VERSION)
     } else {
@@ -2315,5 +2344,56 @@ mod tests {
         assert!(detect_mcp_collisions(&[], &["read_file"]).is_empty());
         assert!(detect_mcp_collisions(&["foo".to_string()], &[]).is_empty());
         assert!(detect_mcp_collisions(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn bedrock_credentials_noop_for_non_bedrock() {
+        let mut config = test_agent_config("anthropic", "test-model");
+        config.api_key = "sk-test".to_string();
+        apply_bedrock_credentials(&mut config);
+        assert_eq!(config.api_key, "sk-test");
+    }
+
+    #[test]
+    fn bedrock_credentials_noop_when_already_combined() {
+        let mut config = test_agent_config("bedrock", "test-model");
+        config.api_key = "access:secret".to_string();
+        apply_bedrock_credentials(&mut config);
+        assert_eq!(config.api_key, "access:secret");
+    }
+
+    #[test]
+    #[serial]
+    fn bedrock_credentials_combines_access_and_secret() {
+        // SAFETY: test runs serially, no concurrent readers
+        unsafe {
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "my-secret");
+            std::env::remove_var("AWS_SESSION_TOKEN");
+        }
+        let mut config = test_agent_config("bedrock", "test-model");
+        config.api_key = "my-access".to_string();
+        apply_bedrock_credentials(&mut config);
+        assert_eq!(config.api_key, "my-access:my-secret");
+        unsafe {
+            std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn bedrock_credentials_includes_session_token() {
+        // SAFETY: test runs serially, no concurrent readers
+        unsafe {
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "my-secret");
+            std::env::set_var("AWS_SESSION_TOKEN", "my-token");
+        }
+        let mut config = test_agent_config("bedrock", "test-model");
+        config.api_key = "my-access".to_string();
+        apply_bedrock_credentials(&mut config);
+        assert_eq!(config.api_key, "my-access:my-secret:my-token");
+        unsafe {
+            std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+            std::env::remove_var("AWS_SESSION_TOKEN");
+        }
     }
 }
