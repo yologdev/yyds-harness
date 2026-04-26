@@ -46,6 +46,18 @@ fn color_enabled() -> bool {
     !*COLOR_DISABLED.get_or_init(|| std::env::var("NO_COLOR").is_ok())
 }
 
+// --- Stderr TTY detection (cached) ---
+
+/// Whether stderr is connected to a terminal. Cached via `OnceLock` to avoid
+/// repeated syscalls. Used to suppress spinner/progress ANSI escape sequences
+/// when stderr is not a TTY (e.g., piped output, CI logs).
+static STDERR_IS_TTY: OnceLock<bool> = OnceLock::new();
+
+/// Check if stderr is a terminal. Result is cached after first call.
+pub fn stderr_is_terminal() -> bool {
+    *STDERR_IS_TTY.get_or_init(|| std::io::IsTerminal::is_terminal(&std::io::stderr()))
+}
+
 /// A color code that respects the NO_COLOR convention.
 /// When color is disabled, formats as an empty string.
 pub struct Color(pub &'static str);
@@ -1272,5 +1284,15 @@ mod tests {
     fn test_context_budget_warning_zero_max_returns_none() {
         reset_context_budget_warning();
         assert!(context_budget_warning(100, 0).is_none());
+    }
+
+    #[test]
+    fn test_stderr_is_terminal_returns_bool() {
+        // Basic smoke test — stderr_is_terminal() should return a bool without
+        // panicking. In CI/test environments stderr is typically not a TTY,
+        // so we just verify it runs and returns a deterministic result.
+        let result = stderr_is_terminal();
+        // Call again to verify caching works (OnceLock returns same value)
+        assert_eq!(result, stderr_is_terminal());
     }
 }

@@ -22,8 +22,20 @@ pub struct Spinner {
 impl Spinner {
     /// Start a spinner that prints frames to stderr every 100ms.
     /// The spinner shows `⠋ thinking...` cycling through braille characters.
+    /// When stderr is not a TTY, the spinner thread is skipped entirely to
+    /// prevent ANSI escape sequences from leaking into piped/captured output.
     pub fn start() -> Self {
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+
+        // Skip the spinner thread when stderr isn't a terminal — ANSI escape
+        // sequences (\r, \x1b[K) would leak as garbage into piped output.
+        if !stderr_is_terminal() {
+            return Self {
+                cancel: cancel_tx,
+                handle: None,
+            };
+        }
+
         let handle = tokio::spawn(async move {
             let mut tick: usize = 0;
             loop {
@@ -64,10 +76,11 @@ impl Spinner {
     /// to Drop to minimize latency on the critical path.
     pub fn stop(self) {
         let _ = self.cancel.send(true);
-        // Clear the spinner line from the calling thread — this is synchronous
-        // and guaranteed to complete before any subsequent stdout writes.
-        eprint!("\r\x1b[K");
-        let _ = io::stderr().flush();
+        // Only emit ANSI clear sequence when stderr is a terminal
+        if stderr_is_terminal() {
+            eprint!("\r\x1b[K");
+            let _ = io::stderr().flush();
+        }
         // Defer handle.abort() to Drop — it interacts with the tokio runtime
         // and doesn't need to complete before the first text token is printed.
         // The cancel signal already ensures the spinner task won't write again.
@@ -77,9 +90,11 @@ impl Spinner {
 impl Drop for Spinner {
     fn drop(&mut self) {
         let _ = self.cancel.send(true);
-        // Clear the spinner line synchronously on drop too
-        eprint!("\r\x1b[K");
-        let _ = io::stderr().flush();
+        // Only emit ANSI clear sequence when stderr is a terminal
+        if stderr_is_terminal() {
+            eprint!("\r\x1b[K");
+            let _ = io::stderr().flush();
+        }
         if let Some(handle) = self.handle.take() {
             handle.abort();
         }
@@ -224,11 +239,24 @@ pub struct ToolProgressTimer {
 impl ToolProgressTimer {
     /// Start a timer that shows elapsed time for a tool on stderr.
     /// Updates every second with the current line count.
+    /// When stderr is not a TTY, the progress thread is skipped entirely to
+    /// prevent ANSI escape sequences from leaking into piped/captured output.
     pub fn start(tool_name: String) -> Self {
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
         let line_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let line_count_clone = Arc::clone(&line_count);
         let label: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+
+        // Skip the progress thread when stderr isn't a terminal
+        if !stderr_is_terminal() {
+            return Self {
+                cancel: cancel_tx,
+                line_count,
+                label,
+                handle: None,
+            };
+        }
+
+        let line_count_clone = Arc::clone(&line_count);
         let label_clone = Arc::clone(&label);
         let handle = tokio::spawn(async move {
             let start = Instant::now();
@@ -292,16 +320,20 @@ impl ToolProgressTimer {
     /// Stop the timer and clear its output.
     pub fn stop(self) {
         let _ = self.cancel.send(true);
-        eprint!("\r\x1b[K");
-        let _ = io::stderr().flush();
+        if stderr_is_terminal() {
+            eprint!("\r\x1b[K");
+            let _ = io::stderr().flush();
+        }
     }
 }
 
 impl Drop for ToolProgressTimer {
     fn drop(&mut self) {
         let _ = self.cancel.send(true);
-        eprint!("\r\x1b[K");
-        let _ = io::stderr().flush();
+        if stderr_is_terminal() {
+            eprint!("\r\x1b[K");
+            let _ = io::stderr().flush();
+        }
         if let Some(handle) = self.handle.take() {
             handle.abort();
         }
@@ -790,5 +822,38 @@ mod tests {
         }
         collected.push_str(&f.flush());
         assert_eq!(collected, "Hi!");
+    }
+
+    #[tokio::test]
+    async fn test_spinner_start_stop_no_panic() {
+        // Spinner should be creatable and stoppable without panicking,
+        // regardless of whether stderr is a TTY. When not a TTY (as in CI),
+        // the spinner thread is skipped entirely.
+        let spinner = Spinner::start();
+        spinner.stop();
+    }
+
+    #[tokio::test]
+    async fn test_spinner_drop_no_panic() {
+        // Dropping a spinner without calling stop() should not panic.
+        let spinner = Spinner::start();
+        drop(spinner);
+    }
+
+    #[tokio::test]
+    async fn test_tool_progress_timer_start_stop_no_panic() {
+        // ToolProgressTimer should be creatable and stoppable without panicking,
+        // regardless of whether stderr is a TTY.
+        let timer = ToolProgressTimer::start("test_tool".to_string());
+        timer.set_line_count(5);
+        timer.set_label("test label".to_string());
+        timer.stop();
+    }
+
+    #[tokio::test]
+    async fn test_tool_progress_timer_drop_no_panic() {
+        // Dropping a timer without calling stop() should not panic.
+        let timer = ToolProgressTimer::start("test_tool".to_string());
+        drop(timer);
     }
 }
