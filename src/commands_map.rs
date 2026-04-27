@@ -4,6 +4,73 @@ use crate::commands_search::{is_ast_grep_available, is_binary_extension, list_pr
 use crate::format::*;
 use regex::Regex;
 use std::path::Path;
+use std::sync::LazyLock;
+
+// ── Rust symbol regexes ──────────────────────────────────────────────
+static RE_RUST_FN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(pub(?:\(crate\))?\s+)?(?:async\s+)?fn\s+(\w+)").unwrap());
+static RE_RUST_STRUCT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(pub(?:\(crate\))?\s+)?struct\s+(\w+)").unwrap());
+static RE_RUST_ENUM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(pub(?:\(crate\))?\s+)?enum\s+(\w+)").unwrap());
+static RE_RUST_TRAIT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(pub(?:\(crate\))?\s+)?trait\s+(\w+)").unwrap());
+static RE_RUST_IMPL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*impl(?:<[^>]*>)?\s+(.+?)(?:\s*\{|$)").unwrap());
+static RE_RUST_CONST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(pub(?:\(crate\))?\s+)?(?:const|static)\s+(\w+)").unwrap());
+static RE_RUST_MOD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(pub(?:\(crate\))?\s+)?mod\s+(\w+)").unwrap());
+static RE_RUST_CFG_TEST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"#\[cfg\(test\)\]").unwrap());
+
+// ── Python symbol regexes ────────────────────────────────────────────
+static RE_PY_CLASS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^class\s+(\w+)").unwrap());
+static RE_PY_DEF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:async\s+)?def\s+(\w+)").unwrap());
+static RE_PY_CONST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([A-Z][A-Z0-9_]*)\s*=").unwrap());
+
+// ── JavaScript symbol regexes ────────────────────────────────────────
+static RE_JS_FUNCTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+(\w+)").unwrap()
+});
+static RE_JS_CLASS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:export\s+(?:default\s+)?)?class\s+(\w+)").unwrap());
+static RE_JS_CONST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=").unwrap());
+
+// ── TypeScript-specific regexes (JS ones reused via extract_js_symbols) ──
+static RE_TS_INTERFACE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:export\s+)?interface\s+(\w+)").unwrap());
+static RE_TS_TYPE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:export\s+)?type\s+(\w+)\s*[=<]").unwrap());
+
+// ── Go symbol regexes ────────────────────────────────────────────────
+static RE_GO_FUNC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^func\s+(\w+)\s*\(").unwrap());
+static RE_GO_METHOD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^func\s+\([^)]+\)\s+(\w+)\s*\(").unwrap());
+static RE_GO_STRUCT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^type\s+(\w+)\s+struct\b").unwrap());
+static RE_GO_INTERFACE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^type\s+(\w+)\s+interface\b").unwrap());
+static RE_GO_CONST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:const|var)\s+(\w+)").unwrap());
+
+// ── Java symbol regexes ──────────────────────────────────────────────
+static RE_JAVA_CLASS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:public\s+)?(?:abstract\s+)?(?:final\s+)?class\s+(\w+)").unwrap()
+});
+static RE_JAVA_INTERFACE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(?:public\s+)?interface\s+(\w+)").unwrap());
+static RE_JAVA_ENUM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(?:public\s+)?enum\s+(\w+)").unwrap());
+static RE_JAVA_METHOD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:[\w<>\[\],\s]+)\s+(\w+)\s*\(",
+    )
+    .unwrap()
+});
 
 // ── /map — structural codebase understanding ────────────────────────────
 
@@ -75,14 +142,14 @@ fn extract_rust_symbols(code: &str) -> Vec<Symbol> {
     let mut in_test_module = false;
     let mut test_brace_depth: i32 = 0;
 
-    let re_fn = Regex::new(r"^\s*(pub(?:\(crate\))?\s+)?(?:async\s+)?fn\s+(\w+)").unwrap();
-    let re_struct = Regex::new(r"^\s*(pub(?:\(crate\))?\s+)?struct\s+(\w+)").unwrap();
-    let re_enum = Regex::new(r"^\s*(pub(?:\(crate\))?\s+)?enum\s+(\w+)").unwrap();
-    let re_trait = Regex::new(r"^\s*(pub(?:\(crate\))?\s+)?trait\s+(\w+)").unwrap();
-    let re_impl = Regex::new(r"^\s*impl(?:<[^>]*>)?\s+(.+?)(?:\s*\{|$)").unwrap();
-    let re_const = Regex::new(r"^\s*(pub(?:\(crate\))?\s+)?(?:const|static)\s+(\w+)").unwrap();
-    let re_mod = Regex::new(r"^\s*(pub(?:\(crate\))?\s+)?mod\s+(\w+)").unwrap();
-    let re_cfg_test = Regex::new(r"#\[cfg\(test\)\]").unwrap();
+    let re_fn = &*RE_RUST_FN;
+    let re_struct = &*RE_RUST_STRUCT;
+    let re_enum = &*RE_RUST_ENUM;
+    let re_trait = &*RE_RUST_TRAIT;
+    let re_impl = &*RE_RUST_IMPL;
+    let re_const = &*RE_RUST_CONST;
+    let re_mod = &*RE_RUST_MOD;
+    let re_cfg_test = &*RE_RUST_CFG_TEST;
 
     let mut next_is_test_mod = false;
 
@@ -208,9 +275,9 @@ fn extract_rust_symbols(code: &str) -> Vec<Symbol> {
 fn extract_python_symbols(code: &str) -> Vec<Symbol> {
     let mut symbols = Vec::new();
 
-    let re_class = Regex::new(r"^class\s+(\w+)").unwrap();
-    let re_func = Regex::new(r"^(?:async\s+)?def\s+(\w+)").unwrap();
-    let re_const = Regex::new(r"^([A-Z][A-Z0-9_]*)\s*=").unwrap();
+    let re_class = &*RE_PY_CLASS;
+    let re_func = &*RE_PY_DEF;
+    let re_const = &*RE_PY_CONST;
 
     for (line_num, line) in code.lines().enumerate() {
         // Only consider top-level (no indentation)
@@ -253,10 +320,9 @@ fn extract_python_symbols(code: &str) -> Vec<Symbol> {
 fn extract_js_symbols(code: &str) -> Vec<Symbol> {
     let mut symbols = Vec::new();
 
-    let re_export_func =
-        Regex::new(r"^(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+(\w+)").unwrap();
-    let re_class = Regex::new(r"^(?:export\s+(?:default\s+)?)?class\s+(\w+)").unwrap();
-    let re_const = Regex::new(r"^(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=").unwrap();
+    let re_export_func = &*RE_JS_FUNCTION;
+    let re_class = &*RE_JS_CLASS;
+    let re_const = &*RE_JS_CONST;
 
     for (line_num, line) in code.lines().enumerate() {
         let trimmed = line.trim_start();
@@ -300,8 +366,8 @@ fn extract_ts_symbols(code: &str) -> Vec<Symbol> {
     // Start with JS symbols
     let mut symbols = extract_js_symbols(code);
 
-    let re_interface = Regex::new(r"^(?:export\s+)?interface\s+(\w+)").unwrap();
-    let re_type = Regex::new(r"^(?:export\s+)?type\s+(\w+)\s*[=<]").unwrap();
+    let re_interface = &*RE_TS_INTERFACE;
+    let re_type = &*RE_TS_TYPE;
 
     for (line_num, line) in code.lines().enumerate() {
         let trimmed = line.trim_start();
@@ -336,11 +402,11 @@ fn extract_ts_symbols(code: &str) -> Vec<Symbol> {
 fn extract_go_symbols(code: &str) -> Vec<Symbol> {
     let mut symbols = Vec::new();
 
-    let re_func = Regex::new(r"^func\s+(\w+)\s*\(").unwrap();
-    let re_method = Regex::new(r"^func\s+\([^)]+\)\s+(\w+)\s*\(").unwrap();
-    let re_type_struct = Regex::new(r"^type\s+(\w+)\s+struct\b").unwrap();
-    let re_type_interface = Regex::new(r"^type\s+(\w+)\s+interface\b").unwrap();
-    let re_const = Regex::new(r"^(?:const|var)\s+(\w+)").unwrap();
+    let re_func = &*RE_GO_FUNC;
+    let re_method = &*RE_GO_METHOD;
+    let re_type_struct = &*RE_GO_STRUCT;
+    let re_type_interface = &*RE_GO_INTERFACE;
+    let re_const = &*RE_GO_CONST;
 
     for (line_num, line) in code.lines().enumerate() {
         let trimmed = line.trim_start();
@@ -400,14 +466,10 @@ fn extract_go_symbols(code: &str) -> Vec<Symbol> {
 fn extract_java_symbols(code: &str) -> Vec<Symbol> {
     let mut symbols = Vec::new();
 
-    let re_class =
-        Regex::new(r"^\s*(?:public\s+)?(?:abstract\s+)?(?:final\s+)?class\s+(\w+)").unwrap();
-    let re_interface = Regex::new(r"^\s*(?:public\s+)?interface\s+(\w+)").unwrap();
-    let re_enum = Regex::new(r"^\s*(?:public\s+)?enum\s+(\w+)").unwrap();
-    let re_method = Regex::new(
-        r"^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:[\w<>\[\],\s]+)\s+(\w+)\s*\(",
-    )
-    .unwrap();
+    let re_class = &*RE_JAVA_CLASS;
+    let re_interface = &*RE_JAVA_INTERFACE;
+    let re_enum = &*RE_JAVA_ENUM;
+    let re_method = &*RE_JAVA_METHOD;
 
     for (line_num, line) in code.lines().enumerate() {
         let is_pub = line.trim_start().starts_with("public");
