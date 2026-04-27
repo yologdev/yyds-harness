@@ -307,15 +307,17 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              for structural codebase awareness.",
         ),
         "outline" => Some(
-            "/outline <query> [--all] — Search for symbols across the project\n\n\
+            "/outline <query|filepath> [--all] — Search for symbols or show file structure\n\n\
              Finds functions, structs, enums, traits, and other symbols whose names\n\
              match the query. Like VS Code's \"Go to Symbol in Workspace\" (Ctrl+T).\n\n\
+             When given a file path, shows all symbols in that file sorted by line number.\n\n\
              Results are ranked by relevance: exact match > prefix > substring.\n\
              Shows up to 30 results by default.\n\n\
              Usage:\n\
-             \x20 /outline parse          Find symbols containing \"parse\"\n\
-             \x20 /outline Config         Find symbols containing \"Config\"\n\
-             \x20 /outline handle --all   Show all matches (no limit)\n\n\
+             \x20 /outline parse            Find symbols containing \"parse\"\n\
+             \x20 /outline Config           Find symbols containing \"Config\"\n\
+             \x20 /outline src/main.rs      Show all symbols in src/main.rs\n\
+             \x20 /outline handle --all     Show all matches (no limit)\n\n\
              Uses the same symbol extraction as /map (regex or ast-grep).",
         ),
         "status" => Some(
@@ -1145,7 +1147,7 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(s, "  index             Build and display project index");
     let _ = writeln!(
         s,
-        "  outline           Search for symbols by name (e.g. yoyo outline parse)"
+        "  outline           Search for symbols or show file structure (e.g. yoyo outline src/main.rs)"
     );
     let _ = writeln!(
         s,
@@ -1345,7 +1347,7 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
-        "    /outline <query>   Search for symbols by name across the project"
+        "    /outline <query|file>  Search for symbols or show file structure"
     );
     let _ = writeln!(s, "    /tree [depth]      Show project directory tree");
     let _ = writeln!(
@@ -1568,7 +1570,7 @@ pub fn help_text() -> String {
     out.push_str(
         "  /map [path]        Show structural map of the codebase (functions, types, etc.)\n",
     );
-    out.push_str("  /outline <query>   Search for symbols by name across the project\n");
+    out.push_str("  /outline <query|file>  Search for symbols or show file structure\n");
     out.push_str("  /tree [depth]      Show project directory tree (default depth: 3)\n");
     out.push_str("  /web <url>         Fetch a web page and display clean readable text content\n");
     out.push_str("  /watch [cmd|all]   Auto-run tests (or lint+test) after agent edits (off/status to control)\n");
@@ -1713,7 +1715,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "memories" => Some("List or search project memories"),
         "model" => Some("Switch or show current model"),
         "move" => Some("Move a method between files"),
-        "outline" => Some("Search for symbols by name across the project"),
+        "outline" => Some("Search for symbols or show file structure"),
         "plan" => Some("Plan mode toggle or one-shot task plan"),
         "permissions" => Some("Show active security and permission configuration"),
         "pr" => Some("List, view, or create pull requests"),

@@ -520,7 +520,42 @@ fn format_outline_match(m: &OutlineMatch) -> String {
     )
 }
 
-/// Handle the `/outline <query> [--all]` command.
+/// Check if a query looks like a file path (contains `/` or has a known code extension).
+fn looks_like_file_path(query: &str) -> bool {
+    if query.contains('/') {
+        return true;
+    }
+    // Check for known source file extensions
+    let known_extensions = [
+        ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".go", ".java", ".c", ".cpp", ".cc",
+        ".h", ".hpp", ".rb", ".swift", ".kt", ".scala", ".zig", ".lua", ".sh", ".bash", ".zsh",
+        ".toml", ".json", ".yaml", ".yml", ".xml", ".html", ".css", ".scss", ".md",
+    ];
+    let lower = query.to_lowercase();
+    known_extensions.iter().any(|ext| lower.ends_with(ext))
+}
+
+/// Collect ALL symbols from a specific file path, sorted by line number.
+fn collect_file_outline(entries: &[FileSymbols], path: &str) -> Vec<OutlineMatch> {
+    let mut matches = Vec::new();
+    for entry in entries {
+        if entry.path == path || entry.path.ends_with(&format!("/{path}")) {
+            for sym in &entry.symbols {
+                matches.push(OutlineMatch {
+                    kind: sym.kind.clone(),
+                    name: sym.name.clone(),
+                    path: entry.path.clone(),
+                    line: sym.line,
+                    score: 0, // not relevant for file-path mode
+                });
+            }
+        }
+    }
+    matches.sort_by_key(|m| m.line);
+    matches
+}
+
+/// Handle the `/outline <query|filepath> [--all]` command.
 pub fn handle_outline(input: &str) {
     let rest = input.strip_prefix("/outline").unwrap_or(input).trim();
 
@@ -535,18 +570,41 @@ pub fn handle_outline(input: &str) {
 
     if query.is_empty() {
         println!(
-            "{DIM}  Usage: /outline <query> [--all]{RESET}\n  \
-             Search for functions, structs, enums, and traits across the project.\n\n  \
+            "{DIM}  Usage: /outline <query|filepath> [--all]{RESET}\n  \
+             Search for symbols across the project, or show all symbols in a file.\n\n  \
              Examples:\n    \
-             /outline parse\n    \
-             /outline Config\n    \
-             /outline handle --all"
+             /outline parse            {DIM}# search for symbols matching \"parse\"{RESET}\n    \
+             /outline Config            {DIM}# search for symbols matching \"Config\"{RESET}\n    \
+             /outline src/main.rs       {DIM}# show all symbols in src/main.rs{RESET}\n    \
+             /outline handle --all      {DIM}# show all matches (no limit){RESET}"
         );
         return;
     }
 
     // Build symbol map (include all symbols, not just public)
     let entries = build_repo_map(None, false);
+
+    // File-path mode: if the query looks like a file path and the file exists,
+    // show all symbols from that specific file.
+    if looks_like_file_path(query) && std::path::Path::new(query).exists() {
+        let file_matches = collect_file_outline(&entries, query);
+        if !file_matches.is_empty() {
+            println!();
+            for m in &file_matches {
+                println!("{}", format_outline_match(m));
+            }
+            println!();
+            println!(
+                "{DIM}  {} symbol(s) in \"{query}\"{RESET}",
+                file_matches.len()
+            );
+            return;
+        }
+        // If the file exists but had no symbols extracted, fall through to symbol search.
+        // This handles e.g. non-code files like .md that have no parseable symbols.
+    }
+
+    // Symbol-name search mode
     let matches = collect_outline_matches(&entries, query);
 
     if matches.is_empty() {
@@ -2028,5 +2086,117 @@ mod tests {
         // The limit is applied in handle_outline, not collect_outline_matches
         let limit = matches.len().min(OUTLINE_DEFAULT_LIMIT);
         assert_eq!(limit, 30);
+    }
+
+    #[test]
+    fn looks_like_file_path_with_slash() {
+        assert!(looks_like_file_path("src/main.rs"));
+        assert!(looks_like_file_path("src/format/mod.rs"));
+        assert!(looks_like_file_path("lib/utils.py"));
+    }
+
+    #[test]
+    fn looks_like_file_path_with_known_extension() {
+        assert!(looks_like_file_path("main.rs"));
+        assert!(looks_like_file_path("utils.py"));
+        assert!(looks_like_file_path("index.ts"));
+        assert!(looks_like_file_path("app.js"));
+        assert!(looks_like_file_path("server.go"));
+        assert!(looks_like_file_path("Main.java"));
+        assert!(looks_like_file_path("lib.c"));
+        assert!(looks_like_file_path("util.cpp"));
+        assert!(looks_like_file_path("helper.rb"));
+        assert!(looks_like_file_path("config.toml"));
+        assert!(looks_like_file_path("data.json"));
+        assert!(looks_like_file_path("style.css"));
+        assert!(looks_like_file_path("page.html"));
+    }
+
+    #[test]
+    fn looks_like_file_path_rejects_symbol_names() {
+        assert!(!looks_like_file_path("Config"));
+        assert!(!looks_like_file_path("parse_args"));
+        assert!(!looks_like_file_path("handle"));
+        assert!(!looks_like_file_path("run_server"));
+    }
+
+    #[test]
+    fn collect_file_outline_filters_by_path() {
+        let entries = vec![
+            FileSymbols {
+                path: "src/main.rs".to_string(),
+                lines: 100,
+                symbols: vec![
+                    Symbol {
+                        name: "main".to_string(),
+                        kind: SymbolKind::Function,
+                        is_public: false,
+                        line: 1,
+                    },
+                    Symbol {
+                        name: "Config".to_string(),
+                        kind: SymbolKind::Struct,
+                        is_public: true,
+                        line: 20,
+                    },
+                ],
+            },
+            FileSymbols {
+                path: "src/lib.rs".to_string(),
+                lines: 50,
+                symbols: vec![Symbol {
+                    name: "init".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 5,
+                }],
+            },
+        ];
+
+        let matches = collect_file_outline(&entries, "src/main.rs");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].name, "main");
+        assert_eq!(matches[1].name, "Config");
+
+        // Non-existent file returns empty
+        let matches = collect_file_outline(&entries, "src/nonexistent.rs");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn collect_file_outline_sorts_by_line() {
+        let entries = vec![FileSymbols {
+            path: "src/test.rs".to_string(),
+            lines: 100,
+            symbols: vec![
+                Symbol {
+                    name: "gamma".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 30,
+                },
+                Symbol {
+                    name: "alpha".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 10,
+                },
+                Symbol {
+                    name: "beta".to_string(),
+                    kind: SymbolKind::Struct,
+                    is_public: true,
+                    line: 20,
+                },
+            ],
+        }];
+
+        let matches = collect_file_outline(&entries, "src/test.rs");
+        assert_eq!(matches.len(), 3);
+        assert_eq!(matches[0].name, "alpha");
+        assert_eq!(matches[0].line, 10);
+        assert_eq!(matches[1].name, "beta");
+        assert_eq!(matches[1].line, 20);
+        assert_eq!(matches[2].name, "gamma");
+        assert_eq!(matches[2].line, 30);
     }
 }
