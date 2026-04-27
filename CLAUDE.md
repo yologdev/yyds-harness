@@ -71,6 +71,7 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `prompt.rs` — prompt execution, agent interaction, streaming event handling, auto-retry logic, watch-after-prompt for non-REPL modes
 - `prompt_budget.rs` — session wall-clock budget + audit log helpers (extracted from `prompt.rs`)
 - `session.rs` — session tracking types: SessionChanges, TurnSnapshot, TurnHistory, format_changes (extracted from `prompt.rs`)
+- `sync_util.rs` — shared synchronisation helpers: `lock_or_recover` for poisoned `Mutex` recovery (deduplicated Day 58)
 
 Uses `yoagent::Agent` with `AnthropicProvider`, `default_tools()`, and an optional `SkillSet`.
 

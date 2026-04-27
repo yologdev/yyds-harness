@@ -6,18 +6,10 @@
 
 use crate::format::*;
 use crate::prompt::*;
+use crate::sync_util::lock_or_recover;
 
 use std::sync::{Arc, Mutex};
 use yoagent::types::{AgentMessage, Usage};
-
-/// Acquire a `std::sync::Mutex` lock, recovering from poison if a thread panicked.
-///
-/// See `commands_bg::lock_or_recover` for rationale — spawn tasks run in
-/// sub-agents that may panic, and we must not cascade a poisoned lock into the
-/// parent REPL.
-fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|e| e.into_inner())
-}
 
 // ── /spawn ────────────────────────────────────────────────────────────────
 

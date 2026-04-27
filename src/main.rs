@@ -67,6 +67,7 @@ mod repl;
 mod safety;
 mod session;
 mod setup;
+mod sync_util;
 mod tools;
 mod update;
 

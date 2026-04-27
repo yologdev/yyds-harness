@@ -4,13 +4,9 @@
 //! from prompt execution logic.
 
 use crate::format::pluralize;
+use crate::sync_util::lock_or_recover;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-
-/// Acquire a Mutex guard, recovering from a poisoned Mutex instead of panicking.
-fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|e| e.into_inner())
-}
 
 /// Tracks files modified during a session via write_file and edit_file tool calls.
 /// Thread-safe via Arc<Mutex<...>> so it can be shared across async tasks.
