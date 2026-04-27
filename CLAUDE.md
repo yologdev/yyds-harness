@@ -68,7 +68,8 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `format/cost.rs` — pricing, cost display, token formatting
 - `format/markdown.rs` — MarkdownRenderer for streaming markdown output
 - `format/tools.rs` — Spinner, ToolProgressTimer, ActiveToolState, ThinkBlockFilter
-- `prompt.rs` — prompt execution, agent interaction, streaming event handling, auto-retry logic, watch-after-prompt for non-REPL modes
+- `prompt.rs` — prompt execution, agent interaction, streaming event handling, auto-retry logic
+- `watch.rs` — watch mode: set/get/clear watch command, run watch command with streaming output, auto-fix loop after prompts (extracted from `prompt.rs`)
 - `prompt_budget.rs` — session wall-clock budget + audit log helpers (extracted from `prompt.rs`)
 - `session.rs` — session tracking types: SessionChanges, TurnSnapshot, TurnHistory, format_changes (extracted from `prompt.rs`)
 - `sync_util.rs` — shared synchronisation helpers: `lock_or_recover` for poisoned `Mutex` recovery (deduplicated Day 58)

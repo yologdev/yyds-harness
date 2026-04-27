@@ -70,6 +70,7 @@ mod setup;
 mod sync_util;
 mod tools;
 mod update;
+mod watch;
 
 use cli::*;
 use format::*;
