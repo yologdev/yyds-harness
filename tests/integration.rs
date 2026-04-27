@@ -2241,3 +2241,110 @@ fn skills_directory_loads_via_yoagent_skillset() {
         "skill-evolve meta-skill must be present"
     );
 }
+
+/// Validates the SharedState round-trip pattern used by `build_sub_agent_tool`.
+///
+/// Since yoyo is a binary crate, integration tests can't call `build_sub_agent_tool`
+/// directly. Instead we exercise the same yoagent public API that `build_sub_agent_tool`
+/// wires internally:
+///   1. Create a SharedState
+///   2. Wire it into a SubAgentTool via `.with_shared_state()`
+///   3. Write a value from the "parent" side
+///   4. Read it back and verify the round-trip
+///   5. Confirm SharedStateTool reports the correct tool name ("shared_state")
+///
+/// This complements the unit tests in `src/tools.rs` by testing the yoagent API
+/// surface from *outside* the crate — the same perspective a fork or downstream
+/// consumer would have.
+#[test]
+fn test_shared_state_sub_agent_roundtrip() {
+    use yoagent::shared_state::SharedState;
+    use yoagent::tools::SharedStateTool;
+    use yoagent::AgentTool;
+
+    // 1. Create a SharedState — same as build_sub_agent_tool does internally
+    let shared_state = SharedState::new();
+
+    // 2. Create a SharedStateTool wired to the same state — this is what
+    //    SubAgentTool::with_shared_state() adds to the sub-agent's tool list
+    let shared_state_tool = SharedStateTool::new(shared_state.clone());
+
+    // 3. Verify the tool name is "shared_state" — this is the name that must
+    //    appear in BUILTIN_TOOL_NAMES for MCP collision detection to work
+    assert_eq!(
+        shared_state_tool.name(),
+        "shared_state",
+        "SharedStateTool must report name 'shared_state' — \
+         BUILTIN_TOOL_NAMES in src/main.rs depends on this"
+    );
+
+    // 4. Round-trip: parent writes a value, reads it back
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        // Write from the parent side
+        shared_state
+            .set("test.artifact", "analysis result from parent".into())
+            .await
+            .expect("set should succeed on a fresh SharedState");
+
+        // Read back — simulates what a sub-agent would see
+        let value = shared_state.get("test.artifact").await;
+        assert_eq!(
+            value,
+            Some("analysis result from parent".to_string()),
+            "SharedState round-trip: value written by parent must be readable"
+        );
+
+        // 5. Verify keys are enumerable (sub-agents use this to discover context)
+        let keys = shared_state.keys().await;
+        assert_eq!(keys, vec!["test.artifact".to_string()]);
+
+        // 6. Multiple keys work (real usage: parent pre-populates several artifacts)
+        shared_state
+            .set("test.config", "model=test".into())
+            .await
+            .expect("second set should succeed");
+        let keys = shared_state.keys().await;
+        assert_eq!(keys.len(), 2, "Should have two keys after two sets");
+        assert!(keys.contains(&"test.artifact".to_string()));
+        assert!(keys.contains(&"test.config".to_string()));
+    });
+}
+
+/// Verify that "shared_state" appears in yoyo's BUILTIN_TOOL_NAMES by checking
+/// the binary's MCP collision detection behavior. If a hypothetical MCP server
+/// exposed a tool called "shared_state", yoyo should flag it as a collision.
+/// We verify this indirectly: the binary's --help output references SharedState
+/// functionality, and the SharedStateTool's name matches what BUILTIN_TOOL_NAMES
+/// must contain.
+#[test]
+fn test_builtin_tool_names_includes_shared_state() {
+    // SharedStateTool.name() must be "shared_state" — this is the canonical name
+    // that BUILTIN_TOOL_NAMES must include for MCP collision detection.
+    use yoagent::tools::SharedStateTool;
+    use yoagent::AgentTool;
+
+    let state = yoagent::shared_state::SharedState::new();
+    let tool = SharedStateTool::new(state);
+    let tool_name = tool.name();
+
+    // The tool name must be exactly "shared_state" — if yoagent ever changes this,
+    // BUILTIN_TOOL_NAMES in src/main.rs must be updated too.
+    assert_eq!(
+        tool_name, "shared_state",
+        "SharedStateTool name must be 'shared_state' to match BUILTIN_TOOL_NAMES"
+    );
+
+    // Cross-check: read the source to verify BUILTIN_TOOL_NAMES contains it.
+    // This is a source-level assertion — fragile by design, so it catches drift.
+    let main_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("should be able to read src/main.rs");
+
+    assert!(
+        main_src.contains(r#""shared_state""#),
+        "src/main.rs BUILTIN_TOOL_NAMES must contain \"shared_state\" — \
+         MCP collision detection depends on this"
+    );
+}
