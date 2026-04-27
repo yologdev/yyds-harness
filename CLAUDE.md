@@ -182,6 +182,8 @@ yoyo is built on [yoagent](https://github.com/yologdev/yoagent). Before implemen
 
 Key yoagent features available: `SubAgentTool`, `SharedState`, `SharedStateTool`, `ContextConfig`, `ExecutionLimits`, `CompactionStrategy`, `AgentEvent` stream, `default_tools()`, `SkillSet`, `with_sub_agent()`.
 
+**SharedState substrate** (Day 58): Sub-agents created via `build_sub_agent_tool` share a `yoagent::SharedState` key-value store with their parent. Artifacts are stored once and read by reference (`shared_state` tool) instead of being pasted into each sub-agent's prompt. The `shared_state` tool name is in `BUILTIN_TOOL_NAMES` for MCP collision detection.
+
 **yoagent 0.7.x prompt lifecycle gotcha (Issue #258):** `agent.prompt()` / `agent.prompt_messages()` spawns the agent loop into a tokio task and returns the event receiver immediately. The agent's internal `self.messages` is NOT updated until `agent.finish().await` is called. If you read `agent.messages()` (or `total_tokens(agent.messages())`) right after draining the event stream WITHOUT calling `finish()` first, you will see the stale pre-prompt state — which silently breaks anything that depends on message count (e.g., the context-window usage bar). Always call `agent.finish().await` between event drain and message read.
 
 ## Safety Rules

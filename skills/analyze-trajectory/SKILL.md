@@ -1,7 +1,7 @@
 ---
 name: analyze-trajectory
 description: Diagnose a recurring failure (STUCK task, clustered CI error, frequent reverts) by dispatching sub-agents to digest CI logs without bloating main context. Returns one root-cause diagnosis.
-tools: [bash, read_file, sub_agent]
+tools: [bash, read_file, sub_agent, shared_state]
 core: true
 origin: creator
 ---
@@ -66,13 +66,25 @@ gh run view <id> --log-failed 2>/dev/null | wc -c
 
 ### 4. Dispatch a sub-agent (if needed)
 
-Use the `sub_agent` tool with this template. The sub-agent must return JSON conforming to this exact schema — note the `null` examples (JSON null, not the string `"null"`):
+**Store the artifact in shared state first** — don't paste large logs into the sub-agent prompt. Sub-agents automatically have access to the `shared_state` tool and share the same key-value store as their parent.
+
+Use the namespace convention `trajectory.<key>` for all artifacts stored by this skill.
+
+```bash
+# 1. Fetch the artifact into a shell variable
+LOG=$(gh run view <id> --log-failed 2>/dev/null)
+
+# 2. Store it in shared state (the parent agent calls this directly)
+shared_state set key="trajectory.run-<id>" value="$LOG"
+```
+
+Then dispatch the sub-agent with a **reference**, not the artifact itself:
 
 ```
 Question: <your single-sentence question from step 1>
 
-Artifact (compressed log; do NOT include this in your reply, only summarize):
-<paste the gh run view output here>
+The CI log is stored in shared state under key "trajectory.run-<id>".
+Read it with: shared_state get key="trajectory.run-<id>"
 
 Reply with ONLY a JSON object (no markdown fences, no prose) matching this schema:
 
@@ -90,12 +102,12 @@ Field rules:
 - confidence: exactly one of "high", "medium", or "low"
 ```
 
-Sub-agents inherit RTK compression on bash output and directory restrictions, but they do NOT inherit skills. Keep the sub-agent prompt fully self-contained — don't reference other skills.
+Sub-agents inherit RTK compression on bash output and directory restrictions, but they do NOT inherit skills. Keep the sub-agent prompt fully self-contained — don't reference other skills. Sub-agents share the parent's `SharedState` store automatically (via `SharedStateTool` wired by `build_sub_agent_tool`).
 
 **Sub-agent failure fallback** — if the sub-agent (a) errors, (b) returns non-JSON, (c) returns truncated JSON, or (d) is unavailable as a tool:
 
 1. Append the raw response to `memory/learnings.jsonl` as a learning entry with `pattern_key: trajectory.subagent_malformed_response` so we can debug later.
-2. Downgrade to a direct read of the artifact: `read_file` or `bash`-tail the last 50-100 lines of the log into your main context.
+2. Downgrade to a direct read of the artifact: use `shared_state get key="trajectory.run-<id>"` to retrieve the stored log, then read the last 50-100 lines in your main context.
 3. Produce a low-confidence diagnosis from what you can see directly. Skip recursion (no point — sub-agent path is broken).
 4. Mark the diagnosis with `confidence: low (sub-agent unavailable)` so downstream decisions know to be cautious.
 
@@ -124,9 +136,9 @@ Write the diagnosis somewhere durable:
 
 - **Don't ask the sub-agent to make decisions.** It summarizes evidence; you decide what to do. Sub-agents in chained recursion can drift if asked to plan.
 - **Don't recurse on `confidence: high`.** The whole point is to stop early when you have a clear answer.
-- **Don't dump multiple artifacts to one sub-agent.** One artifact per dispatch keeps the sub-agent focused and the JSON output reliable.
+- **Don't dump multiple artifacts to one sub-agent.** One artifact per dispatch keeps the sub-agent focused and the JSON output reliable. Store each artifact under a separate `trajectory.<key>` in shared state.
 - **Don't forget the recursion cap.** 3 is the hard limit. If you find yourself wanting depth 4, your initial question was probably too vague — go back to step 1.
-- **Skills do not chain.** Sub-agents don't load this skill or any other; you must paste the question + artifact into the sub-agent's prompt directly.
+- **Skills do not chain.** Sub-agents don't load this skill or any other; you must include the question and shared-state key reference in the sub-agent's prompt directly.
 - **Don't run this skill inside Phase B (implementation).** That's task-execution time, not introspection time. Save the diagnosis for the next session's Phase A1 (assess).
 
 ## Verification
