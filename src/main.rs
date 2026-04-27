@@ -116,6 +116,7 @@ pub(crate) const BUILTIN_TOOL_NAMES: &[&str] = &[
     "ask_user",
     "todo",
     "sub_agent",
+    "shared_state",
 ];
 
 /// Pure helper: return the subset of `mcp_tools` whose names collide with any
@@ -511,8 +512,11 @@ impl AgentConfig {
                 self.shell_hooks.clone(),
             ));
 
-        // Add sub-agent tool via the dedicated API (separate from build_tools count)
-        agent = agent.with_sub_agent(build_sub_agent_tool(self));
+        // Add sub-agent tool via the dedicated API (separate from build_tools count).
+        // The SharedState handle is kept for future use (e.g. pre-populating context
+        // before dispatching sub-agents like analyze-trajectory).
+        let (sub_agent_tool, _shared_state) = build_sub_agent_tool(self);
+        agent = agent.with_sub_agent(sub_agent_tool);
 
         // Tell yoagent the context window size so its built-in compaction knows the budget.
         // Uses 80% of the effective context window as the compaction threshold.
@@ -2465,5 +2469,15 @@ mod tests {
             std::env::remove_var("AWS_SECRET_ACCESS_KEY");
             std::env::remove_var("AWS_SESSION_TOKEN");
         }
+    }
+
+    #[test]
+    fn builtin_tool_names_includes_shared_state() {
+        // SharedStateTool registers as "shared_state" in sub-agents — MCP servers
+        // exposing the same name would cause a collision, so our guard must know it.
+        assert!(
+            BUILTIN_TOOL_NAMES.contains(&"shared_state"),
+            "BUILTIN_TOOL_NAMES must include 'shared_state' to guard against MCP collisions"
+        );
     }
 }

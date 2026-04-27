@@ -34,6 +34,7 @@ use yoagent::tools::file::{ReadFileTool, WriteFileTool};
 use yoagent::tools::list::ListFilesTool;
 use yoagent::tools::search::SearchTool;
 use yoagent::types::AgentTool;
+use yoagent::SharedState;
 
 // --- RTK (Rust Token Killer) integration ---
 
@@ -1276,7 +1277,14 @@ pub fn build_tools(
 /// Build a SubAgentTool that inherits the parent's provider/model/key.
 /// The sub-agent gets basic tools with inherited directory restrictions
 /// (no permission prompts, no sub-agent recursion).
-pub(crate) fn build_sub_agent_tool(config: &AgentConfig) -> SubAgentTool {
+///
+/// Returns `(SubAgentTool, SharedState)` — the `SharedState` handle lets the
+/// parent agent pre-populate or read shared variables. The sub-agent
+/// automatically receives a `shared_state` tool (via yoagent's
+/// `SharedStateTool`) so it can read/write the same store.
+pub(crate) fn build_sub_agent_tool(config: &AgentConfig) -> (SubAgentTool, SharedState) {
+    let shared_state = SharedState::new();
+
     // Sub-agent gets standard yoagent tools — no permission guards needed
     // since the parent already authorized the delegation.
     // Directory restrictions ARE inherited to prevent sub-agents from bypassing
@@ -1299,7 +1307,7 @@ pub(crate) fn build_sub_agent_tool(config: &AgentConfig) -> SubAgentTool {
         _ => Arc::new(OpenAiCompatProvider),
     };
 
-    SubAgentTool::new("sub_agent", provider)
+    let tool = SubAgentTool::new("sub_agent", provider)
         .with_description(
             "Delegate a subtask to a fresh sub-agent with its own context window. \
              Use for complex, self-contained subtasks like: researching a codebase, \
@@ -1317,6 +1325,9 @@ pub(crate) fn build_sub_agent_tool(config: &AgentConfig) -> SubAgentTool {
         .with_tools(child_tools)
         .with_thinking(config.thinking)
         .with_max_turns(25)
+        .with_shared_state(shared_state.clone());
+
+    (tool, shared_state)
 }
 
 #[cfg(test)]
@@ -1367,14 +1378,14 @@ mod tests {
     #[test]
     fn test_build_sub_agent_tool_returns_correct_name() {
         let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
-        let tool = build_sub_agent_tool(&config);
+        let (tool, _state) = build_sub_agent_tool(&config);
         assert_eq!(tool.name(), "sub_agent");
     }
 
     #[test]
     fn test_build_sub_agent_tool_has_task_parameter() {
         let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
-        let tool = build_sub_agent_tool(&config);
+        let (tool, _state) = build_sub_agent_tool(&config);
         let schema = tool.parameters_schema();
         assert!(
             schema["properties"]["task"].is_object(),
@@ -1389,11 +1400,12 @@ mod tests {
     #[test]
     fn test_build_sub_agent_tool_all_providers() {
         // All provider paths should build without panic
-        let _tool_anthropic =
+        let (_tool_anthropic, _) =
             build_sub_agent_tool(&test_agent_config("anthropic", "claude-sonnet-4-20250514"));
-        let _tool_google = build_sub_agent_tool(&test_agent_config("google", "gemini-2.0-flash"));
-        let _tool_openai = build_sub_agent_tool(&test_agent_config("openai", "gpt-4o"));
-        let _tool_bedrock = build_sub_agent_tool(&test_agent_config(
+        let (_tool_google, _) =
+            build_sub_agent_tool(&test_agent_config("google", "gemini-2.0-flash"));
+        let (_tool_openai, _) = build_sub_agent_tool(&test_agent_config("openai", "gpt-4o"));
+        let (_tool_bedrock, _) = build_sub_agent_tool(&test_agent_config(
             "bedrock",
             "anthropic.claude-sonnet-4-20250514-v1:0",
         ));
@@ -1408,7 +1420,7 @@ mod tests {
             deny: vec!["/etc".to_string()],
         };
         // Should build without panic — restrictions are applied to file tools
-        let tool = build_sub_agent_tool(&config);
+        let (tool, _state) = build_sub_agent_tool(&config);
         assert_eq!(tool.name(), "sub_agent");
     }
 
@@ -1417,7 +1429,7 @@ mod tests {
         // Empty restrictions shouldn't break sub-agent building
         let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
         assert!(config.dir_restrictions.is_empty());
-        let tool = build_sub_agent_tool(&config);
+        let (tool, _state) = build_sub_agent_tool(&config);
         assert_eq!(tool.name(), "sub_agent");
     }
 
@@ -1432,6 +1444,49 @@ mod tests {
             8,
             "build_tools must stay at 8 — SubAgentTool is added via with_sub_agent"
         );
+    }
+
+    // === SharedState integration tests ===
+
+    #[test]
+    fn test_build_sub_agent_tool_returns_shared_state() {
+        // The returned SharedState should be a valid, usable handle
+        let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
+        let (_tool, shared_state) = build_sub_agent_tool(&config);
+        // SharedState starts empty — verify via the async API
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let keys = rt.block_on(shared_state.keys());
+        assert!(keys.is_empty(), "Fresh SharedState should have no keys");
+    }
+
+    #[test]
+    fn test_shared_state_parent_can_prepopulate() {
+        // Parent agent should be able to write into SharedState before dispatching
+        let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
+        let (_tool, shared_state) = build_sub_agent_tool(&config);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            shared_state
+                .set("context", "some analysis artifact".into())
+                .await
+                .unwrap();
+            let val = shared_state.get("context").await;
+            assert_eq!(val, Some("some analysis artifact".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_shared_state_independent_per_build() {
+        // Each call to build_sub_agent_tool should produce an independent SharedState
+        let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
+        let (_tool1, state1) = build_sub_agent_tool(&config);
+        let (_tool2, state2) = build_sub_agent_tool(&config);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            state1.set("key", "from_agent_1".into()).await.unwrap();
+            // state2 should not see state1's data
+            assert_eq!(state2.get("key").await, None);
+        });
     }
 
     // === File operation confirmation tests ===
