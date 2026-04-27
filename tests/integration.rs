@@ -2337,14 +2337,14 @@ fn test_builtin_tool_names_includes_shared_state() {
 
     // Cross-check: read the source to verify BUILTIN_TOOL_NAMES contains it.
     // This is a source-level assertion — fragile by design, so it catches drift.
-    let main_src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    let agent_builder_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent_builder.rs"),
     )
-    .expect("should be able to read src/main.rs");
+    .expect("should be able to read src/agent_builder.rs");
 
     assert!(
-        main_src.contains(r#""shared_state""#),
-        "src/main.rs BUILTIN_TOOL_NAMES must contain \"shared_state\" — \
+        agent_builder_src.contains(r#""shared_state""#),
+        "src/agent_builder.rs BUILTIN_TOOL_NAMES must contain \"shared_state\" — \
          MCP collision detection depends on this"
     );
 }

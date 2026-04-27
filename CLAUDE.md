@@ -50,7 +50,8 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 **Build** (`build.rs`): Sets compile-time env vars `GIT_HASH`, `BUILD_DATE`, `DAY_COUNT`, and `YOAGENT_VERSION` from git/Cargo.lock/DAY_COUNT file. All overridable by env var at build time (CI/release builds).
 
 **Multi-file agent** (`src/`):
-- `main.rs` — agent core, REPL, streaming event handling, rendering with ANSI colors, sub-agent tool integration, AskUserTool (interactive question-asking)
+- `main.rs` — entry point, CLI flag handling, run modes (single-prompt, piped, REPL), setup/restore helpers
+- `agent_builder.rs` — AgentConfig, build_agent, build_side_agent, create_model_config, MCP collision detection (BUILTIN_TOOL_NAMES, detect_mcp_collisions), connect_external_servers, fallback retry logic
 - `hooks.rs` — Hook trait, HookRegistry, AuditHook, HookedTool wrapper, maybe_hook helper
 - `tools.rs` — StreamingBashTool, RenameSymbolTool, AskUserTool, TodoTool, tool builders, RTK proxy integration, SharedState wiring for sub-agents
 - `update.rs` — version comparison (`version_is_newer`) and update checking (`check_for_update`) against GitHub releases
@@ -165,9 +166,9 @@ This is enforced both by HARD RULE #1 in the meta-skill (LLM-side) and by the di
 
 **Tool-name collisions (Day 39):** If an MCP server exposes a tool whose name matches one of yoyo's builtins (`bash`, `read_file`, `write_file`, `edit_file`, `list_files`, `search`, `rename_symbol`, `ask_user`, `todo`, `sub_agent`, `shared_state`), the Anthropic API will reject the first turn with `"Tool names must be unique"` and the session dies. The flagship reference server `@modelcontextprotocol/server-filesystem` collides on `read_file` AND `write_file`, so the common case was broken until the guard landed.
 
-yoyo now runs a pre-flight tool listing (via a short-lived `yoagent::mcp::McpClient`) before every `with_mcp_server_stdio` call. If any MCP tool name appears in `BUILTIN_TOOL_NAMES` (defined in `src/main.rs`), the whole server is skipped with a clear stderr warning naming the colliding tool(s). Non-colliding servers connect normally. If the pre-flight itself fails (e.g. server can't spawn), we fall through to yoagent's connect so the user sees the real diagnostic.
+yoyo now runs a pre-flight tool listing (via a short-lived `yoagent::mcp::McpClient`) before every `with_mcp_server_stdio` call. If any MCP tool name appears in `BUILTIN_TOOL_NAMES` (defined in `src/agent_builder.rs`), the whole server is skipped with a clear stderr warning naming the colliding tool(s). Non-colliding servers connect normally. If the pre-flight itself fails (e.g. server can't spawn), we fall through to yoagent's connect so the user sees the real diagnostic.
 
-Keep `BUILTIN_TOOL_NAMES` in sync with `tools::build_tools` and the sub-agent's `SharedStateTool` whenever a new builtin is added — the pure helper `detect_mcp_collisions` is unit-tested in `src/main.rs` against the filesystem server's known tool set as a regression guard.
+Keep `BUILTIN_TOOL_NAMES` in sync with `tools::build_tools` and the sub-agent's `SharedStateTool` whenever a new builtin is added — the pure helper `detect_mcp_collisions` is unit-tested in `src/agent_builder.rs` against the filesystem server's known tool set as a regression guard.
 
 ## yoagent: Don't Reinvent the Wheel
 
