@@ -1,5 +1,6 @@
-//! Dev workflow command handlers: /doctor, /health, /fix, /test, /lint, /watch, /tree, /run.
+//! Dev workflow command handlers: /doctor, /health, /fix, /test, /lint, /watch, /tree, /run, /loop.
 
+use crate::agent_builder::AgentConfig;
 use crate::cli;
 use crate::commands::auto_compact_if_needed;
 use crate::commands_project::{detect_project_type, ProjectType};
@@ -1638,6 +1639,123 @@ pub fn handle_run_usage() {
     println!("  Runs a shell command directly (no AI, no tokens).{RESET}\n");
 }
 
+// ── /loop ──────────────────────────────────────────────────────────────────
+
+/// How many times to iterate in a `/loop` command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoopMode {
+    /// Run exactly N times (1..=100).
+    Count(usize),
+    /// Run until the last tool call succeeds (max 20 iterations).
+    UntilPass,
+}
+
+const MAX_UNTIL_PASS: usize = 20;
+const MAX_LOOP_COUNT: usize = 100;
+
+/// Parse `/loop <N|until-pass> <prompt>`.
+///
+/// Returns `None` if the input is malformed (missing args, zero count, etc.).
+/// Counts above [`MAX_LOOP_COUNT`] are clamped silently.
+pub fn parse_loop_args(input: &str) -> Option<(LoopMode, String)> {
+    let rest = input.strip_prefix("/loop").unwrap_or(input).trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+
+    // Split into mode token and the remaining prompt.
+    let (mode_tok, prompt) = match rest.split_once(char::is_whitespace) {
+        Some((m, p)) => (m, p.trim()),
+        None => return None, // e.g. "/loop 5" with no prompt
+    };
+
+    if prompt.is_empty() {
+        return None;
+    }
+
+    let mode = if mode_tok == "until-pass" {
+        LoopMode::UntilPass
+    } else if let Ok(n) = mode_tok.parse::<usize>() {
+        if n == 0 {
+            return None;
+        }
+        LoopMode::Count(n.min(MAX_LOOP_COUNT))
+    } else {
+        return None;
+    };
+
+    Some((mode, prompt.to_string()))
+}
+
+/// Run a prompt in a polling loop.
+pub async fn handle_loop(
+    input: &str,
+    agent: &mut Agent,
+    session_total: &mut Usage,
+    agent_config: &AgentConfig,
+    changes: &SessionChanges,
+) {
+    let (mode, prompt) = match parse_loop_args(input) {
+        Some(v) => v,
+        None => {
+            println!(
+                "{DIM}Usage: /loop <N|until-pass> <prompt>\n\
+                 \n  /loop 5 run the tests and fix any failures\
+                 \n  /loop until-pass run cargo test{RESET}"
+            );
+            return;
+        }
+    };
+
+    let max_iters = match &mode {
+        LoopMode::Count(n) => *n,
+        LoopMode::UntilPass => MAX_UNTIL_PASS,
+    };
+
+    for i in 1..=max_iters {
+        // Print iteration header.
+        let label = match &mode {
+            LoopMode::Count(n) => format!("--- loop iteration {i}/{n} ---"),
+            LoopMode::UntilPass => {
+                format!("--- loop iteration {i} (until-pass, max {MAX_UNTIL_PASS}) ---")
+            }
+        };
+        println!("\n{BOLD}{CYAN}{label}{RESET}\n");
+
+        let outcome =
+            run_prompt_auto_retry(agent, &prompt, session_total, &agent_config.model, changes)
+                .await;
+
+        auto_compact_if_needed(agent);
+
+        // For until-pass mode: stop when the last tool call succeeded (no error).
+        if mode == LoopMode::UntilPass && outcome.last_tool_error.is_none() {
+            println!(
+                "\n{GREEN}{BOLD}✓ Loop complete — last tool call succeeded on iteration {i}.{RESET}"
+            );
+            return;
+        }
+
+        // Don't sleep after the last iteration.
+        if i < max_iters {
+            // Brief pause so the user can Ctrl+C between iterations.
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
+
+    // Finished all iterations.
+    match &mode {
+        LoopMode::Count(n) => {
+            println!("\n{DIM}Loop complete — {n} iterations finished.{RESET}");
+        }
+        LoopMode::UntilPass => {
+            println!(
+                "\n{YELLOW}Loop exhausted {MAX_UNTIL_PASS} iterations without a passing tool call.{RESET}"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2663,6 +2781,73 @@ unsafe impl Send for Foo {}
         assert!(
             LINT_SUBCOMMANDS.contains(&"unsafe"),
             "LINT_SUBCOMMANDS should contain 'unsafe'"
+        );
+    }
+
+    // ── /loop parse tests ────────────────────────────────────────────
+
+    #[test]
+    fn parse_loop_count_with_prompt() {
+        let result = parse_loop_args("/loop 5 fix the tests");
+        assert_eq!(
+            result,
+            Some((LoopMode::Count(5), "fix the tests".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_loop_until_pass() {
+        let result = parse_loop_args("/loop until-pass cargo test");
+        assert_eq!(
+            result,
+            Some((LoopMode::UntilPass, "cargo test".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_loop_missing_args() {
+        assert_eq!(parse_loop_args("/loop"), None);
+    }
+
+    #[test]
+    fn parse_loop_missing_prompt() {
+        assert_eq!(parse_loop_args("/loop 5"), None);
+    }
+
+    #[test]
+    fn parse_loop_zero_not_valid() {
+        assert_eq!(parse_loop_args("/loop 0 something"), None);
+    }
+
+    #[test]
+    fn parse_loop_capped_at_100() {
+        let result = parse_loop_args("/loop 200 something");
+        assert_eq!(
+            result,
+            Some((LoopMode::Count(100), "something".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_loop_invalid_mode() {
+        assert_eq!(parse_loop_args("/loop abc do stuff"), None);
+    }
+
+    #[test]
+    fn parse_loop_one_iteration() {
+        let result = parse_loop_args("/loop 1 check it");
+        assert_eq!(result, Some((LoopMode::Count(1), "check it".to_string())));
+    }
+
+    #[test]
+    fn parse_loop_prompt_preserves_spaces() {
+        let result = parse_loop_args("/loop 3 check if the server is responding");
+        assert_eq!(
+            result,
+            Some((
+                LoopMode::Count(3),
+                "check if the server is responding".to_string()
+            ))
         );
     }
 }

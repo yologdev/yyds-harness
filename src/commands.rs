@@ -33,8 +33,10 @@ pub use crate::commands_memory::{handle_forget, handle_memories, handle_remember
 // Re-export config, hooks, permissions, teach, and MCP handlers extracted
 // to commands_config.rs (issue #260 slice). Same stability contract as above.
 pub use crate::commands_config::{
-    handle_config, handle_config_edit, handle_config_get, handle_config_set, handle_config_show,
-    handle_hooks, handle_mcp, handle_permissions, handle_teach, is_teach_mode, TEACH_MODE_PROMPT,
+    architect_model, default_editor_model, handle_architect, handle_config, handle_config_edit,
+    handle_config_get, handle_config_set, handle_config_show, handle_hooks, handle_mcp,
+    handle_permissions, handle_teach, is_architect_mode, is_teach_mode, ARCHITECT_PROMPT,
+    TEACH_MODE_PROMPT,
 };
 
 use yoagent::agent::Agent;
@@ -45,6 +47,7 @@ use yoagent::*;
 pub const KNOWN_COMMANDS: &[&str] = &[
     "/add",
     "/apply",
+    "/architect",
     "/bg",
     "/checkpoint",
     "/help",
@@ -91,6 +94,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "/grep",
     "/test",
     "/lint",
+    "/loop",
     "/spawn",
     "/update",
     "/review",
@@ -169,6 +173,7 @@ pub const CONFIG_SUBCOMMANDS: &[&str] = &["show", "edit", "set", "get"];
 /// Returns `None` for commands that take no arguments.
 pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
     match cmd {
+        "architect" => Some("on | off | <model>"),
         "diff" => Some("[file] [--stat] [--cached] [--staged] [--name-only]"),
         "model" => Some("<model-name>"),
         "think" => Some("off | low | medium | high"),
@@ -186,6 +191,7 @@ pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
         "refactor" => Some("rename | extract | move"),
         "watch" => Some("off | status"),
         "lint" => Some("fix | pedantic | strict | unsafe"),
+        "loop" => Some("<N|until-pass> <prompt>"),
         "provider" => Some("<provider-name>"),
         "context" => Some("show | files | clear"),
         "skill" => Some("list | show | path"),
@@ -453,8 +459,8 @@ pub use crate::commands_search::{
 };
 
 pub use crate::commands_dev::{
-    handle_doctor, handle_fix, handle_health, handle_lint, handle_lint_fix, handle_run,
-    handle_run_usage, handle_test, handle_tree, handle_update, handle_watch,
+    handle_doctor, handle_fix, handle_health, handle_lint, handle_lint_fix, handle_loop,
+    handle_run, handle_run_usage, handle_test, handle_tree, handle_update, handle_watch,
 };
 
 pub use crate::commands_file::{

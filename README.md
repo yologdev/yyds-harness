@@ -343,6 +343,7 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 | `/exit`, `/quit` | Exit |
 | `/find <pattern>` | Fuzzy-search project files by name |
 | `/fix` | Auto-fix build/lint errors |
+| `/loop <N\|until-pass> <prompt>` | Repeat a prompt in a polling loop |
 | `/forget <n>` | Remove a project memory by index |
 | `/git <subcmd>` | Quick git: status, log, add, diff, branch, stash |
 | `/health` | Run project health checks |

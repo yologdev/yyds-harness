@@ -64,6 +64,76 @@ gh run view <id> --log-failed 2>/dev/null | wc -c
 - **< 5KB**: read it directly with `read_file` or `bash`. Skip sub-agent — the cost isn't worth it.
 - **≥ 5KB**: dispatch a sub-agent. Don't load raw logs into your main context.
 
+### 3.5. Handle large artifacts (token-aware chunking)
+
+Before dispatching a sub-agent, estimate whether the artifact fits in a single sub-agent's context:
+
+```
+estimated_tokens = artifact_bytes / 4
+```
+
+**If estimated_tokens ≤ 30,000** (roughly half a sub-agent's context window): proceed to Step 4 as normal — single sub-agent dispatch.
+
+**If estimated_tokens > 30,000**: the artifact is too large for one sub-agent to digest reliably. Split and fan out:
+
+1. **Split into chunks** of ~20,000 tokens (~80,000 bytes) with 2,000-token (~8,000 byte) overlap between consecutive chunks. The overlap ensures error context that spans a chunk boundary isn't lost.
+
+2. **Store each chunk separately** in shared state:
+   ```
+   shared_state set key="trajectory.run-<id>.chunk-1" value="<first 80KB>"
+   shared_state set key="trajectory.run-<id>.chunk-2" value="<next 80KB, starting 8KB before the split>"
+   ...
+   ```
+
+3. **Dispatch one sub-agent per chunk** with the prompt:
+   ```
+   You are analyzing CHUNK <N> of <M> from a CI log.
+
+   The chunk is stored in shared state under key "trajectory.run-<id>.chunk-<N>".
+   Read it with: shared_state get key="trajectory.run-<id>.chunk-<N>"
+
+   Question: <your single-sentence question from step 1>
+
+   Reply with ONLY a JSON object (no markdown fences, no prose):
+   {
+     "summary": "1-3 sentences on what this chunk reveals about the failure",
+     "key_lines": ["relevant line 1", "relevant line 2"],
+     "chunk_relevant": true,
+     "confidence": "high|medium|low"
+   }
+
+   If this chunk contains no information relevant to the question, set chunk_relevant to false
+   and keep summary/key_lines minimal.
+   ```
+
+4. **Merge chunk results** — after all chunk sub-agents return, store their combined results in shared state and dispatch one final merge sub-agent:
+   ```
+   shared_state set key="trajectory.run-<id>.chunk-results" value="<JSON array of chunk responses>"
+   ```
+
+   Merge sub-agent prompt:
+   ```
+   You are merging analyses from <M> chunks of a single CI log.
+
+   The chunk analyses are stored in shared state under key "trajectory.run-<id>.chunk-results".
+   Read them with: shared_state get key="trajectory.run-<id>.chunk-results"
+
+   Original question: <your single-sentence question from step 1>
+
+   Synthesize the chunk analyses into a single diagnosis.
+   Reply with ONLY a JSON object (no markdown fences, no prose):
+   {
+     "summary": "1-3 sentences explaining the root cause",
+     "key_lines": ["most important line 1", "most important line 2"],
+     "deeper_question": null,
+     "confidence": "high|medium|low"
+   }
+   ```
+
+5. The merge sub-agent's response is your diagnosis — validate it using the same JSON contract rules in Step 4.
+
+**Chunking counts toward the recursion cap** (Step 5): each chunk sub-agent is depth 1, the merge sub-agent is depth 1. If chunking used 4 chunk agents + 1 merge agent, you've used 1 of your 3 recursion levels. You can still recurse on a `deeper_question` from the merge result, but be mindful of the budget.
+
 ### 4. Dispatch a sub-agent (if needed)
 
 **Store the artifact in shared state first** — don't paste large logs into the sub-agent prompt. Sub-agents automatically have access to the `shared_state` tool and share the same key-value store as their parent.
@@ -104,12 +174,36 @@ Field rules:
 
 Sub-agents inherit RTK compression on bash output and directory restrictions, but they do NOT inherit skills. Keep the sub-agent prompt fully self-contained — don't reference other skills. Sub-agents share the parent's `SharedState` store automatically (via `SharedStateTool` wired by `build_sub_agent_tool`).
 
-**Sub-agent failure fallback** — if the sub-agent (a) errors, (b) returns non-JSON, (c) returns truncated JSON, or (d) is unavailable as a tool:
+**Validate the sub-agent response** — after the sub-agent returns, check:
+
+1. **Parse as JSON.** Strip any leading/trailing whitespace and markdown code fences (` ```json ... ``` `) that sub-agents sometimes add despite instructions.
+2. **Check required fields.** The parsed object must contain all four keys: `summary` (string), `key_lines` (array of strings), `deeper_question` (string or null), `confidence` (one of `"high"`, `"medium"`, `"low"`).
+3. **If valid** → proceed to Step 5 (recursion check).
+4. **If invalid** → retry ONCE with this prompt:
+
+```
+Your previous response was not valid JSON or was missing required fields.
+
+Please respond with ONLY a JSON object (no markdown, no explanation):
+{
+  "summary": "1-3 sentences explaining the root cause",
+  "key_lines": ["key line 1", "key line 2"],
+  "deeper_question": null,
+  "confidence": "high|medium|low"
+}
+
+Required fields: summary (string), key_lines (array), deeper_question (string or null), confidence ("high"|"medium"|"low").
+```
+
+5. **If retry also fails** → fall back gracefully (see below).
+
+**Sub-agent failure fallback** — if the sub-agent (a) errors, (b) returns non-JSON twice (initial + retry), (c) returns truncated JSON that can't be repaired, or (d) is unavailable as a tool:
 
 1. Append the raw response to `memory/learnings.jsonl` as a learning entry with `pattern_key: trajectory.subagent_malformed_response` so we can debug later.
-2. Downgrade to a direct read of the artifact: use `shared_state get key="trajectory.run-<id>"` to retrieve the stored log, then read the last 50-100 lines in your main context.
-3. Produce a low-confidence diagnosis from what you can see directly. Skip recursion (no point — sub-agent path is broken).
-4. Mark the diagnosis with `confidence: low (sub-agent unavailable)` so downstream decisions know to be cautious.
+2. Extract whatever text the sub-agent did return and treat it as the `summary` field. Construct a synthetic response: `{"summary": "<raw text, first 500 chars>", "key_lines": [], "deeper_question": null, "confidence": "low"}`.
+3. If even the raw text is empty or the sub-agent errored entirely, downgrade to a direct read of the artifact: use `shared_state get key="trajectory.run-<id>"` to retrieve the stored log, then read the last 50-100 lines in your main context.
+4. Produce a low-confidence diagnosis from what you can see directly. Skip recursion (no point — sub-agent path is broken).
+5. Mark the diagnosis with `confidence: low (sub-agent unavailable)` so downstream decisions know to be cautious.
 
 ### 5. Recurse if the sub-agent returns `deeper_question`
 

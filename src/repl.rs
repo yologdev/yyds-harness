@@ -407,16 +407,22 @@ pub async fn run_repl(
     let mut checkpoint_store = commands::CheckpointStore::new();
 
     loop {
-        let prompt = if let Some(branch) = git_branch() {
+        // Build mode indicators
+        let mode_indicators = {
+            let mut indicators = String::new();
             if commands::is_plan_mode() {
-                format!("{BOLD}{GREEN}{branch}{RESET} {BOLD}{YELLOW}📋{RESET} {BOLD}{GREEN}🐙 › {RESET}")
-            } else {
-                format!("{BOLD}{GREEN}{branch}{RESET} {BOLD}{GREEN}🐙 › {RESET}")
+                indicators.push_str(&format!("{BOLD}{YELLOW}📋{RESET} "));
             }
-        } else if commands::is_plan_mode() {
-            format!("{BOLD}{YELLOW}📋{RESET} {BOLD}{GREEN}🐙 › {RESET}")
+            if commands::is_architect_mode() {
+                indicators.push_str(&format!("{BOLD}{YELLOW}🏗️{RESET} "));
+            }
+            indicators
+        };
+
+        let prompt = if let Some(branch) = git_branch() {
+            format!("{BOLD}{GREEN}{branch}{RESET} {mode_indicators}{BOLD}{GREEN}🐙 › {RESET}")
         } else {
-            format!("{BOLD}{GREEN}🐙 › {RESET}")
+            format!("{mode_indicators}{BOLD}{GREEN}🐙 › {RESET}")
         };
 
         let line = match rl.readline(&prompt) {
@@ -529,7 +535,134 @@ pub async fn run_repl(
 
         let prompt_start = Instant::now();
         turn_count += 1;
-        let outcome = if !file_results.is_empty() {
+
+        // ── Architect mode: plan with strong model, implement with editor ──
+        let outcome = if commands::is_architect_mode() {
+            let arch_model =
+                commands::architect_model().unwrap_or_else(|| agent_config.model.clone());
+            let editor_model = commands::default_editor_model(&arch_model);
+
+            eprintln!("{DIM}  🏗️ architect mode: planning with {arch_model}...{RESET}");
+
+            // Phase 1: Get the plan from the architect (no tools, text-only)
+            let architect_input = format!("{}\n\n{}", commands::ARCHITECT_PROMPT, effective_input);
+            let mut arch_agent = agent_config.build_architect_agent(&arch_model);
+            let mut rx = arch_agent.prompt(&architect_input).await;
+
+            let mut md_renderer = MarkdownRenderer::new();
+            let mut plan_text = String::new();
+            let mut started = false;
+
+            loop {
+                match rx.recv().await {
+                    Some(AgentEvent::MessageUpdate {
+                        delta: StreamDelta::Text { delta },
+                        ..
+                    }) => {
+                        if !started {
+                            eprintln!();
+                            eprint!("{DIM}[architect]{RESET} ");
+                            started = true;
+                        }
+                        plan_text.push_str(&delta);
+                        let rendered = md_renderer.render_delta(&delta);
+                        if !rendered.is_empty() {
+                            print!("{rendered}");
+                        }
+                    }
+                    Some(AgentEvent::MessageEnd { .. }) => {
+                        let tail = md_renderer.flush();
+                        if !tail.is_empty() {
+                            print!("{tail}");
+                        }
+                    }
+                    Some(AgentEvent::AgentEnd { .. }) => break,
+                    None => break,
+                    _ => {}
+                }
+            }
+
+            arch_agent.finish().await;
+
+            // Show architect cost
+            let arch_messages = arch_agent.messages();
+            let mut arch_usage = Usage::default();
+            for msg in arch_messages {
+                if let AgentMessage::Llm(yoagent::types::Message::Assistant { usage, .. }) = msg {
+                    arch_usage.input += usage.input;
+                    arch_usage.output += usage.output;
+                    arch_usage.cache_read += usage.cache_read;
+                    arch_usage.cache_write += usage.cache_write;
+                }
+            }
+            let arch_tokens = arch_usage.input + arch_usage.output;
+            if arch_tokens > 0 {
+                let cost = estimate_cost(&arch_usage, &arch_model);
+                if let Some(c) = cost {
+                    eprintln!(
+                        "\n{DIM}  [architect] {} tokens, ${:.4}{RESET}",
+                        arch_tokens, c
+                    );
+                } else {
+                    eprintln!("\n{DIM}  [architect] {} tokens{RESET}", arch_tokens);
+                }
+            } else {
+                eprintln!();
+            }
+
+            if plan_text.trim().is_empty() {
+                eprintln!(
+                    "{YELLOW}  architect returned empty plan — skipping editor phase{RESET}\n"
+                );
+                PromptOutcome::default()
+            } else {
+                // Phase 2: Feed the plan to the editor model for implementation
+                eprintln!("{DIM}  🔧 implementing with {editor_model}...{RESET}\n");
+
+                let editor_prompt = format!(
+                    "Implement the following plan exactly. The plan was written by an architect model \
+                     analyzing the user's request.\n\n\
+                     ## Original request\n\n{effective_input}\n\n\
+                     ## Architect's plan\n\n{plan_text}"
+                );
+
+                // Build a separate editor agent with the cheaper model
+                let mut editor_agent = agent_config.build_editor_agent(&editor_model);
+                let editor_outcome = run_prompt_auto_retry(
+                    &mut editor_agent,
+                    &editor_prompt,
+                    &mut session_total,
+                    &editor_model,
+                    &session_changes,
+                )
+                .await;
+
+                // Show editor cost
+                editor_agent.finish().await;
+                let editor_messages = editor_agent.messages();
+                let mut editor_usage = Usage::default();
+                for msg in editor_messages {
+                    if let AgentMessage::Llm(yoagent::types::Message::Assistant { usage, .. }) = msg
+                    {
+                        editor_usage.input += usage.input;
+                        editor_usage.output += usage.output;
+                        editor_usage.cache_read += usage.cache_read;
+                        editor_usage.cache_write += usage.cache_write;
+                    }
+                }
+                let editor_tokens = editor_usage.input + editor_usage.output;
+                if editor_tokens > 0 {
+                    let cost = estimate_cost(&editor_usage, &editor_model);
+                    if let Some(c) = cost {
+                        eprintln!("{DIM}  [editor] {} tokens, ${:.4}{RESET}", editor_tokens, c);
+                    } else {
+                        eprintln!("{DIM}  [editor] {} tokens{RESET}", editor_tokens);
+                    }
+                }
+
+                editor_outcome
+            }
+        } else if !file_results.is_empty() {
             // Print summaries like /add does
             for result in &file_results {
                 match result {

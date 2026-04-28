@@ -344,6 +344,7 @@ The subagent has access to the same tools (bash, file operations, etc.) and uses
 | `/lint fix` | Run linter and auto-send failures to AI for fixing |
 | `/lint unsafe` | Scan for unsafe code blocks and suggest safety attributes (Rust only) |
 | `/fix` | Auto-fix build/lint errors — runs health checks, sends failures to the AI agent for fixing |
+| `/loop <N\|until-pass> <prompt>` | Repeat a prompt in a polling loop — runs N times or until the last tool call succeeds |
 | `/update` | Self-update yoyo to the latest GitHub release — detects platform, downloads, replaces the binary |
 
 The `/git` command is a convenience wrapper for common git operations without burning AI tokens or using `/run git ...`. For example:
@@ -418,6 +419,23 @@ The `/fix` command goes one step further than `/health` — it runs the same hea
 
   Sending 1 failure(s) to AI for fixing...
 ```
+
+### `/loop` — Repeat a prompt in a polling loop
+
+The `/loop` command runs a prompt repeatedly — either a fixed number of times or until the last tool call succeeds. This is useful for iterative fix-and-test cycles, polling checks, or any task that needs repeated attempts.
+
+```
+/loop 5 run the tests and fix any failures
+/loop until-pass run cargo test
+/loop 3 check if the server is responding
+```
+
+**Syntax:** `/loop <N|until-pass> <prompt>`
+
+- **N** (1–100): Run the prompt exactly N times, with a 1-second pause between iterations so you can Ctrl+C to stop early.
+- **until-pass**: Run repeatedly until the last tool call exits without error (e.g. a bash command that returns exit code 0). Safety-capped at 20 iterations.
+
+Each iteration prints a separator showing the current iteration number. In `until-pass` mode, the loop also shows a success message when it stops.
 
 ### `/update` — Self-update to latest release
 

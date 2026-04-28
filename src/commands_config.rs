@@ -10,6 +10,7 @@ use crate::format::{
 };
 use crate::git::git_branch;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use yoagent::agent::Agent;
 use yoagent::ThinkingLevel;
 
@@ -37,6 +38,163 @@ pub const TEACH_MODE_PROMPT: &str = "\
 3. Add brief comments on non-obvious lines
 4. After completing a task, summarize what the user should learn from it
 Keep explanations concise but educational.";
+
+// ── Architect mode ──
+//
+// Dual-model workflow: a strong reasoning model plans the changes (text-only,
+// no tools), then a cheaper editor model implements the plan with full tool
+// access. Inspired by Aider's architect mode — saves 60-80% on costs for
+// complex tasks.
+
+static ARCHITECT_MODE: AtomicBool = AtomicBool::new(false);
+
+/// The model override for the architect (planning) phase.
+/// `None` means use the current model.
+static ARCHITECT_MODEL: Mutex<Option<String>> = Mutex::new(None);
+
+/// Enable or disable architect mode, optionally setting a specific architect model.
+pub fn set_architect_mode(on: bool, model: Option<String>) {
+    ARCHITECT_MODE.store(on, Ordering::Relaxed);
+    if let Ok(mut m) = ARCHITECT_MODEL.lock() {
+        *m = if on { model } else { None };
+    }
+}
+
+/// Check whether architect mode is currently active.
+pub fn is_architect_mode() -> bool {
+    ARCHITECT_MODE.load(Ordering::Relaxed)
+}
+
+/// Get the architect model override (if set). Returns `None` to use the current model.
+pub fn architect_model() -> Option<String> {
+    ARCHITECT_MODEL.lock().ok().and_then(|m| m.clone())
+}
+
+/// Choose a default editor model given the current (architect) model.
+/// Maps strong/expensive models to their cheaper counterparts from the same provider.
+pub fn default_editor_model(current_model: &str) -> String {
+    let m = current_model.to_lowercase();
+
+    // Anthropic: opus → sonnet, sonnet → haiku
+    if m.contains("opus") {
+        return "claude-sonnet-4-20250514".into();
+    }
+    if m.contains("sonnet") {
+        return "claude-haiku-4-5-20250414".into();
+    }
+
+    // OpenAI: gpt-4o → gpt-4o-mini, gpt-4.1 → gpt-4.1-mini, o3 → o3-mini
+    if m.contains("gpt-4o") && !m.contains("mini") {
+        return "gpt-4o-mini".into();
+    }
+    if m.contains("gpt-4.1") && !m.contains("mini") && !m.contains("nano") {
+        return "gpt-4.1-mini".into();
+    }
+    if m == "o3" {
+        return "o3-mini".into();
+    }
+
+    // Google: pro → flash
+    if m.contains("gemini") && m.contains("pro") {
+        return m.replace("pro", "flash");
+    }
+
+    // DeepSeek: reasoner → chat
+    if m.contains("deepseek-reasoner") {
+        return "deepseek-chat".into();
+    }
+
+    // xAI: grok-3 → grok-3-mini
+    if m == "grok-3" {
+        return "grok-3-mini".into();
+    }
+
+    // Mistral: large → small
+    if m.contains("mistral-large") {
+        return "mistral-small-latest".into();
+    }
+
+    // Bedrock: follows the same anthropic pattern with prefix
+    if m.contains("bedrock") || m.starts_with("anthropic.") {
+        if m.contains("opus") {
+            return "anthropic.claude-sonnet-4-20250514-v1:0".into();
+        }
+        if m.contains("sonnet") {
+            return "anthropic.claude-haiku-4-5-20250414-v1:0".into();
+        }
+    }
+
+    // Fallback: if we don't recognize the model, use it as its own editor
+    // (architect mode still benefits from the plan-then-implement split)
+    current_model.to_string()
+}
+
+/// System prompt suffix for the architect (planning) phase.
+pub const ARCHITECT_PROMPT: &str = "\
+[ARCHITECT MODE] You are in architect mode. Your job is to PLAN, not implement.
+
+Describe exactly what changes to make:
+- Which files to create, modify, or delete
+- What code to add, remove, or change — include specific code snippets
+- The order of operations if it matters
+
+Be specific and precise. Reference line numbers when helpful.
+Do NOT use any tools. Do NOT write code to files. Just describe the plan.";
+
+/// Handle the `/architect` command.
+pub fn handle_architect(input: &str) {
+    let arg = input.strip_prefix("/architect").unwrap_or("").trim();
+    match arg {
+        "on" => {
+            set_architect_mode(true, None);
+            let current = "current model";
+            let editor = "(auto-selected)";
+            eprintln!(
+                "{GREEN}  ✓ architect mode: ON{RESET}\n\
+                 {DIM}    architect: {current}\n\
+                 {DIM}    editor: {editor}{RESET}\n"
+            );
+        }
+        "off" => {
+            set_architect_mode(false, None);
+            eprintln!("{YELLOW}  ✗ architect mode: OFF{RESET}\n");
+        }
+        "" => {
+            // Toggle
+            let was_on = is_architect_mode();
+            if was_on {
+                set_architect_mode(false, None);
+                eprintln!("{YELLOW}  ✗ architect mode: OFF{RESET}\n");
+            } else {
+                set_architect_mode(true, None);
+                eprintln!(
+                    "{GREEN}  ✓ architect mode: ON{RESET}\n\
+                     {DIM}    architect: current model\n\
+                     {DIM}    editor: auto-selected{RESET}\n"
+                );
+            }
+        }
+        model => {
+            // Enable with a specific architect model
+            set_architect_mode(true, Some(model.to_string()));
+            eprintln!(
+                "{GREEN}  ✓ architect mode: ON{RESET}\n\
+                 {DIM}    architect: {model}\n\
+                 {DIM}    editor: auto-selected{RESET}\n"
+            );
+        }
+    }
+}
+
+/// Format a status line for architect mode (used by /status).
+pub fn architect_status(current_model: &str) -> Option<String> {
+    if !is_architect_mode() {
+        return None;
+    }
+    let arch_model = architect_model().unwrap_or_else(|| current_model.to_string());
+    let editor = default_editor_model(&arch_model);
+    Some(format!("architect: {arch_model} → editor: {editor}"))
+}
 
 // ── /config ──────────────────────────────────────────────────────────────
 
@@ -1252,5 +1410,66 @@ mod tests {
     fn test_parse_config_set_args_global_only_no_value() {
         // "/config set model --global" — --global is filtered out, no value remains
         assert!(parse_config_set_args("/config set model --global").is_err());
+    }
+
+    // --- architect mode tests ---
+
+    #[test]
+    fn test_default_editor_model_sonnet_maps_to_haiku() {
+        let editor = default_editor_model("claude-sonnet-4-20250514");
+        assert!(
+            editor.to_lowercase().contains("haiku"),
+            "expected haiku for sonnet, got: {editor}"
+        );
+    }
+
+    #[test]
+    fn test_default_editor_model_opus_maps_to_sonnet() {
+        let editor = default_editor_model("claude-opus-4-20250115");
+        assert!(
+            editor.to_lowercase().contains("sonnet"),
+            "expected sonnet for opus, got: {editor}"
+        );
+    }
+
+    #[test]
+    fn test_default_editor_model_gpt4o_maps_to_mini() {
+        let editor = default_editor_model("gpt-4o");
+        assert!(
+            editor.to_lowercase().contains("gpt-4o-mini"),
+            "expected gpt-4o-mini for gpt-4o, got: {editor}"
+        );
+    }
+
+    #[test]
+    fn test_architect_toggle_on_off() {
+        // Start from a known state
+        set_architect_mode(false, None);
+        assert!(!is_architect_mode());
+
+        // Toggle on
+        set_architect_mode(true, None);
+        assert!(is_architect_mode());
+
+        // Toggle off
+        set_architect_mode(false, None);
+        assert!(!is_architect_mode());
+    }
+
+    #[test]
+    fn test_architect_parse_sets_model() {
+        // Reset state
+        set_architect_mode(false, None);
+
+        // Simulate `/architect claude-sonnet-4-20250514`
+        handle_architect("/architect claude-sonnet-4-20250514");
+        assert!(is_architect_mode());
+        assert_eq!(
+            architect_model().as_deref(),
+            Some("claude-sonnet-4-20250514")
+        );
+
+        // Clean up
+        set_architect_mode(false, None);
     }
 }

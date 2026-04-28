@@ -881,6 +881,17 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             commands::handle_watch(ctx.input);
             CommandResult::Continue
         }
+        s if s == "/loop" || s.starts_with("/loop ") => {
+            commands::handle_loop(
+                ctx.input,
+                ctx.agent,
+                ctx.session_total,
+                ctx.agent_config,
+                ctx.session_changes,
+            )
+            .await;
+            CommandResult::Continue
+        }
         s if s == "/todo" || s.starts_with("/todo ") => {
             let result = commands::handle_todo(ctx.input);
             println!("{result}\n");
@@ -888,6 +899,10 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
         }
         s if s == "/teach" || s.starts_with("/teach ") => {
             commands::handle_teach(ctx.input);
+            CommandResult::Continue
+        }
+        s if s == "/architect" || s.starts_with("/architect ") => {
+            commands::handle_architect(ctx.input);
             CommandResult::Continue
         }
         s if s == "/mcp" || s.starts_with("/mcp ") => {

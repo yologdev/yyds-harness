@@ -61,6 +61,16 @@ pub fn handle_status(
         println!("  git:     {branch}");
     }
     println!("  cwd:     {cwd}");
+    // Show active modes
+    if crate::commands_config::is_teach_mode() {
+        println!("  mode:    {GREEN}teach{DIM}");
+    }
+    if let Some(arch_status) = crate::commands_config::architect_status(model) {
+        println!("  mode:    {GREEN}{arch_status}{DIM}");
+    }
+    if crate::commands_project::is_plan_mode() {
+        println!("  mode:    {GREEN}plan{DIM}");
+    }
     println!(
         "  session: {} elapsed, {turns} turn{}",
         format_duration(elapsed),

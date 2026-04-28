@@ -48,6 +48,26 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /add Cargo.toml:1-20\n\
              \x20 /add src/*.rs tests/*.rs",
         ),
+        "architect" => Some(
+            "/architect [on|off|<model>] — Toggle architect mode (dual-model plan+implement)\n\n\
+             Architect mode uses a strong model to plan changes (text-only, no tools),\n\
+             then a cheaper model to implement the plan (with full tools).\n\
+             Saves 60-80% on costs for complex tasks.\n\n\
+             Usage:\n\
+             \x20 /architect          Toggle on/off\n\
+             \x20 /architect on       Enable with current model as architect\n\
+             \x20 /architect off      Disable architect mode\n\
+             \x20 /architect <model>  Enable with specific architect model\n\n\
+             When enabled, each prompt goes through two phases:\n\
+             \x20 1. Architect (planning): Describes what changes to make, no tools\n\
+             \x20 2. Editor (implementation): Implements the plan with full tool access\n\n\
+             The editor model is auto-selected based on the architect model:\n\
+             \x20 opus → sonnet, sonnet → haiku, gpt-4o → gpt-4o-mini, etc.\n\n\
+             Examples:\n\
+             \x20 /architect\n\
+             \x20 /architect claude-opus-4-6\n\
+             \x20 /architect off",
+        ),
         "apply" => Some(
             "/apply [file] — Apply a diff or patch file\n\n\
              Usage:\n\
@@ -674,6 +694,20 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              Strictness levels only affect Rust projects (clippy). Other languages\n\
              use their default linter regardless of strictness level.\n\n\
              Output is displayed directly in the terminal.",
+        ),
+        "loop" => Some(
+            "/loop <N|until-pass> <prompt> — Repeat a prompt in a polling loop\n\n\
+             Usage:\n\
+             \x20 /loop <N> <prompt>          Run the prompt exactly N times (1-100)\n\
+             \x20 /loop until-pass <prompt>   Run until the last tool call succeeds (max 20)\n\n\
+             Each iteration runs the prompt through the normal agent path with auto-retry.\n\
+             A 1-second pause between iterations gives you time to Ctrl+C.\n\n\
+             In until-pass mode, the loop stops as soon as the last tool call exits\n\
+             without error (e.g. a bash command that returns exit code 0).\n\n\
+             Examples:\n\
+             \x20 /loop 5 run the tests and fix any failures\n\
+             \x20 /loop until-pass run cargo test\n\
+             \x20 /loop 3 check if the server is responding",
         ),
         "spawn" => Some(
             "/spawn <task> — Spawn a subagent to handle a task\n\n\
@@ -1363,6 +1397,10 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "    /loop <N|until-pass>   Repeat a prompt in a polling loop"
+    );
+    let _ = writeln!(
+        s,
         "    /ast <pattern>     Structural code search (ast-grep)"
     );
     let _ = writeln!(s, "    /skill [subcmd]    List and inspect loaded skills");
@@ -1378,6 +1416,10 @@ pub fn cli_help_text() -> String {
         "    /think [level]     Show/change thinking (off/low/medium/high)"
     );
     let _ = writeln!(s, "    /plan <task>       Plan a task without executing");
+    let _ = writeln!(
+        s,
+        "    /architect [on|off] Architect mode — plan strong, implement cheap"
+    );
     let _ = writeln!(s, "    /spawn <task>      Spawn a subagent for a task");
     let _ = writeln!(
         s,
@@ -1580,6 +1622,9 @@ pub fn help_text() -> String {
         "  /watch [cmd|all|lint]  Auto-run lint+test after agent edits (off/status to control)\n",
     );
     out.push_str(
+        "  /loop <N|until-pass>   Repeat a prompt in a polling loop (stop early on success)\n",
+    );
+    out.push_str(
         "  /ast <pattern>     Structural code search using ast-grep (--lang, --in flags)\n",
     );
     out.push_str("  /skill [subcmd]    List and inspect loaded skills (list/show/path)\n");
@@ -1591,6 +1636,9 @@ pub fn help_text() -> String {
     out.push_str("  /provider <name>   Switch provider (resets model to provider default)\n");
     out.push_str("  /think [level]     Show or change thinking level (off/low/medium/high)\n");
     out.push_str("  /plan [on|off|task] Plan mode toggle or one-shot task plan (architect mode)\n");
+    out.push_str(
+        "  /architect [on|off] Toggle architect mode — plan with strong model, implement cheap\n",
+    );
     out.push_str("  /spawn <task>      Spawn a subagent to handle a task (separate context)\n");
     out.push_str(
         "                     The model can also delegate subtasks to sub-agents automatically.\n",
@@ -1676,6 +1724,9 @@ pub fn handle_help_command(input: &str) -> bool {
 pub fn command_short_description(cmd: &str) -> Option<&'static str> {
     match cmd {
         "add" => Some("Add file contents to conversation"),
+        "architect" => {
+            Some("Toggle architect mode — plan with strong model, implement with cheap model")
+        }
         "apply" => Some("Apply a diff or patch file"),
         "ast" => Some("Structural code search via ast-grep"),
         "bg" => Some("Manage background shell processes"),
@@ -1713,6 +1764,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "jump" => Some("Restore conversation to a bookmark"),
         "lint" => Some("Run project linter (pedantic/strict/fix subcommands)"),
         "load" => Some("Load session from file"),
+        "loop" => Some("Repeat a prompt in a polling loop"),
         "map" => Some("Show project symbol map"),
         "mcp" => Some("List and manage MCP server connections"),
         "mark" => Some("Bookmark current conversation state"),
@@ -1799,6 +1851,7 @@ mod tests {
             "/fix",
             "/test",
             "/lint",
+            "/loop",
             "/run",
             "/docs",
             "/find",
@@ -1904,8 +1957,8 @@ mod tests {
         let ai_start = text.find("── AI ──").expect("AI header missing");
         let project_section = &text[project_start..ai_start];
         for cmd in &[
-            "/context", "/init", "/health", "/fix", "/test", "/lint", "/run", "/docs", "/find",
-            "/index", "/tree",
+            "/context", "/init", "/health", "/fix", "/test", "/lint", "/loop", "/run", "/docs",
+            "/find", "/index", "/tree",
         ] {
             assert!(
                 project_section.contains(cmd),

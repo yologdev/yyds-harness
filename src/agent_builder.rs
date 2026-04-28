@@ -568,6 +568,73 @@ impl AgentConfig {
         agent
     }
 
+    /// Build a minimal agent for the architect (planning) phase — same provider
+    /// but optionally a different model, no tools, and the architect system prompt.
+    /// The agent is one-shot (1 turn) and returns a text-only plan.
+    pub fn build_architect_agent(&self, architect_model: &str) -> Agent {
+        let base_url = self.base_url.as_deref();
+
+        let agent = if self.provider == "anthropic" && base_url.is_none() {
+            let mut model_config = ModelConfig::anthropic(architect_model, architect_model);
+            insert_client_headers(&mut model_config);
+            Agent::new(AnthropicProvider).with_model_config(model_config)
+        } else if self.provider == "google" {
+            let model_config = create_model_config(&self.provider, architect_model, base_url);
+            Agent::new(GoogleProvider).with_model_config(model_config)
+        } else if self.provider == "bedrock" {
+            let model_config = create_model_config(&self.provider, architect_model, base_url);
+            Agent::new(BedrockProvider).with_model_config(model_config)
+        } else {
+            let model_config = create_model_config(&self.provider, architect_model, base_url);
+            Agent::new(OpenAiCompatProvider).with_model_config(model_config)
+        };
+
+        let mut agent = agent
+            .with_system_prompt(&self.system_prompt)
+            .with_model(architect_model)
+            .with_api_key(&self.api_key)
+            .with_execution_limits(ExecutionLimits {
+                max_turns: 1,
+                ..ExecutionLimits::default()
+            });
+
+        if let Some(temp) = self.temperature {
+            agent.temperature = Some(temp);
+        }
+
+        agent
+    }
+
+    /// Build a full agent configured for the editor (implementation) phase.
+    /// Uses the editor model (a cheaper model) but with the same tools, skills,
+    /// and system prompt as the main agent.
+    pub fn build_editor_agent(&self, editor_model: &str) -> Agent {
+        // Create a temporary config clone with the editor model
+        let editor_config = AgentConfig {
+            model: editor_model.to_string(),
+            api_key: self.api_key.clone(),
+            provider: self.provider.clone(),
+            base_url: self.base_url.clone(),
+            skills: self.skills.clone(),
+            system_prompt: self.system_prompt.clone(),
+            thinking: self.thinking,
+            max_tokens: self.max_tokens,
+            temperature: self.temperature,
+            max_turns: self.max_turns,
+            auto_approve: self.auto_approve,
+            auto_commit: self.auto_commit,
+            permissions: self.permissions.clone(),
+            dir_restrictions: self.dir_restrictions.clone(),
+            context_strategy: self.context_strategy,
+            context_window: self.context_window,
+            shell_hooks: self.shell_hooks.clone(),
+            fallback_provider: self.fallback_provider.clone(),
+            fallback_model: self.fallback_model.clone(),
+            auto_watch: self.auto_watch,
+        };
+        editor_config.build_agent()
+    }
+
     /// Attempt to switch to the fallback provider.
     ///
     /// Returns `true` if the switch was made (caller should rebuild the agent
