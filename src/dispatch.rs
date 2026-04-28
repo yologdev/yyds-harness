@@ -192,7 +192,7 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
             }
             "run" => {
                 let input = quote_args_as_command(args);
-                crate::commands_dev::handle_run(&input);
+                crate::commands_run::handle_run(&input);
                 return Some(None);
             }
             "diff" => {

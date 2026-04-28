@@ -459,9 +459,11 @@ pub use crate::commands_search::{
 };
 
 pub use crate::commands_dev::{
-    handle_doctor, handle_fix, handle_health, handle_lint, handle_lint_fix, handle_loop,
-    handle_run, handle_run_usage, handle_test, handle_tree, handle_update, handle_watch,
+    handle_doctor, handle_fix, handle_health, handle_lint, handle_lint_fix, handle_test,
+    handle_tree, handle_update, handle_watch,
 };
+
+pub use crate::commands_run::{handle_loop, handle_run, handle_run_usage};
 
 pub use crate::commands_file::{
     build_explain_prompt, expand_file_mentions, handle_add, handle_apply, handle_web, AddResult,
