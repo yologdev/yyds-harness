@@ -216,6 +216,87 @@ const KNOWN_FLAGS: &[&str] = &[
     "-V",
 ];
 
+/// Collect positional arguments that aren't flags, flag values, or known subcommands.
+///
+/// Walks `args` (skipping `args[0]` — the binary name) and collects any token
+/// that is not a flag (`--foo` / `-x`), not consumed as a flag's value, and
+/// not a known bare subcommand (e.g. `doctor`, `help`, `setup`).
+///
+/// Used to support bare positional prompts: `yoyo "fix this bug"` without
+/// requiring `--prompt`. The caller joins the result with spaces.
+pub(crate) fn collect_positional_args(
+    args: &[String],
+    flags_needing_values: &[&str],
+) -> Vec<String> {
+    // Subcommands dispatched by try_dispatch_subcommand — if args[1] is one of
+    // these, the subcommand handler already ran and parse_args was never reached.
+    // But we list them defensively so that a typo like `yoyo doctor something`
+    // (which falls through because "doctor" was already dispatched) never
+    // accidentally treats a subcommand name as a prompt token.
+    const KNOWN_SUBCOMMANDS: &[&str] = &[
+        "blame",
+        "changelog",
+        "commit",
+        "config",
+        "diff",
+        "docs",
+        "doctor",
+        "evolution",
+        "extended",
+        "find",
+        "grep",
+        "health",
+        "help",
+        "index",
+        "init",
+        "lint",
+        "map",
+        "memories",
+        "outline",
+        "permissions",
+        "review",
+        "run",
+        "setup",
+        "skill",
+        "status",
+        "test",
+        "todo",
+        "tree",
+        "undo",
+        "update",
+        "version",
+        "watch",
+    ];
+
+    let mut positional = Vec::new();
+    let mut skip_next = false;
+
+    for (i, arg) in args.iter().enumerate() {
+        // Skip the binary name
+        if i == 0 {
+            continue;
+        }
+        // This arg is consumed as a flag's value — skip it
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        // It's a flag: if it needs a value, mark the next arg for skipping
+        if arg.starts_with('-') {
+            if flags_needing_values.contains(&arg.as_str()) {
+                skip_next = true;
+            }
+            continue;
+        }
+        // Skip known subcommands (only relevant for args[1])
+        if i == 1 && KNOWN_SUBCOMMANDS.contains(&arg.as_str()) {
+            continue;
+        }
+        positional.push(arg.clone());
+    }
+    positional
+}
+
 /// Warn about any unrecognized flags in the arguments.
 /// Skips args[0] (binary name) and values that follow flags expecting values.
 pub fn warn_unknown_flags(args: &[String], flags_needing_values: &[&str]) {
@@ -737,7 +818,16 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
     warn_unknown_flags(args, &flags_needing_values);
 
     // Parse prompt and image flags early so we can validate --image before API key check
-    let prompt_arg = flag_value(args, &["--prompt", "-p"]);
+    let mut prompt_arg = flag_value(args, &["--prompt", "-p"]);
+
+    // Support bare positional prompts: `yoyo "fix this bug"` without --prompt.
+    // Only if --prompt/-p wasn't explicitly provided.
+    if prompt_arg.is_none() {
+        let positional = collect_positional_args(args, &flags_needing_values);
+        if !positional.is_empty() {
+            prompt_arg = Some(positional.join(" "));
+        }
+    }
 
     let image_path_raw = flag_value(args, &["--image"]);
 
@@ -2771,5 +2861,148 @@ command = "server-two"
         // When built externally, option_env! returns None gracefully.
         // Either way, it must not panic.
         print_banner();
+    }
+
+    // ── bare positional prompt tests ──────────────────────────────────
+
+    #[test]
+    fn test_collect_positional_bare_prompt() {
+        let flags = ["--model", "--prompt", "-p"];
+        let args: Vec<String> = vec!["yoyo", "fix this bug"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let pos = collect_positional_args(&args, &flags);
+        assert_eq!(pos, vec!["fix this bug"]);
+    }
+
+    #[test]
+    fn test_collect_positional_with_flags() {
+        let flags = ["--model", "--prompt", "-p"];
+        let args: Vec<String> = vec!["yoyo", "--model", "gpt-4", "do something"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let pos = collect_positional_args(&args, &flags);
+        assert_eq!(pos, vec!["do something"]);
+    }
+
+    #[test]
+    fn test_collect_positional_no_args() {
+        let flags = ["--model", "--prompt", "-p"];
+        let args: Vec<String> = vec!["yoyo"].into_iter().map(String::from).collect();
+        let pos = collect_positional_args(&args, &flags);
+        assert!(pos.is_empty());
+    }
+
+    #[test]
+    fn test_collect_positional_only_flags() {
+        let flags = ["--model", "--prompt", "-p"];
+        let args: Vec<String> = vec!["yoyo", "--model", "gpt-4"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let pos = collect_positional_args(&args, &flags);
+        assert!(pos.is_empty());
+    }
+
+    #[test]
+    fn test_collect_positional_skips_subcommand() {
+        let flags = ["--model", "--prompt", "-p"];
+        let args: Vec<String> = vec!["yoyo", "doctor"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let pos = collect_positional_args(&args, &flags);
+        assert!(
+            pos.is_empty(),
+            "known subcommands should not become prompts"
+        );
+    }
+
+    #[test]
+    fn test_collect_positional_prompt_flag_takes_precedence() {
+        // When --prompt is explicitly passed, collect_positional_args still
+        // collects positional args, but parse_args checks prompt_arg first.
+        let flags = ["--model", "--prompt", "-p"];
+        let args: Vec<String> = vec!["yoyo", "-p", "explicit prompt", "extra"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        // -p consumes "explicit prompt" as its value, "extra" is positional
+        let pos = collect_positional_args(&args, &flags);
+        assert_eq!(pos, vec!["extra"]);
+        // But in parse_args, prompt_arg would already be Some("explicit prompt")
+        // so the positional branch is never taken.
+    }
+
+    #[test]
+    fn test_collect_positional_multiple_words() {
+        // Multiple positional args get joined by the caller
+        let flags = ["--model"];
+        let args: Vec<String> = vec!["yoyo", "fix", "the", "bug"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let pos = collect_positional_args(&args, &flags);
+        assert_eq!(pos, vec!["fix", "the", "bug"]);
+    }
+
+    #[test]
+    fn test_collect_positional_flag_after_prompt() {
+        // `yoyo "do something" --json` — positional before a boolean flag
+        let flags = ["--model"];
+        let args: Vec<String> = vec!["yoyo", "do something", "--json"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let pos = collect_positional_args(&args, &flags);
+        assert_eq!(pos, vec!["do something"]);
+    }
+
+    #[test]
+    fn test_bare_prompt_via_parse_args() {
+        // End-to-end: `yoyo "fix bug"` should set prompt_arg
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec!["yoyo".to_string(), "fix bug".to_string()];
+        let config = parse_args(&args).unwrap();
+        assert_eq!(config.prompt_arg, Some("fix bug".to_string()));
+    }
+
+    #[test]
+    fn test_bare_prompt_with_model_flag_via_parse_args() {
+        // `yoyo --model gpt-4 "do something"` should work
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--model".to_string(),
+            "gpt-4".to_string(),
+            "do something".to_string(),
+        ];
+        let config = parse_args(&args).unwrap();
+        assert_eq!(config.prompt_arg, Some("do something".to_string()));
+    }
+
+    #[test]
+    fn test_explicit_prompt_flag_overrides_positional() {
+        // `yoyo -p "explicit" "ignored"` — -p takes precedence
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "-p".to_string(),
+            "explicit".to_string(),
+            "ignored".to_string(),
+        ];
+        let config = parse_args(&args).unwrap();
+        assert_eq!(config.prompt_arg, Some("explicit".to_string()));
+    }
+
+    #[test]
+    fn test_no_args_still_none_prompt() {
+        // `yoyo` with no args → REPL mode, prompt_arg is None
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec!["yoyo".to_string()];
+        let config = parse_args(&args).unwrap();
+        assert_eq!(config.prompt_arg, None);
     }
 }

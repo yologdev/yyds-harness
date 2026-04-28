@@ -1,7 +1,7 @@
 # Gap Analysis: yoyo vs Claude Code
 
-Last verified: Day 54 (2026-04-23)
-Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54
+Last verified: Day 59 (2026-04-28)
+Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54, Day 59
 
 This document tracks the feature gap between yoyo and Claude Code, used to inform
 development priorities when there are no community issues to address. It is a
@@ -24,7 +24,7 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Multi-turn conversation | ✅ | ✅ | Both maintain conversation history |
 | Thinking/reasoning display | ✅ | ✅ | yoyo shows thinking dimmed; --thinking flag controls budget |
 | Error recovery / auto-retry | ✅ | ✅ | yoagent retries 3x with exponential backoff by default |
-| Subagent / task spawning | 🟡 | ✅ | `/spawn` runs tasks in separate context; yoagent's `SubAgentTool` exposes subagents as tools; no named-role persistent orchestration yet |
+| Subagent / task spawning | 🟡 | ✅ | `/spawn` runs tasks in separate context; yoagent's `SubAgentTool` exposes subagents as tools; `SharedState` key-value store for parent↔child data sharing (Day 58); no named-role persistent orchestration yet |
 | Tool output streaming | 🟡 | ✅ | `ToolExecutionUpdate` events handled and rendered live (line counts, partial tail); full real-time subprocess streaming inside a single tool call still buffered |
 | Background processes | ✅ | ✅ | `/bg` command (Day 45): launch, list, view output, kill background jobs with persistent tracker; Claude Code has similar with `/bashes` |
 
@@ -68,6 +68,7 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Proactive context compaction | ✅ | ✅ | Proactive at 70% + auto-compact at 80% context (Day 23, upgraded from auto-only) |
 | Manual compaction | ✅ | ✅ | /compact command |
 | Token usage display | ✅ | ✅ | /tokens with visual bar; live context-window percentage in prompt |
+| Smart context injection | ✅ | ✅ | `/add` with intelligent truncation — files over 500 lines get head+tail with omission marker (Day 56) |
 | Cost estimation | ✅ | ✅ | Per-request and session totals |
 | Context window awareness | ✅ | ✅ | Per-model context limit tracked (no longer hardcoded to 200k — #195 fix) |
 
@@ -103,6 +104,8 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Commit message generation | ✅ | ✅ | `/commit` with heuristic-based message generation from staged diff (Day 8) |
 | Code review | ✅ | ✅ | `/review` provides AI-powered code review of staged/unstaged changes (Day 13) |
 | Multi-file refactoring | ✅ | ✅ | `/refactor` umbrella command (rename, extract, move); `rename_symbol` agent tool for cross-project renames (Day 23) |
+| Architect mode | ✅ | ✅ | `/architect` dual-model mode — cheap model plans, expensive model edits; inspired by Aider's architect mode (Day 59) |
+| Iterative prompt loop | ✅ | ❌ | `/loop <N|until-pass> <prompt>` runs a prompt repeatedly, useful for iterative refinement (Day 59) |
 
 ## Configuration
 
@@ -111,7 +114,7 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Config file | ✅ | ✅ | yoyo reads .yoyo.toml and ~/.config/yoyo/config.toml |
 | Per-project settings | ✅ | ✅ | .yoyo.toml in project directory |
 | MCP server support | ✅ | ✅ | `--mcp` flag + `[[mcp.servers]]` config blocks; `McpServerConfig` + `parse_mcp_servers_from_config` in `src/config.rs`; stdio transport, used in production |
-| Multi-provider support | ✅ | ❌ | yoyo supports 12 providers via `--provider` (anthropic, openai, google, ollama, bedrock, z.ai, cerebras, etc.) — `KNOWN_PROVIDERS` in `src/providers.rs` |
+| Multi-provider support | ✅ | ❌ | yoyo supports 25 providers via `--provider` (anthropic, openai, google, ollama, bedrock, z.ai, cerebras, etc.) — `KNOWN_PROVIDERS` in `src/providers.rs` |
 | Skills system | ✅ | 🟡 | yoyo loads skills via `--skills <dir>` (yoagent's `SkillSet`); Claude Code has formal skill packs and a plugin marketplace (see gap below) |
 | OpenAPI tool support | ✅ | ❌ | `--openapi <spec>` loads OpenAPI specs and registers API tools (Day 9) |
 | Config system_prompt/system_file | ✅ | ✅ | `system_prompt` and `system_file` keys in .yoyo.toml for persistent custom prompts (Day 23) |
@@ -134,15 +137,16 @@ remaining gaps, but task selection still happens through the normal planning loo
 ## Priority Queue (real remaining gaps)
 
 After the Day 38 refresh, the gaps that are actually still gaps. Re-evaluated
-on Day 54 — these four remain the real delta, though the competitive landscape
-has shifted (see below).
+on Day 59 — these four remain the real delta, though the competitive landscape
+has shifted significantly (see below).
 
-1. **Plugin / skills marketplace** (since Day ≤38) — Claude Code has formal skill packs and a
-   plugin marketplace with discoverability and install commands. yoyo has
-   `--skills <dir>` (yoagent's `SkillSet`) but no marketplace, no signed
-   bundles, and no `yoyo skill install` flow. Claude Code's API now also
-   exposes advisor, memory, and web tools as first-class capabilities, widening
-   the plugin surface area.
+1. **Plugin / skills marketplace** (since Day ≤38) — Claude Code now has a formal
+   plugin ecosystem with 12+ bundled plugins and a marketplace with discoverability
+   and install commands. yoyo has `--skills <dir>` (yoagent's `SkillSet`) but no
+   marketplace, no signed bundles, and no `yoyo skill install` flow. Claude Code's
+   API also exposes advisor, memory, and web tools as first-class capabilities,
+   widening the plugin surface area. This gap is widening as competitors formalize
+   their extension stories.
 2. **Real-time subprocess streaming inside tool calls** (since Day ≤38) — Claude Code shows
    compile/test output as it streams from the child process. yoyo's
    `ToolExecutionUpdate` events render line counts and partial tails, and
@@ -150,30 +154,34 @@ has shifted (see below).
    underlying bash tool still buffers stdout/stderr per call rather than
    pumping it to the renderer character-by-character. Per-command timeout
    helps with runaway processes but doesn't change the streaming model.
-3. **Persistent named subagents with orchestration** (since Day ≤38) — yoyo has `/spawn` and
-   yoagent's `SubAgentTool`, but no named-role persistent subagent system
-   (e.g., a long-lived "reviewer" or "tester" subagent the orchestrator can
-   delegate to repeatedly with shared state).
+3. **Persistent named subagents with orchestration** (since Day ≤38) — yoyo now has
+   `/spawn`, yoagent's `SubAgentTool`, AND `SharedState` for parent↔child data
+   sharing (Day 58), but still no named-role persistent subagent system (e.g., a
+   long-lived "reviewer" or "tester" subagent the orchestrator can delegate to
+   repeatedly across turns). SharedState closes the data-sharing gap; the
+   orchestration gap remains.
 4. **Full graceful degradation on partial tool failures** (since Day ≤38) — provider fallback
    covers hard API errors, but there's no story for "this tool call failed,
    try a different tool that achieves the same effect."
 
-### Competitive landscape shift (Day 54)
+### Competitive landscape shift (Day 59)
 
 The gap is no longer just yoyo vs Claude Code. The field has widened:
 
-- **Claude Code API** now exposes web search, web fetch, code execution,
-  advisor, and memory tools as first-class API capabilities — things that
-  were previously CLI-only are now programmable.
+- **Claude Code** now has a formal plugin ecosystem with 12+ bundled plugins,
+  a marketplace with discoverability and install commands, and exposes web
+  search, web fetch, code execution, advisor, and memory tools as first-class
+  API capabilities. The plugin gap is widening.
 - **Codex CLI** (OpenAI) has npm/brew install, ChatGPT plan integration,
   and a desktop app — lowering the barrier to entry for non-terminal users.
-- **Aider** has expanded tree-sitter language support and continues to
-  iterate on its edit format and model compatibility.
+- **Aider** v0.85–0.86 added GPT-5 family, Grok-4, and o3-pro support,
+  continuing to iterate on model compatibility and edit formats.
 
-yoyo's differentiators remain: open-source self-evolution, multi-provider
-support (14 backends), and the skills/hooks extensibility model. The
-marketplace gap (#1 above) is increasingly important as competitors
-formalize their extension stories.
+yoyo's differentiators remain and have grown: open-source self-evolution,
+multi-provider support (25 backends), the skills/hooks extensibility model,
+`/architect` dual-model mode (Aider parity), `/loop` iterative refinement,
+and `SharedState` for sub-agent data sharing. The marketplace gap (#1 above)
+is increasingly important as competitors formalize their extension stories.
 
 ### What was on the old priority queue and is now done
 
@@ -190,7 +198,7 @@ These were listed as gaps on Day 24 but have shipped since:
   200k limit; `effective_context_tokens` in `src/cli.rs` reads per-model
   defaults.
 - ✅ **Provider fallback** — `--fallback` chains providers and auto-switches
-  on hard errors (Issue #205, Day 31, `try_switch_to_fallback` in `src/main.rs`).
+  on hard errors (Issue #205, Day 31, `try_switch_to_fallback` in `src/agent_builder.rs`).
 - ✅ **Bedrock provider wiring** — both the wizard and the actual provider
   construction landed (Day 30 trap closed).
 - ✅ **Background process management** — `/bg` command in `src/commands_bg.rs`
@@ -240,25 +248,40 @@ These were listed as gaps on Day 24 but have shipped since:
 - ✅ Recently completed (Day 54): `src/safety.rs` extracted from
   `tools.rs` (bash command safety analysis, 510 lines), `yoyo version`
   enriched with build metadata (git hash, build date, yoagent version).
+- ✅ Recently completed (Day 55–57): `/quick` quick-question mode (Day 55),
+  smart `/add` truncation — files over 500 lines get head+tail with
+  omission marker (Day 56), custom commands visible in `/help` (Day 56),
+  system prompt sections visible in `/context tokens` (Day 56), RTK
+  dependency checkable in `/doctor` (Day 56), commands module extraction —
+  `dispatch.rs` + `commands_*.rs` split (Days 55–57).
+- ✅ Recently completed (Day 58–59): `SharedState` integration for sub-agent
+  data sharing (Day 58), `agent_builder.rs` extracted from `main.rs`
+  (Day 58), `DispatchContext` struct to reduce parameter passing (Day 58),
+  `/architect` dual-model mode — cheap model plans, expensive model edits
+  (Day 59), `/loop <N|until-pass>` iterative prompt command (Day 59),
+  `commands_run.rs` extracted from `commands_dev.rs` (Day 59),
+  analyze-trajectory JSON contract + token-aware chunking (Day 59).
 
-## Stats (Day 54)
+## Stats (Day 59)
 
-- yoyo: ~52,845 lines of Rust across 38 source files (incl. `src/format/`) + integration tests
-- 38 source files (was 35 on Day 50): commands split into 14 `commands_*.rs` files
+- yoyo: ~58,004 lines of Rust across 45 source files (incl. `src/format/`) + integration tests
+- 45 source files (was 38 on Day 54): commands split into 15 `commands_*.rs` files
   (`commands.rs`, `commands_bg.rs`, `commands_config.rs`, `commands_dev.rs`,
   `commands_file.rs`, `commands_git.rs`, `commands_info.rs`, `commands_map.rs`,
   `commands_memory.rs`, `commands_project.rs`, `commands_refactor.rs`,
-  `commands_retry.rs`, `commands_search.rs`, `commands_session.rs`,
-  `commands_spawn.rs`),
+  `commands_retry.rs`, `commands_run.rs`, `commands_search.rs`,
+  `commands_session.rs`, `commands_spawn.rs`),
   format split into `format/{mod,markdown,highlight,cost,tools,output,diff}.rs`,
-  plus `hooks.rs`, `memory.rs`, `setup.rs`, `docs.rs`, `repl.rs`, `git.rs`,
-  `providers.rs`, `context.rs`, `config.rs`, `prompt.rs`, `prompt_budget.rs`,
-  `tools.rs`, `safety.rs`, `help.rs`, `cli.rs`, `main.rs`
-- 2,103 tests (2,018 unit + 85 integration)
-- ~68+ REPL commands, 23 shell subcommands (help, version, setup, init, diff,
+  plus `agent_builder.rs`, `hooks.rs`, `memory.rs`, `setup.rs`, `docs.rs`,
+  `repl.rs`, `git.rs`, `providers.rs`, `context.rs`, `config.rs`, `prompt.rs`,
+  `prompt_budget.rs`, `session.rs`, `sync_util.rs`, `dispatch.rs`,
+  `tools.rs`, `safety.rs`, `help.rs`, `cli.rs`, `main.rs`, `watch.rs`
+- 2,273 tests (2,185 unit + 88 integration)
+- ~89 REPL commands, 32 shell subcommands (help, version, setup, init, diff,
   commit, review, blame, grep, find, index, lint, test, doctor, map, tree,
-  run, watch, status, undo, docs, update, pr)
-- 14 provider backends (including z.ai, cerebras, bedrock, minimax, custom)
+  run, watch, status, undo, docs, update, pr, config, health, skill, todo,
+  outline, changelog, evolution, memories, permissions)
+- 25 provider backends (including z.ai, cerebras, bedrock, minimax, custom)
 - **Published:** v0.1.9 on crates.io (`cargo install yoyo-agent`)
 - MCP server support (production)
 - User-configurable hooks (`[[hooks]]` config blocks)
@@ -296,7 +319,7 @@ These were listed as gaps on Day 24 but have shipped since:
 - `/bg` background process management
 - `/blame` with colorized git blame output
 - `/lint fix`, `/lint pedantic`, `/lint strict`, `/lint unsafe`
-- Comprehensive categorized help (68+ commands)
+- Comprehensive categorized help (89 REPL commands, 32 shell subcommands)
 - Fuzzy command suggestions (Levenshtein distance)
 - Context budget warnings (60/80/90/95%)
 - `/profile` session statistics
@@ -306,3 +329,10 @@ These were listed as gaps on Day 24 but have shipped since:
 - `--stat` flag for `/diff` (compact diffstat view)
 - Exit summary with tokens, cost, and duration
 - `src/safety.rs` — dedicated bash command safety analysis module
+- `/quick` quick-question mode (lightweight single-turn)
+- Smart `/add` truncation (head+tail for large files)
+- `/architect` dual-model mode (cheap planner + expensive editor)
+- `/loop` iterative prompt refinement
+- `SharedState` key-value store for sub-agent data sharing
+- `DispatchContext` struct for clean command dispatch
+- `agent_builder.rs` — dedicated agent construction module

@@ -271,7 +271,8 @@ git clone https://github.com/yologdev/yoyo-evolve && cd yoyo-evolve && cargo ins
 # Interactive REPL (default)
 ANTHROPIC_API_KEY=sk-... yoyo
 
-# Single prompt
+# Single prompt (bare or with flag)
+yoyo "explain this codebase"
 yoyo -p "explain this codebase"
 
 # Pipe input

@@ -981,7 +981,11 @@ pub fn cli_help_text() -> String {
     use std::fmt::Write as _;
     let _ = writeln!(s, "yoyo v{VERSION} — a coding agent growing up in public");
     let _ = writeln!(s);
-    let _ = writeln!(s, "Usage: yoyo [OPTIONS]");
+    let _ = writeln!(s, "Usage: yoyo [OPTIONS] [PROMPT]");
+    let _ = writeln!(s);
+    let _ = writeln!(s, "  Run with a bare prompt:  yoyo \"fix this bug\"");
+    let _ = writeln!(s, "  Or with --prompt flag:   yoyo -p \"fix this bug\"");
+    let _ = writeln!(s, "  Interactive REPL:        yoyo");
     let _ = writeln!(s);
     let _ = writeln!(s, "Options:");
     let _ = writeln!(
