@@ -1,7 +1,7 @@
 ---
 name: skill-evolve
 description: Refine, create, or retire your own skills based on recurring patterns from past sessions
-tools: [bash, read_file, write_file, edit_file]
+tools: [bash, read_file, write_file, edit_file, sub_agent]
 core: true
 origin: creator
 ---

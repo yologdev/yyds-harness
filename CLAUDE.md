@@ -159,8 +159,38 @@ This is enforced both by HARD RULE #1 in the meta-skill (LLM-side) and by the di
 - Five sub-sections: recent session outcomes, per-task activity from git log, reverts in window, recurring CI error fingerprints (clustered via `gh run view --log-failed`), provider/API health from audit.jsonl
 - Fail-soft: never blocks the session; emits `(no trajectory data yet)` if any input is missing
 - Complementary to skill-evolve: skill-evolve mines audit-log for *skill-level* signals; trajectory awareness is *task-level*. Both consume audit-log, neither writes to it.
-- For deep dives into a single recurring failure, the agent loads the `analyze-trajectory` skill (RLM-style sub-agent recursion, depth cap 3)
 
+
+## RLM substrate
+
+yoyo has shared-state recursive sub-agent dispatch — the [Recursive Language Model](https://alexzhang13.github.io/blog/2025/rlm/) pattern, scaled down to one yoagent primitive plus skill-level conventions. The substrate is in place; specific skills opt into it.
+
+**What's available:**
+- `build_sub_agent_tool` (`src/tools.rs:1283`) returns `(SubAgentTool, SharedState)`. Parent agents get a handle to pre-populate; sub-agents automatically receive a `shared_state` tool that reads/writes the same yoagent::SharedState key-value store.
+- Artifacts are stored once and read by reference rather than re-pasted into every sub-agent prompt. Namespace convention: `<skill>.<key>` (e.g., `trajectory.run-12345`, `research.topic.source-3`).
+- `shared_state` is in `BUILTIN_TOOL_NAMES` (MCP collision guard).
+- Canonical example: `skills/analyze-trajectory/SKILL.md` (Section 3.5 chunking, Section 4 dispatch + JSON contract, Section 5 recursion cap of 3).
+
+**When to reach for RLM:**
+- The artifact is too large for one prompt (>5KB; chunk if >30KB).
+- The work is decomposable — different focused questions over the same artifact, each independently answerable.
+- Some fidelity loss is acceptable (RLM passes summaries between layers, not raw text).
+- Cross-piece reasoning is light — each sub-question can be answered locally.
+
+**When NOT to reach for RLM:**
+- The artifact is small (<5KB) — direct read costs less than sub-agent overhead.
+- The task needs *precise* control (writing code, surgical edits) — sub-agent summaries are lossy and you can't reconstruct exact diffs from them.
+- The work is sequential with strong mutual context — refactoring needs to see all pieces at once, not in isolated summaries.
+- The decomposition isn't natural — forcing RLM where the problem is monolithic costs tokens and adds noise.
+
+**Established pattern in yoyo:**
+1. Parent fetches the artifact, stores it under `<skill>.<key>` in shared state.
+2. Parent dispatches sub-agent(s) with a *focused question* and a *reference* to the shared-state key — never the artifact itself in the prompt.
+3. Sub-agent reads via `shared_state` tool, returns a JSON-shaped summary (concrete schema; see `analyze-trajectory` Section 4).
+4. Parent recurses on `deeper_question` if confidence is low. Hard depth cap = 3.
+5. On sub-agent failure / non-JSON response, fall back to direct read of a slice and produce a low-confidence diagnosis.
+
+For the broader capability roadmap (codebase archaeology, semantic git bisect, multi-source research synthesis, large-scale refactor coordination, etc.), see issue #341. Skills opt into the substrate by adding `sub_agent` and `shared_state` to their `tools:` frontmatter; the description-routing layer decides when each skill loads.
 
 ## MCP gotchas
 
@@ -182,9 +212,7 @@ yoyo is built on [yoagent](https://github.com/yologdev/yoagent). Before implemen
 2. Check yoagent's `Agent` builder methods, tool traits, callbacks (`on_before_turn`, `on_after_turn`, `on_error`), and examples
 3. If yoagent has it → use it. If yoagent almost has it → file an issue on yoagent. If yoagent doesn't have it → build it in yoyo.
 
-Key yoagent features available: `SubAgentTool`, `SharedState`, `SharedStateTool`, `ContextConfig`, `ExecutionLimits`, `CompactionStrategy`, `AgentEvent` stream, `default_tools()`, `SkillSet`, `with_sub_agent()`.
-
-**SharedState substrate** (Day 58): Sub-agents created via `build_sub_agent_tool` share a `yoagent::SharedState` key-value store with their parent. Artifacts are stored once and read by reference (`shared_state` tool) instead of being pasted into each sub-agent's prompt. The `shared_state` tool name is in `BUILTIN_TOOL_NAMES` for MCP collision detection.
+Key yoagent features available: `SubAgentTool`, `SharedState`, `SharedStateTool`, `ContextConfig`, `ExecutionLimits`, `CompactionStrategy`, `AgentEvent` stream, `default_tools()`, `SkillSet`, `with_sub_agent()`. For `SharedState` / sub-agent recursion details and decision trees, see the **RLM substrate** section above.
 
 **yoagent 0.7.x prompt lifecycle gotcha (Issue #258):** `agent.prompt()` / `agent.prompt_messages()` spawns the agent loop into a tokio task and returns the event receiver immediately. The agent's internal `self.messages` is NOT updated until `agent.finish().await` is called. If you read `agent.messages()` (or `total_tokens(agent.messages())`) right after draining the event stream WITHOUT calling `finish()` first, you will see the stale pre-prompt state — which silently breaks anything that depends on message count (e.g., the context-window usage bar). Always call `agent.finish().await` between event drain and message read.
 

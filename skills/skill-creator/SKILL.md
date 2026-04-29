@@ -1,7 +1,7 @@
 ---
 name: skill-creator
 description: Scaffold a new yoyo skill when a human or community issue asks for one ("add a skill for X", "create a skill that does Y"). Generates correct frontmatter, validates, writes to disk.
-tools: [bash, read_file, write_file]
+tools: [bash, read_file, write_file, sub_agent]
 core: true
 origin: creator
 ---
