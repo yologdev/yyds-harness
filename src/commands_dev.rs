@@ -1,7 +1,8 @@
-//! Dev workflow command handlers: /doctor, /health, /fix, /test, /lint, /watch, /tree.
+//! Dev workflow command handlers: /doctor, /health, /fix, /watch, /tree.
 
 use crate::cli;
 use crate::commands::auto_compact_if_needed;
+use crate::commands_lint::{lint_command_for_project, test_command_for_project, LintStrictness};
 use crate::commands_project::{detect_project_type, ProjectType};
 use crate::format::*;
 use crate::prompt::*;
@@ -839,540 +840,6 @@ pub async fn handle_fix(
     auto_compact_if_needed(agent);
     Some(fix_prompt)
 }
-
-// ── /test ─────────────────────────────────────────────────────────────
-
-/// Return the test command for a given project type.
-pub fn test_command_for_project(
-    project_type: &ProjectType,
-) -> Option<(&'static str, Vec<&'static str>)> {
-    match project_type {
-        ProjectType::Rust => Some(("cargo test", vec!["cargo", "test"])),
-        ProjectType::Node => Some(("npm test", vec!["npm", "test"])),
-        ProjectType::Python => Some(("python -m pytest", vec!["python", "-m", "pytest"])),
-        ProjectType::Go => Some(("go test ./...", vec!["go", "test", "./..."])),
-        ProjectType::Make => Some(("make test", vec!["make", "test"])),
-        ProjectType::Unknown => None,
-    }
-}
-
-/// Handle the /test command: auto-detect project type and run tests.
-/// Returns a summary string suitable for AI context.
-pub fn handle_test() -> Option<String> {
-    let project_type = detect_project_type(&std::env::current_dir().unwrap_or_default());
-    println!("{DIM}  Detected project: {project_type}{RESET}");
-    if project_type == ProjectType::Unknown {
-        println!(
-            "{DIM}  No recognized project found. Looked for: Cargo.toml, package.json, pyproject.toml, setup.py, go.mod, Makefile{RESET}\n"
-        );
-        return None;
-    }
-
-    let (label, args) = match test_command_for_project(&project_type) {
-        Some(cmd) => cmd,
-        None => {
-            println!("{DIM}  No test command configured for {project_type}{RESET}\n");
-            return None;
-        }
-    };
-
-    println!("{DIM}  Running: {label}...{RESET}");
-    let start = std::time::Instant::now();
-    let output = std::process::Command::new(args[0])
-        .args(&args[1..])
-        .output();
-    let elapsed = format_duration(start.elapsed());
-
-    match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            let stderr = String::from_utf8_lossy(&o.stderr);
-
-            if !stdout.is_empty() {
-                print!("{stdout}");
-            }
-            if !stderr.is_empty() {
-                eprint!("{stderr}");
-            }
-
-            if o.status.success() {
-                println!("\n{GREEN}  ✓ Tests passed ({elapsed}){RESET}\n");
-                Some(format!("Tests passed ({elapsed}): {label}"))
-            } else {
-                let code = o.status.code().unwrap_or(-1);
-                println!("\n{RED}  ✗ Tests failed (exit {code}, {elapsed}){RESET}\n");
-                let mut summary = format!("Tests FAILED (exit {code}, {elapsed}): {label}");
-                // Include a preview of the error output for AI context
-                let error_text = if !stderr.is_empty() {
-                    stderr.to_string()
-                } else {
-                    stdout.to_string()
-                };
-                let lines: Vec<&str> = error_text.lines().collect();
-                let preview_lines = if lines.len() > 20 {
-                    &lines[lines.len() - 20..]
-                } else {
-                    &lines
-                };
-                summary.push_str("\n\nLast output:\n");
-                for line in preview_lines {
-                    summary.push_str(line);
-                    summary.push('\n');
-                }
-                Some(summary)
-            }
-        }
-        Err(e) => {
-            eprintln!("{RED}  ✗ Failed to run {label}: {e}{RESET}\n");
-            Some(format!("Failed to run {label}: {e}"))
-        }
-    }
-}
-
-// ── /lint ──────────────────────────────────────────────────────────────
-
-/// Lint strictness level for clippy (Rust only; other languages ignore this).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LintStrictness {
-    /// Default: `-D warnings`
-    Default,
-    /// Pedantic: `-D warnings -W clippy::pedantic`
-    Pedantic,
-    /// Strict: `-D warnings -W clippy::pedantic -W clippy::nursery`
-    Strict,
-}
-
-/// Lint subcommand names for tab completion.
-pub const LINT_SUBCOMMANDS: &[&str] = &["fix", "pedantic", "strict", "unsafe"];
-
-/// Return the lint command for a given project type and strictness level.
-pub fn lint_command_for_project(
-    project_type: &ProjectType,
-    strictness: LintStrictness,
-) -> Option<(String, Vec<String>)> {
-    match project_type {
-        ProjectType::Rust => {
-            let mut label = String::from("cargo clippy --all-targets -- -D warnings");
-            let mut args: Vec<String> =
-                vec!["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]
-                    .into_iter()
-                    .map(String::from)
-                    .collect();
-            match strictness {
-                LintStrictness::Default => {}
-                LintStrictness::Pedantic => {
-                    label.push_str(" -W clippy::pedantic");
-                    args.push("-W".into());
-                    args.push("clippy::pedantic".into());
-                }
-                LintStrictness::Strict => {
-                    label.push_str(" -W clippy::pedantic -W clippy::nursery");
-                    args.push("-W".into());
-                    args.push("clippy::pedantic".into());
-                    args.push("-W".into());
-                    args.push("clippy::nursery".into());
-                }
-            }
-            Some((label, args))
-        }
-        ProjectType::Node => Some((
-            "npx eslint .".into(),
-            vec!["npx".into(), "eslint".into(), ".".into()],
-        )),
-        ProjectType::Python => Some((
-            "ruff check .".into(),
-            vec!["ruff".into(), "check".into(), ".".into()],
-        )),
-        ProjectType::Go => Some((
-            "golangci-lint run".into(),
-            vec!["golangci-lint".into(), "run".into()],
-        )),
-        ProjectType::Make | ProjectType::Unknown => None,
-    }
-}
-
-/// Handle the /lint command: auto-detect project type and run linter.
-/// Returns a summary string suitable for AI context.
-/// Accepts the full input string (e.g. "/lint", "/lint pedantic", "/lint strict").
-pub fn handle_lint(input: &str) -> Option<String> {
-    // Parse strictness from subcommand
-    let arg = input.strip_prefix("/lint").unwrap_or("").trim();
-
-    // Dispatch to specialized subcommand handlers
-    if arg == "unsafe" {
-        return handle_lint_unsafe();
-    }
-
-    let strictness = match arg {
-        "pedantic" => LintStrictness::Pedantic,
-        "strict" => LintStrictness::Strict,
-        _ => LintStrictness::Default,
-    };
-
-    let project_type = detect_project_type(&std::env::current_dir().unwrap_or_default());
-    println!("{DIM}  Detected project: {project_type}{RESET}");
-    if project_type == ProjectType::Unknown {
-        println!(
-            "{DIM}  No recognized project found. Looked for: Cargo.toml, package.json, pyproject.toml, setup.py, go.mod, Makefile{RESET}\n"
-        );
-        return None;
-    }
-
-    let (label, args) = match lint_command_for_project(&project_type, strictness) {
-        Some(cmd) => cmd,
-        None => {
-            println!("{DIM}  No lint command configured for {project_type}{RESET}\n");
-            return None;
-        }
-    };
-
-    println!("{DIM}  Running: {label}...{RESET}");
-    let start = std::time::Instant::now();
-    let output = std::process::Command::new(&args[0])
-        .args(&args[1..])
-        .output();
-    let elapsed = format_duration(start.elapsed());
-
-    match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            let stderr = String::from_utf8_lossy(&o.stderr);
-
-            if !stdout.is_empty() {
-                print!("{stdout}");
-            }
-            if !stderr.is_empty() {
-                eprint!("{stderr}");
-            }
-
-            if o.status.success() {
-                println!("\n{GREEN}  ✓ Lint passed ({elapsed}){RESET}\n");
-                Some(format!("Lint passed ({elapsed}): {label}"))
-            } else {
-                let code = o.status.code().unwrap_or(-1);
-                println!("\n{RED}  ✗ Lint failed (exit {code}, {elapsed}){RESET}\n");
-                let mut summary = format!("Lint FAILED (exit {code}, {elapsed}): {label}");
-                let error_text = if !stderr.is_empty() {
-                    stderr.to_string()
-                } else {
-                    stdout.to_string()
-                };
-                let lines: Vec<&str> = error_text.lines().collect();
-                let preview_lines = if lines.len() > 20 {
-                    &lines[lines.len() - 20..]
-                } else {
-                    &lines
-                };
-                summary.push_str("\n\nLast output:\n");
-                for line in preview_lines {
-                    summary.push_str(line);
-                    summary.push('\n');
-                }
-                Some(summary)
-            }
-        }
-        Err(e) => {
-            eprintln!("{RED}  ✗ Failed to run {label}: {e}{RESET}\n");
-            Some(format!("Failed to run {label}: {e}"))
-        }
-    }
-}
-
-/// Build a prompt asking the AI to fix lint errors.
-/// Takes the lint command label and the raw lint output.
-pub fn build_lint_fix_prompt(lint_command: &str, lint_output: &str) -> String {
-    let mut prompt = String::from(
-        "Fix the following lint errors in this project. Read the relevant files, \
-         understand the warnings/errors, and apply fixes:\n\n",
-    );
-    prompt.push_str(&format!(
-        "## Lint errors (`{lint_command}`):\n```\n{lint_output}\n```\n\n"
-    ));
-    prompt
-        .push_str("After fixing, run the lint command again to verify. Fix any remaining issues.");
-    prompt
-}
-
-/// Handle the `/lint fix` command: run lint and send failures to AI for auto-fixing.
-/// Returns Some(fix_prompt) if failures were sent to AI, None otherwise.
-pub async fn handle_lint_fix(
-    agent: &mut Agent,
-    session_total: &mut Usage,
-    model: &str,
-) -> Option<String> {
-    let lint_result = handle_lint("/lint");
-    match lint_result {
-        Some(ref summary)
-            if summary.starts_with("Lint FAILED") || summary.starts_with("Failed to run") =>
-        {
-            println!("{YELLOW}  Sending lint failures to AI for fixing...{RESET}\n");
-            // Extract the lint command label for the prompt
-            let project_type = detect_project_type(&std::env::current_dir().unwrap_or_default());
-            let lint_label = lint_command_for_project(&project_type, LintStrictness::Default)
-                .map(|(label, _)| label)
-                .unwrap_or_else(|| "lint".into());
-            let fix_prompt = build_lint_fix_prompt(&lint_label, summary);
-            run_prompt(agent, &fix_prompt, session_total, model).await;
-            auto_compact_if_needed(agent);
-            Some(fix_prompt)
-        }
-        Some(_) => {
-            // Lint passed — nothing to fix
-            println!("{GREEN}  No lint errors to fix ✓{RESET}\n");
-            None
-        }
-        None => None,
-    }
-}
-
-// ── /lint unsafe ────────────────────────────────────────────────────────
-
-/// A single occurrence of `unsafe` found in a source file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnsafeOccurrence {
-    pub file: String,
-    pub line_number: usize,
-    pub line_text: String,
-    pub kind: UnsafeKind,
-}
-
-/// What kind of `unsafe` usage was found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnsafeKind {
-    Block,
-    Function,
-    Impl,
-    Trait,
-}
-
-impl std::fmt::Display for UnsafeKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Block => write!(f, "unsafe block"),
-            Self::Function => write!(f, "unsafe fn"),
-            Self::Impl => write!(f, "unsafe impl"),
-            Self::Trait => write!(f, "unsafe trait"),
-        }
-    }
-}
-
-/// Scan file content for `unsafe` usage. Returns occurrences with line numbers.
-/// This is the pure, testable core — no filesystem access.
-pub fn scan_for_unsafe(file_path: &str, content: &str) -> Vec<UnsafeOccurrence> {
-    let mut results = Vec::new();
-    for (idx, line) in content.lines().enumerate() {
-        let trimmed = line.trim();
-        // Skip comments
-        if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
-            continue;
-        }
-        // Skip string literals containing "unsafe" — simple heuristic:
-        // if the line has a quote before `unsafe`, it's likely in a string
-        if let Some(unsafe_pos) = trimmed.find("unsafe") {
-            let before = &trimmed[..unsafe_pos];
-            // Count unescaped quotes — odd count means we're inside a string
-            let quote_count = before.chars().filter(|&c| c == '"').count();
-            if quote_count % 2 == 1 {
-                continue;
-            }
-            // Determine kind
-            let after_unsafe = &trimmed[unsafe_pos + 6..]; // len("unsafe") == 6
-            let kind = if after_unsafe.trim_start().starts_with("fn ") {
-                UnsafeKind::Function
-            } else if after_unsafe.trim_start().starts_with("impl") {
-                UnsafeKind::Impl
-            } else if after_unsafe.trim_start().starts_with("trait") {
-                UnsafeKind::Trait
-            } else if after_unsafe.trim_start().starts_with('{')
-                || after_unsafe.trim_start().is_empty()
-                || before.is_empty()
-                || before.ends_with(' ')
-                || before.ends_with('{')
-            {
-                UnsafeKind::Block
-            } else {
-                continue; // Not a real unsafe keyword usage
-            };
-            results.push(UnsafeOccurrence {
-                file: file_path.to_string(),
-                line_number: idx + 1,
-                line_text: line.to_string(),
-                kind,
-            });
-        }
-    }
-    results
-}
-
-/// Check whether file content contains `#![deny(unsafe_code)]` or `#![forbid(unsafe_code)]`.
-pub fn has_unsafe_code_attribute(content: &str) -> Option<&'static str> {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") {
-            continue;
-        }
-        if trimmed.contains("#![forbid(unsafe_code)]") {
-            return Some("forbid");
-        }
-        if trimmed.contains("#![deny(unsafe_code)]") {
-            return Some("deny");
-        }
-    }
-    None
-}
-
-/// Collect all `.rs` files under a directory (non-recursive into target/).
-fn collect_rs_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut files = Vec::new();
-    collect_rs_files_recursive(dir, &mut files);
-    files.sort();
-    files
-}
-
-fn collect_rs_files_recursive(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            // Skip target/, .git/, and hidden directories
-            if name == "target" || name == ".git" || name.starts_with('.') {
-                continue;
-            }
-            collect_rs_files_recursive(&path, files);
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            files.push(path);
-        }
-    }
-}
-
-/// Handle the `/lint unsafe` command: scan for unsafe code and report findings.
-pub fn handle_lint_unsafe() -> Option<String> {
-    let cwd = std::env::current_dir().unwrap_or_default();
-
-    // Check for Cargo.toml — this is Rust-specific
-    if !cwd.join("Cargo.toml").exists() {
-        println!("{DIM}  /lint unsafe is only available for Rust projects (no Cargo.toml found){RESET}\n");
-        return None;
-    }
-
-    println!("{DIM}  Scanning for unsafe code...{RESET}");
-
-    // Find the crate root file to check for deny/forbid attribute
-    let mut crate_root_attr: Option<&str> = None;
-    for root_file in &["src/main.rs", "src/lib.rs"] {
-        let root_path = cwd.join(root_file);
-        if root_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&root_path) {
-                if let Some(attr) = has_unsafe_code_attribute(&content) {
-                    crate_root_attr = Some(attr);
-                    break;
-                }
-            }
-        }
-    }
-
-    // Collect and scan all .rs files
-    let src_dir = cwd.join("src");
-    let scan_dir = if src_dir.exists() { &src_dir } else { &cwd };
-    let rs_files = collect_rs_files(scan_dir);
-
-    let mut all_occurrences: Vec<UnsafeOccurrence> = Vec::new();
-    for file_path in &rs_files {
-        if let Ok(content) = std::fs::read_to_string(file_path) {
-            let relative = file_path
-                .strip_prefix(&cwd)
-                .unwrap_or(file_path)
-                .to_string_lossy()
-                .to_string();
-            let occurrences = scan_for_unsafe(&relative, &content);
-            all_occurrences.extend(occurrences);
-        }
-    }
-
-    // Build report
-    let mut summary = String::new();
-
-    if all_occurrences.is_empty() {
-        if let Some(attr) = crate_root_attr {
-            let msg = format!("✓ No unsafe code found — #![{attr}(unsafe_code)] is active");
-            println!("\n{GREEN}  {msg}{RESET}\n");
-            summary.push_str(&msg);
-        } else {
-            println!("\n{GREEN}  ✓ No unsafe code found{RESET}");
-            println!(
-                "{YELLOW}  💡 Consider adding #![forbid(unsafe_code)] to your crate root for compile-time enforcement{RESET}\n"
-            );
-            summary.push_str(
-                "No unsafe code found. Suggest adding #![forbid(unsafe_code)] to crate root.",
-            );
-        }
-    } else {
-        println!(
-            "\n{YELLOW}  ⚠ Found {} unsafe occurrence(s):{RESET}\n",
-            all_occurrences.len()
-        );
-        for occ in &all_occurrences {
-            println!(
-                "  {RED}{}:{}{RESET} — {} — {}",
-                occ.file,
-                occ.line_number,
-                occ.kind,
-                occ.line_text.trim()
-            );
-        }
-        summary.push_str(&format!(
-            "Found {} unsafe occurrence(s):\n",
-            all_occurrences.len()
-        ));
-        for occ in &all_occurrences {
-            summary.push_str(&format!(
-                "  {}:{} — {} — {}\n",
-                occ.file,
-                occ.line_number,
-                occ.kind,
-                occ.line_text.trim()
-            ));
-        }
-
-        match crate_root_attr {
-            Some(attr) => {
-                println!(
-                    "\n{DIM}  #![{attr}(unsafe_code)] is set — these unsafe usages require #[allow(unsafe_code)] or will fail to compile{RESET}\n"
-                );
-                summary.push_str(&format!("\n#![{attr}(unsafe_code)] is set in crate root."));
-            }
-            None => {
-                println!(
-                    "\n{YELLOW}  💡 No #![deny(unsafe_code)] or #![forbid(unsafe_code)] found in crate root{RESET}"
-                );
-                println!(
-                    "{YELLOW}  💡 Consider adding #![forbid(unsafe_code)] to prevent future unsafe additions{RESET}\n"
-                );
-                summary.push_str(
-                    "\nNo unsafe_code attribute found. Suggest adding #![forbid(unsafe_code)] to crate root."
-                );
-            }
-        }
-    }
-
-    Some(summary)
-}
-
-// ── /watch ──────────────────────────────────────────────────────────────
-
-/// Auto-detect the test command for the current project.
-/// Returns the command string (e.g. "cargo test") if a project type is detected.
-#[allow(dead_code)]
-fn detect_test_command() -> Option<String> {
-    let dir = std::env::current_dir().unwrap_or_default();
-    let project_type = detect_project_type(&dir);
-    test_command_for_project(&project_type).map(|(label, _args)| label.to_string())
-}
-
 /// Auto-detect the appropriate watch command for the current project.
 /// Returns a lint+test combo command (e.g. `cargo clippy … && cargo test`) when
 /// both are available, falls back to test-only, or `None` for unknown project types.
@@ -1399,6 +866,24 @@ pub fn detect_watch_all_command() -> Option<String> {
     }
 }
 
+/// Auto-detect separate lint and test commands for two-phase watch.
+/// Returns a vec of individual commands (lint first, then test).
+/// Falls back to a single-element vec if only one is available.
+pub fn detect_watch_all_phases() -> Option<Vec<String>> {
+    let dir = std::env::current_dir().unwrap_or_default();
+    let project_type = detect_project_type(&dir);
+    let lint = lint_command_for_project(&project_type, LintStrictness::Default);
+    let test = test_command_for_project(&project_type);
+    match (lint, test) {
+        (Some((lint_label, _)), Some((test_label, _))) => {
+            Some(vec![lint_label.to_string(), test_label.to_string()])
+        }
+        (None, Some((test_label, _))) => Some(vec![test_label.to_string()]),
+        (Some((lint_label, _)), None) => Some(vec![lint_label]),
+        (None, None) => None,
+    }
+}
+
 /// Watch subcommand names for tab completion.
 pub const WATCH_SUBCOMMANDS: &[&str] = &["off", "status", "all", "lint"];
 
@@ -1408,13 +893,22 @@ pub fn handle_watch(input: &str) {
 
     match arg {
         "" => {
-            // Auto-detect lint+test combo and toggle on
-            match detect_watch_all_command() {
-                Some(cmd) => {
-                    crate::prompt::set_watch_command(&cmd);
-                    println!(
-                        "{GREEN}  👀 Watch mode ON — will run `{cmd}` after agent edits{RESET}\n"
-                    );
+            // Auto-detect lint+test as separate phases
+            match detect_watch_all_phases() {
+                Some(phases) => {
+                    let display = phases.join(" && ");
+                    let phase_refs: Vec<&str> = phases.iter().map(|s| s.as_str()).collect();
+                    crate::prompt::set_watch_commands(&phase_refs);
+                    if phases.len() > 1 {
+                        println!(
+                            "{GREEN}  👀 Watch mode ON — {n} phases: `{display}`{RESET}\n",
+                            n = phases.len()
+                        );
+                    } else {
+                        println!(
+                            "{GREEN}  👀 Watch mode ON — will run `{display}` after agent edits{RESET}\n"
+                        );
+                    }
                 }
                 None => {
                     println!("{DIM}  No lint or test command detected. Specify one:{RESET}");
@@ -1429,21 +923,39 @@ pub fn handle_watch(input: &str) {
         }
         "status" => match crate::prompt::get_watch_command() {
             Some(cmd) => {
+                let phases = crate::prompt::get_watch_commands();
                 println!("{DIM}  👀 Watch mode: ON{RESET}");
-                println!("{DIM}  Command: `{cmd}`{RESET}\n");
+                if phases.len() > 1 {
+                    println!("{DIM}  Phases ({}):{RESET}", phases.len());
+                    for (i, phase) in phases.iter().enumerate() {
+                        println!("{DIM}    {}. `{phase}`{RESET}", i + 1);
+                    }
+                    println!();
+                } else {
+                    println!("{DIM}  Command: `{cmd}`{RESET}\n");
+                }
             }
             None => {
                 println!("{DIM}  👀 Watch mode: OFF{RESET}\n");
             }
         },
         "all" => {
-            // Auto-detect lint + test and chain them
-            match detect_watch_all_command() {
-                Some(cmd) => {
-                    crate::prompt::set_watch_command(&cmd);
-                    println!(
-                        "{GREEN}  👀 Watch mode ON — will run `{cmd}` after agent edits{RESET}\n"
-                    );
+            // Auto-detect lint + test as separate phases
+            match detect_watch_all_phases() {
+                Some(phases) => {
+                    let display = phases.join(" && ");
+                    let phase_refs: Vec<&str> = phases.iter().map(|s| s.as_str()).collect();
+                    crate::prompt::set_watch_commands(&phase_refs);
+                    if phases.len() > 1 {
+                        println!(
+                            "{GREEN}  👀 Watch mode ON — {n} phases: `{display}`{RESET}\n",
+                            n = phases.len()
+                        );
+                    } else {
+                        println!(
+                            "{GREEN}  👀 Watch mode ON — will run `{display}` after agent edits{RESET}\n"
+                        );
+                    }
                 }
                 None => {
                     println!("{DIM}  No lint or test command detected. Specify one:{RESET}");
@@ -1558,21 +1070,6 @@ mod tests {
     use super::*;
     use crate::commands::{is_unknown_command, KNOWN_COMMANDS};
 
-    // ── test_command_for_project ─────────────────────────────────────
-
-    #[test]
-    fn test_command_rust() {
-        let cmd = test_command_for_project(&ProjectType::Rust);
-        assert!(cmd.is_some());
-        let (label, _) = cmd.unwrap();
-        assert_eq!(label, "cargo test");
-    }
-
-    #[test]
-    fn test_command_unknown() {
-        assert!(test_command_for_project(&ProjectType::Unknown).is_none());
-    }
-
     #[test]
     fn auto_detect_watch_command_returns_lint_and_test_in_rust_project() {
         // We're running from a directory with Cargo.toml, so this should detect Rust
@@ -1632,7 +1129,7 @@ mod tests {
     fn handle_watch_all_sets_combined_command() {
         // Clear any previous watch command
         crate::prompt::clear_watch_command();
-        // Run /watch all — since we're in a Rust project, it should set a combined command
+        // Run /watch all — since we're in a Rust project, it should set separate phases
         handle_watch("/watch all");
         let cmd = crate::prompt::get_watch_command();
         assert!(
@@ -1643,6 +1140,23 @@ mod tests {
         assert!(
             cmd.contains("clippy") && cmd.contains("cargo test"),
             "watch all should set lint && test: {cmd}"
+        );
+        // Verify multi-phase: should have 2 separate commands
+        let phases = crate::prompt::get_watch_commands();
+        assert_eq!(
+            phases.len(),
+            2,
+            "watch all should set 2 separate phases: {phases:?}"
+        );
+        assert!(
+            phases[0].contains("clippy"),
+            "first phase should be lint: {}",
+            phases[0]
+        );
+        assert!(
+            phases[1].contains("test"),
+            "second phase should be test: {}",
+            phases[1]
         );
         // Cleanup
         crate::prompt::clear_watch_command();
@@ -1684,7 +1198,7 @@ mod tests {
     fn handle_watch_bare_sets_lint_and_test() {
         // Clear any previous watch command
         crate::prompt::clear_watch_command();
-        // Run bare /watch — should now set lint+test, not just test
+        // Run bare /watch — should now set lint+test as separate phases
         handle_watch("/watch");
         let cmd = crate::prompt::get_watch_command();
         assert!(
@@ -1696,6 +1210,13 @@ mod tests {
             cmd.contains("clippy") && cmd.contains("cargo test"),
             "bare /watch should set lint && test: {cmd}"
         );
+        // Verify multi-phase
+        let phases = crate::prompt::get_watch_commands();
+        assert_eq!(
+            phases.len(),
+            2,
+            "bare /watch should set 2 phases: {phases:?}"
+        );
         // Cleanup
         crate::prompt::clear_watch_command();
     }
@@ -1703,23 +1224,41 @@ mod tests {
     // ── lint_command_for_project ─────────────────────────────────────
 
     #[test]
-    fn lint_command_rust() {
-        let cmd = lint_command_for_project(&ProjectType::Rust, LintStrictness::Default);
-        assert!(cmd.is_some());
-        assert!(cmd.unwrap().0.contains("clippy"));
+    fn detect_watch_all_phases_returns_separate_commands() {
+        // In a Rust project, should return 2 separate commands
+        let phases = detect_watch_all_phases();
+        assert!(phases.is_some(), "should detect phases in a Rust project");
+        let phases = phases.unwrap();
+        assert_eq!(
+            phases.len(),
+            2,
+            "should have lint + test phases: {phases:?}"
+        );
+        assert!(
+            phases[0].contains("clippy"),
+            "first phase should be lint: {}",
+            phases[0]
+        );
+        assert!(
+            phases[1].contains("test"),
+            "second phase should be test: {}",
+            phases[1]
+        );
     }
 
     #[test]
-    fn lint_command_make_none() {
-        assert!(lint_command_for_project(&ProjectType::Make, LintStrictness::Default).is_none());
+    fn handle_watch_custom_command_single_phase() {
+        crate::prompt::clear_watch_command();
+        handle_watch("/watch make check");
+        let phases = crate::prompt::get_watch_commands();
+        assert_eq!(
+            phases.len(),
+            1,
+            "custom command should be single-phase: {phases:?}"
+        );
+        assert_eq!(phases[0], "make check");
+        crate::prompt::clear_watch_command();
     }
-
-    #[test]
-    fn lint_command_unknown_none() {
-        assert!(lint_command_for_project(&ProjectType::Unknown, LintStrictness::Default).is_none());
-    }
-
-    // ── health_checks_for_project ───────────────────────────────────
 
     #[test]
     fn health_checks_rust_has_build() {
@@ -1778,37 +1317,6 @@ mod tests {
     }
 
     // ── build_lint_fix_prompt ──────────────────────────────────────────
-
-    #[test]
-    fn lint_fix_prompt_contains_command_and_output() {
-        let prompt = build_lint_fix_prompt(
-            "cargo clippy --all-targets -- -D warnings",
-            "warning: unused variable `x`\n  --> src/main.rs:5:9",
-        );
-        assert!(prompt.contains("cargo clippy"));
-        assert!(prompt.contains("unused variable"));
-        assert!(prompt.contains("src/main.rs:5:9"));
-    }
-
-    #[test]
-    fn lint_fix_prompt_asks_to_fix() {
-        let prompt = build_lint_fix_prompt("ruff check .", "E501 line too long");
-        assert!(prompt.contains("Fix the following lint errors"));
-        assert!(prompt.contains("ruff check ."));
-        assert!(prompt.contains("E501 line too long"));
-        assert!(prompt.contains("run the lint command again to verify"));
-    }
-
-    #[test]
-    fn lint_fix_prompt_includes_structured_output() {
-        let lint_output = "Lint FAILED (exit 1, 2.3s): cargo clippy\n\nLast output:\nwarning: field `foo` is never read";
-        let prompt =
-            build_lint_fix_prompt("cargo clippy --all-targets -- -D warnings", lint_output);
-        assert!(prompt.contains("## Lint errors"));
-        assert!(prompt.contains("field `foo` is never read"));
-    }
-
-    // ── update helpers ────────────────────────────────────────────────
 
     #[test]
     fn update_platform_linux_x86_64() {
@@ -2180,353 +1688,6 @@ mod tests {
         assert!(
             prompt.is_empty() || prompt.contains("Fix"),
             "Empty failures should produce empty or minimal prompt"
-        );
-    }
-
-    #[test]
-    fn test_test_command_recognized() {
-        assert!(!is_unknown_command("/test"));
-        assert!(
-            KNOWN_COMMANDS.contains(&"/test"),
-            "/test should be in KNOWN_COMMANDS"
-        );
-    }
-
-    #[test]
-    fn test_test_command_for_rust_project() {
-        let cmd = test_command_for_project(&ProjectType::Rust);
-        assert!(cmd.is_some(), "Rust project should have a test command");
-        let (label, args) = cmd.unwrap();
-        assert!(
-            label.contains("cargo"),
-            "Rust test label should mention cargo"
-        );
-        assert_eq!(args[0], "cargo");
-        assert!(args.contains(&"test"));
-    }
-
-    #[test]
-    fn test_test_command_for_node_project() {
-        let cmd = test_command_for_project(&ProjectType::Node);
-        assert!(cmd.is_some(), "Node project should have a test command");
-        let (label, args) = cmd.unwrap();
-        assert!(label.contains("npm"), "Node test label should mention npm");
-        assert_eq!(args[0], "npm");
-        assert!(args.contains(&"test"));
-    }
-
-    #[test]
-    fn test_test_command_for_python_project() {
-        let cmd = test_command_for_project(&ProjectType::Python);
-        assert!(cmd.is_some(), "Python project should have a test command");
-        let (label, _args) = cmd.unwrap();
-        assert!(
-            label.contains("pytest"),
-            "Python test label should mention pytest"
-        );
-    }
-
-    #[test]
-    fn test_test_command_for_go_project() {
-        let cmd = test_command_for_project(&ProjectType::Go);
-        assert!(cmd.is_some(), "Go project should have a test command");
-        let (label, args) = cmd.unwrap();
-        assert!(label.contains("go"), "Go test label should mention go");
-        assert_eq!(args[0], "go");
-        assert!(args.contains(&"test"));
-    }
-
-    #[test]
-    fn test_test_command_for_make_project() {
-        let cmd = test_command_for_project(&ProjectType::Make);
-        assert!(cmd.is_some(), "Make project should have a test command");
-        let (label, args) = cmd.unwrap();
-        assert!(
-            label.contains("make"),
-            "Make test label should mention make"
-        );
-        assert_eq!(args[0], "make");
-        assert!(args.contains(&"test"));
-    }
-
-    #[test]
-    fn test_test_command_for_unknown_project() {
-        let cmd = test_command_for_project(&ProjectType::Unknown);
-        assert!(
-            cmd.is_none(),
-            "Unknown project should not have a test command"
-        );
-    }
-
-    #[test]
-    fn test_lint_command_recognized() {
-        assert!(!is_unknown_command("/lint"));
-        assert!(
-            KNOWN_COMMANDS.contains(&"/lint"),
-            "/lint should be in KNOWN_COMMANDS"
-        );
-    }
-
-    #[test]
-    fn test_lint_command_for_rust_project() {
-        let cmd = lint_command_for_project(&ProjectType::Rust, LintStrictness::Default);
-        assert!(cmd.is_some(), "Rust project should have a lint command");
-        let (label, args) = cmd.unwrap();
-        assert!(
-            label.contains("clippy"),
-            "Rust lint label should mention clippy"
-        );
-        assert_eq!(args[0], "cargo");
-        assert!(args.iter().any(|a| a == "clippy"));
-    }
-
-    #[test]
-    fn test_lint_command_for_node_project() {
-        let cmd = lint_command_for_project(&ProjectType::Node, LintStrictness::Default);
-        assert!(cmd.is_some(), "Node project should have a lint command");
-        let (label, args) = cmd.unwrap();
-        assert!(
-            label.contains("eslint"),
-            "Node lint label should mention eslint"
-        );
-        assert_eq!(args[0], "npx");
-        assert!(args.iter().any(|a| a == "eslint"));
-    }
-
-    #[test]
-    fn test_lint_command_for_python_project() {
-        let cmd = lint_command_for_project(&ProjectType::Python, LintStrictness::Default);
-        assert!(cmd.is_some(), "Python project should have a lint command");
-        let (label, _args) = cmd.unwrap();
-        assert!(
-            label.contains("ruff"),
-            "Python lint label should mention ruff"
-        );
-    }
-
-    #[test]
-    fn test_lint_command_for_go_project() {
-        let cmd = lint_command_for_project(&ProjectType::Go, LintStrictness::Default);
-        assert!(cmd.is_some(), "Go project should have a lint command");
-        let (label, args) = cmd.unwrap();
-        assert!(
-            label.contains("golangci-lint"),
-            "Go lint label should mention golangci-lint"
-        );
-        assert_eq!(args[0], "golangci-lint");
-    }
-
-    #[test]
-    fn test_lint_command_for_make_project() {
-        let cmd = lint_command_for_project(&ProjectType::Make, LintStrictness::Default);
-        assert!(cmd.is_none(), "Make project should not have a lint command");
-    }
-
-    #[test]
-    fn test_lint_command_for_unknown_project() {
-        let cmd = lint_command_for_project(&ProjectType::Unknown, LintStrictness::Default);
-        assert!(
-            cmd.is_none(),
-            "Unknown project should not have a lint command"
-        );
-    }
-
-    // ── lint strictness levels ──────────────────────────────────────────
-
-    #[test]
-    fn test_lint_pedantic_adds_flag() {
-        let cmd = lint_command_for_project(&ProjectType::Rust, LintStrictness::Pedantic);
-        let (label, args) = cmd.unwrap();
-        assert!(
-            label.contains("-W clippy::pedantic"),
-            "Pedantic label should contain -W clippy::pedantic, got: {label}"
-        );
-        assert!(
-            args.iter().any(|a| a == "clippy::pedantic"),
-            "Pedantic args should contain clippy::pedantic"
-        );
-    }
-
-    #[test]
-    fn test_lint_strict_adds_both_flags() {
-        let cmd = lint_command_for_project(&ProjectType::Rust, LintStrictness::Strict);
-        let (label, args) = cmd.unwrap();
-        assert!(
-            label.contains("-W clippy::pedantic"),
-            "Strict label should contain -W clippy::pedantic, got: {label}"
-        );
-        assert!(
-            label.contains("-W clippy::nursery"),
-            "Strict label should contain -W clippy::nursery, got: {label}"
-        );
-        assert!(
-            args.iter().any(|a| a == "clippy::pedantic"),
-            "Strict args should contain clippy::pedantic"
-        );
-        assert!(
-            args.iter().any(|a| a == "clippy::nursery"),
-            "Strict args should contain clippy::nursery"
-        );
-    }
-
-    #[test]
-    fn test_lint_default_no_extra_flags() {
-        let cmd = lint_command_for_project(&ProjectType::Rust, LintStrictness::Default);
-        let (label, args) = cmd.unwrap();
-        assert!(
-            !label.contains("clippy::pedantic"),
-            "Default should not contain clippy::pedantic"
-        );
-        assert!(
-            !label.contains("clippy::nursery"),
-            "Default should not contain clippy::nursery"
-        );
-        assert!(
-            !args.iter().any(|a| a == "clippy::pedantic"),
-            "Default args should not contain clippy::pedantic"
-        );
-    }
-
-    #[test]
-    fn test_lint_strictness_ignored_for_non_rust() {
-        // Non-Rust projects should return the same command regardless of strictness
-        let default = lint_command_for_project(&ProjectType::Node, LintStrictness::Default);
-        let pedantic = lint_command_for_project(&ProjectType::Node, LintStrictness::Pedantic);
-        let strict = lint_command_for_project(&ProjectType::Node, LintStrictness::Strict);
-        assert_eq!(default, pedantic);
-        assert_eq!(default, strict);
-    }
-
-    // ── scan_for_unsafe ────────────────────────────────────────────────
-
-    #[test]
-    fn scan_for_unsafe_finds_blocks() {
-        let content = r#"
-fn main() {
-    unsafe {
-        std::ptr::null::<u8>();
-    }
-}
-"#;
-        let results = scan_for_unsafe("test.rs", content);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].kind, UnsafeKind::Block);
-        assert_eq!(results[0].line_number, 3);
-        assert_eq!(results[0].file, "test.rs");
-    }
-
-    #[test]
-    fn scan_for_unsafe_finds_functions() {
-        let content = r#"
-unsafe fn dangerous() {
-    // do something dangerous
-}
-"#;
-        let results = scan_for_unsafe("test.rs", content);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].kind, UnsafeKind::Function);
-        assert_eq!(results[0].line_number, 2);
-    }
-
-    #[test]
-    fn scan_for_unsafe_finds_impl() {
-        let content = r#"
-unsafe impl Send for MyType {}
-"#;
-        let results = scan_for_unsafe("test.rs", content);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].kind, UnsafeKind::Impl);
-    }
-
-    #[test]
-    fn scan_for_unsafe_finds_trait() {
-        let content = r#"
-unsafe trait MyTrait {}
-"#;
-        let results = scan_for_unsafe("test.rs", content);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].kind, UnsafeKind::Trait);
-    }
-
-    #[test]
-    fn scan_for_unsafe_ignores_comments() {
-        let content = r#"
-// unsafe { this is a comment }
-fn safe() {}
-"#;
-        let results = scan_for_unsafe("test.rs", content);
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn scan_for_unsafe_ignores_strings() {
-        let content = r#"
-let s = "unsafe { not real code }";
-"#;
-        let results = scan_for_unsafe("test.rs", content);
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn scan_for_unsafe_no_occurrences() {
-        let content = r#"
-fn main() {
-    println!("hello world");
-}
-"#;
-        let results = scan_for_unsafe("test.rs", content);
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn scan_for_unsafe_multiple_occurrences() {
-        let content = r#"
-unsafe fn one() {}
-fn two() {
-    unsafe {
-        // block
-    }
-}
-unsafe impl Send for Foo {}
-"#;
-        let results = scan_for_unsafe("test.rs", content);
-        assert_eq!(results.len(), 3);
-        assert_eq!(results[0].kind, UnsafeKind::Function);
-        assert_eq!(results[1].kind, UnsafeKind::Block);
-        assert_eq!(results[2].kind, UnsafeKind::Impl);
-    }
-
-    // ── has_unsafe_code_attribute ──────────────────────────────────────
-
-    #[test]
-    fn detects_forbid_attribute() {
-        let content = "#![forbid(unsafe_code)]\nfn main() {}";
-        assert_eq!(has_unsafe_code_attribute(content), Some("forbid"));
-    }
-
-    #[test]
-    fn detects_deny_attribute() {
-        let content = "#![deny(unsafe_code)]\nfn main() {}";
-        assert_eq!(has_unsafe_code_attribute(content), Some("deny"));
-    }
-
-    #[test]
-    fn no_attribute_returns_none() {
-        let content = "fn main() {}";
-        assert_eq!(has_unsafe_code_attribute(content), None);
-    }
-
-    #[test]
-    fn ignores_commented_attribute() {
-        let content = "// #![forbid(unsafe_code)]\nfn main() {}";
-        assert_eq!(has_unsafe_code_attribute(content), None);
-    }
-
-    #[test]
-    fn lint_unsafe_in_subcommands() {
-        assert!(
-            LINT_SUBCOMMANDS.contains(&"unsafe"),
-            "LINT_SUBCOMMANDS should contain 'unsafe'"
         );
     }
 }

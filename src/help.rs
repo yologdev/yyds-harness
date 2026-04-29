@@ -887,16 +887,20 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
         "watch" => Some(
             "/watch [command|all|lint|off|status] — Auto-run lint+test after agent edits\n\n\
              Usage:\n\
-             \x20 /watch              Auto-detect lint+test and enable watching\n\
-             \x20 /watch all          Same as /watch (lint + test combined)\n\
+             \x20 /watch              Auto-detect lint+test as separate phases\n\
+             \x20 /watch all          Same as /watch (two-phase: lint → test)\n\
              \x20 /watch lint         Watch with lint only (no tests)\n\
-             \x20 /watch cargo test   Watch with a specific command\n\
+             \x20 /watch cargo test   Watch with a specific command (single phase)\n\
              \x20 /watch off          Disable watching\n\
-             \x20 /watch status       Show current watch state\n\n\
+             \x20 /watch status       Show current watch state and phases\n\n\
              When enabled, yoyo automatically runs the watch command after every\n\
              agent turn that modifies files. On failure, yoyo auto-fixes up to 3 times.\n\n\
-             By default, `/watch` detects both the lint and test commands for your\n\
-             project and chains them with `&&` (e.g. `cargo clippy -- -D warnings && cargo test`).\n\
+             By default, `/watch` and `/watch all` detect both the lint and test commands\n\
+             for your project and run them as **separate phases** — lint is fixed first,\n\
+             then tests run. This is more efficient than chaining with `&&` because lint\n\
+             fixes are usually mechanical while test fixes require understanding behavior.\n\n\
+             Fix prompts are command-type-aware: lint failures get targeted mechanical fix\n\
+             hints, test failures get behavioral understanding hints.\n\n\
              Use `/watch lint` for lint-only or `/watch <cmd>` for any custom command.\n\n\
              Examples:\n\
              \x20 /watch\n\

@@ -12,7 +12,8 @@ use yoagent::*;
 // Extracted into `watch` module (Day 58). Re-exported here so
 // `use crate::prompt::*;` call sites keep working without changes.
 pub use crate::watch::{
-    clear_watch_command, get_watch_command, run_watch_after_prompt, set_watch_command,
+    clear_watch_command, get_watch_command, get_watch_commands, run_watch_after_prompt,
+    set_watch_command, set_watch_commands,
 };
 
 // ── Audit log + session budget ──────────────────────────────────────────

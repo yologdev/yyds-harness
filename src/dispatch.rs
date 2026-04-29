@@ -168,11 +168,11 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
             }
             "lint" => {
                 let input = quote_args_as_command(args);
-                crate::commands_dev::handle_lint(&input);
+                crate::commands_lint::handle_lint(&input);
                 return Some(None);
             }
             "test" => {
-                crate::commands_dev::handle_test();
+                crate::commands_lint::handle_test();
                 return Some(None);
             }
             "tree" => {

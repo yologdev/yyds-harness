@@ -26,25 +26,50 @@ fn rw_write_or_recover<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T
 
 // Global state for `/watch` — auto-run a test command after agent edits.
 
-/// The currently active watch command (None = watch mode off).
-static WATCH_COMMAND: RwLock<Option<String>> = RwLock::new(None);
+/// The currently active watch commands (empty = watch mode off).
+/// When multiple commands are stored, each is run as its own phase with
+/// its own fix loop (e.g. lint → fix lint → test → fix test).
+static WATCH_COMMANDS: RwLock<Vec<String>> = RwLock::new(Vec::new());
 
-/// Set the watch command, enabling watch mode.
+/// Set a single watch command, enabling watch mode.
+/// This is the backward-compatible API — stores a single-element vec internally.
 pub fn set_watch_command(cmd: &str) {
-    let mut guard = rw_write_or_recover(&WATCH_COMMAND);
-    *guard = Some(cmd.to_string());
+    let mut guard = rw_write_or_recover(&WATCH_COMMANDS);
+    *guard = vec![cmd.to_string()];
 }
 
-/// Get the current watch command, if watch mode is active.
+/// Set multiple watch commands for multi-phase execution.
+/// Each command runs as its own phase with its own fix loop.
+/// For example: `["cargo clippy ...", "cargo test"]` runs lint first,
+/// fixes lint errors, then runs tests, fixes test errors.
+pub fn set_watch_commands(cmds: &[&str]) {
+    let mut guard = rw_write_or_recover(&WATCH_COMMANDS);
+    *guard = cmds.iter().map(|s| s.to_string()).collect();
+}
+
+/// Get the current watch command for display purposes.
+/// If multiple commands are stored, returns them joined with ` && `.
+/// Returns None if watch mode is off.
 pub fn get_watch_command() -> Option<String> {
-    let guard = rw_read_or_recover(&WATCH_COMMAND);
+    let guard = rw_read_or_recover(&WATCH_COMMANDS);
+    if guard.is_empty() {
+        None
+    } else {
+        Some(guard.join(" && "))
+    }
+}
+
+/// Get the individual watch commands (phases).
+/// Returns an empty vec if watch mode is off.
+pub fn get_watch_commands() -> Vec<String> {
+    let guard = rw_read_or_recover(&WATCH_COMMANDS);
     guard.clone()
 }
 
 /// Clear the watch command, disabling watch mode.
 pub fn clear_watch_command() {
-    let mut guard = rw_write_or_recover(&WATCH_COMMAND);
-    *guard = None;
+    let mut guard = rw_write_or_recover(&WATCH_COMMANDS);
+    *guard = Vec::new();
 }
 
 /// Maximum characters of watch command output to include in fix prompts.
@@ -63,17 +88,57 @@ pub struct WatchResult {
     pub last_tool_error: Option<String>,
 }
 
+/// Classify a watch command as "lint", "test", or "command" for fix prompt hints.
+fn classify_watch_command(cmd: &str) -> &'static str {
+    let lower = cmd.to_lowercase();
+    // Check for lint-like commands
+    if lower.contains("clippy")
+        || lower.contains("eslint")
+        || lower.contains("pylint")
+        || lower.contains("flake8")
+        || lower.contains("ruff")
+        || lower.contains("golint")
+        || lower.contains("lint")
+    {
+        "lint"
+    // Check for test-like commands
+    } else if lower.contains("test")
+        || lower.contains("pytest")
+        || lower.contains("jest")
+        || lower.contains("vitest")
+        || lower.contains("mocha")
+    {
+        "test"
+    } else {
+        "command"
+    }
+}
+
 /// Build a prompt asking the agent to fix failures from a watch command.
+///
+/// Includes a hint about the command type (lint, test, or general command)
+/// so the agent can choose an appropriate fix strategy. Lint failures are
+/// usually mechanical (unused imports, formatting), while test failures
+/// require understanding the intended behavior.
 pub fn build_watch_fix_prompt(watch_cmd: &str, output: &str) -> String {
     let truncated = if output.len() > WATCH_OUTPUT_MAX {
         format!("{}... (truncated)", safe_truncate(output, WATCH_OUTPUT_MAX))
     } else {
         output.to_string()
     };
+    let cmd_type = classify_watch_command(watch_cmd);
+    let hint = match cmd_type {
+        "lint" => "\n\nThis is a **lint** failure — fixes are usually mechanical (unused imports, \
+                   missing derives, formatting issues). Apply targeted fixes without changing logic.",
+        "test" => "\n\nThis is a **test** failure — understand what the test expects before \
+                   changing code. Fix the implementation to match the intended behavior, \
+                   or fix the test if the new behavior is correct.",
+        _ => "",
+    };
     format!(
-        "Your changes caused test/lint failures. Here's the output from `{watch_cmd}`:\n\
+        "Your changes caused {cmd_type} failures. Here's the output from `{watch_cmd}`:\n\
          ```\n{truncated}\n```\n\
-         Please fix the issues."
+         Please fix the issues.{hint}"
     )
 }
 
@@ -161,11 +226,13 @@ pub fn run_watch_command(cmd: &str) -> (bool, String) {
     (status, combined)
 }
 
-/// Run the watch command after a prompt completes.
+/// Run the watch command(s) after a prompt completes.
 ///
-/// If a watch command is active, this runs the watch command and auto-fixes
-/// failures up to [`MAX_WATCH_FIX_ATTEMPTS`] times. Used by the REPL main
-/// loop, `/side` handler, single-prompt mode, and piped mode.
+/// If watch commands are active, iterates through each phase in order.
+/// For each phase: runs the command, and if it fails, enters the fix loop
+/// (up to [`MAX_WATCH_FIX_ATTEMPTS`] times). Only proceeds to the next
+/// phase if the current one passes. This means lint gets fixed before tests
+/// even run.
 ///
 /// Returns a [`WatchResult`] with pass/fail status and the last tool error
 /// from any fix attempts. If no watch command is set, returns
@@ -176,73 +243,88 @@ pub async fn run_watch_after_prompt(
     model: &str,
     changes: &SessionChanges,
 ) -> WatchResult {
-    let watch_cmd = match get_watch_command() {
-        Some(cmd) => cmd,
-        None => {
-            return WatchResult {
-                passed: true,
-                last_tool_error: None,
-            }
-        }
-    };
-
-    let (ok, output) = run_watch_command(&watch_cmd);
-    if ok {
-        eprintln!("{GREEN}  ✓ Watch passed: `{watch_cmd}`{RESET}");
+    let commands = get_watch_commands();
+    if commands.is_empty() {
         return WatchResult {
             passed: true,
             last_tool_error: None,
         };
     }
 
-    eprintln!("{RED}  ✗ Watch failed: `{watch_cmd}`{RESET}");
-    let display_output = if output.len() > 2000 {
-        format!("{}...\n(truncated)", safe_truncate(&output, 2000))
-    } else {
-        output.clone()
-    };
-    eprintln!("{DIM}{display_output}{RESET}");
-
-    // Multi-attempt auto-fix loop
-    let mut current_output = output;
+    let total_phases = commands.len();
     let mut last_tool_error: Option<String> = None;
-    for attempt in 1..=MAX_WATCH_FIX_ATTEMPTS {
-        if session_budget_exhausted(30) {
-            eprintln!(
-                "{DIM}  ⏱ session budget nearly exhausted, stopping watch fix loop early{RESET}"
-            );
+
+    for (phase_idx, watch_cmd) in commands.iter().enumerate() {
+        let phase_num = phase_idx + 1;
+        let phase_label = if total_phases > 1 {
+            format!(" (phase {phase_num}/{total_phases})")
+        } else {
+            String::new()
+        };
+
+        let (ok, output) = run_watch_command(watch_cmd);
+        if ok {
+            eprintln!("{GREEN}  ✓ Watch passed{phase_label}: `{watch_cmd}`{RESET}");
+            continue;
+        }
+
+        eprintln!("{RED}  ✗ Watch failed{phase_label}: `{watch_cmd}`{RESET}");
+        let display_output = if output.len() > 2000 {
+            format!("{}...\n(truncated)", safe_truncate(&output, 2000))
+        } else {
+            output.clone()
+        };
+        eprintln!("{DIM}{display_output}{RESET}");
+
+        // Multi-attempt auto-fix loop for this phase
+        let mut current_output = output;
+        let mut phase_passed = false;
+        for attempt in 1..=MAX_WATCH_FIX_ATTEMPTS {
+            if session_budget_exhausted(30) {
+                eprintln!(
+                    "{DIM}  ⏱ session budget nearly exhausted, stopping watch fix loop early{RESET}"
+                );
+                return WatchResult {
+                    passed: false,
+                    last_tool_error,
+                };
+            }
+            eprintln!("{YELLOW}  → Auto-fixing{phase_label} (attempt {attempt}/{MAX_WATCH_FIX_ATTEMPTS})...{RESET}");
+
+            let fix_prompt = build_watch_fix_prompt(watch_cmd, &current_output);
+            let fix_outcome =
+                run_prompt_auto_retry(agent, &fix_prompt, session_total, model, changes).await;
+            last_tool_error = fix_outcome.last_tool_error.clone();
+
+            // Re-run this phase's command to see if fix worked
+            let (fix_ok, fix_output) = run_watch_command(watch_cmd);
+            if fix_ok {
+                eprintln!(
+                    "{GREEN}  ✓ Watch passed{phase_label} after fix (attempt {attempt}){RESET}"
+                );
+                phase_passed = true;
+                break;
+            } else if attempt == MAX_WATCH_FIX_ATTEMPTS {
+                eprintln!(
+                    "{RED}  ✗ Watch still failing{phase_label} after {MAX_WATCH_FIX_ATTEMPTS} attempts — manual fix needed{RESET}"
+                );
+            } else {
+                eprintln!("{RED}  ✗ Attempt {attempt} failed{phase_label}, retrying...{RESET}");
+                current_output = fix_output;
+            }
+        }
+
+        if !phase_passed {
+            // Stop: don't proceed to later phases if this one can't be fixed
             return WatchResult {
                 passed: false,
                 last_tool_error,
             };
         }
-        eprintln!("{YELLOW}  → Auto-fixing (attempt {attempt}/{MAX_WATCH_FIX_ATTEMPTS})...{RESET}");
-
-        let fix_prompt = build_watch_fix_prompt(&watch_cmd, &current_output);
-        let fix_outcome =
-            run_prompt_auto_retry(agent, &fix_prompt, session_total, model, changes).await;
-        last_tool_error = fix_outcome.last_tool_error.clone();
-
-        // Re-run watch command to see if fix worked
-        let (fix_ok, fix_output) = run_watch_command(&watch_cmd);
-        if fix_ok {
-            eprintln!("{GREEN}  ✓ Watch passed after fix (attempt {attempt}){RESET}");
-            return WatchResult {
-                passed: true,
-                last_tool_error,
-            };
-        } else if attempt == MAX_WATCH_FIX_ATTEMPTS {
-            eprintln!(
-                "{RED}  ✗ Watch still failing after {MAX_WATCH_FIX_ATTEMPTS} attempts — manual fix needed{RESET}"
-            );
-        } else {
-            eprintln!("{RED}  ✗ Attempt {attempt} failed, retrying...{RESET}");
-            current_output = fix_output;
-        }
     }
 
     WatchResult {
-        passed: false,
+        passed: true,
         last_tool_error,
     }
 }
@@ -250,6 +332,7 @@ pub async fn run_watch_after_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_build_watch_fix_prompt() {
@@ -350,6 +433,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn test_watch_command_none_by_default() {
         // After clearing, there should be no watch command
@@ -360,6 +444,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn test_watch_command_roundtrip() {
         // Set a command, get it back, clear it
@@ -370,6 +455,7 @@ mod tests {
         assert!(get_watch_command().is_none());
     }
 
+    #[serial]
     #[test]
     fn test_run_watch_after_prompt_no_watch_returns_passed() {
         // When no watch command is set, run_watch_after_prompt should return
@@ -385,6 +471,7 @@ mod tests {
         // but we verify the guard condition that makes it return early.
     }
 
+    #[serial]
     #[test]
     fn test_run_watch_command_pass_with_set_watch() {
         // Simulate: set a watch command that passes, run it
@@ -399,6 +486,7 @@ mod tests {
         clear_watch_command();
     }
 
+    #[serial]
     #[test]
     fn test_run_watch_command_fail_with_set_watch() {
         // Simulate: set a watch command that fails, run it, check output
@@ -457,5 +545,139 @@ mod tests {
         let debug = format!("{:?}", result);
         assert!(debug.contains("passed: true"));
         assert!(debug.contains("last_tool_error: None"));
+    }
+
+    // --- Multi-phase watch tests ---
+
+    #[serial]
+    #[test]
+    fn test_set_get_watch_commands_roundtrip() {
+        set_watch_commands(&["cargo clippy", "cargo test"]);
+        let cmds = get_watch_commands();
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0], "cargo clippy");
+        assert_eq!(cmds[1], "cargo test");
+        clear_watch_command();
+        assert!(get_watch_commands().is_empty());
+    }
+
+    #[serial]
+    #[test]
+    fn test_get_watch_command_joins_multi_phase() {
+        set_watch_commands(&["cargo clippy", "cargo test"]);
+        let display = get_watch_command();
+        assert_eq!(
+            display.as_deref(),
+            Some("cargo clippy && cargo test"),
+            "get_watch_command should join phases with &&"
+        );
+        clear_watch_command();
+    }
+
+    #[serial]
+    #[test]
+    fn test_single_command_still_works() {
+        set_watch_command("cargo test");
+        let cmds = get_watch_commands();
+        assert_eq!(cmds.len(), 1, "single command should store one-element vec");
+        assert_eq!(cmds[0], "cargo test");
+        let display = get_watch_command();
+        assert_eq!(display.as_deref(), Some("cargo test"));
+        clear_watch_command();
+    }
+
+    #[serial]
+    #[test]
+    fn test_clear_clears_multi_phase() {
+        set_watch_commands(&["a", "b", "c"]);
+        assert_eq!(get_watch_commands().len(), 3);
+        clear_watch_command();
+        assert!(get_watch_commands().is_empty());
+        assert!(get_watch_command().is_none());
+    }
+
+    #[test]
+    fn test_classify_watch_command_lint() {
+        assert_eq!(classify_watch_command("cargo clippy"), "lint");
+        assert_eq!(
+            classify_watch_command("cargo clippy --all-targets -- -D warnings"),
+            "lint"
+        );
+        assert_eq!(classify_watch_command("npx eslint ."), "lint");
+        assert_eq!(classify_watch_command("ruff check ."), "lint");
+        assert_eq!(classify_watch_command("npm run lint"), "lint");
+    }
+
+    #[test]
+    fn test_classify_watch_command_test() {
+        assert_eq!(classify_watch_command("cargo test"), "test");
+        assert_eq!(classify_watch_command("npm test"), "test");
+        assert_eq!(classify_watch_command("python -m pytest"), "test");
+        assert_eq!(classify_watch_command("npx jest"), "test");
+        assert_eq!(classify_watch_command("npx vitest"), "test");
+    }
+
+    #[test]
+    fn test_classify_watch_command_general() {
+        assert_eq!(classify_watch_command("cargo build"), "command");
+        assert_eq!(classify_watch_command("make"), "command");
+        assert_eq!(classify_watch_command("echo hello"), "command");
+    }
+
+    #[test]
+    fn test_fix_prompt_includes_lint_hint() {
+        let prompt = build_watch_fix_prompt("cargo clippy --all-targets", "warning: unused import");
+        assert!(
+            prompt.contains("lint"),
+            "lint command prompt should mention lint: {prompt}"
+        );
+        assert!(
+            prompt.contains("mechanical"),
+            "lint prompt should mention mechanical fixes: {prompt}"
+        );
+    }
+
+    #[test]
+    fn test_fix_prompt_includes_test_hint() {
+        let prompt = build_watch_fix_prompt("cargo test", "test result: FAILED");
+        assert!(
+            prompt.contains("test"),
+            "test command prompt should mention test: {prompt}"
+        );
+        assert!(
+            prompt.contains("intended behavior"),
+            "test prompt should mention understanding behavior: {prompt}"
+        );
+    }
+
+    #[test]
+    fn test_fix_prompt_general_command_no_extra_hint() {
+        let prompt = build_watch_fix_prompt("cargo build", "error: linking failed");
+        assert!(
+            prompt.contains("command failures"),
+            "general command should say 'command failures': {prompt}"
+        );
+        // Should NOT contain the lint or test specific hints
+        assert!(
+            !prompt.contains("mechanical"),
+            "general command should not have lint hint"
+        );
+        assert!(
+            !prompt.contains("intended behavior"),
+            "general command should not have test hint"
+        );
+    }
+
+    #[serial]
+    #[test]
+    fn test_run_watch_after_prompt_empty_commands_returns_passed() {
+        // When no watch commands are set, should return passed immediately
+        clear_watch_command();
+        assert!(
+            get_watch_commands().is_empty(),
+            "precondition: no commands set"
+        );
+        // The function checks get_watch_commands() first and returns a passing
+        // WatchResult if empty. We verify the guard condition.
     }
 }

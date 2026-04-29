@@ -250,7 +250,7 @@ pub fn command_arg_completions(cmd: &str, partial_arg: &str) -> Vec<String> {
         "/undo" => filter_candidates(UNDO_OPTIONS, &partial_lower),
         "/refactor" => filter_candidates(REFACTOR_SUBCOMMANDS, &partial_lower),
         "/watch" => filter_candidates(crate::commands_dev::WATCH_SUBCOMMANDS, &partial_lower),
-        "/lint" => filter_candidates(crate::commands_dev::LINT_SUBCOMMANDS, &partial_lower),
+        "/lint" => filter_candidates(crate::commands_lint::LINT_SUBCOMMANDS, &partial_lower),
         "/ast" => filter_candidates(crate::commands_search::AST_GREP_FLAGS, &partial_lower),
         "/apply" => filter_candidates(crate::commands_file::APPLY_FLAGS, &partial_lower),
         "/context" => filter_candidates(
@@ -459,9 +459,10 @@ pub use crate::commands_search::{
 };
 
 pub use crate::commands_dev::{
-    handle_doctor, handle_fix, handle_health, handle_lint, handle_lint_fix, handle_test,
-    handle_tree, handle_update, handle_watch,
+    handle_doctor, handle_fix, handle_health, handle_tree, handle_update, handle_watch,
 };
+
+pub use crate::commands_lint::{handle_lint, handle_lint_fix, handle_test};
 
 pub use crate::commands_run::{handle_loop, handle_run, handle_run_usage};
 
