@@ -53,6 +53,16 @@ const WATCH_OUTPUT_MAX: usize = 5000;
 /// Maximum number of auto-fix attempts when watch mode detects failures.
 pub const MAX_WATCH_FIX_ATTEMPTS: usize = 3;
 
+/// Result from [`run_watch_after_prompt`] — carries pass/fail status plus
+/// the last tool error from any auto-fix attempts (if the watch failed).
+#[derive(Debug, Clone)]
+pub struct WatchResult {
+    /// Whether the watch command ultimately passed.
+    pub passed: bool,
+    /// The last tool error from auto-fix attempts, if any.
+    pub last_tool_error: Option<String>,
+}
+
 /// Build a prompt asking the agent to fix failures from a watch command.
 pub fn build_watch_fix_prompt(watch_cmd: &str, output: &str) -> String {
     let truncated = if output.len() > WATCH_OUTPUT_MAX {
@@ -151,30 +161,38 @@ pub fn run_watch_command(cmd: &str) -> (bool, String) {
     (status, combined)
 }
 
-/// Run the watch command after a prompt completes (for non-REPL modes).
+/// Run the watch command after a prompt completes.
 ///
 /// If a watch command is active, this runs the watch command and auto-fixes
-/// failures up to [`MAX_WATCH_FIX_ATTEMPTS`] times. This is the extracted,
-/// reusable version of the watch loop that the REPL uses inline (see
-/// `repl.rs` ~line 656).
+/// failures up to [`MAX_WATCH_FIX_ATTEMPTS`] times. Used by the REPL main
+/// loop, `/side` handler, single-prompt mode, and piped mode.
 ///
-/// Returns `true` if the watch command passed (or no watch command is set),
-/// `false` if it still fails after all fix attempts.
+/// Returns a [`WatchResult`] with pass/fail status and the last tool error
+/// from any fix attempts. If no watch command is set, returns
+/// `WatchResult { passed: true, last_tool_error: None }`.
 pub async fn run_watch_after_prompt(
     agent: &mut Agent,
     session_total: &mut Usage,
     model: &str,
     changes: &SessionChanges,
-) -> bool {
+) -> WatchResult {
     let watch_cmd = match get_watch_command() {
         Some(cmd) => cmd,
-        None => return true, // No watch command → nothing to do
+        None => {
+            return WatchResult {
+                passed: true,
+                last_tool_error: None,
+            }
+        }
     };
 
     let (ok, output) = run_watch_command(&watch_cmd);
     if ok {
         eprintln!("{GREEN}  ✓ Watch passed: `{watch_cmd}`{RESET}");
-        return true;
+        return WatchResult {
+            passed: true,
+            last_tool_error: None,
+        };
     }
 
     eprintln!("{RED}  ✗ Watch failed: `{watch_cmd}`{RESET}");
@@ -187,24 +205,32 @@ pub async fn run_watch_after_prompt(
 
     // Multi-attempt auto-fix loop
     let mut current_output = output;
+    let mut last_tool_error: Option<String> = None;
     for attempt in 1..=MAX_WATCH_FIX_ATTEMPTS {
         if session_budget_exhausted(30) {
             eprintln!(
                 "{DIM}  ⏱ session budget nearly exhausted, stopping watch fix loop early{RESET}"
             );
-            return false;
+            return WatchResult {
+                passed: false,
+                last_tool_error,
+            };
         }
         eprintln!("{YELLOW}  → Auto-fixing (attempt {attempt}/{MAX_WATCH_FIX_ATTEMPTS})...{RESET}");
 
         let fix_prompt = build_watch_fix_prompt(&watch_cmd, &current_output);
-        let _fix_outcome =
+        let fix_outcome =
             run_prompt_auto_retry(agent, &fix_prompt, session_total, model, changes).await;
+        last_tool_error = fix_outcome.last_tool_error.clone();
 
         // Re-run watch command to see if fix worked
         let (fix_ok, fix_output) = run_watch_command(&watch_cmd);
         if fix_ok {
             eprintln!("{GREEN}  ✓ Watch passed after fix (attempt {attempt}){RESET}");
-            return true;
+            return WatchResult {
+                passed: true,
+                last_tool_error,
+            };
         } else if attempt == MAX_WATCH_FIX_ATTEMPTS {
             eprintln!(
                 "{RED}  ✗ Watch still failing after {MAX_WATCH_FIX_ATTEMPTS} attempts — manual fix needed{RESET}"
@@ -215,7 +241,10 @@ pub async fn run_watch_after_prompt(
         }
     }
 
-    false
+    WatchResult {
+        passed: false,
+        last_tool_error,
+    }
 }
 
 #[cfg(test)]
@@ -342,18 +371,18 @@ mod tests {
     }
 
     #[test]
-    fn test_run_watch_after_prompt_no_watch_returns_true() {
-        // When no watch command is set, run_watch_after_prompt should return true
-        // immediately. We verify this by checking get_watch_command() is None,
-        // which is the guard condition at the top of run_watch_after_prompt.
+    fn test_run_watch_after_prompt_no_watch_returns_passed() {
+        // When no watch command is set, run_watch_after_prompt should return
+        // WatchResult { passed: true, last_tool_error: None } immediately.
+        // We verify the guard condition that makes it return early.
         clear_watch_command();
         assert!(
             get_watch_command().is_none(),
             "precondition: no watch command set"
         );
-        // The function checks get_watch_command() first and returns true if None.
-        // We can't call the async function in a sync test, but we verify the
-        // guard condition that makes it return early.
+        // The function checks get_watch_command() first and returns a passing
+        // WatchResult if None. We can't call the async function in a sync test,
+        // but we verify the guard condition that makes it return early.
     }
 
     #[test]
@@ -386,5 +415,47 @@ mod tests {
             panic!("watch command should be set");
         }
         clear_watch_command();
+    }
+
+    #[test]
+    fn test_watch_result_passed() {
+        let result = WatchResult {
+            passed: true,
+            last_tool_error: None,
+        };
+        assert!(result.passed);
+        assert!(result.last_tool_error.is_none());
+    }
+
+    #[test]
+    fn test_watch_result_failed_with_error() {
+        let result = WatchResult {
+            passed: false,
+            last_tool_error: Some("compilation error".to_string()),
+        };
+        assert!(!result.passed);
+        assert_eq!(result.last_tool_error.as_deref(), Some("compilation error"));
+    }
+
+    #[test]
+    fn test_watch_result_clone() {
+        let result = WatchResult {
+            passed: false,
+            last_tool_error: Some("test failure".to_string()),
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.passed, result.passed);
+        assert_eq!(cloned.last_tool_error, result.last_tool_error);
+    }
+
+    #[test]
+    fn test_watch_result_debug() {
+        let result = WatchResult {
+            passed: true,
+            last_tool_error: None,
+        };
+        let debug = format!("{:?}", result);
+        assert!(debug.contains("passed: true"));
+        assert!(debug.contains("last_tool_error: None"));
     }
 }

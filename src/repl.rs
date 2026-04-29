@@ -786,61 +786,15 @@ pub async fn run_repl(
         // ── Watch mode: auto-run test/lint command after agent edits ───────
         let files_modified = changes_after.len() > changes_before.len();
         if files_modified {
-            if let Some(watch_cmd) = get_watch_command() {
-                let (ok, output) = run_watch_command(&watch_cmd);
-                if ok {
-                    eprintln!("{GREEN}  ✓ Watch passed: `{watch_cmd}`{RESET}");
-                } else {
-                    eprintln!("{RED}  ✗ Watch failed: `{watch_cmd}`{RESET}");
-                    // Show truncated output
-                    let display_output = if output.len() > 2000 {
-                        format!("{}...\n(truncated)", safe_truncate(&output, 2000))
-                    } else {
-                        output.clone()
-                    };
-                    eprintln!("{DIM}{display_output}{RESET}");
-                    // Multi-attempt auto-fix loop
-                    let mut current_output = output;
-                    for attempt in 1..=MAX_WATCH_FIX_ATTEMPTS {
-                        if session_budget_exhausted(30) {
-                            eprintln!(
-                                "{DIM}  ⏱ session budget nearly exhausted, stopping watch fix loop early{RESET}"
-                            );
-                            break;
-                        }
-                        eprintln!(
-                            "{YELLOW}  → Auto-fixing (attempt {attempt}/{MAX_WATCH_FIX_ATTEMPTS})...{RESET}"
-                        );
-
-                        let fix_prompt = build_watch_fix_prompt(&watch_cmd, &current_output);
-                        let fix_outcome = run_prompt_auto_retry(
-                            agent,
-                            &fix_prompt,
-                            &mut session_total,
-                            &agent_config.model,
-                            &session_changes,
-                        )
-                        .await;
-                        last_error = fix_outcome.last_tool_error.clone();
-
-                        // Re-run watch command to see if fix worked
-                        let (fix_ok, fix_output) = run_watch_command(&watch_cmd);
-                        if fix_ok {
-                            eprintln!(
-                                "{GREEN}  ✓ Watch passed after fix (attempt {attempt}){RESET}"
-                            );
-                            break;
-                        } else if attempt == MAX_WATCH_FIX_ATTEMPTS {
-                            eprintln!(
-                                "{RED}  ✗ Watch still failing after {MAX_WATCH_FIX_ATTEMPTS} attempts — manual fix needed{RESET}"
-                            );
-                        } else {
-                            eprintln!("{RED}  ✗ Attempt {attempt} failed, retrying...{RESET}");
-                            // Feed the latest failure output into the next fix attempt
-                            current_output = fix_output;
-                        }
-                    }
-                }
+            let watch_result = run_watch_after_prompt(
+                agent,
+                &mut session_total,
+                &agent_config.model,
+                &session_changes,
+            )
+            .await;
+            if !watch_result.passed {
+                last_error = watch_result.last_tool_error;
             }
         }
 
