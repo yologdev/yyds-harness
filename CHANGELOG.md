@@ -4,26 +4,72 @@ All notable changes to **yoyo-agent** (`cargo install yoyo-agent`) are documente
 
 This project is a self-evolving coding agent — every change was planned, implemented, and tested by yoyo itself during automated evolution sessions. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.9] — 2026-04-21
+## [0.1.9] — 2026-04-29
 
-12 commits spanning Days 50–52. Session profiling, fuzzy command suggestions, smarter output compression, poison-proof locks, and continued shell subcommand wiring — plus a sweep of test reliability fixes.
+18 sessions spanning Days 50–60. Dual-model architecture mode, iterative prompt loops, direct positional prompts, ten module extractions, zero production unwraps, SharedState for sub-agents, multi-phase watch, and a long consolidation arc that cleaned house before building new rooms.
 
 ### Added
 
+- **`/architect` dual-model mode** — Aider-inspired split where a strong reasoner (e.g. Claude Opus) plans changes and a cheaper model executes them, cutting complex-task costs 60–80%; toggle with `/architect` or `/architect <model>` (Day 59)
+- **`/loop` iterative prompt command** — repeat a prompt N times (`/loop 5 "fix warnings"`) or until a command passes (`/loop until-pass cargo test`), automating the fix-test-fix cycle (Day 59)
+- **Bare positional prompts** — `yoyo "fix this bug"` now works without `--prompt`; leftover CLI arguments are collected as a prompt, matching Claude Code/Aider/Codex UX (Day 59)
+- **`/quick` direct model query** — skip the full agent loop for simple questions; one-turn Q&A with no tool calls (Day 55)
+- **`/plan` mode** — sustained read-only toggle that allows search, read, and analysis but blocks modifications and destructive commands (Day 56)
+- **`/checkpoint` command** — name a moment in your editing session and jump back later; supports save, restore, list, diff, and delete (Day 53)
+- **`/outline <file>` file-scoped view** — symbol outline for a single file instead of the whole project (Day 58)
+- **`/config set` and `/config get`** — change and inspect settings mid-session without editing TOML files (Day 56)
+- **`/context tokens` breakdown** — system prompt section analysis showing token count per section (personality, project context, skills, etc.) (Day 56)
+- **`--quiet` flag** — suppress informational output (config loaded, context files, spinners) for piped/scripted use (Day 57)
 - **`/profile` command** — unified session summary in a bordered box showing model, provider, duration, turns, tokens, estimated cost, and color-coded context usage (Day 51)
 - **"Did you mean?" fuzzy suggestions** — mistyped slash commands now suggest the closest match using Levenshtein distance with length-adaptive thresholds and unique prefix matching (Day 50)
 - **5 more shell subcommands** — `changelog`, `config`, `permissions`, `todo`, and `memories` wired for direct CLI invocation without starting a session (Day 50)
 - **`/config edit` subcommand** — opens `.yoyo.toml` or `~/.config/yoyo/config.toml` in `$EDITOR` (Day 50)
 - **Proactive context budget warnings** — automatic warnings after each agent turn when context window usage is high (Day 50)
+- **`--budget` flag for `/extended`** — set a wall-clock time limit for long-running tasks (Day 53)
+- **SharedState for sub-agents** — parent and child agents share a key-value store via `yoagent::SharedState`, enabling artifact passing by reference instead of by copy (Day 58)
 
 ### Improved
 
+- **`/watch all` multi-phase mode** — auto-detects both linter and test suite for your project and chains them (e.g. `cargo clippy && cargo test`), stopping at first failure; inspired by Aider's auto-lint-fix loop (Days 57–58)
+- **`DispatchContext` struct** — consolidated 20 function arguments into a single named struct for the command dispatch system (Day 58)
+- **Build metadata in version output** — `yoyo version` now shows git hash, build date, and platform: `yoyo v0.1.9 (a529e52 2026-04-23) linux-x86_64`; `DAY_COUNT` baked in at compile time so release binaries show the evolution day (Days 54–55)
+- **Argument hints for subcommands** — dim inline completions (e.g. `/diff [file] [--stat] [--cached]`) appear when typing subcommands (Day 54)
+- **Custom commands visible in `/help`** — `.yoyo/commands/*.md` files now appear in their own help section, and `/help my-command` shows their content (Day 56)
+- **RTK dependency check in `/doctor`** — self-diagnostic now reports whether Rust Token Killer is installed (Day 56)
+- **`stderr_is_terminal()` gating** — spinners, progress bars, and animated output suppressed when stderr is not a terminal, preventing garbage in piped output (Day 57)
+- **Smart `/add` truncation** — files over 500 lines auto-truncate to first 200 + last 100 lines with an omission marker; explicit line ranges bypass truncation (Day 56)
+- **Zero production unwraps** — every `.unwrap()` across the entire codebase replaced with explicit error handling or recovery paths; completed across Days 51–55 (Day 55)
+- **Poison-proof mutex/rwlock handling** — all `.lock().unwrap()` calls replaced with `lock_or_recover()` helper in `sync_util.rs` that recovers from poisoned mutexes instead of cascading panics; deduplicated from three files into one shared module (Days 52, 58)
+- **Exit summary enriched** — session goodbye now includes elapsed time, token count, and estimated cost alongside file changes (Day 53)
+- **`/diff --stat` flag** — compact one-line-per-file summary view for diffs (Day 53)
 - **Tool output compression** — command-aware filtering collapses `Compiling`/`Downloading` sequences, npm/pip install noise, and consecutive blank lines into compact summaries (Day 50)
 - **Live bash output expanded** — increased visible partial output lines from 3 to 6 during command execution, with hidden line count header (Day 51)
-- **Poison-proof mutex/rwlock handling** — all `.lock().unwrap()` calls in `commands_bg.rs` (13) and `commands_spawn.rs` (8) replaced with `lock_or_recover()` helper that recovers from poisoned mutexes instead of cascading panics (Day 52)
+- **Analyze-trajectory improvements** — JSON contract for structured sub-agent diagnoses, token-aware chunking for large CI logs, and improved fingerprint clustering that strips timestamps/job names (Days 58–59)
+
+### Changed (Internal / Architecture)
+
+- **10 module extractions** across the consolidation arc:
+  - `agent_builder.rs` from `main.rs` — agent construction, MCP collision detection, fallback retry logic (Day 58)
+  - `watch.rs` from `prompt.rs` — watch mode, multi-phase auto-fix loop (Day 58)
+  - `commands_run.rs` from `commands_dev.rs` — `/loop` and `/run` handlers (Day 59)
+  - `safety.rs` from `tools.rs` — bash command safety analysis (Day 54)
+  - `session.rs` from `prompt.rs` — session tracking types and change recording (Day 54)
+  - `prompt_budget.rs` from `prompt.rs` — wall-clock budget and audit log helpers (Day 54)
+  - `sync_util.rs` (new) — shared `lock_or_recover` for poisoned mutex recovery (Day 58)
+  - `dispatch.rs` from `repl.rs` — slash command dispatch with `DispatchContext` (Day 55)
+  - `help.rs` expansion — 500 lines of help text moved from `cli.rs` (Day 57)
+  - `format/output.rs` and `format/diff.rs` from `format/mod.rs` — split 3,092-line file into focused modules (Day 53)
+- **`main.rs` reduced from ~2,484 to ~861 lines** — setup, restore, and agent-building logic extracted (Days 57–58)
+- **`prompt.rs` reduced from ~3,063 to ~2,174 lines** — watch, session, and budget code extracted (Days 54, 58)
+- **yoagent upgraded to 0.8** — one-line version bump, no breaking changes (Day 58)
+- **Consolidated watch-fix loop** — 55-line inline copy in `repl.rs` replaced with 9-line call to shared `run_watch_after_prompt` returning `WatchResult` struct (Day 60)
+- **LazyLock regex compilation** — 25 regex patterns in `commands_map.rs` now compile once via `LazyLock` instead of per-call (Day 58)
 
 ### Fixed
 
+- **UTF-8 safety in refactor commands** — 12 byte-indexing operations in `commands_refactor.rs` replaced with `is_char_boundary()` checks to prevent panics on multi-byte characters; 13 new tests with CJK/emoji strings (Day 53)
+- **Home directory hang** — file listing now caps at 10,000 files and skips `node_modules`, `__pycache__`, `venv`, and other common large directories when outside a git repo (Issue #333, Day 55)
+- **Missing DAY_COUNT in release builds** — `DAY_COUNT` now baked in at compile time via `build.rs` so release binaries show the correct evolution day (Issue #331, Day 55)
 - **Integration tests burning 2.5 min per CI run** — two tests tried to connect to non-existent ollama, timing out with retries; switched to `--print-system-prompt` for instant exit (Day 51)
 - **CWD race condition in test suite** — eliminated all `set_current_dir` calls from `commands_config.rs` and `commands_session.rs` tests by extracting `_in(root)` variants that take explicit paths (Day 51)
 - **Flaky `build_repo_map_with_regex_backend` test** — fixed CWD race with explicit directory handling (Day 51)
@@ -392,6 +438,12 @@ The codebase evolved from a single 200-line `main.rs` to 12 focused modules (~17
 | 23 | `/watch` auto-test, `/refactor` umbrella, `rename_symbol` tool, terminal bell, `system_prompt`/`system_file` config, git-aware prompt, streaming flush improvements |
 | 24 | `/ast` structural search, piped-mode output fixes, v0.1.3 release |
 
+[0.1.9]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.9
+[0.1.8]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.8
+[0.1.7]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.7
+[0.1.6]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.6
+[0.1.5]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.5
+[0.1.4]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.4
 [0.1.3]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.3
 [0.1.2]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.2
 [0.1.1]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.1
