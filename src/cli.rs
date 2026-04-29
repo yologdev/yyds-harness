@@ -54,8 +54,9 @@ pub enum ContextStrategy {
 
 // Re-exported from config module so existing `use crate::cli::` imports keep working.
 pub use crate::config::{
+    history_file_path, home_config_path, load_config_file, parse_config_file,
     parse_directories_from_config, parse_mcp_servers_from_config, parse_permissions_from_config,
-    parse_toml_array, DirectoryRestrictions, McpServerConfig, PermissionConfig,
+    parse_toml_array, user_config_path, DirectoryRestrictions, McpServerConfig, PermissionConfig,
 };
 
 /// Parsed CLI configuration.
@@ -318,89 +319,8 @@ pub fn warn_unknown_flags(args: &[String], flags_needing_values: &[&str]) {
     }
 }
 
-/// Config file search paths, checked in order (first found wins).
-/// - `.yoyo.toml` in the current directory (project-level)
-/// - `~/.yoyo.toml` (home directory shorthand)
-/// - `~/.config/yoyo/config.toml` (XDG user-level)
-const CONFIG_FILE_NAMES: &[&str] = &[".yoyo.toml"];
-
-pub fn user_config_path() -> Option<std::path::PathBuf> {
-    dirs_hint().map(|dir| dir.join("yoyo").join("config.toml"))
-}
-
-/// Home directory config path: ~/.yoyo.toml
-pub fn home_config_path() -> Option<std::path::PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|h| std::path::PathBuf::from(h).join(".yoyo.toml"))
-}
-
-/// Best-effort XDG config dir (~/.config on Linux/macOS).
-fn dirs_hint() -> Option<std::path::PathBuf> {
-    std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| std::path::PathBuf::from(h).join(".config"))
-        })
-}
-
-/// Best-effort XDG data dir (~/.local/share on Linux/macOS).
-fn data_dir_hint() -> Option<std::path::PathBuf> {
-    std::env::var("XDG_DATA_HOME")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| std::path::PathBuf::from(h).join(".local").join("share"))
-        })
-}
-
-/// Get the path for the readline history file.
-/// Prefers `$XDG_DATA_HOME/yoyo/history`, falls back to `~/.yoyo_history`.
-pub fn history_file_path() -> Option<std::path::PathBuf> {
-    // Try XDG data dir first
-    if let Some(data_dir) = data_dir_hint() {
-        let yoyo_dir = data_dir.join("yoyo");
-        // Try to create the directory; if it works, use it
-        if std::fs::create_dir_all(&yoyo_dir).is_ok() {
-            return Some(yoyo_dir.join("history"));
-        }
-    }
-    // Fall back to ~/.yoyo_history
-    std::env::var("HOME")
-        .ok()
-        .map(|h| std::path::PathBuf::from(h).join(".yoyo_history"))
-}
-
-/// Parse a simple TOML-like config file (key = "value" or key = value per line).
-/// Ignores comments (#) and blank lines. Returns a map of key → value.
-pub fn parse_config_file(content: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some((key, value)) = line.split_once('=') {
-            let key = key.trim().to_string();
-            let value = value.trim();
-            // Strip surrounding quotes if present
-            let value = if (value.starts_with('"') && value.ends_with('"'))
-                || (value.starts_with('\'') && value.ends_with('\''))
-            {
-                value[1..value.len() - 1].to_string()
-            } else {
-                value.to_string()
-            };
-            map.insert(key, value);
-        }
-    }
-    map
-}
+// Config-file path resolution and loading functions live in config.rs.
+// Re-exported below so existing `use crate::cli::` imports keep working.
 
 /// Resolve the system prompt using the precedence chain:
 /// CLI --system-file > CLI --system > config system_file > config system_prompt > default SYSTEM_PROMPT
@@ -441,42 +361,6 @@ pub fn resolve_system_prompt(
     }
     // Default
     SYSTEM_PROMPT.to_string()
-}
-
-/// Load config from file, checking project-level, home-level, then user-level paths.
-/// Returns an empty map if no config file is found.
-/// Read the config file once, returning both the parsed key-value map and the raw content.
-/// Checks project-level, home-level (~/.yoyo.toml), then user-level (XDG) paths.
-/// Returns `(HashMap, raw_content)` or `(empty HashMap, empty string)` if no config found.
-pub(crate) fn load_config_file() -> (HashMap<String, String>, String) {
-    // Check project-level config first
-    for name in CONFIG_FILE_NAMES {
-        if let Ok(content) = std::fs::read_to_string(name) {
-            if !is_quiet() {
-                eprintln!("{DIM}  config: {name}{RESET}");
-            }
-            return (parse_config_file(&content), content);
-        }
-    }
-    // Check ~/.yoyo.toml (home directory shorthand)
-    if let Some(path) = home_config_path() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if !is_quiet() {
-                eprintln!("{DIM}  config: {}{RESET}", path.display());
-            }
-            return (parse_config_file(&content), content);
-        }
-    }
-    // Check user-level config (XDG)
-    if let Some(path) = user_config_path() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if !is_quiet() {
-                eprintln!("{DIM}  config: {}{RESET}", path.display());
-            }
-            return (parse_config_file(&content), content);
-        }
-    }
-    (HashMap::new(), String::new())
 }
 
 /// Parse a numeric CLI flag with config file fallback.
@@ -1344,95 +1228,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_config_file_basic() {
-        let content = r#"
-model = "claude-sonnet-4-20250514"
-thinking = "medium"
-max_tokens = 4096
-"#;
-        let config = parse_config_file(content);
-        assert_eq!(config.get("model").unwrap(), "claude-sonnet-4-20250514");
-        assert_eq!(config.get("thinking").unwrap(), "medium");
-        assert_eq!(config.get("max_tokens").unwrap(), "4096");
-    }
-
-    #[test]
-    fn test_parse_config_file_comments_and_blanks() {
-        let content = r#"
-# This is a comment
-model = "claude-opus-4-6"
-
-# Another comment
-thinking = "high"
-"#;
-        let config = parse_config_file(content);
-        assert_eq!(config.get("model").unwrap(), "claude-opus-4-6");
-        assert_eq!(config.get("thinking").unwrap(), "high");
-        assert_eq!(config.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_config_file_no_quotes() {
-        let content = "model = claude-haiku-35\nmax_tokens = 2048";
-        let config = parse_config_file(content);
-        assert_eq!(config.get("model").unwrap(), "claude-haiku-35");
-        assert_eq!(config.get("max_tokens").unwrap(), "2048");
-    }
-
-    #[test]
-    fn test_parse_config_file_single_quotes() {
-        let content = "model = 'claude-opus-4-6'";
-        let config = parse_config_file(content);
-        assert_eq!(config.get("model").unwrap(), "claude-opus-4-6");
-    }
-
-    #[test]
-    fn test_parse_config_file_empty() {
-        let config = parse_config_file("");
-        assert!(config.is_empty());
-    }
-
-    #[test]
-    fn test_parse_config_file_whitespace_handling() {
-        let content = "  model  =  claude-opus-4-6  ";
-        let config = parse_config_file(content);
-        assert_eq!(config.get("model").unwrap(), "claude-opus-4-6");
-    }
-
-    #[test]
-    fn test_parse_config_file_mcp_array() {
-        let content = r#"
-model = "claude-sonnet-4-20250514"
-mcp = ["npx open-websearch@latest", "npx @mcp/server-filesystem /tmp"]
-"#;
-        let config = parse_config_file(content);
-        let mcp_val = config.get("mcp").expect("mcp key should exist");
-        let mcps = parse_toml_array(mcp_val);
-        assert_eq!(mcps.len(), 2);
-        assert_eq!(mcps[0], "npx open-websearch@latest");
-        assert_eq!(mcps[1], "npx @mcp/server-filesystem /tmp");
-    }
-
-    #[test]
-    fn test_parse_config_file_mcp_empty_array() {
-        let content = "mcp = []";
-        let config = parse_config_file(content);
-        let mcp_val = config.get("mcp").expect("mcp key should exist");
-        let mcps = parse_toml_array(mcp_val);
-        assert!(mcps.is_empty());
-    }
-
-    #[test]
-    fn test_parse_config_file_mcp_single_entry() {
-        let content = r#"mcp = ["npx open-websearch@latest"]"#;
-        let config = parse_config_file(content);
-        let mcp_val = config.get("mcp").expect("mcp key should exist");
-        let mcps = parse_toml_array(mcp_val);
-        assert_eq!(mcps.len(), 1);
-        assert_eq!(mcps[0], "npx open-websearch@latest");
-    }
-
-    #[test]
     fn test_temperature_flag_parsing() {
         let args = [
             "yoyo".to_string(),
@@ -1587,92 +1382,6 @@ mcp = ["npx open-websearch@latest", "npx @mcp/server-filesystem /tmp"]
     }
 
     #[test]
-    fn test_home_config_path_returns_yoyo_toml_in_home() {
-        // home_config_path() should return $HOME/.yoyo.toml
-        let original_home = std::env::var("HOME").ok();
-        let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", tmp.path());
-
-        let path = home_config_path();
-        assert!(path.is_some());
-        let path = path.unwrap();
-        assert_eq!(path, tmp.path().join(".yoyo.toml"));
-
-        // Restore
-        if let Some(h) = original_home {
-            std::env::set_var("HOME", h);
-        }
-    }
-
-    #[test]
-    fn test_home_config_path_file_is_loadable() {
-        // If ~/.yoyo.toml exists, parse_config_file should parse it
-        let tmp = tempfile::tempdir().unwrap();
-        let config_path = tmp.path().join(".yoyo.toml");
-        std::fs::write(
-            &config_path,
-            "model = \"test-model\"\napi_key = \"sk-home-test\"\n",
-        )
-        .unwrap();
-
-        let content = std::fs::read_to_string(&config_path).unwrap();
-        let config = parse_config_file(&content);
-        assert_eq!(config.get("model").unwrap(), "test-model");
-        assert_eq!(config.get("api_key").unwrap(), "sk-home-test");
-    }
-
-    #[test]
-    fn test_config_precedence_project_over_home() {
-        // If both project-level .yoyo.toml and ~/.yoyo.toml exist,
-        // the project-level config should be found first.
-        // We verify this by checking the search order logic:
-        // CONFIG_FILE_NAMES is checked before home_config_path().
-        //
-        // Since load_config_file() checks project-level first, and both files
-        // would parse correctly, we verify the ordering is as documented.
-        let project_content = "model = \"project-model\"";
-        let home_content = "model = \"home-model\"";
-
-        let project_config = parse_config_file(project_content);
-        let home_config = parse_config_file(home_content);
-
-        assert_eq!(project_config.get("model").unwrap(), "project-model");
-        assert_eq!(home_config.get("model").unwrap(), "home-model");
-
-        // The search order is documented: project > home > XDG
-        // This test verifies both configs parse independently.
-        // The actual precedence is enforced by the early-return in load_config_file().
-    }
-
-    #[test]
-    fn test_config_search_order_documented() {
-        // Verify the documented search order: project (.yoyo.toml), home (~/.yoyo.toml), XDG
-        // CONFIG_FILE_NAMES contains the project-level name
-        assert_eq!(CONFIG_FILE_NAMES, &[".yoyo.toml"]);
-
-        // home_config_path returns ~/.yoyo.toml
-        let original_home = std::env::var("HOME").ok();
-        let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", tmp.path());
-
-        let home = home_config_path().unwrap();
-        assert!(home.to_string_lossy().ends_with(".yoyo.toml"));
-        assert!(home
-            .to_string_lossy()
-            .contains(&tmp.path().to_string_lossy().to_string()));
-
-        // user_config_path returns ~/.config/yoyo/config.toml (XDG)
-        let xdg = user_config_path().unwrap();
-        assert!(xdg.to_string_lossy().ends_with("config.toml"));
-        assert!(xdg.to_string_lossy().contains("yoyo"));
-
-        // Restore
-        if let Some(h) = original_home {
-            std::env::set_var("HOME", h);
-        }
-    }
-
-    #[test]
     fn test_help_text_mentions_home_config() {
         // The help output should mention all three config paths.
         let welcome = get_welcome_text();
@@ -1710,49 +1419,6 @@ mcp = ["npx open-websearch@latest", "npx @mcp/server-filesystem /tmp"]
             "YOYO_SESSION_BUDGET_SECS",
         ] {
             assert!(help.contains(var), "--help should mention {var}");
-        }
-    }
-
-    #[test]
-    fn test_history_file_path_returns_some() {
-        // In CI and local environments, HOME is typically set
-        let path = history_file_path();
-        if std::env::var("HOME").is_ok() {
-            assert!(path.is_some(), "Should return a path when HOME is set");
-            let p = path.unwrap();
-            let p_str = p.to_string_lossy();
-            assert!(
-                p_str.contains("yoyo"),
-                "History path should contain 'yoyo': {p_str}"
-            );
-            assert!(
-                p_str.ends_with("history") || p_str.ends_with(".yoyo_history"),
-                "History path should end with 'history' or '.yoyo_history': {p_str}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_history_file_path_prefers_xdg() {
-        // When XDG_DATA_HOME is set, should use it
-        let dir = std::env::temp_dir().join("yoyo_test_xdg_data");
-        let _ = std::fs::create_dir_all(&dir);
-        // We can't safely set env vars in parallel tests, so just verify the logic
-        // by calling data_dir_hint and checking the fallback behavior
-        let path = history_file_path();
-        // Should return Some regardless
-        if std::env::var("HOME").is_ok() || std::env::var("XDG_DATA_HOME").is_ok() {
-            assert!(path.is_some());
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_data_dir_hint_returns_path() {
-        // data_dir_hint should return something when HOME is set
-        if std::env::var("HOME").is_ok() || std::env::var("XDG_DATA_HOME").is_ok() {
-            let dir = data_dir_hint();
-            assert!(dir.is_some(), "Should return a data dir path");
         }
     }
 
