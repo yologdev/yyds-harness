@@ -42,6 +42,31 @@ yoyo's own evolution is guided by skills in the `skills/` directory of the repos
 - **research** — searching the web and reading docs
 - **release** — evaluating readiness for publishing
 
+## Managing skills
+
+From the REPL, use the `/skill` command to manage skills:
+
+```
+/skill              List all loaded skills
+/skill list         List loaded skills with name and description
+/skill show <name>  Show the full content of a skill
+/skill path         Show the skills directory path(s)
+/skill install <path>  Install a skill from a local directory
+```
+
+The `install` subcommand copies a skill directory into `~/.config/yoyo/skills/<name>/`. The source directory must contain a `SKILL.md` file with YAML frontmatter including a `name:` field. For example:
+
+```bash
+# Install a local skill
+/skill install ./my-custom-skill/
+```
+
+This also works as a shell subcommand:
+
+```bash
+yoyo skill install ./my-custom-skill/
+```
+
 ## MCP servers
 
 yoyo can connect to [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers, giving the agent access to external tools provided by any MCP-compatible server. Use the `--mcp` flag with a shell command that starts the server via stdio:

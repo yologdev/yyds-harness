@@ -514,20 +514,24 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /quick explain the difference between async and threading",
         ),
         "skill" => Some(
-            "/skill [subcommand] — List and inspect loaded skills\n\n\
+            "/skill [subcommand] — List, inspect, and install skills\n\n\
              Usage:\n\
              \x20 /skill              List all loaded skills (same as /skill list)\n\
              \x20 /skill list         List loaded skills with name and description\n\
              \x20 /skill show <name>  Show the full content of a skill\n\
-             \x20 /skill path         Show the skills directory path(s)\n\n\
+             \x20 /skill path         Show the skills directory path(s)\n\
+             \x20 /skill install <path>  Install a skill from a local directory\n\n\
              Skills are loaded from directories specified with --skills <dir>.\n\
              Each skill is a directory containing a SKILL.md file with YAML\n\
              frontmatter (name + description) and markdown instructions.\n\n\
+             The install subcommand copies a skill directory into\n\
+             ~/.config/yoyo/skills/<name>/ for permanent availability.\n\n\
              Examples:\n\
              \x20 /skill\n\
              \x20 /skill list\n\
              \x20 /skill show evolve\n\
-             \x20 /skill path",
+             \x20 /skill path\n\
+             \x20 /skill install ./my-skill/",
         ),
         "model" => Some(
             "/model <name> — Switch the AI model\n\n\
@@ -1204,7 +1208,7 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
-        "  skill             List and inspect loaded skills (e.g. yoyo skill list --skills ./skills)"
+        "  skill             List, inspect, and install skills (e.g. yoyo skill list --skills ./skills)"
     );
     let _ = writeln!(
         s,
@@ -1411,7 +1415,10 @@ pub fn cli_help_text() -> String {
         s,
         "    /ast <pattern>     Structural code search (ast-grep)"
     );
-    let _ = writeln!(s, "    /skill [subcmd]    List and inspect loaded skills");
+    let _ = writeln!(
+        s,
+        "    /skill [subcmd]    List, inspect, and install skills"
+    );
     let _ = writeln!(s);
     let _ = writeln!(s, "  AI:");
     let _ = writeln!(
@@ -1635,7 +1642,9 @@ pub fn help_text() -> String {
     out.push_str(
         "  /ast <pattern>     Structural code search using ast-grep (--lang, --in flags)\n",
     );
-    out.push_str("  /skill [subcmd]    List and inspect loaded skills (list/show/path)\n");
+    out.push_str(
+        "  /skill [subcmd]    List, inspect, and install skills (list/show/path/install)\n",
+    );
     out.push('\n');
 
     // ── AI ──
@@ -1797,7 +1806,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "save" => Some("Save session to file"),
         "search" => Some("Search conversation history"),
         "side" => Some("Ask a quick question without affecting conversation"),
-        "skill" => Some("List and inspect loaded skills"),
+        "skill" => Some("List, inspect, and install skills"),
         "spawn" => Some("Run a task in a sub-agent"),
         "stash" => Some("Stash conversation and start fresh"),
         "status" => Some("Show session info"),
