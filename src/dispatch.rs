@@ -263,7 +263,7 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                         SkillSet::empty()
                     })
                 };
-                crate::commands_project::handle_skill(&input, &skills);
+                crate::commands_skill::handle_skill(&input, &skills);
                 return Some(None);
             }
             "watch" => {

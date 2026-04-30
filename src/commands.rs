@@ -257,7 +257,7 @@ pub fn command_arg_completions(cmd: &str, partial_arg: &str) -> Vec<String> {
             crate::commands_project::context_subcommands(),
             &partial_lower,
         ),
-        "/skill" => filter_candidates(crate::commands_project::SKILL_SUBCOMMANDS, &partial_lower),
+        "/skill" => filter_candidates(crate::commands_skill::SKILL_SUBCOMMANDS, &partial_lower),
         "/plan" => filter_candidates(crate::commands_project::PLAN_SUBCOMMANDS, &partial_lower),
         _ => Vec::new(),
     }
@@ -450,8 +450,11 @@ pub use crate::commands_git::{
 // Project-related handlers
 pub use crate::commands_project::{
     handle_context, handle_docs, handle_extract, handle_init, handle_move, handle_plan,
-    handle_refactor, handle_rename, handle_skill, handle_todo, is_plan_mode, PLAN_MODE_PROMPT,
+    handle_refactor, handle_rename, handle_todo, is_plan_mode, PLAN_MODE_PROMPT,
 };
+
+// Skill-related handlers
+pub use crate::commands_skill::handle_skill;
 
 pub use crate::commands_map::handle_map;
 pub use crate::commands_search::{

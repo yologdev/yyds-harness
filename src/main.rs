@@ -53,6 +53,7 @@ mod commands_retry;
 mod commands_run;
 mod commands_search;
 mod commands_session;
+mod commands_skill;
 mod commands_spawn;
 mod config;
 mod context;
