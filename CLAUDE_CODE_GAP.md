@@ -1,7 +1,7 @@
 # Gap Analysis: yoyo vs Claude Code
 
-Last verified: Day 59 (2026-04-28)
-Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54, Day 59
+Last verified: Day 61 (2026-04-30)
+Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54, Day 59, Day 61
 
 This document tracks the feature gap between yoyo and Claude Code, used to inform
 development priorities when there are no community issues to address. It is a
@@ -115,10 +115,10 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Per-project settings | ✅ | ✅ | .yoyo.toml in project directory |
 | MCP server support | ✅ | ✅ | `--mcp` flag + `[[mcp.servers]]` config blocks; `McpServerConfig` + `parse_mcp_servers_from_config` in `src/config.rs`; stdio transport, used in production |
 | Multi-provider support | ✅ | ❌ | yoyo supports 25 providers via `--provider` (anthropic, openai, google, ollama, bedrock, z.ai, cerebras, etc.) — `KNOWN_PROVIDERS` in `src/providers.rs` |
-| Skills system | ✅ | 🟡 | yoyo loads skills via `--skills <dir>` (yoagent's `SkillSet`); Claude Code has formal skill packs and a plugin marketplace (see gap below) |
+| Skills system | ✅ | ✅ | yoyo loads skills via `--skills <dir>` (yoagent's `SkillSet`); `/skill install`, `/skill search`, `/skill create`, `/skill list/show/enable/disable` (Days 60-61) |
 | OpenAPI tool support | ✅ | ❌ | `--openapi <spec>` loads OpenAPI specs and registers API tools (Day 9) |
 | Config system_prompt/system_file | ✅ | ✅ | `system_prompt` and `system_file` keys in .yoyo.toml for persistent custom prompts (Day 23) |
-| Plugin / skills marketplace | ❌ | ✅ | Claude Code has a plugin marketplace and bundled skill packs; yoyo has the loader (`--skills`) but no discoverability, no signed bundles, no install command |
+| Skill install & discovery | 🟡 | ✅ | `/skill install <dir>` (local) + `/skill install gh:user/repo` (remote) + `/skill search <query>` (GitHub discovery) shipped Days 60-61; still missing signed bundles, curation/ratings, formal marketplace with reviews |
 
 ## Error Handling
 
@@ -137,51 +137,51 @@ remaining gaps, but task selection still happens through the normal planning loo
 ## Priority Queue (real remaining gaps)
 
 After the Day 38 refresh, the gaps that are actually still gaps. Re-evaluated
-on Day 59 — these four remain the real delta, though the competitive landscape
-has shifted significantly (see below).
+on Day 61 — three core gaps remain, plus one new sub-gap from the skills work.
 
-1. **Plugin / skills marketplace** (since Day ≤38) — Claude Code now has a formal
-   plugin ecosystem with 12+ bundled plugins and a marketplace with discoverability
-   and install commands. yoyo has `--skills <dir>` (yoagent's `SkillSet`) but no
-   marketplace, no signed bundles, and no `yoyo skill install` flow. Claude Code's
-   API also exposes advisor, memory, and web tools as first-class capabilities,
-   widening the plugin surface area. This gap is widening as competitors formalize
-   their extension stories.
-2. **Real-time subprocess streaming inside tool calls** (since Day ≤38) — Claude Code shows
+1. **Real-time subprocess streaming inside tool calls** (since Day ≤38) — Claude Code shows
    compile/test output as it streams from the child process. yoyo's
    `ToolExecutionUpdate` events render line counts and partial tails, and
    Day 51 improved live output for long-running bash commands. But the
    underlying bash tool still buffers stdout/stderr per call rather than
    pumping it to the renderer character-by-character. Per-command timeout
    helps with runaway processes but doesn't change the streaming model.
-3. **Persistent named subagents with orchestration** (since Day ≤38) — yoyo now has
+2. **Persistent named subagents with orchestration** (since Day ≤38) — yoyo now has
    `/spawn`, yoagent's `SubAgentTool`, AND `SharedState` for parent↔child data
    sharing (Day 58), but still no named-role persistent subagent system (e.g., a
    long-lived "reviewer" or "tester" subagent the orchestrator can delegate to
    repeatedly across turns). SharedState closes the data-sharing gap; the
    orchestration gap remains.
-4. **Full graceful degradation on partial tool failures** (since Day ≤38) — provider fallback
+3. **Full graceful degradation on partial tool failures** (since Day ≤38) — provider fallback
    covers hard API errors, but there's no story for "this tool call failed,
    try a different tool that achieves the same effect."
+4. **Skill marketplace curation** (since Day 61) — `/skill install` and `/skill search`
+   shipped on Days 60-61, closing the install/discovery gap. Still missing vs
+   Claude Code: signed skill bundles, curation/ratings system, formal marketplace
+   with reviews. A real but lower-priority gap — the install mechanics work,
+   the trust/quality layer doesn't exist yet.
 
-### Competitive landscape shift (Day 59)
+### Competitive landscape shift (Day 61)
 
 The gap is no longer just yoyo vs Claude Code. The field has widened:
 
-- **Claude Code** now has a formal plugin ecosystem with 12+ bundled plugins,
+- **Claude Code** has a formal plugin ecosystem with 12+ bundled plugins,
   a marketplace with discoverability and install commands, and exposes web
   search, web fetch, code execution, advisor, and memory tools as first-class
-  API capabilities. The plugin gap is widening.
+  API capabilities. yoyo now matches on install/discovery mechanics
+  (`/skill install`, `/skill search`) but lacks the curation/trust layer.
 - **Codex CLI** (OpenAI) has npm/brew install, ChatGPT plan integration,
   and a desktop app — lowering the barrier to entry for non-terminal users.
 - **Aider** v0.85–0.86 added GPT-5 family, Grok-4, and o3-pro support,
   continuing to iterate on model compatibility and edit formats.
 
 yoyo's differentiators remain and have grown: open-source self-evolution,
-multi-provider support (25 backends), the skills/hooks extensibility model,
-`/architect` dual-model mode (Aider parity), `/loop` iterative refinement,
-and `SharedState` for sub-agent data sharing. The marketplace gap (#1 above)
-is increasingly important as competitors formalize their extension stories.
+multi-provider support (25 backends), the skills ecosystem (`/skill install`,
+`/skill search`, `/skill create`, 12 skills), `/architect` dual-model mode
+(Aider parity), `/loop` iterative refinement, `SharedState` for sub-agent
+data sharing, and the explore-codebase + x-research skills for RLM-style
+sub-agent dispatch. The plugin gap has shifted from "no install/discovery
+at all" to "install works, curation doesn't exist yet."
 
 ### What was on the old priority queue and is now done
 
@@ -261,23 +261,42 @@ These were listed as gaps on Day 24 but have shipped since:
   (Day 59), `/loop <N|until-pass>` iterative prompt command (Day 59),
   `commands_run.rs` extracted from `commands_dev.rs` (Day 59),
   analyze-trajectory JSON contract + token-aware chunking (Day 59).
+- ✅ **Plugin / skills ecosystem** — `/skill install <dir>` for local skills
+  (Day 60), `/skill install gh:user/repo` for remote GitHub skills (Day 61),
+  `/skill search <query>` for GitHub skill discovery (Day 61), `/skill create`
+  for scaffolding, `/skill list/show/enable/disable` for management. Closes
+  the install/discovery gap that was #1 priority since Day ≤38. Remaining
+  sub-gap: signed bundles, curation/ratings, formal marketplace with reviews.
+- ✅ Recently completed (Day 60–61): `/skill install` local directories
+  (Day 60), CHANGELOG generation (Day 60), `config.rs` extraction (Day 60),
+  x-research skill for X/Twitter reading (Day 61), `commands_skill.rs`
+  extraction (Day 61), `/skill install gh:user/repo` remote GitHub skills
+  (Day 61), `/skill search` GitHub skill discovery (Day 61),
+  explore-codebase RLM skill (Day 61), `dispatch_sub.rs` extraction (Day 61),
+  positional CLI arguments (Day 59).
 
-## Stats (Day 59)
+## Stats (Day 61)
 
-- yoyo: ~58,004 lines of Rust across 45 source files (incl. `src/format/`) + integration tests
-- 45 source files (was 38 on Day 54): commands split into 15 `commands_*.rs` files
+- yoyo: ~59,794 lines of Rust across 48 source files (incl. `src/format/`) + integration tests
+- 48 source files (was 45 on Day 59): added `commands_skill.rs`, `commands_lint.rs`,
+  `dispatch_sub.rs`; commands split into 17 `commands_*.rs` files
   (`commands.rs`, `commands_bg.rs`, `commands_config.rs`, `commands_dev.rs`,
-  `commands_file.rs`, `commands_git.rs`, `commands_info.rs`, `commands_map.rs`,
-  `commands_memory.rs`, `commands_project.rs`, `commands_refactor.rs`,
-  `commands_retry.rs`, `commands_run.rs`, `commands_search.rs`,
-  `commands_session.rs`, `commands_spawn.rs`),
+  `commands_file.rs`, `commands_git.rs`, `commands_info.rs`, `commands_lint.rs`,
+  `commands_map.rs`, `commands_memory.rs`, `commands_project.rs`,
+  `commands_refactor.rs`, `commands_retry.rs`, `commands_run.rs`,
+  `commands_search.rs`, `commands_session.rs`, `commands_skill.rs`,
+  `commands_spawn.rs`),
   format split into `format/{mod,markdown,highlight,cost,tools,output,diff}.rs`,
   plus `agent_builder.rs`, `hooks.rs`, `memory.rs`, `setup.rs`, `docs.rs`,
   `repl.rs`, `git.rs`, `providers.rs`, `context.rs`, `config.rs`, `prompt.rs`,
   `prompt_budget.rs`, `session.rs`, `sync_util.rs`, `dispatch.rs`,
-  `tools.rs`, `safety.rs`, `help.rs`, `cli.rs`, `main.rs`, `watch.rs`
-- 2,273 tests (2,185 unit + 88 integration)
-- ~89 REPL commands, 32 shell subcommands (help, version, setup, init, diff,
+  `dispatch_sub.rs`, `tools.rs`, `safety.rs`, `help.rs`, `cli.rs`, `main.rs`,
+  `watch.rs`
+- 2,305 tests (2,216 unit + 89 integration)
+- 12 skills (7 core/creator, 5 yoyo-origin): self-assess, evolve, communicate,
+  research, skill-evolve, skill-creator, analyze-trajectory (core);
+  social, family, release, explore-codebase, x-research (yoyo)
+- ~88 REPL commands, 32 shell subcommands (help, version, setup, init, diff,
   commit, review, blame, grep, find, index, lint, test, doctor, map, tree,
   run, watch, status, undo, docs, update, pr, config, health, skill, todo,
   outline, changelog, evolution, memories, permissions)
@@ -319,7 +338,7 @@ These were listed as gaps on Day 24 but have shipped since:
 - `/bg` background process management
 - `/blame` with colorized git blame output
 - `/lint fix`, `/lint pedantic`, `/lint strict`, `/lint unsafe`
-- Comprehensive categorized help (89 REPL commands, 32 shell subcommands)
+- Comprehensive categorized help (88 REPL commands, 32 shell subcommands)
 - Fuzzy command suggestions (Levenshtein distance)
 - Context budget warnings (60/80/90/95%)
 - `/profile` session statistics
@@ -336,3 +355,12 @@ These were listed as gaps on Day 24 but have shipped since:
 - `SharedState` key-value store for sub-agent data sharing
 - `DispatchContext` struct for clean command dispatch
 - `agent_builder.rs` — dedicated agent construction module
+- `/skill install` local + remote (`gh:user/repo`) skill installation
+- `/skill search` GitHub skill discovery
+- `/skill create` new skill scaffolding
+- `commands_skill.rs` — dedicated skill command module
+- `commands_lint.rs` — dedicated lint command module
+- `dispatch_sub.rs` — CLI subcommand routing
+- x-research skill (X/Twitter reading via xurl)
+- explore-codebase RLM skill (sub-agent codebase comprehension)
+- CHANGELOG generation
