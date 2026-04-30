@@ -37,33 +37,69 @@ read a specific thread, check someone's recent posts, or read long-form X Articl
 
 ## Prerequisites
 
-Before any API call, verify the tool and auth are available:
+Two auth modes are supported. Detect which one applies first, then use the `x_get` helper for **every** request — never call `xurl GET` or `curl` directly inline, or CI mode will silently fail (xurl has no `~/.xurl` on a runner).
 
 ```bash
-# 1. Check xurl is installed
-xurl --version
+# Auth mode detection — run this once at the top of the session:
+if [ -n "$X_BEARER_TOKEN" ]; then
+    AUTH_MODE=ci
+elif command -v xurl &>/dev/null && [ -d "$HOME/.xurl" ]; then
+    AUTH_MODE=local
+else
+    have_xurl=$(command -v xurl >/dev/null 2>&1 && echo yes || echo no)
+    have_xurl_dir=$([ -d "$HOME/.xurl" ] && echo yes || echo no)
+    have_token=$([ -n "$X_BEARER_TOKEN" ] && echo yes || echo no)
+    echo "x-research: auth not configured; skill unavailable this session" >&2
+    echo "  X_BEARER_TOKEN set: $have_token" >&2
+    echo "  xurl on PATH:       $have_xurl" >&2
+    echo "  ~/.xurl exists:     $have_xurl_dir" >&2
+    exit 1
+fi
 ```
 
-If `xurl` is not found:
-```
-xurl is not installed. Install it:
-  cargo install xurl
-or see https://github.com/deepfates/xurl
-```
+**CI mode (`AUTH_MODE=ci`)** — `$X_BEARER_TOKEN` is set (provisioned by the CI workflow as a repo secret). Calls go through `curl` with an `Authorization: Bearer` header. Tokens come from the X developer portal as **App-only Bearer tokens**, which are read-only (cannot post, like, DM, or act as a user). Don't paste a user OAuth2 access token into this secret — `x_get` won't validate token type, but a user token would expose write capability the skill is not designed to use.
+
+**Local mode (`AUTH_MODE=local`)** — `xurl` is on PATH and `~/.xurl/` exists from a prior `xurl auth oauth2` run. `xurl` handles auth from its credential store.
+
+**Setup instructions for the human if both checks fail:**
+
+Local: install `xurl` (`cargo install xurl`, see https://github.com/deepfates/xurl), then run `xurl auth oauth2` and follow the prompts.
+
+CI: generate an App-only Bearer token at the X developer portal → add to repo Settings → Secrets and variables → Actions as `X_BEARER_TOKEN`.
+
+**If neither auth mode is available, stop. Don't retry.** This is not a transient failure.
+
+### Auth-aware request helper
+
+`x_get` is the only request entry point — checks HTTP status, surfaces auth/rate-limit failures explicitly, and exits non-zero on error so primitives don't silently parse error JSON as data:
 
 ```bash
-# 2. Check auth is configured
-ls ~/.xurl/
+x_get() {
+    local path="$1"
+    local body http_code
+    if [ "$AUTH_MODE" = "ci" ]; then
+        # -w writes the HTTP status to stdout after the body; split with tail -n1.
+        local raw
+        raw=$(curl -sS -w $'\n%{http_code}' \
+                   -H "Authorization: Bearer $X_BEARER_TOKEN" \
+                   "https://api.x.com${path}") || return $?
+        http_code=$(printf '%s' "$raw" | tail -n1)
+        body=$(printf '%s' "$raw" | sed '$d')
+    else
+        body=$(xurl GET "$path") || return $?
+        # xurl exits non-zero on HTTP errors; assume 200 if we got here.
+        http_code=200
+    fi
+    case "$http_code" in
+        2*) printf '%s' "$body" ;;
+        401|403) echo "x-research: HTTP $http_code on $path — token rejected (regenerate the auth)" >&2; return 2 ;;
+        429)     echo "x-research: HTTP 429 on $path — rate limited" >&2; return 3 ;;
+        *)       echo "x-research: HTTP $http_code on $path — unexpected; body: $body" >&2; return 4 ;;
+    esac
+}
 ```
 
-If auth is missing or expired:
-```
-xurl auth not configured. Run:
-  xurl auth oauth2
-and follow the prompts to authorize your X app.
-```
-
-**If either check fails, stop. Print the setup instructions and exit. Don't retry.**
+**Never echo or log `$X_BEARER_TOKEN`.** Treat it like any other secret. Don't add `set -x` to scripts that run `x_get` — bash trace expands the `-H` arg verbatim.
 
 ## Primitives
 
@@ -72,7 +108,7 @@ and follow the prompts to authorize your X app.
 ```bash
 # URL-encode the query (spaces → %20, # → %23, etc.)
 QUERY=$(python3 -c "import urllib.parse; print(urllib.parse.quote('your search query'))")
-xurl GET "/2/tweets/search/recent?query=${QUERY}&max_results=10&tweet.fields=created_at,author_id,public_metrics,text"
+x_get "/2/tweets/search/recent?query=${QUERY}&max_results=10&tweet.fields=created_at,author_id,public_metrics,text"
 ```
 
 **Cost:** 1 request per call.
@@ -91,13 +127,13 @@ Given a tweet URL or ID, reconstruct the full conversation thread.
 **Step 1:** Fetch the root tweet and its conversation_id:
 ```bash
 TWEET_ID="1234567890"
-xurl GET "/2/tweets/${TWEET_ID}?tweet.fields=conversation_id,author_id,created_at,text,public_metrics"
+x_get "/2/tweets/${TWEET_ID}?tweet.fields=conversation_id,author_id,created_at,text,public_metrics"
 ```
 
 **Step 2:** Search for all replies in that conversation:
 ```bash
 CONV_ID="..."  # from step 1 response
-xurl GET "/2/tweets/search/recent?query=conversation_id:${CONV_ID}&max_results=50&tweet.fields=created_at,author_id,text,in_reply_to_user_id"
+x_get "/2/tweets/search/recent?query=conversation_id:${CONV_ID}&max_results=50&tweet.fields=created_at,author_id,text,in_reply_to_user_id"
 ```
 
 **Cost:** 2 requests per call.
@@ -113,13 +149,13 @@ Given a username, fetch their bio and recent tweets.
 **Step 1:** Look up the user:
 ```bash
 USERNAME="elonmusk"
-xurl GET "/2/users/by/username/${USERNAME}?user.fields=description,public_metrics,created_at"
+x_get "/2/users/by/username/${USERNAME}?user.fields=description,public_metrics,created_at"
 ```
 
 **Step 2:** Fetch their recent tweets:
 ```bash
 USER_ID="..."  # from step 1 response
-xurl GET "/2/users/${USER_ID}/tweets?max_results=10&tweet.fields=created_at,public_metrics,text"
+x_get "/2/users/${USER_ID}/tweets?max_results=10&tweet.fields=created_at,public_metrics,text"
 ```
 
 **Cost:** 2 requests per call.
@@ -133,7 +169,7 @@ X Articles are long-form posts. Given an article URL or the tweet ID that contai
 **Try the expanded tweet fields first:**
 ```bash
 TWEET_ID="1234567890"
-xurl GET "/2/tweets/${TWEET_ID}?tweet.fields=note_tweet,created_at,author_id,text&expansions=author_id"
+x_get "/2/tweets/${TWEET_ID}?tweet.fields=note_tweet,created_at,author_id,text&expansions=author_id"
 ```
 
 The `note_tweet` field contains expanded text for long-form content (tweets > 280 chars).
@@ -183,8 +219,11 @@ if [ -f "$CACHE_FILE" ]; then
   fi
 fi
 
-# Cache miss — make the request
-RESULT=$(xurl GET "$API_PATH")
+# Cache miss — make the request via x_get (returns non-zero on HTTP error,
+# so we don't cache 401/429/5xx error bodies).
+if ! RESULT=$(x_get "$API_PATH"); then
+  exit $?
+fi
 echo "$RESULT" > "$CACHE_FILE"
 echo "$RESULT"
 ```
@@ -211,8 +250,8 @@ Every xurl call is a real API request that may cost money (X API is pay-per-use 
 
 | Failure | Response |
 |---------|----------|
-| `xurl` not in PATH | Print install instructions, stop |
-| Auth expired/missing (`~/.xurl` absent) | Tell user to run `xurl auth oauth2`, stop |
+| Neither auth mode available (no `xurl`+`~/.xurl` AND no `$X_BEARER_TOKEN`) | Print setup instructions for both modes, stop |
+| Auth rejected (HTTP 401) | Local: tell user to re-run `xurl auth oauth2`. CI: tell user the `X_BEARER_TOKEN` secret needs regeneration at developer.x.com. Stop |
 | Rate limited (HTTP 429) | Wait 60 seconds, retry once. If still 429, give up and report the limit |
 | Empty results | Report "no results found for [query]". Don't retry with a broader query |
 | Network timeout | Retry once after 2 seconds. If it fails again, give up |
