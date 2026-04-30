@@ -25,14 +25,16 @@ pub fn handle_skill(input: &str, skills: &yoagent::skills::SkillSet) {
     } else if let Some(source) = sub.strip_prefix("install ") {
         let source = source.trim();
         if source.is_empty() {
-            eprintln!("{YELLOW}  usage: /skill install <path>{RESET}");
-            eprintln!("{DIM}  install a skill from a local directory containing SKILL.md{RESET}\n");
+            eprintln!("{YELLOW}  usage: /skill install <path|gh:user/repo>{RESET}");
+            eprintln!(
+                "{DIM}  install a skill from a local directory or GitHub repository{RESET}\n"
+            );
         } else {
             skill_install(source);
         }
     } else if sub == "install" {
-        eprintln!("{YELLOW}  usage: /skill install <path>{RESET}");
-        eprintln!("{DIM}  install a skill from a local directory containing SKILL.md{RESET}\n");
+        eprintln!("{YELLOW}  usage: /skill install <path|gh:user/repo>{RESET}");
+        eprintln!("{DIM}  install a skill from a local directory or GitHub repository{RESET}\n");
     } else {
         eprintln!("{RED}  unknown subcommand: {sub}{RESET}");
         eprintln!("{DIM}  try: /skill list, /skill show <name>, /skill path, /skill install <path>{RESET}\n");
@@ -176,7 +178,14 @@ fn default_skill_install_dir() -> Option<std::path::PathBuf> {
 ///
 /// Validates the source, extracts the skill name from SKILL.md frontmatter,
 /// and copies the entire directory to `~/.config/yoyo/skills/<name>/`.
+///
+/// If the source starts with `gh:`, delegates to [`skill_install_from_github`].
 fn skill_install(source: &str) {
+    if source.starts_with("gh:") {
+        skill_install_from_github(source);
+        return;
+    }
+
     let source_path = std::path::Path::new(source);
 
     // Validate source exists and is a directory
@@ -282,6 +291,356 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
         }
     }
     Ok(count)
+}
+
+/// Parsed GitHub skill source: `gh:user/repo[/path][@branch]`
+#[derive(Debug, PartialEq)]
+struct GitHubSource {
+    user: String,
+    repo: String,
+    /// Sub-path within the repo (e.g. `"skills/my-skill"`), empty if root.
+    path: String,
+    /// Optional branch or tag (e.g. `"main"`).
+    branch: Option<String>,
+}
+
+/// Parse a `gh:` prefixed source string into its components.
+///
+/// Supported formats:
+/// - `gh:user/repo`
+/// - `gh:user/repo/path/to/skill`
+/// - `gh:user/repo@branch`
+/// - `gh:user/repo/path@branch`
+fn parse_github_source(source: &str) -> Result<GitHubSource, String> {
+    let raw = source
+        .strip_prefix("gh:")
+        .ok_or_else(|| "source must start with 'gh:'".to_string())?;
+
+    if raw.is_empty() {
+        return Err("missing repository reference after 'gh:'".to_string());
+    }
+
+    // Split off optional @branch first
+    let (main_part, branch) = if let Some(at_pos) = raw.rfind('@') {
+        let branch_str = &raw[at_pos + 1..];
+        if branch_str.is_empty() {
+            return Err("empty branch specifier after '@'".to_string());
+        }
+        (&raw[..at_pos], Some(branch_str.to_string()))
+    } else {
+        (raw, None)
+    };
+
+    // Split by '/' — first two segments are user/repo, rest is path
+    let segments: Vec<&str> = main_part.split('/').collect();
+    if segments.len() < 2 {
+        return Err(format!(
+            "invalid format: expected 'gh:user/repo', got 'gh:{main_part}'"
+        ));
+    }
+
+    let user = segments[0].trim();
+    let repo = segments[1].trim();
+
+    if user.is_empty() {
+        return Err("missing GitHub username".to_string());
+    }
+    if repo.is_empty() {
+        return Err("missing GitHub repository name".to_string());
+    }
+
+    let path = if segments.len() > 2 {
+        segments[2..].join("/")
+    } else {
+        String::new()
+    };
+
+    Ok(GitHubSource {
+        user: user.to_string(),
+        repo: repo.to_string(),
+        path,
+        branch,
+    })
+}
+
+/// Find a SKILL.md in a cloned repo directory.
+///
+/// Search order:
+/// 1. If a sub-path was specified, look only there.
+/// 2. Root of the repo.
+/// 3. `skill/SKILL.md` or `skills/SKILL.md` (common conventions).
+///
+/// Returns the directory containing SKILL.md, or an error with suggestions.
+fn find_skill_in_repo(
+    repo_root: &std::path::Path,
+    sub_path: &str,
+) -> Result<std::path::PathBuf, String> {
+    if !sub_path.is_empty() {
+        let target = repo_root.join(sub_path);
+        if target.join("SKILL.md").exists() {
+            return Ok(target);
+        }
+        // Maybe the sub_path itself points to a file or doesn't exist
+        if !target.exists() {
+            return Err(format!(
+                "path '{sub_path}' does not exist in the repository"
+            ));
+        }
+        return Err(format!(
+            "no SKILL.md found at '{sub_path}/' in the repository"
+        ));
+    }
+
+    // Check root
+    if repo_root.join("SKILL.md").exists() {
+        return Ok(repo_root.to_path_buf());
+    }
+
+    // Check common subdirectories
+    for dir_name in &["skill", "skills"] {
+        let candidate = repo_root.join(dir_name);
+        if candidate.join("SKILL.md").exists() {
+            return Ok(candidate);
+        }
+    }
+
+    // Not found — build a helpful error with what we did find
+    let mut found_files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(repo_root) {
+        for entry in entries.flatten() {
+            found_files.push(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+    found_files.sort();
+
+    let mut msg = "no SKILL.md found in repository root".to_string();
+    if !found_files.is_empty() {
+        msg.push_str("\n  found at root: ");
+        msg.push_str(&found_files.join(", "));
+    }
+
+    // Look for SKILL.md anywhere in the repo to suggest paths
+    let mut skill_locations = Vec::new();
+    find_skill_md_recursive(repo_root, repo_root, &mut skill_locations, 3);
+    if !skill_locations.is_empty() {
+        msg.push_str("\n  SKILL.md found at:");
+        for loc in &skill_locations {
+            msg.push_str(&format!("\n    gh:user/repo/{loc}"));
+        }
+    }
+
+    Err(msg)
+}
+
+/// Recursively search for SKILL.md files, up to `max_depth` levels deep.
+fn find_skill_md_recursive(
+    base: &std::path::Path,
+    current: &std::path::Path,
+    results: &mut Vec<String>,
+    max_depth: usize,
+) {
+    if max_depth == 0 {
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(current) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.join("SKILL.md").exists() {
+                    if let Ok(rel) = path.strip_prefix(base) {
+                        results.push(rel.display().to_string());
+                    }
+                }
+                find_skill_md_recursive(base, &path, results, max_depth - 1);
+            }
+        }
+    }
+}
+
+/// Install a skill from a GitHub repository.
+///
+/// Clones the repo with `--depth 1`, finds SKILL.md, then installs via
+/// the same path as local installs.
+fn skill_install_from_github(source: &str) {
+    let gh = match parse_github_source(source) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("{RED}  error: {e}{RESET}\n");
+            return;
+        }
+    };
+
+    let url = format!("https://github.com/{}/{}.git", gh.user, gh.repo);
+
+    // Create a temp directory for the clone
+    let tmp_base = std::env::temp_dir().join(format!("yoyo-skill-install-{}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&tmp_base) {
+        eprintln!("{RED}  error creating temp directory: {e}{RESET}\n");
+        return;
+    }
+
+    // Ensure cleanup on all exit paths
+    struct CleanupGuard(std::path::PathBuf);
+    impl Drop for CleanupGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = CleanupGuard(tmp_base.clone());
+
+    let clone_path = tmp_base.join(&gh.repo);
+
+    // Build git clone command
+    let mut args = vec!["clone".to_string(), "--depth".to_string(), "1".to_string()];
+    if let Some(ref branch) = gh.branch {
+        args.push("--branch".to_string());
+        args.push(branch.clone());
+    }
+    args.push(url.clone());
+    args.push(clone_path.display().to_string());
+
+    eprintln!(
+        "{DIM}  cloning {}/{}{}…{RESET}",
+        gh.user,
+        gh.repo,
+        gh.branch
+            .as_ref()
+            .map(|b| format!("@{b}"))
+            .unwrap_or_default()
+    );
+
+    let output = std::process::Command::new("git")
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    match output {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("{RED}  error: git is not installed or not in PATH{RESET}");
+            eprintln!("{DIM}  install git to use remote skill installation{RESET}\n");
+            return;
+        }
+        Err(e) => {
+            eprintln!("{RED}  error running git clone: {e}{RESET}\n");
+            return;
+        }
+        Ok(ref o) if !o.status.success() => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if stderr.contains("not found")
+                || stderr.contains("does not exist")
+                || stderr.contains("Repository not found")
+            {
+                eprintln!(
+                    "{RED}  error: repository not found: {}/{}{RESET}",
+                    gh.user, gh.repo
+                );
+            } else if stderr.contains("Remote branch") && stderr.contains("not found")
+                || stderr.contains("Could not find remote branch")
+            {
+                eprintln!(
+                    "{RED}  error: branch '{}' not found in {}/{}{RESET}",
+                    gh.branch.as_deref().unwrap_or("?"),
+                    gh.user,
+                    gh.repo
+                );
+            } else if stderr.contains("Could not resolve host")
+                || stderr.contains("unable to access")
+            {
+                eprintln!("{RED}  error: network failure — could not reach github.com{RESET}");
+            } else {
+                eprintln!("{RED}  error: git clone failed{RESET}");
+                // Show first meaningful line of stderr
+                let first_line = stderr
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("unknown error");
+                eprintln!("{DIM}  {first_line}{RESET}");
+            }
+            eprintln!();
+            return;
+        }
+        Ok(_) => {} // success
+    }
+
+    // Find SKILL.md in the cloned repo
+    let skill_dir = match find_skill_in_repo(&clone_path, &gh.path) {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("{RED}  error: {e}{RESET}\n");
+            return;
+        }
+    };
+
+    // Read and validate the SKILL.md
+    let skill_md_path = skill_dir.join("SKILL.md");
+    let content = match std::fs::read_to_string(&skill_md_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{RED}  error reading SKILL.md: {e}{RESET}\n");
+            return;
+        }
+    };
+
+    let skill_name = match extract_skill_name_from_frontmatter(&content) {
+        Some(name) => name,
+        None => {
+            eprintln!(
+                "{RED}  error: could not extract skill name from SKILL.md frontmatter{RESET}"
+            );
+            eprintln!("{DIM}  SKILL.md must have YAML frontmatter with a 'name:' field{RESET}\n");
+            return;
+        }
+    };
+
+    // Determine install destination
+    let install_dir = match default_skill_install_dir() {
+        Some(dir) => dir,
+        None => {
+            eprintln!("{RED}  error: could not determine config directory{RESET}\n");
+            return;
+        }
+    };
+
+    let dest = install_dir.join(&skill_name);
+
+    if dest.exists() {
+        eprintln!(
+            "{YELLOW}  skill '{skill_name}' already installed at {}{RESET}",
+            dest.display()
+        );
+        eprintln!("{DIM}  remove the existing directory first to reinstall{RESET}\n");
+        return;
+    }
+
+    if let Err(e) = std::fs::create_dir_all(&dest) {
+        eprintln!(
+            "{RED}  error creating directory {}: {e}{RESET}\n",
+            dest.display()
+        );
+        return;
+    }
+
+    match copy_dir_recursive(&skill_dir, &dest) {
+        Ok(count) => {
+            println!(
+                "{GREEN}  ✓ installed skill '{skill_name}' from {}/{} ({count} files){RESET}",
+                gh.user, gh.repo
+            );
+            println!("{DIM}  location: {}{RESET}", dest.display());
+            println!(
+                "{DIM}  load with: --skills {}{RESET}\n",
+                install_dir.display()
+            );
+        }
+        Err(e) => {
+            eprintln!("{RED}  error copying skill: {e}{RESET}");
+            let _ = std::fs::remove_dir_all(&dest);
+            eprintln!("{DIM}  installation rolled back{RESET}\n");
+        }
+    }
+
+    // _cleanup guard handles temp directory removal on drop
 }
 
 /// Install a skill to a specific directory (used for testing).
@@ -628,5 +987,274 @@ mod tests {
         // These should not panic — they print usage/error messages
         handle_skill("/skill install", &skills);
         handle_skill("/skill install ", &skills);
+    }
+
+    // ── GitHub source parsing tests ──────────────────────────────────────
+
+    #[test]
+    fn test_parse_github_source_basic() {
+        let result = parse_github_source("gh:user/repo").unwrap();
+        assert_eq!(result.user, "user");
+        assert_eq!(result.repo, "repo");
+        assert_eq!(result.path, "");
+        assert_eq!(result.branch, None);
+    }
+
+    #[test]
+    fn test_parse_github_source_with_path() {
+        let result = parse_github_source("gh:user/repo/skills/my-skill").unwrap();
+        assert_eq!(result.user, "user");
+        assert_eq!(result.repo, "repo");
+        assert_eq!(result.path, "skills/my-skill");
+        assert_eq!(result.branch, None);
+    }
+
+    #[test]
+    fn test_parse_github_source_with_branch() {
+        let result = parse_github_source("gh:user/repo@main").unwrap();
+        assert_eq!(result.user, "user");
+        assert_eq!(result.repo, "repo");
+        assert_eq!(result.path, "");
+        assert_eq!(result.branch, Some("main".to_string()));
+    }
+
+    #[test]
+    fn test_parse_github_source_with_path_and_branch() {
+        let result = parse_github_source("gh:user/repo/path/to/skill@dev").unwrap();
+        assert_eq!(result.user, "user");
+        assert_eq!(result.repo, "repo");
+        assert_eq!(result.path, "path/to/skill");
+        assert_eq!(result.branch, Some("dev".to_string()));
+    }
+
+    #[test]
+    fn test_parse_github_source_missing_prefix() {
+        let result = parse_github_source("user/repo");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must start with 'gh:'"));
+    }
+
+    #[test]
+    fn test_parse_github_source_missing_repo() {
+        let result = parse_github_source("gh:user");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected 'gh:user/repo'"));
+    }
+
+    #[test]
+    fn test_parse_github_source_empty_after_prefix() {
+        let result = parse_github_source("gh:");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing repository reference"));
+    }
+
+    #[test]
+    fn test_parse_github_source_empty_user() {
+        let result = parse_github_source("gh:/repo");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing GitHub username"));
+    }
+
+    #[test]
+    fn test_parse_github_source_empty_repo() {
+        let result = parse_github_source("gh:user/");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("missing GitHub repository name"));
+    }
+
+    #[test]
+    fn test_parse_github_source_empty_branch() {
+        let result = parse_github_source("gh:user/repo@");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty branch specifier"));
+    }
+
+    #[test]
+    fn test_parse_github_source_tag_as_branch() {
+        let result = parse_github_source("gh:user/repo@v1.0.0").unwrap();
+        assert_eq!(result.branch, Some("v1.0.0".to_string()));
+    }
+
+    // ── find_skill_in_repo tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_find_skill_in_repo_root() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("SKILL.md"),
+            "---\nname: root-skill\n---\n# Hi\n",
+        )
+        .unwrap();
+
+        let result = find_skill_in_repo(tmp.path(), "");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), tmp.path());
+    }
+
+    #[test]
+    fn test_find_skill_in_repo_skills_subdir() {
+        let tmp = TempDir::new().unwrap();
+        let skills_dir = tmp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: sub-skill\n---\n# Hi\n",
+        )
+        .unwrap();
+
+        let result = find_skill_in_repo(tmp.path(), "");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), skills_dir);
+    }
+
+    #[test]
+    fn test_find_skill_in_repo_skill_subdir() {
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: sub-skill\n---\n# Hi\n",
+        )
+        .unwrap();
+
+        let result = find_skill_in_repo(tmp.path(), "");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), skill_dir);
+    }
+
+    #[test]
+    fn test_find_skill_in_repo_with_subpath() {
+        let tmp = TempDir::new().unwrap();
+        let deep = tmp.path().join("a").join("b");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("SKILL.md"), "---\nname: deep-skill\n---\n# Hi\n").unwrap();
+
+        let result = find_skill_in_repo(tmp.path(), "a/b");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), deep);
+    }
+
+    #[test]
+    fn test_find_skill_in_repo_subpath_no_skill_md() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("somedir");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("README.md"), "# Not a skill").unwrap();
+
+        let result = find_skill_in_repo(tmp.path(), "somedir");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no SKILL.md found"));
+    }
+
+    #[test]
+    fn test_find_skill_in_repo_subpath_missing() {
+        let tmp = TempDir::new().unwrap();
+
+        let result = find_skill_in_repo(tmp.path(), "nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_find_skill_in_repo_not_found_suggests_locations() {
+        let tmp = TempDir::new().unwrap();
+        // Put SKILL.md in a nested location
+        let nested = tmp.path().join("custom").join("my-skill");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("SKILL.md"), "---\nname: nested\n---\n# Hi\n").unwrap();
+
+        let result = find_skill_in_repo(tmp.path(), "");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("no SKILL.md found"));
+        assert!(err.contains("custom/my-skill"));
+    }
+
+    // ── skill_install_from_github integration with local git ─────────────
+
+    #[test]
+    fn test_skill_install_from_github_with_local_repo() {
+        // Create a local git repo that simulates a GitHub clone
+        let tmp = TempDir::new().unwrap();
+        let repo_dir = tmp.path().join("test-skill-repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+
+        // Init a git repo
+        let status = std::process::Command::new("git")
+            .args(["init", repo_dir.to_str().unwrap()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        if status.is_err() || !status.unwrap().success() {
+            // git not available, skip test
+            return;
+        }
+
+        // Configure git user for the commit
+        let _ = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_dir.to_str().unwrap(),
+                "config",
+                "user.email",
+                "test@test.com",
+            ])
+            .status();
+        let _ = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_dir.to_str().unwrap(),
+                "config",
+                "user.name",
+                "Test",
+            ])
+            .status();
+
+        // Add SKILL.md
+        fs::write(
+            repo_dir.join("SKILL.md"),
+            "---\nname: remote-test-skill\ndescription: A test skill from git\norigin: marketplace\n---\n\n# Remote Test Skill\n\nInstalled from a git repo.\n",
+        )
+        .unwrap();
+
+        let _ = std::process::Command::new("git")
+            .args(["-C", repo_dir.to_str().unwrap(), "add", "."])
+            .status();
+        let _ = std::process::Command::new("git")
+            .args(["-C", repo_dir.to_str().unwrap(), "commit", "-m", "init"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        // Now test that parse_github_source and find_skill_in_repo work
+        // (We can't test the full flow without a real GitHub URL, but we
+        // can test the pieces)
+        let source = parse_github_source("gh:testuser/test-skill-repo").unwrap();
+        assert_eq!(source.user, "testuser");
+        assert_eq!(source.repo, "test-skill-repo");
+
+        // Test find_skill_in_repo on the created repo
+        let found = find_skill_in_repo(&repo_dir, "").unwrap();
+        assert_eq!(found, repo_dir);
+
+        // Read and validate the SKILL.md
+        let content = fs::read_to_string(found.join("SKILL.md")).unwrap();
+        let name = extract_skill_name_from_frontmatter(&content).unwrap();
+        assert_eq!(name, "remote-test-skill");
+    }
+
+    #[test]
+    fn test_gh_prefix_dispatch() {
+        // Verify that /skill install gh:... routes to the github handler
+        // (it will fail with a network error, but should not panic)
+        let skills = yoagent::skills::SkillSet::empty();
+        handle_skill(
+            "/skill install gh:nonexistent-user-12345/nonexistent-repo-67890",
+            &skills,
+        );
     }
 }

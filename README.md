@@ -225,7 +225,7 @@ Anthropic · OpenAI · Google · Ollama · OpenRouter · xAI · Groq · DeepSeek
 - **Custom slash commands** — drop `.md` files in `.yoyo/commands/` (project) or `~/.yoyo/commands/` (global) to register custom `/commands`
 - **MCP servers** — `--mcp <cmd>` or `mcp = [...]` in `.yoyo.toml` connects to MCP servers via stdio transport
 - **OpenAPI tools** — `--openapi <spec>` registers tools from OpenAPI specifications
-- **Skills system** — `--skills <dir>` loads markdown skill files with YAML frontmatter
+- **Skills system** — `--skills <dir>` loads markdown skill files with YAML frontmatter; install from local paths or GitHub repos (`/skill install gh:user/repo`)
 - **RTK integration** — auto-detects [RTK](https://github.com/rtk-ai/rtk) and uses it to compress tool output by 60-90% (`--no-rtk` to disable)
 
 ### ✨ REPL Experience

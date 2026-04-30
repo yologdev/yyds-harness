@@ -51,10 +51,13 @@ From the REPL, use the `/skill` command to manage skills:
 /skill list         List loaded skills with name and description
 /skill show <name>  Show the full content of a skill
 /skill path         Show the skills directory path(s)
-/skill install <path>  Install a skill from a local directory
+/skill install <path>           Install a skill from a local directory
+/skill install gh:user/repo     Install a skill from a GitHub repository
 ```
 
-The `install` subcommand copies a skill directory into `~/.config/yoyo/skills/<name>/`. The source directory must contain a `SKILL.md` file with YAML frontmatter including a `name:` field. For example:
+The `install` subcommand copies a skill directory into `~/.config/yoyo/skills/<name>/`. The source directory must contain a `SKILL.md` file with YAML frontmatter including a `name:` field.
+
+### Local install
 
 ```bash
 # Install a local skill
@@ -66,6 +69,23 @@ This also works as a shell subcommand:
 ```bash
 yoyo skill install ./my-custom-skill/
 ```
+
+### Remote install from GitHub
+
+Install skills directly from GitHub repositories:
+
+```bash
+# Install from a repo root
+/skill install gh:user/awesome-skill
+
+# Install from a subdirectory
+/skill install gh:user/skill-collection/skills/my-skill
+
+# Install from a specific branch
+/skill install gh:user/repo@dev
+```
+
+The remote installer uses `git clone --depth 1` for efficiency, validates the SKILL.md frontmatter, and cleans up the temporary clone automatically. If no SKILL.md is found at the expected location, yoyo will search the repository and suggest the correct path.
 
 ## MCP servers
 

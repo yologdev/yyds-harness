@@ -520,18 +520,25 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /skill list         List loaded skills with name and description\n\
              \x20 /skill show <name>  Show the full content of a skill\n\
              \x20 /skill path         Show the skills directory path(s)\n\
-             \x20 /skill install <path>  Install a skill from a local directory\n\n\
+             \x20 /skill install <path>           Install a skill from a local directory\n\
+             \x20 /skill install gh:user/repo     Install a skill from a GitHub repository\n\
+             \x20 /skill install gh:user/repo/path  Install from a subdirectory of a repo\n\
+             \x20 /skill install gh:user/repo@branch  Install from a specific branch\n\n\
              Skills are loaded from directories specified with --skills <dir>.\n\
              Each skill is a directory containing a SKILL.md file with YAML\n\
              frontmatter (name + description) and markdown instructions.\n\n\
              The install subcommand copies a skill directory into\n\
-             ~/.config/yoyo/skills/<name>/ for permanent availability.\n\n\
+             ~/.config/yoyo/skills/<name>/ for permanent availability.\n\
+             Remote install uses 'git clone --depth 1' and cleans up after.\n\n\
              Examples:\n\
              \x20 /skill\n\
              \x20 /skill list\n\
              \x20 /skill show evolve\n\
              \x20 /skill path\n\
-             \x20 /skill install ./my-skill/",
+             \x20 /skill install ./my-skill/\n\
+             \x20 /skill install gh:user/awesome-skill\n\
+             \x20 /skill install gh:user/skill-collection/skills/my-skill\n\
+             \x20 /skill install gh:user/repo@dev",
         ),
         "model" => Some(
             "/model <name> — Switch the AI model\n\n\
