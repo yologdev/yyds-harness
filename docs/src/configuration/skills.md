@@ -51,11 +51,28 @@ From the REPL, use the `/skill` command to manage skills:
 /skill list         List loaded skills with name and description
 /skill show <name>  Show the full content of a skill
 /skill path         Show the skills directory path(s)
+/skill search [query]           Search GitHub for community skills
 /skill install <path>           Install a skill from a local directory
 /skill install gh:user/repo     Install a skill from a GitHub repository
 ```
 
 The `install` subcommand copies a skill directory into `~/.config/yoyo/skills/<name>/`. The source directory must contain a `SKILL.md` file with YAML frontmatter including a `name:` field.
+
+### Searching for skills
+
+Find community-created skills on GitHub:
+
+```bash
+# Search for skills by keyword
+/skill search research
+
+# Browse all available skills
+/skill search
+```
+
+The search command looks for repositories tagged with the `yoyo-skill` topic on GitHub. Results include the repository name, description, and an install hint. Requires the [GitHub CLI](https://cli.github.com/) (`gh`).
+
+To make your own skill discoverable, add the `yoyo-skill` topic to your GitHub repository.
 
 ### Local install
 

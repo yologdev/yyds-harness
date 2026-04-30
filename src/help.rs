@@ -514,12 +514,13 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /quick explain the difference between async and threading",
         ),
         "skill" => Some(
-            "/skill [subcommand] — List, inspect, and install skills\n\n\
+            "/skill [subcommand] — List, inspect, install, and search for skills\n\n\
              Usage:\n\
              \x20 /skill              List all loaded skills (same as /skill list)\n\
              \x20 /skill list         List loaded skills with name and description\n\
              \x20 /skill show <name>  Show the full content of a skill\n\
              \x20 /skill path         Show the skills directory path(s)\n\
+             \x20 /skill search [query]  Search GitHub for community skills\n\
              \x20 /skill install <path>           Install a skill from a local directory\n\
              \x20 /skill install gh:user/repo     Install a skill from a GitHub repository\n\
              \x20 /skill install gh:user/repo/path  Install from a subdirectory of a repo\n\
@@ -527,6 +528,8 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              Skills are loaded from directories specified with --skills <dir>.\n\
              Each skill is a directory containing a SKILL.md file with YAML\n\
              frontmatter (name + description) and markdown instructions.\n\n\
+             The search subcommand finds skills on GitHub tagged with the\n\
+             yoyo-skill topic. Requires the gh CLI (https://cli.github.com/).\n\n\
              The install subcommand copies a skill directory into\n\
              ~/.config/yoyo/skills/<name>/ for permanent availability.\n\
              Remote install uses 'git clone --depth 1' and cleans up after.\n\n\
@@ -535,6 +538,8 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /skill list\n\
              \x20 /skill show evolve\n\
              \x20 /skill path\n\
+             \x20 /skill search research\n\
+             \x20 /skill search\n\
              \x20 /skill install ./my-skill/\n\
              \x20 /skill install gh:user/awesome-skill\n\
              \x20 /skill install gh:user/skill-collection/skills/my-skill\n\
@@ -1215,7 +1220,7 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
-        "  skill             List, inspect, and install skills (e.g. yoyo skill list --skills ./skills)"
+        "  skill             List, inspect, install, and search for skills (e.g. yoyo skill list --skills ./skills)"
     );
     let _ = writeln!(
         s,
@@ -1424,7 +1429,7 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
-        "    /skill [subcmd]    List, inspect, and install skills"
+        "    /skill [subcmd]    List, inspect, install, and search for skills"
     );
     let _ = writeln!(s);
     let _ = writeln!(s, "  AI:");
@@ -1650,7 +1655,7 @@ pub fn help_text() -> String {
         "  /ast <pattern>     Structural code search using ast-grep (--lang, --in flags)\n",
     );
     out.push_str(
-        "  /skill [subcmd]    List, inspect, and install skills (list/show/path/install)\n",
+        "  /skill [subcmd]    List, inspect, install, and search for skills (list/show/path/install/search)\n",
     );
     out.push('\n');
 
@@ -1813,7 +1818,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "save" => Some("Save session to file"),
         "search" => Some("Search conversation history"),
         "side" => Some("Ask a quick question without affecting conversation"),
-        "skill" => Some("List, inspect, and install skills"),
+        "skill" => Some("List, inspect, install, and search for skills"),
         "spawn" => Some("Run a task in a sub-agent"),
         "stash" => Some("Stash conversation and start fresh"),
         "status" => Some("Show session info"),

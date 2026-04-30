@@ -1,9 +1,9 @@
-//! Skill-related command handlers: /skill list, show, path, install.
+//! Skill-related command handlers: /skill list, show, path, install, search.
 
 use crate::format::*;
 
 /// Subcommand names for `/skill <Tab>` completion.
-pub const SKILL_SUBCOMMANDS: &[&str] = &["list", "show", "path", "install"];
+pub const SKILL_SUBCOMMANDS: &[&str] = &["list", "show", "path", "install", "search"];
 
 /// Handle the `/skill` command: list, show, and inspect loaded skills.
 ///
@@ -35,9 +35,18 @@ pub fn handle_skill(input: &str, skills: &yoagent::skills::SkillSet) {
     } else if sub == "install" {
         eprintln!("{YELLOW}  usage: /skill install <path|gh:user/repo>{RESET}");
         eprintln!("{DIM}  install a skill from a local directory or GitHub repository{RESET}\n");
+    } else if let Some(query) = sub.strip_prefix("search ") {
+        let query = query.trim();
+        if query.is_empty() {
+            handle_skill_search(None);
+        } else {
+            handle_skill_search(Some(query));
+        }
+    } else if sub == "search" {
+        handle_skill_search(None);
     } else {
         eprintln!("{RED}  unknown subcommand: {sub}{RESET}");
-        eprintln!("{DIM}  try: /skill list, /skill show <name>, /skill path, /skill install <path>{RESET}\n");
+        eprintln!("{DIM}  try: /skill list, /skill show <name>, /skill path, /skill install <path>, /skill search <query>{RESET}\n");
     }
 }
 
@@ -131,6 +140,266 @@ fn skill_show(name: &str, skills: &yoagent::skills::SkillSet) {
             }
         }
     }
+}
+
+/// A single search result from GitHub.
+struct SkillSearchResult {
+    full_name: String,
+    description: String,
+    updated: String,
+}
+
+/// Search GitHub for yoyo skills using the `gh` CLI.
+///
+/// Searches for repositories with the `yoyo-skill` topic. If no topic-based
+/// results are found, falls back to a text search for "yoyo-skill".
+/// Displays results in a formatted table with install hints.
+fn handle_skill_search(query: Option<&str>) {
+    // Check if gh CLI is available
+    let gh_check = std::process::Command::new("gh")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    if gh_check.is_err() || !gh_check.unwrap().success() {
+        eprintln!("{RED}  gh CLI not found{RESET}");
+        eprintln!(
+            "{DIM}  install the GitHub CLI to search for skills: https://cli.github.com/{RESET}\n"
+        );
+        return;
+    }
+
+    println!("{DIM}  searching for yoyo skills...{RESET}");
+
+    // Try topic-based search first
+    let results = search_github_skills_by_topic(query);
+    let results = match results {
+        Ok(r) if !r.is_empty() => r,
+        _ => {
+            // Fall back to text search
+            match search_github_skills_by_text(query) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("{RED}  search failed: {e}{RESET}\n");
+                    return;
+                }
+            }
+        }
+    };
+
+    if results.is_empty() {
+        let q = query.unwrap_or("(all)");
+        eprintln!("{YELLOW}  no skills found for: {q}{RESET}");
+        eprintln!("{DIM}  try a different query, or browse: https://github.com/topics/yoyo-skill{RESET}\n");
+        return;
+    }
+
+    // Find max name length for alignment
+    let max_name = results
+        .iter()
+        .map(|r| r.full_name.len())
+        .max()
+        .unwrap_or(0)
+        .min(40);
+
+    println!(
+        "\n{BOLD}  Found {} skill{}:{RESET}\n",
+        results.len(),
+        if results.len() == 1 { "" } else { "s" }
+    );
+
+    for r in &results {
+        let name_display = if r.full_name.len() > 40 {
+            let mut b = 37;
+            while b > 0 && !r.full_name.is_char_boundary(b) {
+                b -= 1;
+            }
+            format!("{}...", &r.full_name[..b])
+        } else {
+            r.full_name.clone()
+        };
+        let padding = " ".repeat(max_name.saturating_sub(name_display.len()));
+        let desc = if r.description.is_empty() {
+            "(no description)"
+        } else {
+            safe_truncate(&r.description, 60)
+        };
+        let updated_str = if r.updated.is_empty() {
+            String::new()
+        } else {
+            format!("  {DIM}({}){RESET}", r.updated)
+        };
+        println!("    {GREEN}{name_display}{RESET}{padding}  {DIM}{desc}{RESET}{updated_str}");
+    }
+
+    println!("\n{DIM}  install with: /skill install gh:<owner>/<repo>{RESET}\n");
+}
+
+/// Search GitHub repos by the `yoyo-skill` topic.
+fn search_github_skills_by_topic(query: Option<&str>) -> Result<Vec<SkillSearchResult>, String> {
+    let mut args = vec![
+        "search",
+        "repos",
+        "--topic",
+        "yoyo-skill",
+        "--limit",
+        "20",
+        "--json",
+        "fullName,description,updatedAt",
+    ];
+    // Add the query as a positional argument if provided
+    if let Some(q) = query {
+        args.push("--");
+        args.push(q);
+    }
+
+    run_gh_search(&args)
+}
+
+/// Search GitHub repos by text query containing "yoyo-skill".
+fn search_github_skills_by_text(query: Option<&str>) -> Result<Vec<SkillSearchResult>, String> {
+    let combined: String;
+    let search_term = if let Some(q) = query {
+        combined = format!("yoyo-skill {q}");
+        combined.as_str()
+    } else {
+        "yoyo-skill"
+    };
+
+    let args = vec![
+        "search",
+        "repos",
+        search_term,
+        "--limit",
+        "20",
+        "--json",
+        "fullName,description,updatedAt",
+    ];
+
+    run_gh_search(&args)
+}
+
+/// Run a `gh` search command and parse JSON results.
+fn run_gh_search(args: &[&str]) -> Result<Vec<SkillSearchResult>, String> {
+    let output = std::process::Command::new("gh")
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to run gh: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh search failed: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_gh_search_json(&stdout)
+}
+
+/// Parse the JSON output from `gh search repos --json`.
+///
+/// Expected format: array of objects with `fullName`, `description`, `updatedAt`.
+fn parse_gh_search_json(json_str: &str) -> Result<Vec<SkillSearchResult>, String> {
+    let json_str = json_str.trim();
+    if json_str.is_empty() || json_str == "[]" {
+        return Ok(Vec::new());
+    }
+
+    // Minimal JSON array-of-objects parser — avoids adding a serde_json dependency.
+    // Each object has the shape: {"fullName":"...","description":"...","updatedAt":"..."}
+    let mut results = Vec::new();
+
+    // Split by objects: find each { ... } block
+    let mut depth = 0i32;
+    let mut obj_start: Option<usize> = None;
+
+    for (i, ch) in json_str.char_indices() {
+        match ch {
+            '{' => {
+                if depth == 0 {
+                    obj_start = Some(i);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(start) = obj_start {
+                        let obj = &json_str[start..=i];
+                        let full_name = extract_json_string(obj, "fullName").unwrap_or_default();
+                        let description =
+                            extract_json_string(obj, "description").unwrap_or_default();
+                        let updated = extract_json_string(obj, "updatedAt")
+                            .unwrap_or_default()
+                            .chars()
+                            .take(10)
+                            .collect();
+                        if !full_name.is_empty() {
+                            results.push(SkillSearchResult {
+                                full_name,
+                                description,
+                                updated,
+                            });
+                        }
+                    }
+                    obj_start = None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(results)
+}
+
+/// Extract a string value for a given key from a JSON object string.
+///
+/// Very simple: looks for `"key":"value"` or `"key": "value"`.
+/// Handles basic escape sequences (\", \\, \n, \t).
+fn extract_json_string(obj: &str, key: &str) -> Option<String> {
+    // Look for "key": or "key":
+    let patterns = [format!("\"{key}\":\""), format!("\"{key}\": \"")];
+
+    for pattern in &patterns {
+        if let Some(start) = obj.find(pattern.as_str()) {
+            let val_start = start + pattern.len();
+            // Find the closing unescaped quote
+            let rest = &obj[val_start..];
+            let mut result = String::new();
+            let mut chars = rest.chars();
+            loop {
+                match chars.next() {
+                    None => break,
+                    Some('\\') => match chars.next() {
+                        Some('"') => result.push('"'),
+                        Some('\\') => result.push('\\'),
+                        Some('n') => result.push('\n'),
+                        Some('t') => result.push('\t'),
+                        Some(c) => {
+                            result.push('\\');
+                            result.push(c);
+                        }
+                        None => break,
+                    },
+                    Some('"') => break,
+                    Some(c) => result.push(c),
+                }
+            }
+            return Some(result);
+        }
+    }
+
+    // Handle null/empty values: "key":null or "key": null
+    let null_patterns = [format!("\"{key}\":null"), format!("\"{key}\": null")];
+    for pattern in &null_patterns {
+        if obj.contains(pattern.as_str()) {
+            return Some(String::new());
+        }
+    }
+
+    None
 }
 
 /// Extract the skill name from SKILL.md YAML frontmatter.
@@ -1256,5 +1525,93 @@ mod tests {
             "/skill install gh:nonexistent-user-12345/nonexistent-repo-67890",
             &skills,
         );
+    }
+
+    #[test]
+    fn test_parse_gh_search_json_basic() {
+        let json = r#"[{"fullName":"alice/cool-skill","description":"A cool skill","updatedAt":"2025-01-15T10:00:00Z"}]"#;
+        let results = parse_gh_search_json(json).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].full_name, "alice/cool-skill");
+        assert_eq!(results[0].description, "A cool skill");
+        assert_eq!(results[0].updated, "2025-01-15");
+    }
+
+    #[test]
+    fn test_parse_gh_search_json_multiple() {
+        let json = r#"[
+            {"fullName":"alice/skill-a","description":"First","updatedAt":"2025-01-01T00:00:00Z"},
+            {"fullName":"bob/skill-b","description":"Second","updatedAt":"2025-02-02T00:00:00Z"}
+        ]"#;
+        let results = parse_gh_search_json(json).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].full_name, "alice/skill-a");
+        assert_eq!(results[1].full_name, "bob/skill-b");
+        assert_eq!(results[1].description, "Second");
+    }
+
+    #[test]
+    fn test_parse_gh_search_json_empty() {
+        assert!(parse_gh_search_json("[]").unwrap().is_empty());
+        assert!(parse_gh_search_json("").unwrap().is_empty());
+        assert!(parse_gh_search_json("  ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_gh_search_json_null_description() {
+        let json =
+            r#"[{"fullName":"alice/skill","description":null,"updatedAt":"2025-01-01T00:00:00Z"}]"#;
+        let results = parse_gh_search_json(json).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].description, "");
+    }
+
+    #[test]
+    fn test_parse_gh_search_json_escaped_chars() {
+        let json = r#"[{"fullName":"alice/skill","description":"A \"quoted\" skill","updatedAt":"2025-01-01T00:00:00Z"}]"#;
+        let results = parse_gh_search_json(json).unwrap();
+        assert_eq!(results[0].description, "A \"quoted\" skill");
+    }
+
+    #[test]
+    fn test_extract_json_string() {
+        let obj = r#"{"fullName":"alice/repo","description":"hello"}"#;
+        assert_eq!(
+            extract_json_string(obj, "fullName"),
+            Some("alice/repo".into())
+        );
+        assert_eq!(
+            extract_json_string(obj, "description"),
+            Some("hello".into())
+        );
+        assert_eq!(extract_json_string(obj, "missing"), None);
+    }
+
+    #[test]
+    fn test_extract_json_string_with_spaces() {
+        // gh CLI sometimes outputs with spaces after colon
+        let obj = r#"{"fullName": "alice/repo", "description": "hello world"}"#;
+        assert_eq!(
+            extract_json_string(obj, "fullName"),
+            Some("alice/repo".into())
+        );
+        assert_eq!(
+            extract_json_string(obj, "description"),
+            Some("hello world".into())
+        );
+    }
+
+    #[test]
+    fn test_skill_search_subcommand_registered() {
+        assert!(SKILL_SUBCOMMANDS.contains(&"search"));
+    }
+
+    #[test]
+    fn test_skill_search_routes_without_panic() {
+        // Verify /skill search routes correctly (may fail if gh not installed,
+        // but should not panic)
+        let skills = yoagent::skills::SkillSet::empty();
+        handle_skill("/skill search test-query", &skills);
+        handle_skill("/skill search", &skills);
     }
 }
