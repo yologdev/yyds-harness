@@ -1,6 +1,6 @@
 //! CLI argument parsing, config file support, and help text.
 
-use crate::dispatch::{flag_value, require_flag_value, FlagValueCheck};
+use crate::dispatch_sub::{flag_value, require_flag_value, FlagValueCheck};
 use crate::format::*;
 use std::collections::HashMap;
 use std::io::IsTerminal;
@@ -633,7 +633,7 @@ fn parse_mcp_and_openapi_config(
 
 pub fn parse_args(args: &[String]) -> Option<Config> {
     // Handle early-exit subcommands (--help, --version) before anything else.
-    if let Some(result) = crate::dispatch::try_dispatch_subcommand(args) {
+    if let Some(result) = crate::dispatch_sub::try_dispatch_subcommand(args) {
         return result;
     }
 

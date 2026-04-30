@@ -58,6 +58,7 @@ mod commands_spawn;
 mod config;
 mod context;
 mod dispatch;
+mod dispatch_sub;
 mod docs;
 mod format;
 mod git;

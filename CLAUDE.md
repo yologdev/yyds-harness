@@ -58,6 +58,8 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `safety.rs` — bash command safety analysis, destructive pattern detection
 - `cli.rs` — CLI argument parsing, subcommands, configuration (delegates `--help` text to `help.rs`)
 - `commands.rs` — slash command dispatch, grouped /help, custom command discovery (loads user-defined `.md` files from `.yoyo/commands/` and `~/.yoyo/commands/`)
+- `dispatch.rs` — REPL `/command` routing (`dispatch_command`), `CommandResult`, `DispatchContext`
+- `dispatch_sub.rs` — CLI subcommand routing (`try_dispatch_subcommand` for `yoyo <subcmd>`), `flag_value`, `FlagValueCheck`, `require_flag_value`
 - `help.rs` — canonical source for all help content: `cli_help_text()` (`--help` output), `/help` REPL help, per-command detailed help
 - `config.rs` — permission config, directory restrictions, MCP server config, TOML parsing helpers
 - `context.rs` — project context loading, file listing, git status, recently changed files
