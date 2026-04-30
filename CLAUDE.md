@@ -166,31 +166,31 @@ This is enforced both by HARD RULE #1 in the meta-skill (LLM-side) and by the di
 yoyo has shared-state recursive sub-agent dispatch — the [Recursive Language Model](https://alexzhang13.github.io/blog/2025/rlm/) pattern, scaled down to one yoagent primitive plus skill-level conventions. The substrate is in place; specific skills opt into it.
 
 **What's available:**
-- `build_sub_agent_tool` (`src/tools.rs:1283`) returns `(SubAgentTool, SharedState)`. Parent agents get a handle to pre-populate; sub-agents automatically receive a `shared_state` tool that reads/writes the same yoagent::SharedState key-value store.
+- `build_sub_agent_tool` in `src/tools.rs` returns `(SubAgentTool, SharedState)`. Parent agents get a handle to pre-populate; sub-agents automatically receive a `shared_state` tool that reads/writes the same yoagent::SharedState key-value store. (Skills opt into this by adding `sub_agent` and `shared_state` to their `tools:` frontmatter.)
 - Artifacts are stored once and read by reference rather than re-pasted into every sub-agent prompt. Namespace convention: `<skill>.<key>` (e.g., `trajectory.run-12345`, `research.topic.source-3`).
 - `shared_state` is in `BUILTIN_TOOL_NAMES` (MCP collision guard).
-- Canonical example: `skills/analyze-trajectory/SKILL.md` (Section 3.5 chunking, Section 4 dispatch + JSON contract, Section 5 recursion cap of 3).
+- Canonical example: `skills/analyze-trajectory/SKILL.md` — see its "Handle large artifacts" section for chunking, "Dispatch a sub-agent" section for the JSON contract, and "Recurse" section for the depth cap.
 
 **When to reach for RLM:**
-- The artifact is too large for one prompt (>5KB; chunk if >30KB).
+- The artifact is too large for one prompt (>5KB triggers sub-agent dispatch; chunk if >30KB).
 - The work is decomposable — different focused questions over the same artifact, each independently answerable.
-- Some fidelity loss is acceptable (RLM passes summaries between layers, not raw text).
+- Fidelity loss is acceptable — sub-agents return summaries, not raw text. (Use direct read when exact diffs matter.)
 - Cross-piece reasoning is light — each sub-question can be answered locally.
 
 **When NOT to reach for RLM:**
-- The artifact is small (<5KB) — direct read costs less than sub-agent overhead.
-- The task needs *precise* control (writing code, surgical edits) — sub-agent summaries are lossy and you can't reconstruct exact diffs from them.
-- The work is sequential with strong mutual context — refactoring needs to see all pieces at once, not in isolated summaries.
-- The decomposition isn't natural — forcing RLM where the problem is monolithic costs tokens and adds noise.
+- The artifact is small (≤5KB; if exactly 5KB, prefer direct read) — sub-agent overhead exceeds the savings.
+- The task needs *precise* control (writing code, surgical edits) — fidelity-loss in sub-agent summaries is fatal here.
+- The work is sequential with strong mutual context — refactoring needs to see all pieces at once.
+- You're already inside a sub-agent and depth=3 is reached — stop, return what you have, do not dispatch further.
 
 **Established pattern in yoyo:**
-1. Parent fetches the artifact, stores it under `<skill>.<key>` in shared state.
-2. Parent dispatches sub-agent(s) with a *focused question* and a *reference* to the shared-state key — never the artifact itself in the prompt.
-3. Sub-agent reads via `shared_state` tool, returns a JSON-shaped summary (concrete schema; see `analyze-trajectory` Section 4).
-4. Parent recurses on `deeper_question` if confidence is low. Hard depth cap = 3.
+1. Parent fetches the artifact via `bash`, then stores it under `<skill>.<key>` via the `shared_state` tool's `set` op.
+2. Parent calls the `sub_agent` tool with a *focused question* and a *reference* to the shared-state key — never the artifact itself in the prompt.
+3. Sub-agent reads via `shared_state.get`, returns a JSON-shaped summary (see `analyze-trajectory`'s "Dispatch a sub-agent" section for the schema).
+4. Parent recurses on `deeper_question` if confidence is low. Hard depth cap = 3 (counts each sub_agent dispatch toward the budget).
 5. On sub-agent failure / non-JSON response, fall back to direct read of a slice and produce a low-confidence diagnosis.
 
-For the broader capability roadmap (codebase archaeology, semantic git bisect, multi-source research synthesis, large-scale refactor coordination, etc.), see issue #341. Skills opt into the substrate by adding `sub_agent` and `shared_state` to their `tools:` frontmatter; the description-routing layer decides when each skill loads.
+For the broader capability roadmap (codebase archaeology, semantic git bisect, multi-source research synthesis, large-scale refactor coordination, etc.), see issue #341.
 
 ## MCP gotchas
 
