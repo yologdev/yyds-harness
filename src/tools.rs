@@ -13,6 +13,7 @@
 
 use crate::cli;
 use crate::commands_project;
+use crate::commands_todo;
 use crate::format::*;
 use crate::hooks::{self, maybe_hook, AuditHook, HookRegistry};
 use crate::safety::analyze_bash_command;
@@ -1063,11 +1064,11 @@ impl AgentTool for TodoTool {
         let text =
             match action {
                 "list" => {
-                    let items = commands_project::todo_list();
+                    let items = commands_todo::todo_list();
                     if items.is_empty() {
                         "No tasks. Use action 'add' to create one.".to_string()
                     } else {
-                        commands_project::format_todo_list(&items)
+                        commands_todo::format_todo_list(&items)
                     }
                 }
                 "add" => {
@@ -1077,14 +1078,14 @@ impl AgentTool for TodoTool {
                         .ok_or_else(|| {
                             ToolError::InvalidArgs("Missing 'description' for add action".into())
                         })?;
-                    let id = commands_project::todo_add(desc);
+                    let id = commands_todo::todo_add(desc);
                     format!("Added task #{id}: {desc}")
                 }
                 "done" => {
                     let id = params.get("id").and_then(|v| v.as_u64()).ok_or_else(|| {
                         ToolError::InvalidArgs("Missing 'id' for done action".into())
                     })? as usize;
-                    commands_project::todo_update(id, commands_project::TodoStatus::Done)
+                    commands_todo::todo_update(id, commands_todo::TodoStatus::Done)
                         .map_err(ToolError::Failed)?;
                     format!("Task #{id} marked as done ✓")
                 }
@@ -1092,7 +1093,7 @@ impl AgentTool for TodoTool {
                     let id = params.get("id").and_then(|v| v.as_u64()).ok_or_else(|| {
                         ToolError::InvalidArgs("Missing 'id' for wip action".into())
                     })? as usize;
-                    commands_project::todo_update(id, commands_project::TodoStatus::InProgress)
+                    commands_todo::todo_update(id, commands_todo::TodoStatus::InProgress)
                         .map_err(ToolError::Failed)?;
                     format!("Task #{id} marked as in-progress")
                 }
@@ -1100,11 +1101,11 @@ impl AgentTool for TodoTool {
                     let id = params.get("id").and_then(|v| v.as_u64()).ok_or_else(|| {
                         ToolError::InvalidArgs("Missing 'id' for remove action".into())
                     })? as usize;
-                    let item = commands_project::todo_remove(id).map_err(ToolError::Failed)?;
+                    let item = commands_todo::todo_remove(id).map_err(ToolError::Failed)?;
                     format!("Removed task #{id}: {}", item.description)
                 }
                 "clear" => {
-                    commands_project::todo_clear();
+                    commands_todo::todo_clear();
                     "All tasks cleared.".to_string()
                 }
                 other => {
@@ -2107,7 +2108,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_todo_tool_list_empty() {
-        commands_project::todo_clear();
+        commands_todo::todo_clear();
         let tool = TodoTool;
         let ctx = test_tool_context(None);
         let result = tool
@@ -2124,7 +2125,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_todo_tool_add_and_list() {
-        commands_project::todo_clear();
+        commands_todo::todo_clear();
         let tool = TodoTool;
 
         let ctx = test_tool_context(None);
@@ -2150,7 +2151,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_todo_tool_done() {
-        commands_project::todo_clear();
+        commands_todo::todo_clear();
         let tool = TodoTool;
         let ctx = test_tool_context(None);
         tool.execute(

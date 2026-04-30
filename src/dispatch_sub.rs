@@ -289,7 +289,7 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
             }
             "todo" => {
                 let input = quote_args_as_command(args);
-                let output = crate::commands_project::handle_todo(&input);
+                let output = crate::commands_todo::handle_todo(&input);
                 println!("{output}");
                 return Some(None);
             }

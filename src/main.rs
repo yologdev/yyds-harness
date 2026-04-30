@@ -55,6 +55,7 @@ mod commands_search;
 mod commands_session;
 mod commands_skill;
 mod commands_spawn;
+mod commands_todo;
 mod config;
 mod context;
 mod dispatch;

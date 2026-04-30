@@ -450,8 +450,10 @@ pub use crate::commands_git::{
 // Project-related handlers
 pub use crate::commands_project::{
     handle_context, handle_docs, handle_extract, handle_init, handle_move, handle_plan,
-    handle_refactor, handle_rename, handle_todo, is_plan_mode, PLAN_MODE_PROMPT,
+    handle_refactor, handle_rename, is_plan_mode, PLAN_MODE_PROMPT,
 };
+
+pub use crate::commands_todo::handle_todo;
 
 // Skill-related handlers
 pub use crate::commands_skill::handle_skill;
