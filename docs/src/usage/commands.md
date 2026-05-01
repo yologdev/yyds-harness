@@ -568,7 +568,7 @@ The question appears with a ❓ prompt, and you type your response directly. If 
 |---------|-------------|
 | `/add <path>` | Add file contents into the conversation — the AI sees them immediately |
 | `/explain <file>` | Read code from a file and ask the agent to explain it |
-| `/context [system]` | Show which project context files are loaded, or use `/context system` to see system prompt sections with token estimates |
+| `/context [system\|tokens\|files]` | Show project context files, system prompt sections, token budget, or files referenced in this conversation |
 | `/find <pattern>` | Fuzzy-search project files by name — respects `.gitignore`, ranked by relevance |
 | `/grep <pattern> [path]` | Search file contents directly — no AI, no tokens, instant results |
 | `/index` | Build a lightweight index of all project source files — shows path, line count, and first-line summary |

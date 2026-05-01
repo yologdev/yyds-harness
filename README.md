@@ -334,7 +334,7 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 | `/config` | Show all current settings |
 | `/config show` | Show loaded config file path and merged key-value pairs (secrets masked) |
 | `/config edit` | Open config file in `$EDITOR` |
-| `/context [system]` | Show loaded project context files or system prompt sections |
+| `/context [system\|tokens\|files]` | Show loaded project context, system prompt, token budget, or referenced files |
 | `/cost` | Show session cost breakdown |
 | `/changelog [N]` | Show recent git commit history (default: 15) |
 | `/evolution [N]` | Show evolution history, session stats, and CI run status |

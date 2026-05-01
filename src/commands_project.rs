@@ -45,7 +45,7 @@ Analyze the codebase, explain your plan, and describe what changes you WOULD mak
 // ── /context ─────────────────────────────────────────────────────────────
 
 /// Subcommands for /context.
-const CONTEXT_SUBCOMMANDS: &[&str] = &["system", "tokens"];
+const CONTEXT_SUBCOMMANDS: &[&str] = &["system", "tokens", "files"];
 
 pub fn context_subcommands() -> &'static [&'static str] {
     CONTEXT_SUBCOMMANDS
@@ -58,9 +58,113 @@ pub fn handle_context(input: &str, system_prompt: &str, agent: &Agent) {
         show_system_prompt_sections(system_prompt);
     } else if args.starts_with("tokens") {
         show_context_tokens(system_prompt, agent);
+    } else if args.starts_with("files") {
+        show_context_files(agent);
     } else {
         show_project_context_files();
     }
+}
+
+// ---------------------------------------------------------------------------
+// /context files — show files the agent has interacted with
+// ---------------------------------------------------------------------------
+
+/// Categories of file interaction, ordered for display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum FileAction {
+    Read,
+    Edited,
+    Written,
+    Listed,
+    Searched,
+}
+
+impl FileAction {
+    fn label(self) -> &'static str {
+        match self {
+            FileAction::Read => "Read",
+            FileAction::Edited => "Edited",
+            FileAction::Written => "Written",
+            FileAction::Listed => "Listed",
+            FileAction::Searched => "Searched",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            FileAction::Read => "📖",
+            FileAction::Edited => "✏️ ",
+            FileAction::Written => "📝",
+            FileAction::Listed => "📂",
+            FileAction::Searched => "🔍",
+        }
+    }
+}
+
+/// Extract file paths from agent messages, grouped by action type.
+/// Returns a sorted `BTreeMap<FileAction, BTreeSet<String>>`.
+fn extract_context_files(
+    messages: &[yoagent::types::AgentMessage],
+) -> std::collections::BTreeMap<FileAction, std::collections::BTreeSet<String>> {
+    use std::collections::{BTreeMap, BTreeSet};
+    use yoagent::types::{AgentMessage, Content, Message};
+
+    let mut result: BTreeMap<FileAction, BTreeSet<String>> = BTreeMap::new();
+
+    for msg in messages {
+        let llm = match msg {
+            AgentMessage::Llm(m) => m,
+            _ => continue,
+        };
+        let content = match llm {
+            Message::Assistant { content, .. } => content,
+            _ => continue,
+        };
+        for block in content {
+            if let Content::ToolCall {
+                name, arguments, ..
+            } = block
+            {
+                let action = match name.as_str() {
+                    "read_file" => FileAction::Read,
+                    "edit_file" => FileAction::Edited,
+                    "write_file" => FileAction::Written,
+                    "list_files" => FileAction::Listed,
+                    "search" => FileAction::Searched,
+                    _ => continue,
+                };
+
+                if let Some(path) = arguments.get("path").and_then(|v| v.as_str()) {
+                    if !path.is_empty() {
+                        result.entry(action).or_default().insert(path.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
+fn show_context_files(agent: &Agent) {
+    let files = extract_context_files(agent.messages());
+
+    if files.is_empty() {
+        println!("{DIM}  (no files referenced yet){RESET}");
+        return;
+    }
+
+    println!("{DIM}  Files in this conversation:\n");
+    for (action, paths) in &files {
+        let paths_str: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+        println!(
+            "    {} {:<9} {}",
+            action.icon(),
+            format!("{}:", action.label()),
+            paths_str.join(", ")
+        );
+    }
+    println!("{RESET}");
 }
 
 fn show_context_tokens(system_prompt: &str, agent: &Agent) {
@@ -1722,5 +1826,203 @@ mod tests {
             help.contains("architect"),
             "Help text should mention architect mode"
         );
+    }
+
+    #[test]
+    fn test_context_files_subcommand_in_list() {
+        assert!(
+            CONTEXT_SUBCOMMANDS.contains(&"files"),
+            "CONTEXT_SUBCOMMANDS should contain 'files'"
+        );
+    }
+
+    #[test]
+    fn test_show_context_files_no_panic() {
+        // Smoke test: calling with an empty agent shouldn't panic
+        let agent = yoagent::Agent::new(yoagent::provider::AnthropicProvider)
+            .with_system_prompt("test")
+            .with_model("test-model")
+            .with_api_key("test-key");
+        show_context_files(&agent);
+    }
+
+    #[test]
+    fn test_context_files_dispatch() {
+        // Verify handle_context routes "files" correctly (shouldn't panic)
+        let agent = yoagent::Agent::new(yoagent::provider::AnthropicProvider)
+            .with_system_prompt("test")
+            .with_model("test-model")
+            .with_api_key("test-key");
+        handle_context("/context files", "", &agent);
+    }
+
+    #[test]
+    fn test_extract_context_files_empty() {
+        let messages: Vec<yoagent::types::AgentMessage> = vec![];
+        let result = extract_context_files(&messages);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_context_files_with_tool_calls() {
+        use yoagent::types::*;
+
+        let messages = vec![
+            AgentMessage::Llm(Message::Assistant {
+                content: vec![
+                    Content::ToolCall {
+                        id: "1".into(),
+                        name: "read_file".into(),
+                        arguments: serde_json::json!({"path": "src/main.rs"}),
+                        provider_metadata: None,
+                    },
+                    Content::ToolCall {
+                        id: "2".into(),
+                        name: "edit_file".into(),
+                        arguments: serde_json::json!({"path": "src/tools.rs", "old_text": "a", "new_text": "b"}),
+                        provider_metadata: None,
+                    },
+                    Content::ToolCall {
+                        id: "3".into(),
+                        name: "write_file".into(),
+                        arguments: serde_json::json!({"path": "src/new.rs", "content": "fn main() {}"}),
+                        provider_metadata: None,
+                    },
+                ],
+                stop_reason: StopReason::ToolUse,
+                model: "test".into(),
+                provider: "test".into(),
+                usage: Usage::default(),
+                timestamp: 0,
+                error_message: None,
+            }),
+            AgentMessage::Llm(Message::Assistant {
+                content: vec![
+                    Content::ToolCall {
+                        id: "4".into(),
+                        name: "list_files".into(),
+                        arguments: serde_json::json!({"path": "src/"}),
+                        provider_metadata: None,
+                    },
+                    Content::ToolCall {
+                        id: "5".into(),
+                        name: "search".into(),
+                        arguments: serde_json::json!({"pattern": "TODO", "path": "src/"}),
+                        provider_metadata: None,
+                    },
+                    // Duplicate read — should be deduplicated
+                    Content::ToolCall {
+                        id: "6".into(),
+                        name: "read_file".into(),
+                        arguments: serde_json::json!({"path": "src/main.rs"}),
+                        provider_metadata: None,
+                    },
+                ],
+                stop_reason: StopReason::ToolUse,
+                model: "test".into(),
+                provider: "test".into(),
+                usage: Usage::default(),
+                timestamp: 0,
+                error_message: None,
+            }),
+        ];
+
+        let result = extract_context_files(&messages);
+
+        // Check read files — deduplicated
+        let read = result.get(&FileAction::Read).unwrap();
+        assert_eq!(read.len(), 1);
+        assert!(read.contains("src/main.rs"));
+
+        // Check edited
+        let edited = result.get(&FileAction::Edited).unwrap();
+        assert!(edited.contains("src/tools.rs"));
+
+        // Check written
+        let written = result.get(&FileAction::Written).unwrap();
+        assert!(written.contains("src/new.rs"));
+
+        // Check listed
+        let listed = result.get(&FileAction::Listed).unwrap();
+        assert!(listed.contains("src/"));
+
+        // Check searched
+        let searched = result.get(&FileAction::Searched).unwrap();
+        assert!(searched.contains("src/"));
+    }
+
+    #[test]
+    fn test_extract_context_files_skips_non_file_tools() {
+        use yoagent::types::*;
+
+        let messages = vec![AgentMessage::Llm(Message::Assistant {
+            content: vec![
+                Content::ToolCall {
+                    id: "1".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "ls"}),
+                    provider_metadata: None,
+                },
+                Content::ToolCall {
+                    id: "2".into(),
+                    name: "todo".into(),
+                    arguments: serde_json::json!({"action": "list"}),
+                    provider_metadata: None,
+                },
+            ],
+            stop_reason: StopReason::Stop,
+            model: "test".into(),
+            provider: "test".into(),
+            usage: Usage::default(),
+            timestamp: 0,
+            error_message: None,
+        })];
+
+        let result = extract_context_files(&messages);
+        assert!(result.is_empty(), "Non-file tools should be skipped");
+    }
+
+    #[test]
+    fn test_extract_context_files_search_without_path() {
+        use yoagent::types::*;
+
+        // search tool call with no path (searches cwd) — should not add empty path
+        let messages = vec![AgentMessage::Llm(Message::Assistant {
+            content: vec![Content::ToolCall {
+                id: "1".into(),
+                name: "search".into(),
+                arguments: serde_json::json!({"pattern": "TODO"}),
+                provider_metadata: None,
+            }],
+            stop_reason: StopReason::ToolUse,
+            model: "test".into(),
+            provider: "test".into(),
+            usage: Usage::default(),
+            timestamp: 0,
+            error_message: None,
+        })];
+
+        let result = extract_context_files(&messages);
+        // search without a path shouldn't produce an entry
+        assert!(
+            !result.contains_key(&FileAction::Searched),
+            "search without path should not create entry"
+        );
+    }
+
+    #[test]
+    fn test_file_action_labels_and_icons() {
+        assert_eq!(FileAction::Read.label(), "Read");
+        assert_eq!(FileAction::Edited.label(), "Edited");
+        assert_eq!(FileAction::Written.label(), "Written");
+        assert_eq!(FileAction::Listed.label(), "Listed");
+        assert_eq!(FileAction::Searched.label(), "Searched");
+
+        // Icons should be non-empty
+        assert!(!FileAction::Read.icon().is_empty());
+        assert!(!FileAction::Edited.icon().is_empty());
+        assert!(!FileAction::Written.icon().is_empty());
+        assert!(!FileAction::Listed.icon().is_empty());
+        assert!(!FileAction::Searched.icon().is_empty());
     }
 }
