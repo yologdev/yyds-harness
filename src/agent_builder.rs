@@ -1636,6 +1636,7 @@ mod tests {
         let response = PromptOutcome {
             text: "success".to_string(),
             last_tool_error: None,
+            last_tool_name: None,
             was_overflow: false,
             last_api_error: None,
         };
@@ -1654,6 +1655,7 @@ mod tests {
         let response = PromptOutcome {
             text: String::new(),
             last_tool_error: None,
+            last_tool_name: None,
             was_overflow: false,
             last_api_error: Some("503 Service Unavailable".to_string()),
         };
@@ -1676,6 +1678,7 @@ mod tests {
         let response = PromptOutcome {
             text: String::new(),
             last_tool_error: None,
+            last_tool_name: None,
             was_overflow: false,
             last_api_error: Some("529 Overloaded".to_string()),
         };

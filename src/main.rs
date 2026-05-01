@@ -761,6 +761,7 @@ mod tests {
         let response = PromptOutcome {
             text: "Hello, world!".to_string(),
             last_tool_error: None,
+            last_tool_name: None,
             was_overflow: false,
             last_api_error: None,
         };
@@ -792,6 +793,7 @@ mod tests {
         let response = PromptOutcome {
             text: "Something went wrong".to_string(),
             last_tool_error: None,
+            last_tool_name: None,
             was_overflow: false,
             last_api_error: Some("API error".to_string()),
         };

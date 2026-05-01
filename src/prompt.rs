@@ -38,6 +38,9 @@ pub struct PromptOutcome {
     /// The last tool error encountered during this prompt turn, if any.
     /// Tool errors are from `ToolExecutionEnd` events where `is_error` is true.
     pub last_tool_error: Option<String>,
+    /// The name of the tool that produced `last_tool_error`, if any.
+    /// Used to provide tool-specific recovery hints in auto-retry prompts.
+    pub last_tool_name: Option<String>,
     /// Whether this prompt triggered an auto-compact due to context overflow.
     /// Callers can use this to inform users or adjust behavior.
     pub was_overflow: bool,
@@ -80,17 +83,62 @@ pub const MAX_AUTO_RETRIES: u32 = 2;
 
 /// Build a prompt for automatic retry after a tool error.
 /// Includes the original input plus context about what went wrong,
-/// encouraging the agent to try a different approach.
-pub fn build_auto_retry_prompt(original_input: &str, tool_error: &str, attempt: u32) -> String {
+/// encouraging the agent to try a different approach. When `tool_name` is
+/// provided, the retry prompt names the specific tool and includes a
+/// tool-specific recovery hint so the agent can make informed retry decisions.
+pub fn build_auto_retry_prompt(
+    original_input: &str,
+    tool_error: &str,
+    tool_name: Option<&str>,
+    attempt: u32,
+) -> String {
     let summary = if tool_error.len() > 300 {
         format!("{}…", safe_truncate(tool_error, 300))
     } else {
         tool_error.to_string()
     };
-    format!(
-        "[Auto-retry {attempt}/{MAX_AUTO_RETRIES}: a tool failed with: {summary}. \
-         Try a different approach or fix the error.]\n\n{original_input}"
-    )
+    match tool_name {
+        Some(name) => {
+            let hint = tool_recovery_hint(name);
+            format!(
+                "[Auto-retry {attempt}/{MAX_AUTO_RETRIES}: {name} failed with: {summary}. \
+                 {hint}]\n\n{original_input}"
+            )
+        }
+        None => {
+            format!(
+                "[Auto-retry {attempt}/{MAX_AUTO_RETRIES}: a tool failed with: {summary}. \
+                 Try a different approach or fix the error.]\n\n{original_input}"
+            )
+        }
+    }
+}
+
+/// Return a tool-specific recovery hint for the given tool name.
+/// These hints guide the agent toward productive retry strategies instead of
+/// generic "try something different" advice.
+pub fn tool_recovery_hint(tool_name: &str) -> &'static str {
+    match tool_name {
+        "bash" => {
+            "The shell command failed. Check if the command exists, \
+             try a simpler version, or use a different approach."
+        }
+        "edit_file" => {
+            "The edit failed (likely old_text mismatch). Use read_file to see \
+             current contents, then retry with the exact text."
+        }
+        "write_file" => {
+            "The file write failed. Check that the path exists and you have \
+             the right permissions."
+        }
+        "read_file" => {
+            "The file read failed. Use list_files to verify the path, or \
+             search for the file."
+        }
+        "search" => "The search failed. Try a simpler pattern or check the path.",
+        "rename_symbol" => "The rename failed. Verify the symbol exists with search first.",
+        _ => "The tool call failed. Try a different approach.",
+    }
 }
 
 /// Known phrases that indicate context overflow across LLM providers.
@@ -566,6 +614,7 @@ enum PromptResult {
         collected_text: String,
         usage: Usage,
         last_tool_error: Option<String>,
+        last_tool_name: Option<String>,
     },
     /// A retriable API error was detected — caller should retry.
     RetriableError { error_msg: String, usage: Usage },
@@ -613,6 +662,7 @@ async fn handle_prompt_events(
     let mut retriable_error: Option<String> = None;
     let mut overflow_error: Option<String> = None;
     let mut last_tool_error: Option<String> = None;
+    let mut last_tool_name: Option<String> = None;
     let mut md_renderer = MarkdownRenderer::new();
     let mut spinner: Option<Spinner> = Some(Spinner::start());
 
@@ -763,10 +813,12 @@ async fn handle_prompt_events(
                             } else {
                                 last_tool_error = Some("tool execution failed".to_string());
                             }
+                            last_tool_name = Some(tool_name.clone());
                         } else {
                             // Successful tool clears the last error
                             batch_succeeded += 1;
                             last_tool_error = None;
+                            last_tool_name = None;
                             println!(" {GREEN}✓{RESET}{dur_str}");
                             // Warn when write_file writes 0 bytes (empty content)
                             if tool_name == "write_file" {
@@ -1021,6 +1073,7 @@ async fn handle_prompt_events(
                     collected_text,
                     usage,
                     last_tool_error,
+                    last_tool_name,
                 };
             }
         }
@@ -1057,6 +1110,7 @@ async fn handle_prompt_events(
             collected_text,
             usage,
             last_tool_error,
+            last_tool_name,
         }
     }
 }
@@ -1088,6 +1142,7 @@ pub async fn run_prompt_with_changes(
     let mut total_usage = Usage::default();
     let mut collected_text = String::new();
     let mut last_tool_error: Option<String> = None;
+    let mut last_tool_name: Option<String> = None;
     let mut did_overflow_compact = false;
     let mut api_error: Option<String> = None;
 
@@ -1107,6 +1162,7 @@ pub async fn run_prompt_with_changes(
                 collected_text: text,
                 usage,
                 last_tool_error: tool_err,
+                last_tool_name: tool_nm,
             } => {
                 total_usage.input += usage.input;
                 total_usage.output += usage.output;
@@ -1114,6 +1170,7 @@ pub async fn run_prompt_with_changes(
                 total_usage.cache_write += usage.cache_write;
                 collected_text = text;
                 last_tool_error = tool_err;
+                last_tool_name = tool_nm;
                 break;
             }
             PromptResult::RetriableError { error_msg, usage } => {
@@ -1178,6 +1235,7 @@ pub async fn run_prompt_with_changes(
                         collected_text: text,
                         usage: retry_usage,
                         last_tool_error: tool_err,
+                        last_tool_name: tool_nm,
                     } => {
                         total_usage.input += retry_usage.input;
                         total_usage.output += retry_usage.output;
@@ -1185,6 +1243,7 @@ pub async fn run_prompt_with_changes(
                         total_usage.cache_write += retry_usage.cache_write;
                         collected_text = text;
                         last_tool_error = tool_err;
+                        last_tool_name = tool_nm;
                     }
                     PromptResult::RetriableError {
                         error_msg: retry_err,
@@ -1231,6 +1290,7 @@ pub async fn run_prompt_with_changes(
     PromptOutcome {
         text: collected_text,
         last_tool_error,
+        last_tool_name,
         was_overflow: did_overflow_compact,
         last_api_error: api_error,
     }
@@ -1263,7 +1323,8 @@ pub async fn run_prompt_auto_retry(
                     );
                     break;
                 }
-                let retry_prompt = build_auto_retry_prompt(input, err, attempt);
+                let retry_prompt =
+                    build_auto_retry_prompt(input, err, outcome.last_tool_name.as_deref(), attempt);
                 eprintln!(
                     "{DIM}  ⚡ auto-retrying after tool error (attempt {attempt}/{MAX_AUTO_RETRIES})...{RESET}"
                 );
@@ -1324,7 +1385,12 @@ pub async fn run_prompt_auto_retry_with_content(
                 }
                 // Retry with a text-only follow-up — the original content blocks
                 // (files, images) are already in conversation history from the first attempt
-                let retry_prompt = build_auto_retry_prompt(original_text, err, attempt);
+                let retry_prompt = build_auto_retry_prompt(
+                    original_text,
+                    err,
+                    outcome.last_tool_name.as_deref(),
+                    attempt,
+                );
                 eprintln!(
                     "{DIM}  ⚡ auto-retrying after tool error (attempt {attempt}/{MAX_AUTO_RETRIES})...{RESET}"
                 );
@@ -1355,6 +1421,7 @@ pub async fn run_prompt_with_content_and_changes(
     let mut total_usage = Usage::default();
     let mut collected_text = String::new();
     let mut last_tool_error: Option<String> = None;
+    let mut last_tool_name: Option<String> = None;
     let mut api_error: Option<String> = None;
     let user_msg = AgentMessage::Llm(Message::User {
         content: content_blocks,
@@ -1377,6 +1444,7 @@ pub async fn run_prompt_with_content_and_changes(
                 collected_text: text,
                 usage,
                 last_tool_error: tool_err,
+                last_tool_name: tool_nm,
             } => {
                 total_usage.input += usage.input;
                 total_usage.output += usage.output;
@@ -1384,6 +1452,7 @@ pub async fn run_prompt_with_content_and_changes(
                 total_usage.cache_write += usage.cache_write;
                 collected_text = text;
                 last_tool_error = tool_err;
+                last_tool_name = tool_nm;
                 break;
             }
             PromptResult::RetriableError { error_msg, usage } => {
@@ -1448,6 +1517,7 @@ pub async fn run_prompt_with_content_and_changes(
     PromptOutcome {
         text: collected_text,
         last_tool_error,
+        last_tool_name,
         was_overflow: false,
         last_api_error: api_error,
     }
@@ -2155,6 +2225,7 @@ mod tests {
         let outcome = PromptOutcome {
             text: String::new(),
             last_tool_error: None,
+            last_tool_name: None,
             was_overflow: false,
             last_api_error: Some("503 Service Unavailable".to_string()),
         };
@@ -2166,9 +2237,114 @@ mod tests {
         let outcome_no_error = PromptOutcome {
             text: "hello".to_string(),
             last_tool_error: None,
+            last_tool_name: None,
             was_overflow: false,
             last_api_error: None,
         };
         assert!(outcome_no_error.last_api_error.is_none());
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_bash() {
+        let hint = tool_recovery_hint("bash");
+        assert!(hint.contains("shell command failed"), "bash hint: {hint}");
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_edit_file() {
+        let hint = tool_recovery_hint("edit_file");
+        assert!(hint.contains("edit failed"), "edit_file hint: {hint}");
+        assert!(
+            hint.contains("read_file"),
+            "edit_file hint should suggest read_file: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_unknown() {
+        let hint = tool_recovery_hint("some_unknown_tool");
+        assert!(
+            hint.contains("different approach"),
+            "unknown tool hint: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_known_tools() {
+        // All known tools should return specific (non-default) hints
+        for tool in &[
+            "bash",
+            "edit_file",
+            "write_file",
+            "read_file",
+            "search",
+            "rename_symbol",
+        ] {
+            let hint = tool_recovery_hint(tool);
+            assert!(
+                !hint.contains("The tool call failed"),
+                "{tool} should have a specific hint, got default: {hint}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_auto_retry_prompt_with_tool_name() {
+        let prompt = build_auto_retry_prompt("fix the bug", "file not found", Some("read_file"), 1);
+        assert!(
+            prompt.contains("read_file"),
+            "retry prompt should include tool name: {prompt}"
+        );
+        assert!(
+            prompt.contains("fix the bug"),
+            "retry prompt should include original input: {prompt}"
+        );
+        assert!(
+            prompt.contains("file not found"),
+            "retry prompt should include error summary: {prompt}"
+        );
+        // Should contain the recovery hint for read_file
+        assert!(
+            prompt.contains("list_files"),
+            "retry prompt should include read_file recovery hint: {prompt}"
+        );
+    }
+
+    #[test]
+    fn test_build_auto_retry_prompt_without_tool_name() {
+        let prompt = build_auto_retry_prompt("fix the bug", "something broke", None, 1);
+        assert!(
+            prompt.contains("a tool failed"),
+            "retry prompt without tool name should say 'a tool failed': {prompt}"
+        );
+        assert!(
+            prompt.contains("fix the bug"),
+            "retry prompt should include original input: {prompt}"
+        );
+        assert!(
+            prompt.contains("something broke"),
+            "retry prompt should include error summary: {prompt}"
+        );
+    }
+
+    #[test]
+    fn test_prompt_outcome_has_tool_name_field() {
+        let outcome = PromptOutcome {
+            text: String::new(),
+            last_tool_error: Some("file not found".to_string()),
+            last_tool_name: Some("read_file".to_string()),
+            was_overflow: false,
+            last_api_error: None,
+        };
+        assert_eq!(outcome.last_tool_name.as_deref(), Some("read_file"));
+
+        let outcome_none = PromptOutcome {
+            text: String::new(),
+            last_tool_error: None,
+            last_tool_name: None,
+            was_overflow: false,
+            last_api_error: None,
+        };
+        assert!(outcome_none.last_tool_name.is_none());
     }
 }
