@@ -43,6 +43,8 @@ mod commands_config;
 mod commands_dev;
 mod commands_file;
 mod commands_git;
+mod commands_git_review;
+mod commands_goal;
 mod commands_info;
 mod commands_lint;
 mod commands_map;

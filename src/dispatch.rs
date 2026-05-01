@@ -20,6 +20,7 @@ use yoagent::context::total_tokens;
 use yoagent::*;
 
 /// Result of dispatching a slash command in the REPL.
+#[derive(Debug)]
 pub(crate) enum CommandResult {
     /// Command handled, go to next prompt.
     Continue,
@@ -581,6 +582,7 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             commands::handle_git(ctx.input);
             CommandResult::Continue
         }
+        s if s == "/goal" || s.starts_with("/goal ") => commands::handle_goal(ctx.input),
         s if s == "/spawn" || s.starts_with("/spawn ") => {
             if let Some(context_msg) = commands::handle_spawn(
                 ctx.input,

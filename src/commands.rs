@@ -91,6 +91,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "/tree",
     "/pr",
     "/git",
+    "/goal",
     "/grep",
     "/test",
     "/lint",
@@ -167,6 +168,9 @@ pub const BG_SUBCOMMANDS: &[&str] = &["run", "list", "output", "kill"];
 /// Config subcommand names for `/config <Tab>` completion.
 pub const CONFIG_SUBCOMMANDS: &[&str] = &["show", "edit", "set", "get"];
 
+/// Subcommands for `/goal`.
+pub const GOAL_SUBCOMMANDS: &[&str] = &["set", "show", "clear", "check"];
+
 /// Return a hint string showing available arguments/subcommands for a command.
 ///
 /// Used by the hinter to display dim text after the user types a command + space.
@@ -178,6 +182,7 @@ pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
         "model" => Some("<model-name>"),
         "think" => Some("off | low | medium | high"),
         "git" => Some("status | log | add | diff | branch | stash"),
+        "goal" => Some("set | show | clear | check"),
         "pr" => Some("create | describe | status | diff"),
         "help" => Some("<command>"),
         "config" => Some("show | edit | set <key> <value> | get <key>"),
@@ -239,6 +244,7 @@ pub fn command_arg_completions(cmd: &str, partial_arg: &str) -> Vec<String> {
         "/model" => filter_candidates(KNOWN_MODELS, &partial_lower),
         "/think" => filter_candidates(THINKING_LEVELS, &partial_lower),
         "/git" => filter_candidates(GIT_SUBCOMMANDS, &partial_lower),
+        "/goal" => filter_candidates(GOAL_SUBCOMMANDS, &partial_lower),
         "/diff" => filter_candidates(DIFF_FLAGS, &partial_lower),
         "/pr" => filter_candidates(PR_SUBCOMMANDS, &partial_lower),
         "/provider" => filter_candidates(KNOWN_PROVIDERS, &partial_lower),
@@ -443,9 +449,11 @@ pub fn handle_provider_switch(
 // with `commands::handle_*` calls unchanged.
 
 // Git-related handlers
-pub use crate::commands_git::{
-    handle_blame, handle_commit, handle_diff, handle_git, handle_pr, handle_review, handle_undo,
-};
+pub use crate::commands_git::{handle_commit, handle_diff, handle_git, handle_pr, handle_undo};
+pub use crate::commands_goal::handle_goal;
+
+// Git review/blame handlers
+pub use crate::commands_git_review::{handle_blame, handle_review};
 
 // Project-related handlers
 pub use crate::commands_project::{

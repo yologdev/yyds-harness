@@ -347,6 +347,7 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 | `/loop <N\|until-pass> <prompt>` | Repeat a prompt in a polling loop |
 | `/forget <n>` | Remove a project memory by index |
 | `/git <subcmd>` | Quick git: status, log, add, diff, branch, stash |
+| `/goal [subcmd]` | Set, view, or check progress on a session goal (set/show/clear/check) |
 | `/health` | Run project health checks |
 | `/history` | Show conversation message summary |
 | `/hooks` | Show active hooks (pre/post tool execution) |
@@ -403,6 +404,7 @@ src/                    29 modules, ~43,000 lines of Rust
   commands_bg.rs        /bg — background process management (run, list, output, kill)
   commands_info.rs      /version, /status, /tokens, /cost, /changelog, /model, /provider, /think (read-only)
   commands_git.rs       /diff, /blame, /commit, /pr, /review, /git
+  commands_goal.rs      /goal — persistent session goals (set, show, clear, check)
   commands_project.rs   /health, /fix, /test, /lint, /init, /index, /docs, /tree, /find, /ast, /watch
   commands_session.rs   /save, /load, /compact, /tokens, /cost
   docs.rs               Crate documentation lookup

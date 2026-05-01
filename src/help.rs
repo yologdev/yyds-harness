@@ -687,6 +687,23 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /git log\n\
              \x20 /git stash list",
         ),
+        "goal" => Some(
+            "/goal — Set, view, or check progress on a session goal\n\n\
+             Usage:\n\
+             \x20 /goal              Show current goal\n\
+             \x20 /goal show         Show current goal\n\
+             \x20 /goal set <desc>   Set a new goal\n\
+             \x20 /goal clear        Remove current goal\n\
+             \x20 /goal check        Ask AI to evaluate progress\n\n\
+             Goals are stored in .yoyo/goal.md — human-readable, version-controllable.\n\
+             Persists across sessions so you can pick up where you left off.\n\n\
+             /goal check sends the goal to the AI, which reviews conversation history\n\
+             and project state to evaluate progress, remaining work, and next steps.\n\n\
+             Examples:\n\
+             \x20 /goal set Refactor auth module to use JWT\n\
+             \x20 /goal check\n\
+             \x20 /goal clear",
+        ),
         "test" => Some(
             "/test — Auto-detect and run project tests\n\n\
              Detects the project type and runs the appropriate test command:\n\
@@ -1253,6 +1270,10 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "  goal              Show or set a persistent session goal (e.g. yoyo goal show)"
+    );
+    let _ = writeln!(
+        s,
         "  memories          Show project memories (e.g. yoyo memories)"
     );
     let _ = writeln!(s);
@@ -1361,6 +1382,10 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(
         s,
         "    /init              Generate a YOYO.md project context file"
+    );
+    let _ = writeln!(
+        s,
+        "    /goal [subcmd]     Set, view, or check progress on a goal"
     );
     let _ = writeln!(s, "    /health            Run project health checks");
     let _ = writeln!(
@@ -1622,6 +1647,9 @@ pub fn help_text() -> String {
     out.push_str("  /context [system|tokens|files]  Show loaded project context files\n");
     out.push_str("  /doctor            Run environment diagnostics (git, API key, config, etc.)\n");
     out.push_str("  /init              Scan project and generate a YOYO.md context file\n");
+    out.push_str(
+        "  /goal [subcmd]     Set, view, or check progress on a session goal (set/show/clear/check)\n",
+    );
     out.push_str("  /health            Run project health checks (auto-detects project type)\n");
     out.push_str(
         "  /fix               Auto-fix build/lint errors (runs checks, sends failures to AI)\n",
@@ -1787,6 +1815,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "fix" => Some("Auto-fix build/lint errors"),
         "forget" => Some("Remove a saved memory"),
         "git" => Some("Quick git commands"),
+        "goal" => Some("Set, view, or check progress on a session goal"),
         "grep" => Some("Search file contents"),
         "health" => Some("Run project health checks"),
         "help" => Some("Show help for commands"),

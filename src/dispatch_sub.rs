@@ -158,9 +158,10 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 // so the user can see what would be sent to the model.
                 let input = quote_args_as_command(args);
                 let arg = input.strip_prefix("/review").unwrap_or("").trim();
-                match crate::commands_git::build_review_content(arg) {
+                match crate::commands_git_review::build_review_content(arg) {
                     Some((label, content)) => {
-                        let prompt = crate::commands_git::build_review_prompt(&label, &content);
+                        let prompt =
+                            crate::commands_git_review::build_review_prompt(&label, &content);
                         println!("{prompt}");
                     }
                     None => {
@@ -171,7 +172,7 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
             }
             "blame" => {
                 let input = quote_args_as_command(args);
-                crate::commands_git::handle_blame(&input);
+                crate::commands_git_review::handle_blame(&input);
                 return Some(None);
             }
             "grep" => {
@@ -291,6 +292,17 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 let input = quote_args_as_command(args);
                 let output = crate::commands_todo::handle_todo(&input);
                 println!("{output}");
+                return Some(None);
+            }
+            "goal" => {
+                let input = quote_args_as_command(args);
+                let result = crate::commands_goal::handle_goal(&input);
+                // /goal check sends to agent which requires a session — just print
+                // the goal info for shell usage.
+                if let crate::dispatch::CommandResult::SendToAgent(_) = result {
+                    eprintln!("{YELLOW}  /goal check requires an interactive session.{RESET}");
+                    eprintln!("{DIM}  Start yoyo and use: /goal check{RESET}\n");
+                }
                 return Some(None);
             }
             "memories" => {

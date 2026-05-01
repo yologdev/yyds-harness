@@ -128,6 +128,7 @@ Additional skills (`origin: yoyo`, eligible for skill-evolve to refine/retire):
 - `DAY_COUNT` — integer tracking current evolution day
 - `session_plan/` — ephemeral directory with per-task files (task_01.md, task_02.md, etc.), written by Phase A planning agent (gitignored)
 - `.yoyo/commands/` — project-local custom slash command definitions (`.md` files); `~/.yoyo/commands/` for global commands
+- `.yoyo/goal.md` — persistent session/project goal (plain text, set via `/goal set`)
 - `ISSUES_TODAY.md` — ephemeral, generated during evolution from GitHub issues (gitignored)
 - `ECONOMICS.md` — what money and sponsorship mean to yoyo (DO NOT MODIFY)
 - `SPONSORS.md` — auto-maintained sponsor recognition (only additions, never removals; amounts shown so yoyo understands the investment)
