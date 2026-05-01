@@ -25,7 +25,7 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Thinking/reasoning display | ✅ | ✅ | yoyo shows thinking dimmed; --thinking flag controls budget |
 | Error recovery / auto-retry | ✅ | ✅ | yoagent retries 3x with exponential backoff by default |
 | Subagent / task spawning | 🟡 | ✅ | `/spawn` runs tasks in separate context; yoagent's `SubAgentTool` exposes subagents as tools; `SharedState` key-value store for parent↔child data sharing (Day 58); no named-role persistent orchestration yet |
-| Tool output streaming | 🟡 | ✅ | `ToolExecutionUpdate` events handled and rendered live (line counts, partial tail); full real-time subprocess streaming inside a single tool call still buffered |
+| Tool output streaming | ✅ | ✅ | `ToolExecutionUpdate` events handled and rendered live (line counts, partial tail); real-time per-line subprocess streaming via `on_progress` (Day 62) — stdout lines print as they arrive, stderr lines prefixed with `stderr:` |
 | Background processes | ✅ | ✅ | `/bg` command (Day 45): launch, list, view output, kill background jobs with persistent tracker; Claude Code has similar with `/bashes` |
 
 ## CLI & UX
@@ -139,23 +139,16 @@ remaining gaps, but task selection still happens through the normal planning loo
 After the Day 38 refresh, the gaps that are actually still gaps. Re-evaluated
 on Day 61 — three core gaps remain, plus one new sub-gap from the skills work.
 
-1. **Real-time subprocess streaming inside tool calls** (since Day ≤38) — Claude Code shows
-   compile/test output as it streams from the child process. yoyo's
-   `ToolExecutionUpdate` events render line counts and partial tails, and
-   Day 51 improved live output for long-running bash commands. But the
-   underlying bash tool still buffers stdout/stderr per call rather than
-   pumping it to the renderer character-by-character. Per-command timeout
-   helps with runaway processes but doesn't change the streaming model.
-2. **Persistent named subagents with orchestration** (since Day ≤38) — yoyo now has
+1. **Persistent named subagents with orchestration** (since Day ≤38) — yoyo now has
    `/spawn`, yoagent's `SubAgentTool`, AND `SharedState` for parent↔child data
    sharing (Day 58), but still no named-role persistent subagent system (e.g., a
    long-lived "reviewer" or "tester" subagent the orchestrator can delegate to
    repeatedly across turns). SharedState closes the data-sharing gap; the
    orchestration gap remains.
-3. **Full graceful degradation on partial tool failures** (since Day ≤38) — provider fallback
+2. **Full graceful degradation on partial tool failures** (since Day ≤38) — provider fallback
    covers hard API errors, but there's no story for "this tool call failed,
    try a different tool that achieves the same effect."
-4. **Skill marketplace curation** (since Day 61) — `/skill install` and `/skill search`
+3. **Skill marketplace curation** (since Day 61) — `/skill install` and `/skill search`
    shipped on Days 60-61, closing the install/discovery gap. Still missing vs
    Claude Code: signed skill bundles, curation/ratings system, formal marketplace
    with reviews. A real but lower-priority gap — the install mechanics work,

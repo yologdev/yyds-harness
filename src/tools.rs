@@ -532,7 +532,7 @@ fn maybe_confirm(
 }
 
 // ---------------------------------------------------------------------------
-// StreamingBashTool — real-time subprocess output via on_update callbacks
+// StreamingBashTool — real-time subprocess output via on_update and on_progress callbacks
 // ---------------------------------------------------------------------------
 
 /// Execute shell commands with real-time streaming output.
@@ -542,6 +542,11 @@ fn maybe_confirm(
 /// calls `ctx.on_update()` periodically so the UI can display partial output
 /// as the command runs. This is the difference between staring at a blank screen
 /// during `cargo build` and watching compilation progress live.
+///
+/// Additionally, each individual line is emitted in real-time via `ctx.on_progress()`
+/// (when available and in interactive mode), producing `AgentEvent::ProgressMessage`
+/// events that the renderer displays immediately. Stderr lines are prefixed with
+/// `stderr: ` so the user can distinguish them from stdout.
 ///
 /// Streaming updates are sent every `update_interval` or every `lines_per_update`
 /// lines, whichever comes first.
@@ -560,6 +565,10 @@ pub struct StreamingBashTool {
     pub update_interval: Duration,
     /// Emit an update after this many new lines (even if interval hasn't elapsed)
     pub lines_per_update: usize,
+    /// When true (default), real-time progress via `on_progress` is only emitted
+    /// when stderr is a terminal (interactive mode). Set to false in tests to
+    /// allow progress emission regardless of TTY state.
+    pub progress_requires_tty: bool,
 }
 
 impl Default for StreamingBashTool {
@@ -578,6 +587,7 @@ impl Default for StreamingBashTool {
             confirm_fn: None,
             update_interval: Duration::from_millis(500),
             lines_per_update: 20,
+            progress_requires_tty: true,
         }
     }
 }
@@ -718,6 +728,7 @@ impl AgentTool for StreamingBashTool {
         let trunc_clone = Arc::clone(&truncated);
         let cancel_clone = cancel.clone();
         let ctx_clone = ctx.clone();
+        let emit_progress = !self.progress_requires_tty || crate::format::stderr_is_terminal();
 
         let reader_handle = tokio::spawn(async move {
             let stdout_reader = stdout.map(tokio::io::BufReader::new);
@@ -739,8 +750,8 @@ impl AgentTool for StreamingBashTool {
                     break;
                 }
 
-                // Read one line from whichever stream has data
-                let line = tokio::select! {
+                // Read one line from whichever stream has data, tracking its source
+                let line_info: Option<(String, bool)> = tokio::select! {
                     biased;
                     result = async {
                         match stdout_lines.as_mut() {
@@ -749,7 +760,7 @@ impl AgentTool for StreamingBashTool {
                         }
                     }, if !stdout_done => {
                         match result {
-                            Ok(Some(line)) => Some(line),
+                            Ok(Some(line)) => Some((line, false)),
                             Ok(None) => { stdout_done = true; None }
                             Err(_) => { stdout_done = true; None }
                         }
@@ -761,14 +772,14 @@ impl AgentTool for StreamingBashTool {
                         }
                     }, if !stderr_done => {
                         match result {
-                            Ok(Some(line)) => Some(line),
+                            Ok(Some(line)) => Some((line, true)),
                             Ok(None) => { stderr_done = true; None }
                             Err(_) => { stderr_done = true; None }
                         }
                     }
                 };
 
-                if let Some(line) = line {
+                if let Some((line, is_stderr)) = line_info {
                     let mut acc = acc_clone.lock().await;
                     if acc.len() < max_bytes {
                         if !acc.is_empty() {
@@ -784,6 +795,18 @@ impl AgentTool for StreamingBashTool {
                     }
                     lines_since_update += 1;
                     drop(acc);
+
+                    // Emit real-time progress for each line (interactive mode only)
+                    if emit_progress {
+                        if let Some(ref on_progress) = ctx_clone.on_progress {
+                            let progress_text = if is_stderr {
+                                format!("stderr: {line}")
+                            } else {
+                                line.clone()
+                            };
+                            on_progress(progress_text);
+                        }
+                    }
 
                     // Emit update if interval elapsed or enough lines accumulated
                     let elapsed = last_update.elapsed();
@@ -1716,6 +1739,14 @@ mod tests {
     fn test_tool_context(
         updates: Option<Arc<tokio::sync::Mutex<Vec<yoagent::types::ToolResult>>>>,
     ) -> yoagent::types::ToolContext {
+        test_tool_context_with_progress(updates, None)
+    }
+
+    /// Create a ToolContext for testing, with optional on_update and on_progress callbacks.
+    fn test_tool_context_with_progress(
+        updates: Option<Arc<tokio::sync::Mutex<Vec<yoagent::types::ToolResult>>>>,
+        progress: Option<Arc<tokio::sync::Mutex<Vec<String>>>>,
+    ) -> yoagent::types::ToolContext {
         let on_update: Option<yoagent::types::ToolUpdateFn> = updates.map(|u| {
             Arc::new(move |result: yoagent::types::ToolResult| {
                 // Use try_lock to avoid blocking in sync callback
@@ -1724,12 +1755,19 @@ mod tests {
                 }
             }) as yoagent::types::ToolUpdateFn
         });
+        let on_progress: Option<yoagent::types::ProgressFn> = progress.map(|p| {
+            Arc::new(move |text: String| {
+                if let Ok(mut guard) = p.try_lock() {
+                    guard.push(text);
+                }
+            }) as yoagent::types::ProgressFn
+        });
         yoagent::types::ToolContext {
             tool_call_id: "test-id".to_string(),
             tool_name: "bash".to_string(),
             cancel: tokio_util::sync::CancellationToken::new(),
             on_update,
-            on_progress: None,
+            on_progress,
         }
     }
 
@@ -1914,6 +1952,136 @@ mod tests {
             }
             _ => panic!("Expected text content"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_streaming_bash_progress_emits_each_line() {
+        let progress = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let tool = StreamingBashTool {
+            progress_requires_tty: false,
+            ..Default::default()
+        };
+        let ctx = test_tool_context_with_progress(None, Some(Arc::clone(&progress)));
+        let params = serde_json::json!({
+            "command": "echo alpha; echo beta; echo gamma"
+        });
+        let result = tool.execute(params, ctx).await.unwrap();
+        assert_eq!(result.details["exit_code"], 0);
+
+        let lines = progress.lock().await;
+        // Each stdout line should appear in progress
+        assert!(
+            lines.iter().any(|l| l.contains("alpha")),
+            "Progress should contain 'alpha', got: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("beta")),
+            "Progress should contain 'beta', got: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("gamma")),
+            "Progress should contain 'gamma', got: {lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_bash_progress_stderr_prefix() {
+        let progress = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let tool = StreamingBashTool {
+            progress_requires_tty: false,
+            ..Default::default()
+        };
+        let ctx = test_tool_context_with_progress(None, Some(Arc::clone(&progress)));
+        let params = serde_json::json!({
+            "command": "echo normal_out; echo err_line >&2"
+        });
+        let result = tool.execute(params, ctx).await.unwrap();
+        assert_eq!(result.details["exit_code"], 0);
+
+        let lines = progress.lock().await;
+        // stdout lines emitted as-is (no prefix)
+        let stdout_line = lines.iter().find(|l| l.contains("normal_out"));
+        assert!(
+            stdout_line.is_some(),
+            "Should have stdout progress line, got: {lines:?}"
+        );
+        assert!(
+            !stdout_line.unwrap().starts_with("stderr: "),
+            "Stdout lines should not have stderr prefix"
+        );
+        // stderr lines should have "stderr: " prefix
+        let stderr_line = lines.iter().find(|l| l.contains("err_line"));
+        assert!(
+            stderr_line.is_some(),
+            "Should have stderr progress line, got: {lines:?}"
+        );
+        assert!(
+            stderr_line.unwrap().starts_with("stderr: "),
+            "Stderr line should have 'stderr: ' prefix, got: {:?}",
+            stderr_line.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_bash_progress_complete_output_unchanged() {
+        // Verify that the final ToolResult still contains the full buffered output
+        // (on_progress doesn't affect the return value)
+        let progress = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let tool = StreamingBashTool {
+            progress_requires_tty: false,
+            ..Default::default()
+        };
+        let ctx = test_tool_context_with_progress(None, Some(Arc::clone(&progress)));
+        let params = serde_json::json!({
+            "command": "echo line1; echo line2; echo line3"
+        });
+        let result = tool.execute(params, ctx).await.unwrap();
+        match &result.content[0] {
+            yoagent::types::Content::Text { text } => {
+                assert!(text.contains("Exit code: 0"));
+                assert!(text.contains("line1"));
+                assert!(text.contains("line2"));
+                assert!(text.contains("line3"));
+            }
+            _ => panic!("Expected text content"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_streaming_bash_progress_with_timeout() {
+        // Verify timeout still works with on_progress set
+        let progress = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let tool = StreamingBashTool {
+            timeout: Duration::from_millis(200),
+            progress_requires_tty: false,
+            ..Default::default()
+        };
+        let ctx = test_tool_context_with_progress(None, Some(Arc::clone(&progress)));
+        let params = serde_json::json!({"command": "sleep 30"});
+        let result = tool.execute(params, ctx).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("timed out"),
+            "Expected timeout error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_bash_progress_with_cancellation() {
+        // Verify cancellation still works with on_progress set
+        let progress = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let tool = StreamingBashTool {
+            progress_requires_tty: false,
+            ..Default::default()
+        };
+        let ctx = test_tool_context_with_progress(None, Some(Arc::clone(&progress)));
+        let cancel = ctx.cancel.clone();
+
+        // Cancel immediately
+        cancel.cancel();
+        let params = serde_json::json!({"command": "sleep 30"});
+        let result = tool.execute(params, ctx).await;
+        assert!(result.is_err());
     }
 
     // ── rename_symbol tool tests ─────────────────────────────────────
