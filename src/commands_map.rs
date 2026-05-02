@@ -1,6 +1,7 @@
 //! Map command handler: /map — structural codebase understanding.
 
-use crate::commands_search::{is_ast_grep_available, is_binary_extension, list_project_files};
+use crate::commands_ast_grep::is_ast_grep_available;
+use crate::commands_search::{is_binary_extension, list_project_files};
 use crate::format::*;
 use regex::Regex;
 use std::path::Path;

@@ -257,7 +257,7 @@ pub fn command_arg_completions(cmd: &str, partial_arg: &str) -> Vec<String> {
         "/refactor" => filter_candidates(REFACTOR_SUBCOMMANDS, &partial_lower),
         "/watch" => filter_candidates(crate::commands_dev::WATCH_SUBCOMMANDS, &partial_lower),
         "/lint" => filter_candidates(crate::commands_lint::LINT_SUBCOMMANDS, &partial_lower),
-        "/ast" => filter_candidates(crate::commands_search::AST_GREP_FLAGS, &partial_lower),
+        "/ast" => filter_candidates(crate::commands_ast_grep::AST_GREP_FLAGS, &partial_lower),
         "/apply" => filter_candidates(crate::commands_file::APPLY_FLAGS, &partial_lower),
         "/context" => filter_candidates(
             crate::commands_project::context_subcommands(),
@@ -466,10 +466,9 @@ pub use crate::commands_todo::handle_todo;
 // Skill-related handlers
 pub use crate::commands_skill::handle_skill;
 
+pub use crate::commands_ast_grep::handle_ast_grep;
 pub use crate::commands_map::handle_map;
-pub use crate::commands_search::{
-    handle_ast_grep, handle_find, handle_grep, handle_index, handle_outline,
-};
+pub use crate::commands_search::{handle_find, handle_grep, handle_index, handle_outline};
 
 pub use crate::commands_dev::{
     handle_doctor, handle_fix, handle_health, handle_tree, handle_update, handle_watch,
