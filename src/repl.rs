@@ -10,6 +10,17 @@ use crate::git::*;
 use crate::prompt::*;
 use crate::AgentConfig;
 
+/// Configuration for the REPL session, bundling the positional arguments
+/// that don't need mutable borrow semantics.
+pub struct ReplConfig {
+    pub mcp_count: u32,
+    pub openapi_count: u32,
+    pub continue_session: bool,
+    pub update_available: Option<String>,
+    pub mcp_cli_servers: Vec<String>,
+    pub mcp_server_configs: Vec<McpServerConfig>,
+}
+
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -297,16 +308,10 @@ pub fn collect_multiline_rl(
 }
 
 /// Returns when the user exits (via /quit, /exit, Ctrl-D, etc.).
-#[allow(clippy::too_many_arguments)]
 pub async fn run_repl(
     agent_config: &mut AgentConfig,
     agent: &mut yoagent::agent::Agent,
-    mcp_count: u32,
-    openapi_count: u32,
-    continue_session: bool,
-    update_available: Option<String>,
-    mcp_cli_servers: Vec<String>,
-    mcp_server_configs: Vec<crate::cli::McpServerConfig>,
+    repl_config: ReplConfig,
 ) {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
@@ -329,11 +334,17 @@ pub async fn run_repl(
     if !agent_config.skills.is_empty() {
         println!("{DIM}  skills: {} loaded{RESET}", agent_config.skills.len());
     }
-    if mcp_count > 0 {
-        println!("{DIM}  mcp: {mcp_count} server(s) connected{RESET}");
+    if repl_config.mcp_count > 0 {
+        println!(
+            "{DIM}  mcp: {} server(s) connected{RESET}",
+            repl_config.mcp_count
+        );
     }
-    if openapi_count > 0 {
-        println!("{DIM}  openapi: {openapi_count} spec(s) loaded{RESET}");
+    if repl_config.openapi_count > 0 {
+        println!(
+            "{DIM}  openapi: {} spec(s) loaded{RESET}",
+            repl_config.openapi_count
+        );
     }
     if is_verbose() {
         println!("{DIM}  verbose: on{RESET}");
@@ -357,14 +368,14 @@ pub async fn run_repl(
     println!("{DIM}  cwd:   {cwd}{RESET}\n");
 
     // Show update notification if a newer version is available
-    if let Some(ref latest) = update_available {
+    if let Some(ref latest) = repl_config.update_available {
         println!(
             "  {YELLOW}⬆ Update available: v{latest} (you have v{VERSION}) — https://github.com/yologdev/yoyo-evolve/releases{RESET}\n"
         );
     }
 
     // Hint about previous session if one exists and --continue wasn't used
-    if !continue_session && commands::last_session_exists() {
+    if !repl_config.continue_session && commands::last_session_exists() {
         println!(
             "{DIM}  💡 Previous session found. Use {YELLOW}--continue{RESET}{DIM} or {YELLOW}/load .yoyo/last-session.json{RESET}{DIM} to resume.{RESET}\n"
         );
@@ -472,10 +483,10 @@ pub async fn run_repl(
             session_start,
             turn_count,
             cwd: &cwd,
-            mcp_cli_servers: &mcp_cli_servers,
-            mcp_server_configs: &mcp_server_configs,
-            mcp_count,
-            openapi_count,
+            mcp_cli_servers: &repl_config.mcp_cli_servers,
+            mcp_server_configs: &repl_config.mcp_server_configs,
+            mcp_count: repl_config.mcp_count,
+            openapi_count: repl_config.openapi_count,
         };
         let cmd_result = crate::dispatch::dispatch_command(&mut dispatch_ctx).await;
         match cmd_result {

@@ -571,12 +571,14 @@ async fn main() {
     repl::run_repl(
         &mut agent_config,
         &mut agent,
-        mcp_count,
-        openapi_count,
-        continue_session,
-        update_available,
-        mcp_servers,
-        mcp_server_configs,
+        repl::ReplConfig {
+            mcp_count,
+            openapi_count,
+            continue_session,
+            update_available,
+            mcp_cli_servers: mcp_servers,
+            mcp_server_configs,
+        },
     )
     .await;
 }
