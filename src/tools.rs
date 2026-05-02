@@ -1215,7 +1215,6 @@ pub(crate) fn build_sub_agent_tool(config: &AgentConfig) -> (SubAgentTool, Share
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands_refactor;
     use serial_test::serial;
     use std::time::Duration;
     use yoagent::ThinkingLevel;
@@ -1982,7 +1981,7 @@ mod tests {
 
     #[test]
     fn test_rename_result_struct() {
-        let result = commands_refactor::RenameResult {
+        let result = crate::commands_rename::RenameResult {
             files_changed: vec!["src/main.rs".to_string(), "src/lib.rs".to_string()],
             total_replacements: 5,
             preview: "preview text".to_string(),

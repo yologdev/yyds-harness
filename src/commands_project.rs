@@ -5,9 +5,9 @@ use crate::docs;
 use crate::format::*;
 
 // Re-export refactoring commands for backward compatibility
-pub use crate::commands_refactor::{
-    handle_extract, handle_move, handle_refactor, handle_rename, rename_in_project,
-};
+pub use crate::commands_move::handle_move;
+pub use crate::commands_refactor::{handle_extract, handle_refactor};
+pub use crate::commands_rename::{handle_rename, rename_in_project};
 
 use yoagent::agent::Agent;
 
