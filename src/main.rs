@@ -50,6 +50,7 @@ mod commands_info;
 mod commands_lint;
 mod commands_map;
 mod commands_memory;
+mod commands_plan;
 mod commands_project;
 mod commands_refactor;
 mod commands_retry;

@@ -68,7 +68,7 @@ pub fn handle_status(
     if let Some(arch_status) = crate::commands_config::architect_status(model) {
         println!("  mode:    {GREEN}{arch_status}{DIM}");
     }
-    if crate::commands_project::is_plan_mode() {
+    if crate::commands_plan::is_plan_mode() {
         println!("  mode:    {GREEN}plan{DIM}");
     }
     println!(

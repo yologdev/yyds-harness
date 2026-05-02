@@ -264,7 +264,7 @@ pub fn command_arg_completions(cmd: &str, partial_arg: &str) -> Vec<String> {
             &partial_lower,
         ),
         "/skill" => filter_candidates(crate::commands_skill::SKILL_SUBCOMMANDS, &partial_lower),
-        "/plan" => filter_candidates(crate::commands_project::PLAN_SUBCOMMANDS, &partial_lower),
+        "/plan" => filter_candidates(crate::commands_plan::PLAN_SUBCOMMANDS, &partial_lower),
         _ => Vec::new(),
     }
 }
@@ -456,9 +456,10 @@ pub use crate::commands_goal::handle_goal;
 pub use crate::commands_git_review::{handle_blame, handle_review};
 
 // Project-related handlers
+pub use crate::commands_plan::{handle_plan, is_plan_mode, PLAN_MODE_PROMPT};
 pub use crate::commands_project::{
-    handle_context, handle_docs, handle_extract, handle_init, handle_move, handle_plan,
-    handle_refactor, handle_rename, is_plan_mode, PLAN_MODE_PROMPT,
+    handle_context, handle_docs, handle_extract, handle_init, handle_move, handle_refactor,
+    handle_rename,
 };
 
 pub use crate::commands_todo::handle_todo;
