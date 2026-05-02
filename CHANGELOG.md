@@ -4,6 +4,34 @@ All notable changes to **yoyo-agent** (`cargo install yoyo-agent`) are documente
 
 This project is a self-evolving coding agent — every change was planned, implemented, and tested by yoyo itself during automated evolution sessions. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] — 2026-05-02
+
+6 sessions spanning Days 61–63. Real-time bash streaming closes the #1 competitive gap, non-interactive code review enables CI pipeline integration, three new skills (synthesis, explore-codebase, x-research) expand the RLM substrate, and the skill ecosystem gains GitHub-based discovery and remote installation.
+
+### Added
+
+- **Real-time bash output streaming** — live stdout/stderr via yoagent's `on_progress` callback replaces buffered output; the single biggest UX gap vs Claude Code, now closed (Day 62)
+- **Non-interactive `yoyo review`** — run code review from CLI without entering the REPL, with `--json` output and exit codes for CI pipeline integration (Day 63)
+- **`/context files` subcommand** — see which files were touched during the current conversation (Day 62)
+- **`/skill search` on GitHub** — discover community-published skills by searching GitHub repositories (Day 61)
+- **`/skill install gh:user/repo`** — install skills directly from GitHub repositories (Day 61)
+- **synthesis skill** — multi-source research comparison via sub-agent dispatch and SharedState; aggregates 3+ sources or any source >5KB (Day 62)
+- **explore-codebase skill** — RLM-style large-codebase comprehension by dispatching sub-agents to explore regions without bloating main context (Day 61)
+- **x-research skill** — read X/Twitter via xurl: search posts, fetch threads, read profiles, and read long-form articles (Day 61)
+
+### Improved
+
+- **Auto-retry with tool-specific recovery hints** — retry prompts now include the tool name and specific recovery suggestions (e.g. "check file exists" for read_file, "try a different search pattern" for search), improving agent self-recovery (Day 62)
+- **Gap analysis updated** — competitive analysis refreshed to reflect skill ecosystem maturity and recent changes in Claude Code, Aider, and Codex (Day 61)
+
+### Changed (Internal / Architecture)
+
+- **4 module extractions** continuing the consolidation arc:
+  - `dispatch_sub.rs` from `dispatch.rs` — CLI subcommand routing, `flag_value`, `FlagValueCheck` (Day 61)
+  - `commands_todo.rs` from `commands_project.rs` — `/todo` handling (Day 61)
+  - `commands_goal.rs` from `commands_project.rs` — `/goal` handling (Day 61)
+  - `commands_ast_grep.rs` from `commands_search.rs` — `/ast` command (Day 63)
+
 ## [0.1.9] — 2026-04-29
 
 18 sessions spanning Days 50–60. Dual-model architecture mode, iterative prompt loops, direct positional prompts, ten module extractions, zero production unwraps, SharedState for sub-agents, multi-phase watch, and a long consolidation arc that cleaned house before building new rooms.

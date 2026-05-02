@@ -758,15 +758,21 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /spawn refactor the error handling in src/lib.rs",
         ),
         "review" => Some(
-            "/review [path] — AI code review\n\n\
+            "/review [target] — AI code review\n\n\
              Usage:\n\
-             \x20 /review            Review staged/uncommitted changes\n\
-             \x20 /review <path>     Review a specific file\n\n\
+             \x20 /review                   Review staged/uncommitted changes\n\
+             \x20 /review <path>            Review a specific file\n\
+             \x20 /review HEAD~3..HEAD      Review a commit range\n\
+             \x20 /review --pr 42           Review a GitHub PR\n\n\
              Sends the diff or file to the AI for a code review, looking\n\
              for bugs, style issues, and improvement opportunities.\n\n\
+             Also works as a CLI subcommand (non-interactive):\n\
+             \x20 yoyo review               Review from the command line\n\
+             \x20 yoyo review HEAD~1 > r.md Pipe review to a file\n\n\
              Examples:\n\
              \x20 /review\n\
-             \x20 /review src/main.rs",
+             \x20 /review src/main.rs\n\
+             \x20 /review HEAD~3..HEAD",
         ),
         "mark" => Some(
             "/mark <name> — Bookmark current conversation state\n\n\
@@ -1212,7 +1218,7 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
-        "  review            Show review prompt for staged changes or a file"
+        "  review            AI code review (non-interactive, supports commit ranges and PRs)"
     );
     let _ = writeln!(
         s,
@@ -1364,7 +1370,7 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
-        "    /review [path]     AI code review of staged changes or a file"
+        "    /review [target]   AI code review (staged, file, range, or --pr N)"
     );
     let _ = writeln!(s);
     let _ = writeln!(s, "  Project:");
@@ -1628,9 +1634,7 @@ pub fn help_text() -> String {
     out.push_str(
         "                     /pr create [--draft] | /pr <n> diff | /pr <n> comment <text>\n",
     );
-    out.push_str(
-        "  /review [path]     AI code review: staged changes (default) or a specific file\n",
-    );
+    out.push_str("  /review [target]   AI code review: staged changes, file, range, or --pr N\n");
     out.push('\n');
 
     // ── Project ──

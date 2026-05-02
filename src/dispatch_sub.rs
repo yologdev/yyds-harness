@@ -153,22 +153,11 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 return Some(None);
             }
             "review" => {
-                // handle_review is async and needs an agent — for bare
-                // subcommand, gather the content and print the review prompt
-                // so the user can see what would be sent to the model.
-                let input = quote_args_as_command(args);
-                let arg = input.strip_prefix("/review").unwrap_or("").trim();
-                match crate::commands_git_review::build_review_content(arg) {
-                    Some((label, content)) => {
-                        let prompt =
-                            crate::commands_git_review::build_review_prompt(&label, &content);
-                        println!("{prompt}");
-                    }
-                    None => {
-                        // build_review_content already printed the error/status
-                    }
-                }
-                return Some(None);
+                // Non-interactive code review: build an agent, run the review
+                // prompt, print the result to stdout, and exit.
+                let review_arg = build_review_arg(args);
+                let exit_code = run_review_subcommand(args, &review_arg);
+                std::process::exit(exit_code);
             }
             "blame" => {
                 let input = quote_args_as_command(args);
@@ -381,6 +370,138 @@ pub(crate) fn require_flag_value<'a>(next: Option<&'a String>) -> FlagValueCheck
             } else {
                 FlagValueCheck::Ok(v.as_str())
             }
+        }
+    }
+}
+
+/// Build the review argument string from CLI args.
+///
+/// Handles `yoyo review`, `yoyo review HEAD~3..HEAD`, `yoyo review --pr 123`,
+/// and `yoyo review path/to/file.rs`.
+fn build_review_arg(args: &[String]) -> String {
+    // args[0] = binary, args[1] = "review", args[2..] = review arguments
+    if args.len() <= 2 {
+        return String::new();
+    }
+    // Preserve --pr as a single token with its argument
+    args[2..].join(" ")
+}
+
+/// Resolve API key from flags, env vars, and config file.
+/// Returns `Some(key)` or `None` if no key is available.
+fn resolve_api_key(args: &[String], provider: &str) -> Option<String> {
+    // --api-key flag
+    if let Some(key) = flag_value(args, &["--api-key"]) {
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+
+    // Provider-specific env var
+    if let Some(env_var) = crate::providers::provider_api_key_env(provider) {
+        if let Ok(key) = std::env::var(env_var) {
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+    }
+
+    // Fallback env vars
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+    if let Ok(key) = std::env::var("API_KEY") {
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+
+    // Config file
+    let (file_config, _) = load_config_file();
+    if let Some(key) = file_config.get("api_key") {
+        if !key.is_empty() {
+            return Some(key.clone());
+        }
+    }
+
+    None
+}
+
+/// Run the `yoyo review` subcommand — resolve config, build an agent,
+/// run the review, and print the result. Returns an exit code (0 or 1).
+fn run_review_subcommand(args: &[String], review_arg: &str) -> i32 {
+    let (file_config, _) = load_config_file();
+
+    let provider = flag_value(args, &["--provider"])
+        .or_else(|| file_config.get("provider").cloned())
+        .unwrap_or_else(|| "anthropic".into())
+        .to_lowercase();
+
+    let model = flag_value(args, &["--model"])
+        .or_else(|| file_config.get("model").cloned())
+        .unwrap_or_else(|| default_model_for_provider(&provider));
+
+    let api_key = match resolve_api_key(args, &provider) {
+        Some(key) => key,
+        None => {
+            let env_hint =
+                crate::providers::provider_api_key_env(&provider).unwrap_or("ANTHROPIC_API_KEY");
+            eprintln!(
+                "{RED}error:{RESET} No API key found.\n\
+                 Set {env_hint} env var, use --api-key <key>, or add api_key to .yoyo.toml."
+            );
+            return 1;
+        }
+    };
+
+    let base_url =
+        flag_value(args, &["--base-url"]).or_else(|| file_config.get("base_url").cloned());
+
+    let agent_config = crate::agent_builder::AgentConfig {
+        model,
+        api_key,
+        provider,
+        base_url,
+        skills: SkillSet::empty(),
+        system_prompt: String::new(),
+        thinking: yoagent::ThinkingLevel::Off,
+        max_tokens: None,
+        temperature: None,
+        max_turns: None,
+        auto_approve: true,
+        auto_commit: false,
+        permissions: crate::cli::PermissionConfig::default(),
+        dir_restrictions: crate::cli::DirectoryRestrictions::default(),
+        context_strategy: crate::cli::ContextStrategy::Compaction,
+        context_window: None,
+        shell_hooks: Vec::new(),
+        fallback_provider: None,
+        fallback_model: None,
+        auto_watch: false,
+    };
+
+    // We're inside a tokio runtime (called from parse_args in async main),
+    // so use block_in_place + block_on to run the async review.
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(
+            crate::commands_git_review::run_non_interactive_review(review_arg, &agent_config),
+        )
+    });
+
+    match result {
+        Ok(review_text) => {
+            // Print the clean review text to stdout (for piping)
+            println!("{review_text}");
+            0
+        }
+        Err(e) => {
+            // Error already printed to stderr by build_review_content
+            if e != "nothing to review" {
+                eprintln!("{RED}  review failed: {e}{RESET}");
+            }
+            1
         }
     }
 }
@@ -955,5 +1076,65 @@ mod tests {
             .map(String::from)
             .collect();
         assert_eq!(quote_args_as_command(&args), "/grep \"has\ttab\"");
+    }
+
+    #[test]
+    fn test_build_review_arg_empty() {
+        let args: Vec<String> = vec!["yoyo", "review"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(build_review_arg(&args), "");
+    }
+
+    #[test]
+    fn test_build_review_arg_commit_range() {
+        let args: Vec<String> = vec!["yoyo", "review", "HEAD~3..HEAD"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(build_review_arg(&args), "HEAD~3..HEAD");
+    }
+
+    #[test]
+    fn test_build_review_arg_pr_flag() {
+        let args: Vec<String> = vec!["yoyo", "review", "--pr", "123"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(build_review_arg(&args), "--pr 123");
+    }
+
+    #[test]
+    fn test_build_review_arg_file() {
+        let args: Vec<String> = vec!["yoyo", "review", "src/main.rs"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(build_review_arg(&args), "src/main.rs");
+    }
+
+    #[test]
+    fn test_resolve_api_key_from_env() {
+        // This tests the env var fallback chain — set a test var and verify
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-test-review");
+        let args: Vec<String> = vec!["yoyo".into(), "review".into()];
+        let key = resolve_api_key(&args, "anthropic");
+        assert_eq!(key, Some("sk-test-review".to_string()));
+        std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn test_resolve_api_key_flag_overrides_env() {
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-from-env");
+        let args: Vec<String> = vec![
+            "yoyo".into(),
+            "review".into(),
+            "--api-key".into(),
+            "sk-from-flag".into(),
+        ];
+        let key = resolve_api_key(&args, "anthropic");
+        assert_eq!(key, Some("sk-from-flag".to_string()));
+        std::env::remove_var("ANTHROPIC_API_KEY");
     }
 }

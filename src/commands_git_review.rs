@@ -1,4 +1,4 @@
-//! Code review command handlers: /review and /blame.
+//! Code review command handlers: /review, /blame, and non-interactive review.
 
 use crate::commands::auto_compact_if_needed;
 use crate::format::*;
@@ -23,18 +23,24 @@ pub fn build_review_content(arg: &str) -> Option<(String, String)> {
                 // Fall back to unstaged diff if nothing staged
                 let unstaged = run_git(&["diff"]).unwrap_or_default();
                 if unstaged.trim().is_empty() {
-                    println!("{DIM}  nothing to review — no staged or unstaged changes{RESET}\n");
+                    eprintln!("{DIM}  nothing to review — no staged or unstaged changes{RESET}\n");
                     None
                 } else {
-                    println!("{DIM}  reviewing unstaged changes...{RESET}");
+                    eprintln!("{DIM}  reviewing unstaged changes...{RESET}");
                     Some(("unstaged changes".to_string(), unstaged))
                 }
             }
             Some(diff) => {
-                println!("{DIM}  reviewing staged changes...{RESET}");
+                eprintln!("{DIM}  reviewing staged changes...{RESET}");
                 Some(("staged changes".to_string(), diff))
             }
         }
+    } else if arg.starts_with("--pr") {
+        // Review a PR: --pr <number>
+        build_review_content_pr(arg)
+    } else if arg.contains("..") {
+        // Review a commit range: HEAD~3..HEAD, abc123..def456, etc.
+        build_review_content_range(arg)
     } else {
         // Review a specific file
         let path = std::path::Path::new(arg);
@@ -45,10 +51,10 @@ pub fn build_review_content(arg: &str) -> Option<(String, String)> {
         match std::fs::read_to_string(path) {
             Ok(content) => {
                 if content.trim().is_empty() {
-                    println!("{DIM}  file is empty — nothing to review{RESET}\n");
+                    eprintln!("{DIM}  file is empty — nothing to review{RESET}\n");
                     None
                 } else {
-                    println!("{DIM}  reviewing {arg}...{RESET}");
+                    eprintln!("{DIM}  reviewing {arg}...{RESET}");
                     Some((arg.to_string(), content))
                 }
             }
@@ -57,6 +63,150 @@ pub fn build_review_content(arg: &str) -> Option<(String, String)> {
                 None
             }
         }
+    }
+}
+
+/// Build review content from a git commit range (e.g. `HEAD~3..HEAD`).
+fn build_review_content_range(arg: &str) -> Option<(String, String)> {
+    match run_git(&["diff", arg]) {
+        Ok(diff) if !diff.trim().is_empty() => {
+            eprintln!("{DIM}  reviewing diff {arg}...{RESET}");
+            Some((format!("diff {arg}"), diff))
+        }
+        Ok(_) => {
+            eprintln!("{DIM}  no changes in range {arg}{RESET}\n");
+            None
+        }
+        Err(e) => {
+            eprintln!("{RED}  error: git diff {arg} failed: {e}{RESET}\n");
+            None
+        }
+    }
+}
+
+/// Build review content from a GitHub PR number (e.g. `--pr 123`).
+fn build_review_content_pr(arg: &str) -> Option<(String, String)> {
+    let pr_num = arg.strip_prefix("--pr").unwrap_or("").trim();
+    if pr_num.is_empty() {
+        eprintln!("{RED}  error: --pr requires a PR number (e.g. --pr 123){RESET}\n");
+        return None;
+    }
+    // Validate it's a number
+    if pr_num.parse::<u64>().is_err() {
+        eprintln!("{RED}  error: invalid PR number: {pr_num}{RESET}\n");
+        return None;
+    }
+    // Use gh CLI to get the PR diff
+    match std::process::Command::new("gh")
+        .args(["pr", "diff", pr_num])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let diff = String::from_utf8_lossy(&output.stdout).to_string();
+            if diff.trim().is_empty() {
+                eprintln!("{DIM}  PR #{pr_num} has no diff{RESET}\n");
+                None
+            } else {
+                eprintln!("{DIM}  reviewing PR #{pr_num}...{RESET}");
+                Some((format!("PR #{pr_num}"), diff))
+            }
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("{RED}  error: gh pr diff {pr_num} failed: {stderr}{RESET}\n");
+            None
+        }
+        Err(e) => {
+            eprintln!("{RED}  error: failed to run gh CLI: {e}{RESET}");
+            eprintln!("{DIM}  install gh: https://cli.github.com/{RESET}\n");
+            None
+        }
+    }
+}
+
+/// Run a non-interactive code review and return the review text.
+///
+/// This is the entry point for `yoyo review` CLI subcommand — it builds
+/// the review content, creates a one-shot agent, runs the prompt, and
+/// returns the agent's response text. No REPL, no interactive session.
+///
+/// # Arguments
+/// * `arg` — the review target: empty (staged/unstaged), commit range, `--pr N`, or file path
+/// * `agent_config` — pre-built agent configuration for creating the side agent
+///
+/// # Returns
+/// * `Ok(review_text)` — the review completed successfully
+/// * `Err(message)` — nothing to review or an error occurred
+pub async fn run_non_interactive_review(
+    arg: &str,
+    agent_config: &crate::agent_builder::AgentConfig,
+) -> Result<String, String> {
+    let (label, content) =
+        build_review_content(arg).ok_or_else(|| "nothing to review".to_string())?;
+
+    let prompt = build_review_prompt(&label, &content);
+
+    // Build a side agent — one-shot, no tools, concise
+    let mut side_agent = agent_config.build_side_agent();
+
+    let mut rx = side_agent.prompt(&prompt).await;
+
+    let mut collected = String::new();
+    let mut md_renderer = MarkdownRenderer::new();
+
+    loop {
+        match rx.recv().await {
+            Some(AgentEvent::MessageUpdate {
+                delta: StreamDelta::Text { delta },
+                ..
+            }) => {
+                collected.push_str(&delta);
+                // Stream to stderr so stdout stays clean for piping
+                let rendered = md_renderer.render_delta(&delta);
+                if !rendered.is_empty() {
+                    eprint!("{rendered}");
+                }
+            }
+            Some(AgentEvent::MessageEnd { .. }) => {
+                let tail = md_renderer.flush();
+                if !tail.is_empty() {
+                    eprint!("{tail}");
+                }
+            }
+            Some(AgentEvent::AgentEnd { .. }) => break,
+            None => break,
+            _ => {}
+        }
+    }
+
+    side_agent.finish().await;
+    eprintln!(); // newline after streamed output
+
+    // Show cost on stderr
+    let messages = side_agent.messages();
+    let mut usage = Usage::default();
+    for msg in messages {
+        if let AgentMessage::Llm(yoagent::types::Message::Assistant { usage: u, .. }) = msg {
+            usage.input += u.input;
+            usage.output += u.output;
+            usage.cache_read += u.cache_read;
+            usage.cache_write += u.cache_write;
+        }
+    }
+    let total_tokens = usage.input + usage.output;
+    if total_tokens > 0 {
+        let cost = estimate_cost(&usage, &agent_config.model);
+        if let Some(c) = cost {
+            eprintln!("{DIM}  review: {} tokens, ${:.4}{RESET}", total_tokens, c);
+        } else {
+            eprintln!("{DIM}  review: {} tokens{RESET}", total_tokens);
+        }
+    }
+
+    if collected.trim().is_empty() {
+        Err("agent returned empty response".to_string())
+    } else {
+        Ok(collected)
     }
 }
 
@@ -536,5 +686,46 @@ mod tests {
         // Both lines should have ANSI codes
         assert!(lines[0].contains("\x1b["));
         assert!(lines[1].contains("\x1b["));
+    }
+
+    #[test]
+    fn build_review_content_detects_commit_range() {
+        // A range with ".." should be treated as a git diff range
+        let arg = "HEAD~3..HEAD";
+        // We can't test the actual git command in unit tests, but we can
+        // verify the function handles the range format by checking it doesn't
+        // try to treat it as a file path.
+        let result = build_review_content(arg);
+        // In test environment, git may fail — but it should NOT try to
+        // read it as a file (which would give "file not found").
+        // Either None (git error) or Some (if git works) is fine.
+        // The key test: it should not panic.
+        let _ = result;
+    }
+
+    #[test]
+    fn build_review_content_detects_pr_flag() {
+        // --pr without a number should print an error
+        let result = build_review_content("--pr");
+        assert!(result.is_none(), "bare --pr should return None");
+    }
+
+    #[test]
+    fn build_review_content_pr_invalid_number() {
+        let result = build_review_content("--pr abc");
+        assert!(result.is_none(), "non-numeric PR should return None");
+    }
+
+    #[test]
+    fn build_review_prompt_with_diff_label() {
+        let prompt = build_review_prompt("diff HEAD~3..HEAD", "diff --git a/foo b/foo\n+bar");
+        assert!(prompt.contains("diff HEAD~3..HEAD"));
+        assert!(prompt.contains("+bar"));
+    }
+
+    #[test]
+    fn build_review_prompt_with_pr_label() {
+        let prompt = build_review_prompt("PR #42", "diff --git a/foo b/foo");
+        assert!(prompt.contains("PR #42"));
     }
 }

@@ -20,7 +20,7 @@ All commands start with `/`. Type `/help` inside yoyo to see the full list.
 > | `yoyo run` | Run a shell command (e.g. `yoyo run cargo clippy`) |
 > | `yoyo diff` | Show git diff (e.g. `yoyo diff --staged`) |
 > | `yoyo commit` | Commit staged changes (e.g. `yoyo commit "fix typo"`) |
-> | `yoyo review` | Show review prompt for staged changes or a file |
+> | `yoyo review` | AI-powered code review (non-interactive, pipeable to files/CI) |
 > | `yoyo blame` | Show git blame (e.g. `yoyo blame src/main.rs:1-20`) |
 > | `yoyo grep` | Search files for a pattern (e.g. `yoyo grep TODO src/`) |
 > | `yoyo find` | Find files by name (e.g. `yoyo find main`) |
@@ -464,6 +464,8 @@ If you're running a development build (from `cargo build`), it will suggest usin
 |---------|-------------|
 | `/review` | AI-powered review of staged changes (falls back to unstaged if nothing staged) |
 | `/review <path>` | AI-powered review of a specific file |
+| `/review HEAD~3..HEAD` | Review a specific commit range |
+| `/review --pr 123` | Review a GitHub PR |
 
 The `/review` command sends your code to the AI for a thorough review covering:
 
@@ -478,6 +480,20 @@ The `/review` command sends your code to the AI for a thorough review covering:
 /review src/main.rs  # review a specific file
 /review Cargo.toml   # review any file
 ```
+
+### Non-interactive review (CLI subcommand)
+
+`yoyo review` also works as a CLI subcommand — no REPL or interactive session needed. This makes it usable in CI pipelines, git hooks, and scripts:
+
+```bash
+yoyo review                   # review staged/unstaged changes
+yoyo review HEAD~3..HEAD      # review a commit range
+yoyo review --pr 42           # review a GitHub PR
+yoyo review src/main.rs       # review a specific file
+yoyo review > review.md       # pipe review to a file
+```
+
+The review streams to stderr for visual feedback; the final review text goes to stdout so it can be piped or redirected. Exit code is 0 on success, 1 on error.
 
 This is one of the most common workflows for developers using coding agents — getting a second pair of eyes on your changes before committing.
 

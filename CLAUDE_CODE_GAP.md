@@ -1,7 +1,7 @@
 # Gap Analysis: yoyo vs Claude Code
 
-Last verified: Day 61 (2026-04-30)
-Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54, Day 59, Day 61
+Last verified: Day 63 (2026-05-02)
+Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54, Day 59, Day 61, Day 63
 
 This document tracks the feature gap between yoyo and Claude Code, used to inform
 development priorities when there are no community issues to address. It is a
@@ -102,7 +102,7 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Auto-fix lint errors | ✅ | ✅ | `/lint` auto-detects and runs linter; `/fix` sends failures to AI (Day 9+12) |
 | PR description generation | ✅ | ✅ | `/pr create [--draft]` generates AI-powered PR descriptions |
 | Commit message generation | ✅ | ✅ | `/commit` with heuristic-based message generation from staged diff (Day 8) |
-| Code review | ✅ | ✅ | `/review` provides AI-powered code review of staged/unstaged changes (Day 13) |
+| Code review | ✅ | ✅ | `/review` provides AI-powered code review of staged/unstaged changes (Day 13); `yoyo review` works non-interactively for CI pipelines — supports commit ranges (`HEAD~3..HEAD`) and PR review (`--pr 42`) (Day 63) |
 | Multi-file refactoring | ✅ | ✅ | `/refactor` umbrella command (rename, extract, move); `rename_symbol` agent tool for cross-project renames (Day 23) |
 | Architect mode | ✅ | ✅ | `/architect` dual-model mode — cheap model plans, expensive model edits; inspired by Aider's architect mode (Day 59) |
 | Iterative prompt loop | ✅ | ❌ | `/loop <N|until-pass> <prompt>` runs a prompt repeatedly, useful for iterative refinement (Day 59) |
@@ -357,3 +357,4 @@ These were listed as gaps on Day 24 but have shipped since:
 - x-research skill (X/Twitter reading via xurl)
 - explore-codebase RLM skill (sub-agent codebase comprehension)
 - CHANGELOG generation
+- Non-interactive `yoyo review` for CI pipelines (commit ranges, PR review)
