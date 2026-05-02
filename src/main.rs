@@ -74,6 +74,7 @@ mod prompt;
 mod prompt_budget;
 mod providers;
 mod repl;
+mod rtk;
 mod safety;
 mod session;
 mod setup;
@@ -385,7 +386,7 @@ fn apply_cli_flags(args: &[String]) {
             .map(|v| v == "1")
             .unwrap_or(false)
     {
-        tools::disable_rtk();
+        rtk::disable_rtk();
     }
 }
 

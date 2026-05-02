@@ -559,8 +559,8 @@ pub fn run_doctor_checks(provider: &str, model: &str) -> Vec<DoctorCheck> {
 
     // 11. RTK (Rust Token Killer) — optional tool output compression
     {
-        let rtk_available = crate::tools::detect_rtk();
-        let rtk_disabled = crate::tools::is_rtk_disabled();
+        let rtk_available = crate::rtk::detect_rtk();
+        let rtk_disabled = crate::rtk::is_rtk_disabled();
         if rtk_available && !rtk_disabled {
             checks.push(DoctorCheck {
                 name: "RTK".to_string(),
