@@ -646,6 +646,420 @@ async fn run_prompt_once_with_messages(
     handle_prompt_events(agent, rx, changes, model).await
 }
 
+/// Internal state for the prompt event-handling loop.
+/// Bundles the 15+ local variables that were previously declared inline.
+struct PromptEventState {
+    usage: Usage,
+    in_text: bool,
+    in_thinking: bool,
+    tool_timers: HashMap<String, Instant>,
+    collected_text: String,
+    retriable_error: Option<String>,
+    overflow_error: Option<String>,
+    last_tool_error: Option<String>,
+    last_tool_name: Option<String>,
+    md_renderer: MarkdownRenderer,
+    spinner: Option<Spinner>,
+    think_filter: ThinkBlockFilter,
+    /// Audit log: track in-flight tool calls (name + args) so we can log at completion
+    audit_inflight: HashMap<String, (String, serde_json::Value)>,
+    /// Live progress timers for long-running tools (bash)
+    tool_progress_timers: HashMap<String, ToolProgressTimer>,
+    /// Bash tool call IDs that need deferred timer start.
+    /// Maps tool_call_id → optional command string for display label.
+    deferred_bash_timers: HashMap<String, Option<String>>,
+    /// Tool batch tracking for group summaries
+    batch_count: usize,
+    batch_succeeded: usize,
+    batch_failed: usize,
+    batch_start: Option<Instant>,
+    /// Turn tracking for boundary markers
+    turn_number: usize,
+    /// Whether we've seen text output in this prompt
+    had_text: bool,
+}
+
+impl PromptEventState {
+    fn new() -> Self {
+        Self {
+            usage: Usage::default(),
+            in_text: false,
+            in_thinking: false,
+            tool_timers: HashMap::new(),
+            collected_text: String::new(),
+            retriable_error: None,
+            overflow_error: None,
+            last_tool_error: None,
+            last_tool_name: None,
+            md_renderer: MarkdownRenderer::new(),
+            spinner: Some(Spinner::start()),
+            think_filter: ThinkBlockFilter::new(),
+            audit_inflight: HashMap::new(),
+            tool_progress_timers: HashMap::new(),
+            deferred_bash_timers: HashMap::new(),
+            batch_count: 0,
+            batch_succeeded: 0,
+            batch_failed: 0,
+            batch_start: None,
+            turn_number: 0,
+            had_text: false,
+        }
+    }
+
+    /// Handle a ToolExecutionStart event: track file changes, display tool info,
+    /// manage batch state, and set up deferred timers.
+    fn handle_tool_execution_start(
+        &mut self,
+        tool_call_id: String,
+        tool_name: String,
+        args: serde_json::Value,
+        changes: &SessionChanges,
+    ) {
+        // Track file modifications from write_file and edit_file
+        match tool_name.as_str() {
+            "write_file" => {
+                if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                    changes.record(path, ChangeKind::Write);
+                }
+            }
+            "edit_file" => {
+                if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                    changes.record(path, ChangeKind::Edit);
+                }
+            }
+            _ => {}
+        }
+        // Stop spinner on first activity
+        if let Some(s) = self.spinner.take() {
+            s.stop();
+        }
+
+        // Show turn boundary when transitioning from text to a new tool batch
+        if self.in_text {
+            println!();
+            self.in_text = false;
+        }
+
+        // New batch starting (first tool after text or start)
+        if self.batch_count == 0 {
+            if self.batch_start.is_none() {
+                self.batch_start = Some(Instant::now());
+            }
+            // Show turn boundary for multi-turn (turn 2+)
+            if self.turn_number > 1 && self.had_text {
+                println!("{}", turn_boundary(self.turn_number));
+            }
+        }
+
+        self.batch_count += 1;
+        self.tool_timers
+            .insert(tool_call_id.clone(), Instant::now());
+        // Track for audit log
+        self.audit_inflight
+            .insert(tool_call_id.clone(), (tool_name.clone(), args.clone()));
+        let summary = format_tool_summary(&tool_name, &args);
+        if tool_name == "sub_agent" {
+            // Distinctive header for sub-agent delegation
+            eprintln!("\n{DIM}  🐙 Delegating to sub-agent...{RESET}");
+        }
+        print!("{YELLOW}  ▶ {summary}{RESET}");
+        if is_verbose() {
+            println!();
+            let args_str = serde_json::to_string_pretty(&args).unwrap_or_default();
+            for line in args_str.lines() {
+                println!("{DIM}    │ {line}{RESET}");
+            }
+        } else if tool_name == "edit_file" {
+            // Show colored diff for edit_file when not in verbose mode
+            let old_text = args.get("old_text").and_then(|v| v.as_str()).unwrap_or("");
+            let new_text = args.get("new_text").and_then(|v| v.as_str()).unwrap_or("");
+            let diff = format_edit_diff(old_text, new_text);
+            if !diff.is_empty() {
+                println!();
+                println!("{diff}");
+            }
+        }
+        io::stdout().flush().ok();
+
+        // Defer timer start for bash commands — the confirmation
+        // prompt would be overwritten by the spinner. The timer
+        // will start on the first ToolExecutionUpdate instead.
+        if tool_name == "bash" {
+            let cmd_label = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            self.deferred_bash_timers
+                .insert(tool_call_id.clone(), cmd_label);
+        }
+    }
+
+    /// Handle a ToolExecutionEnd event: stop timers, log audit data,
+    /// display success/failure status, track errors.
+    fn handle_tool_execution_end(
+        &mut self,
+        tool_call_id: String,
+        tool_name: String,
+        is_error: bool,
+        result: ToolResult,
+    ) {
+        // Clean up deferred timer entry if command was denied before running
+        self.deferred_bash_timers.remove(&tool_call_id);
+        // Stop any live progress timer for this tool
+        if let Some(timer) = self.tool_progress_timers.remove(&tool_call_id) {
+            timer.stop();
+        }
+        let elapsed = self
+            .tool_timers
+            .remove(&tool_call_id)
+            .map(|start| start.elapsed());
+        let dur_str = elapsed
+            .map(|d| format!(" {DIM}({}){RESET}", format_duration(d)))
+            .unwrap_or_default();
+
+        // Audit log: record the completed tool call
+        if let Some((audit_tool, audit_args)) = self.audit_inflight.remove(&tool_call_id) {
+            let duration_ms = elapsed.map(|d| d.as_millis() as u64).unwrap_or(0);
+            audit_log_tool_call(&audit_tool, &audit_args, duration_ms, !is_error);
+        }
+
+        if is_error {
+            self.batch_failed += 1;
+            println!(" {RED}✗{RESET}{dur_str}");
+            let preview = tool_result_preview(&result, 200);
+            if !preview.is_empty() {
+                // Indent error output under the tool header
+                println!("{}", indent_tool_output(&preview));
+            }
+            // Track the last tool error for /retry context
+            let error_text = tool_result_preview(&result, 200);
+            if !error_text.is_empty() {
+                self.last_tool_error = Some(error_text);
+            } else {
+                self.last_tool_error = Some("tool execution failed".to_string());
+            }
+            self.last_tool_name = Some(tool_name.clone());
+        } else {
+            // Successful tool clears the last error
+            self.batch_succeeded += 1;
+            self.last_tool_error = None;
+            self.last_tool_name = None;
+            println!(" {GREEN}✓{RESET}{dur_str}");
+            // Warn when write_file writes 0 bytes (empty content)
+            if tool_name == "write_file" {
+                let wrote_zero = result
+                    .details
+                    .get("bytes")
+                    .and_then(|v| v.as_u64())
+                    .map(|b| b == 0)
+                    .unwrap_or(false);
+                if wrote_zero {
+                    eprintln!("{YELLOW}    ⚠ write_file wrote 0 bytes — file is now empty{RESET}");
+                }
+            }
+            if is_verbose() {
+                let preview = tool_result_preview(&result, 200);
+                if !preview.is_empty() {
+                    // Indent verbose output under the tool header
+                    println!("{}", indent_tool_output(&preview));
+                }
+            }
+        }
+    }
+
+    /// Handle a ToolExecutionUpdate event: start deferred timers,
+    /// update progress, show partial output in terminal mode.
+    fn handle_tool_execution_update(&mut self, tool_call_id: String, partial_result: ToolResult) {
+        // Start deferred bash timer on first update.
+        // This means the command is actually running (confirmation
+        // has already been resolved), so the spinner won't
+        // overwrite the permission prompt.
+        if let Some(cmd_label) = self.deferred_bash_timers.remove(&tool_call_id) {
+            let timer = ToolProgressTimer::start("bash".to_string());
+            if let Some(label) = cmd_label {
+                timer.set_label(label);
+            }
+            self.tool_progress_timers
+                .insert(tool_call_id.clone(), timer);
+        }
+
+        // Update line count on the progress timer if active
+        let line_count = count_result_lines(&partial_result);
+        if let Some(timer) = self.tool_progress_timers.get(&tool_call_id) {
+            timer.set_line_count(line_count);
+        }
+
+        // Only show partial output in interactive (terminal) mode.
+        // In piped/CI mode, cursor-up sequences don't work and every
+        // partial update becomes a permanent log line, inflating output.
+        if io::stdout().is_terminal() {
+            let text = extract_result_text(&partial_result);
+            if !text.is_empty() {
+                let tail = format_partial_tail(&text, 6);
+                if !tail.is_empty() {
+                    println!();
+                    println!("{tail}");
+                    io::stdout().flush().ok();
+                }
+            }
+        }
+    }
+
+    /// Handle a MessageUpdate with text delta: manage spinner, batch summaries,
+    /// think-block filtering, markdown rendering, and text collection.
+    fn handle_message_update_text(&mut self, delta: &str) {
+        // Stop spinner on first text
+        if let Some(s) = self.spinner.take() {
+            s.stop();
+        }
+        // Transition from thinking to text: add a divider
+        // so text doesn't appear glued to the last thinking output
+        if self.in_thinking {
+            eprintln!();
+            eprintln!("{}", section_divider());
+            let _ = io::stderr().flush();
+            self.in_thinking = false;
+        }
+
+        // Print batch summary if we just finished a tool batch
+        if self.batch_count > 0 {
+            self.print_batch_summary();
+        }
+
+        if !self.in_text {
+            println!();
+            self.in_text = true;
+            self.had_text = true;
+        }
+        // Filter <think>...</think> blocks unless verbose mode
+        let filtered = if is_verbose() {
+            delta.to_string()
+        } else {
+            self.think_filter.filter(delta)
+        };
+        if filtered.is_empty() {
+            // Inside a think block — nothing to render yet
+            io::stdout().flush().ok();
+            return;
+        }
+        // Render and display BEFORE collecting — minimizes time-to-screen.
+        // collected_text is only used after the stream ends, so ordering
+        // with print doesn't affect correctness. (render_latency_budget)
+        let rendered = self.md_renderer.render_delta(&filtered);
+        if !rendered.is_empty() {
+            print!("{}", rendered);
+        }
+        io::stdout().flush().ok();
+        self.collected_text.push_str(&filtered);
+    }
+
+    /// Handle an AgentEnd event: flush filters, print batch summary,
+    /// accumulate usage, detect errors.
+    fn handle_agent_end(&mut self, messages: Vec<AgentMessage>, model: &str) {
+        // Stop spinner if still running
+        if let Some(s) = self.spinner.take() {
+            s.stop();
+        }
+
+        // Flush think block filter — emit any partial non-think text
+        let remaining = self.think_filter.flush();
+        if !remaining.is_empty() {
+            let rendered = self.md_renderer.render_delta(&remaining);
+            if !rendered.is_empty() {
+                print!("{rendered}");
+                io::stdout().flush().ok();
+            }
+            self.collected_text.push_str(&remaining);
+        }
+
+        // Print batch summary if tools were the last thing before end
+        if self.batch_count > 0 {
+            self.print_batch_summary();
+        }
+
+        for msg in &messages {
+            if let AgentMessage::Llm(Message::Assistant {
+                usage: msg_usage,
+                stop_reason,
+                error_message,
+                ..
+            }) = msg
+            {
+                self.usage.input += msg_usage.input;
+                self.usage.output += msg_usage.output;
+                self.usage.cache_read += msg_usage.cache_read;
+                self.usage.cache_write += msg_usage.cache_write;
+
+                if *stop_reason == StopReason::Error {
+                    if let Some(err_msg) = error_message {
+                        if self.in_text {
+                            println!();
+                            self.in_text = false;
+                        }
+                        // Check for context overflow first — needs special handling
+                        if is_overflow_error(err_msg) {
+                            self.overflow_error = Some(err_msg.clone());
+                        } else if is_retriable_error(err_msg) {
+                            // Check if this error is worth retrying
+                            self.retriable_error = Some(err_msg.clone());
+                        } else {
+                            eprintln!("\n{RED}  error: {err_msg}{RESET}");
+                            // Show diagnostic help for common errors
+                            if let Some(diagnostic) = diagnose_api_error(err_msg, model) {
+                                eprintln!(
+                                    "{YELLOW}  💡 {}{RESET}",
+                                    diagnostic.replace('\n', &format!("\n{YELLOW}     {RESET}"))
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Print and reset the tool batch summary.
+    fn print_batch_summary(&mut self) {
+        let batch_duration = self.batch_start.map(|s| s.elapsed()).unwrap_or_default();
+        let summary = format_tool_batch_summary(
+            self.batch_count,
+            self.batch_succeeded,
+            self.batch_failed,
+            batch_duration,
+        );
+        if !summary.is_empty() {
+            println!("{summary}");
+        }
+        // Reset batch tracking
+        self.batch_count = 0;
+        self.batch_succeeded = 0;
+        self.batch_failed = 0;
+        self.batch_start = None;
+    }
+
+    /// Consume state and produce the final PromptResult.
+    fn into_result(self) -> PromptResult {
+        if let Some(err_msg) = self.overflow_error {
+            PromptResult::ContextOverflow {
+                error_msg: err_msg,
+                usage: self.usage,
+            }
+        } else if let Some(err_msg) = self.retriable_error {
+            PromptResult::RetriableError {
+                error_msg: err_msg,
+                usage: self.usage,
+            }
+        } else {
+            PromptResult::Done {
+                collected_text: self.collected_text,
+                usage: self.usage,
+                last_tool_error: self.last_tool_error,
+                last_tool_name: self.last_tool_name,
+            }
+        }
+    }
+}
+
 /// Shared event-handling loop for prompt execution.
 /// Processes all events from the agent's streaming channel and returns the result.
 async fn handle_prompt_events(
@@ -654,44 +1068,7 @@ async fn handle_prompt_events(
     changes: &SessionChanges,
     model: &str,
 ) -> PromptResult {
-    let mut usage = Usage::default();
-    let mut in_text = false;
-    let mut in_thinking = false;
-    let mut tool_timers: HashMap<String, Instant> = HashMap::new();
-    let mut collected_text = String::new();
-    let mut retriable_error: Option<String> = None;
-    let mut overflow_error: Option<String> = None;
-    let mut last_tool_error: Option<String> = None;
-    let mut last_tool_name: Option<String> = None;
-    let mut md_renderer = MarkdownRenderer::new();
-    let mut spinner: Option<Spinner> = Some(Spinner::start());
-
-    // Filter for <think>...</think> blocks that leak into text output
-    let mut think_filter = ThinkBlockFilter::new();
-
-    // Audit log: track in-flight tool calls (name + args) so we can log at completion
-    let mut audit_inflight: HashMap<String, (String, serde_json::Value)> = HashMap::new();
-
-    // Live progress timers for long-running tools (bash)
-    let mut tool_progress_timers: HashMap<String, ToolProgressTimer> = HashMap::new();
-
-    // Bash tool call IDs that need deferred timer start.
-    // We don't start the timer on ToolExecutionStart for bash because the
-    // confirmation prompt would be overwritten by the spinner. Instead we
-    // defer to the first ToolExecutionUpdate (which only fires once the
-    // command is actually running, i.e. after confirmation).
-    // Maps tool_call_id → optional command string for display label.
-    let mut deferred_bash_timers: HashMap<String, Option<String>> = HashMap::new();
-
-    // Tool batch tracking for group summaries
-    let mut batch_count: usize = 0;
-    let mut batch_succeeded: usize = 0;
-    let mut batch_failed: usize = 0;
-    let mut batch_start: Option<Instant> = None;
-
-    // Turn tracking for boundary markers
-    let mut turn_number: usize = 0;
-    let mut had_text = false; // whether we've seen text output in this prompt
+    let mut state = PromptEventState::new();
 
     loop {
         tokio::select! {
@@ -701,255 +1078,30 @@ async fn handle_prompt_events(
                     AgentEvent::ToolExecutionStart {
                         tool_call_id, tool_name, args, ..
                     } => {
-                        // Track file modifications from write_file and edit_file
-                        match tool_name.as_str() {
-                            "write_file" => {
-                                if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
-                                    changes.record(path, ChangeKind::Write);
-                                }
-                            }
-                            "edit_file" => {
-                                if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
-                                    changes.record(path, ChangeKind::Edit);
-                                }
-                            }
-                            _ => {}
-                        }
-                        // Stop spinner on first activity
-                        if let Some(s) = spinner.take() { s.stop(); }
-
-                        // Show turn boundary when transitioning from text to a new tool batch
-                        if in_text {
-                            println!();
-                            in_text = false;
-                        }
-
-                        // New batch starting (first tool after text or start)
-                        if batch_count == 0 {
-                            if batch_start.is_none() {
-                                batch_start = Some(Instant::now());
-                            }
-                            // Show turn boundary for multi-turn (turn 2+)
-                            if turn_number > 1 && had_text {
-                                println!("{}", turn_boundary(turn_number));
-                            }
-                        }
-
-                        batch_count += 1;
-                        tool_timers.insert(tool_call_id.clone(), Instant::now());
-                        // Track for audit log
-                        audit_inflight.insert(
-                            tool_call_id.clone(),
-                            (tool_name.clone(), args.clone()),
-                        );
-                        let summary = format_tool_summary(&tool_name, &args);
-                        if tool_name == "sub_agent" {
-                            // Distinctive header for sub-agent delegation
-                            eprintln!("\n{DIM}  🐙 Delegating to sub-agent...{RESET}");
-                        }
-                        print!("{YELLOW}  ▶ {summary}{RESET}");
-                        if is_verbose() {
-                            println!();
-                            let args_str = serde_json::to_string_pretty(&args).unwrap_or_default();
-                            for line in args_str.lines() {
-                                println!("{DIM}    │ {line}{RESET}");
-                            }
-                        } else if tool_name == "edit_file" {
-                            // Show colored diff for edit_file when not in verbose mode
-                            let old_text = args.get("old_text").and_then(|v| v.as_str()).unwrap_or("");
-                            let new_text = args.get("new_text").and_then(|v| v.as_str()).unwrap_or("");
-                            let diff = format_edit_diff(old_text, new_text);
-                            if !diff.is_empty() {
-                                println!();
-                                println!("{diff}");
-                            }
-                        }
-                        io::stdout().flush().ok();
-
-                        // Defer timer start for bash commands — the confirmation
-                        // prompt would be overwritten by the spinner. The timer
-                        // will start on the first ToolExecutionUpdate instead.
-                        // Store the command string for display as a label.
-                        if tool_name == "bash" {
-                            let cmd_label = args
-                                .get("command")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
-                            deferred_bash_timers.insert(tool_call_id.clone(), cmd_label);
-                        }
+                        state.handle_tool_execution_start(tool_call_id, tool_name, args, changes);
                     }
                     AgentEvent::ToolExecutionEnd { tool_call_id, is_error, result, tool_name, .. } => {
-                        // Clean up deferred timer entry if command was denied before running
-                        deferred_bash_timers.remove(&tool_call_id);
-                        // Stop any live progress timer for this tool
-                        if let Some(timer) = tool_progress_timers.remove(&tool_call_id) {
-                            timer.stop();
-                        }
-                        let elapsed = tool_timers
-                            .remove(&tool_call_id)
-                            .map(|start| start.elapsed());
-                        let dur_str = elapsed
-                            .map(|d| format!(" {DIM}({}){RESET}", format_duration(d)))
-                            .unwrap_or_default();
-
-                        // Audit log: record the completed tool call
-                        if let Some((audit_tool, audit_args)) = audit_inflight.remove(&tool_call_id) {
-                            let duration_ms = elapsed.map(|d| d.as_millis() as u64).unwrap_or(0);
-                            audit_log_tool_call(&audit_tool, &audit_args, duration_ms, !is_error);
-                        }
-
-                        if is_error {
-                            batch_failed += 1;
-                            println!(" {RED}✗{RESET}{dur_str}");
-                            let preview = tool_result_preview(&result, 200);
-                            if !preview.is_empty() {
-                                // Indent error output under the tool header
-                                println!("{}", indent_tool_output(&preview));
-                            }
-                            // Track the last tool error for /retry context
-                            let error_text = tool_result_preview(&result, 200);
-                            if !error_text.is_empty() {
-                                last_tool_error = Some(error_text);
-                            } else {
-                                last_tool_error = Some("tool execution failed".to_string());
-                            }
-                            last_tool_name = Some(tool_name.clone());
-                        } else {
-                            // Successful tool clears the last error
-                            batch_succeeded += 1;
-                            last_tool_error = None;
-                            last_tool_name = None;
-                            println!(" {GREEN}✓{RESET}{dur_str}");
-                            // Warn when write_file writes 0 bytes (empty content)
-                            if tool_name == "write_file" {
-                                let wrote_zero = result.details.get("bytes")
-                                    .and_then(|v| v.as_u64())
-                                    .map(|b| b == 0)
-                                    .unwrap_or(false);
-                                if wrote_zero {
-                                    eprintln!("{YELLOW}    ⚠ write_file wrote 0 bytes — file is now empty{RESET}");
-                                }
-                            }
-                            if is_verbose() {
-                                let preview = tool_result_preview(&result, 200);
-                                if !preview.is_empty() {
-                                    // Indent verbose output under the tool header
-                                    println!("{}", indent_tool_output(&preview));
-                                }
-                            }
-                        }
+                        state.handle_tool_execution_end(tool_call_id, tool_name, is_error, result);
                     }
                     AgentEvent::ToolExecutionUpdate { tool_call_id, partial_result, .. } => {
-                        // Start deferred bash timer on first update.
-                        // This means the command is actually running (confirmation
-                        // has already been resolved), so the spinner won't
-                        // overwrite the permission prompt.
-                        if let Some(cmd_label) = deferred_bash_timers.remove(&tool_call_id) {
-                            let timer = ToolProgressTimer::start("bash".to_string());
-                            if let Some(label) = cmd_label {
-                                timer.set_label(label);
-                            }
-                            tool_progress_timers.insert(tool_call_id.clone(), timer);
-                        }
-
-                        // Update line count on the progress timer if active
-                        let line_count = count_result_lines(&partial_result);
-                        if let Some(timer) = tool_progress_timers.get(&tool_call_id) {
-                            timer.set_line_count(line_count);
-                        }
-
-                        // Only show partial output in interactive (terminal) mode.
-                        // In piped/CI mode, cursor-up sequences don't work and every
-                        // partial update becomes a permanent log line, inflating output.
-                        if io::stdout().is_terminal() {
-                            let text = extract_result_text(&partial_result);
-                            if !text.is_empty() {
-                                let tail = format_partial_tail(&text, 6);
-                                if !tail.is_empty() {
-                                    println!();
-                                    println!("{tail}");
-                                    io::stdout().flush().ok();
-                                }
-                            }
-                        }
+                        state.handle_tool_execution_update(tool_call_id, partial_result);
                     }
                     AgentEvent::MessageUpdate {
                         delta: StreamDelta::Text { delta },
                         ..
                     } => {
-                        // render_latency_budget: First-token path
-                        // 1. Spinner stop: ~0.1ms (synchronous eprint + flush, first token only)
-                        // 2. Batch summary print: conditional, rare
-                        // 3. render_delta(): ~0 for mid-line, 1-token buffer at line start
-                        // 4. print!() + flush(): ~0.01ms system call
-                        // Total: <0.2ms first token, <0.05ms subsequent tokens.
-                        // The API network latency (~50-200ms) dominates; renderer is negligible.
-
-                        // Stop spinner on first text
-                        if let Some(s) = spinner.take() { s.stop(); }
-                        // Transition from thinking to text: add a divider
-                        // so text doesn't appear glued to the last thinking output
-                        if in_thinking {
-                            eprintln!();
-                            eprintln!("{}", section_divider());
-                            let _ = io::stderr().flush();
-                            in_thinking = false;
-                        }
-
-                        // Print batch summary if we just finished a tool batch
-                        if batch_count > 0 {
-                            let batch_duration = batch_start
-                                .map(|s| s.elapsed())
-                                .unwrap_or_default();
-                            let summary = format_tool_batch_summary(
-                                batch_count, batch_succeeded, batch_failed, batch_duration,
-                            );
-                            if !summary.is_empty() {
-                                println!("{summary}");
-                            }
-                            // Reset batch tracking
-                            batch_count = 0;
-                            batch_succeeded = 0;
-                            batch_failed = 0;
-                            batch_start = None;
-                        }
-
-                        if !in_text {
-                            println!();
-                            in_text = true;
-                            had_text = true;
-                        }
-                        // Filter <think>...</think> blocks unless verbose mode
-                        let filtered = if is_verbose() {
-                            delta.clone()
-                        } else {
-                            think_filter.filter(&delta)
-                        };
-                        if filtered.is_empty() {
-                            // Inside a think block — nothing to render yet
-                            io::stdout().flush().ok();
-                            continue;
-                        }
-                        // Render and display BEFORE collecting — minimizes time-to-screen.
-                        // collected_text is only used after the stream ends, so ordering
-                        // with print doesn't affect correctness. (render_latency_budget)
-                        let rendered = md_renderer.render_delta(&filtered);
-                        if !rendered.is_empty() {
-                            print!("{}", rendered);
-                        }
-                        io::stdout().flush().ok();
-                        collected_text.push_str(&filtered);
+                        state.handle_message_update_text(&delta);
                     }
                     AgentEvent::MessageUpdate {
                         delta: StreamDelta::Thinking { delta },
                         ..
                     } => {
                         // Stop spinner on first thinking output
-                        if let Some(s) = spinner.take() { s.stop(); }
-                        if !in_thinking {
+                        if let Some(s) = state.spinner.take() { s.stop(); }
+                        if !state.in_thinking {
                             // Print thinking section header on first thinking token
                             eprintln!("\n{}", section_header("Thinking"));
-                            in_thinking = true;
+                            state.in_thinking = true;
                         }
                         // Render thinking to stderr (dimmed) so it doesn't
                         // interleave with stdout text output
@@ -957,102 +1109,42 @@ async fn handle_prompt_events(
                         let _ = io::stderr().flush();
                     }
                     AgentEvent::AgentEnd { messages } => {
-                        // Stop spinner if still running
-                        if let Some(s) = spinner.take() { s.stop(); }
-
-                        // Flush think block filter — emit any partial non-think text
-                        let remaining = think_filter.flush();
-                        if !remaining.is_empty() {
-                            let rendered = md_renderer.render_delta(&remaining);
-                            if !rendered.is_empty() {
-                                print!("{rendered}");
-                                io::stdout().flush().ok();
-                            }
-                            collected_text.push_str(&remaining);
-                        }
-
-                        // Print batch summary if tools were the last thing before end
-                        if batch_count > 0 {
-                            let batch_duration = batch_start
-                                .map(|s| s.elapsed())
-                                .unwrap_or_default();
-                            let summary = format_tool_batch_summary(
-                                batch_count, batch_succeeded, batch_failed, batch_duration,
-                            );
-                            if !summary.is_empty() {
-                                println!("{summary}");
-                            }
-                            batch_count = 0;
-                            batch_succeeded = 0;
-                            batch_failed = 0;
-                            batch_start = None;
-                        }
-
-                        for msg in &messages {
-                            if let AgentMessage::Llm(Message::Assistant { usage: msg_usage, stop_reason, error_message, .. }) = msg {
-                                usage.input += msg_usage.input;
-                                usage.output += msg_usage.output;
-                                usage.cache_read += msg_usage.cache_read;
-                                usage.cache_write += msg_usage.cache_write;
-
-                                if *stop_reason == StopReason::Error {
-                                    if let Some(err_msg) = error_message {
-                                        if in_text {
-                                            println!();
-                                            in_text = false;
-                                        }
-                                        // Check for context overflow first — needs special handling
-                                        if is_overflow_error(err_msg) {
-                                            overflow_error = Some(err_msg.clone());
-                                        } else if is_retriable_error(err_msg) {
-                                            // Check if this error is worth retrying
-                                            retriable_error = Some(err_msg.clone());
-                                        } else {
-                                            eprintln!("\n{RED}  error: {err_msg}{RESET}");
-                                            // Show diagnostic help for common errors
-                                            if let Some(diagnostic) = diagnose_api_error(err_msg, model) {
-                                                eprintln!("{YELLOW}  💡 {}{RESET}", diagnostic.replace('\n', &format!("\n{YELLOW}     {RESET}")));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        state.handle_agent_end(messages, model);
                     }
                     AgentEvent::InputRejected { reason } => {
-                        if let Some(s) = spinner.take() { s.stop(); }
+                        if let Some(s) = state.spinner.take() { s.stop(); }
                         eprintln!("{RED}  input rejected: {reason}{RESET}");
                         if let Some(diagnostic) = diagnose_api_error(&reason, model) {
                             eprintln!("{YELLOW}  💡 {}{RESET}", diagnostic.replace('\n', &format!("\n{YELLOW}     {RESET}")));
                         }
                     }
                     AgentEvent::ProgressMessage { text, .. } => {
-                        if let Some(s) = spinner.take() { s.stop(); }
-                        if in_text {
+                        if let Some(s) = state.spinner.take() { s.stop(); }
+                        if state.in_text {
                             println!();
-                            in_text = false;
+                            state.in_text = false;
                         }
                         println!("{DIM}  {text}{RESET}");
                     }
                     AgentEvent::MessageStart { .. } => {
                         // Agent started a new message — stop the spinner
                         // so it doesn't overlap with output
-                        if let Some(s) = spinner.take() { s.stop(); }
+                        if let Some(s) = state.spinner.take() { s.stop(); }
                     }
                     AgentEvent::MessageEnd { .. }
                         // Agent finished a message — flush any pending text
                         // (This is where ExecutionLimits stop messages appear)
-                        if in_text =>
+                        if state.in_text =>
                     {
-                        let remaining = md_renderer.flush();
+                        let remaining = state.md_renderer.flush();
                         if !remaining.is_empty() {
                             print!("{remaining}");
                         }
                         println!();
-                        in_text = false;
+                        state.in_text = false;
                     }
                     AgentEvent::TurnStart => {
-                        turn_number += 1;
+                        state.turn_number += 1;
                     }
                     AgentEvent::TurnEnd { .. } => {
                         // Turn complete — nothing needed here for now.
@@ -1063,56 +1155,39 @@ async fn handle_prompt_events(
             }
             _ = tokio::signal::ctrl_c() => {
                 // Stop spinner if still running
-                if let Some(s) = spinner.take() { s.stop(); }
+                if let Some(s) = state.spinner.take() { s.stop(); }
                 agent.abort();
-                if in_text {
+                if state.in_text {
                     println!();
                 }
                 println!("\n{DIM}  (interrupted — press Ctrl+C again to exit){RESET}");
                 return PromptResult::Done {
-                    collected_text,
-                    usage,
-                    last_tool_error,
-                    last_tool_name,
+                    collected_text: state.collected_text,
+                    usage: state.usage,
+                    last_tool_error: state.last_tool_error,
+                    last_tool_name: state.last_tool_name,
                 };
             }
         }
     }
 
     // Stop spinner if still running (e.g., channel closed without events)
-    if let Some(s) = spinner.take() {
+    if let Some(s) = state.spinner.take() {
         s.stop();
     }
 
     // Flush any remaining buffered markdown content
-    let remaining = md_renderer.flush();
+    let remaining = state.md_renderer.flush();
     if !remaining.is_empty() {
         print!("{}", remaining);
         io::stdout().flush().ok();
     }
 
-    if in_text {
+    if state.in_text {
         println!();
     }
 
-    if let Some(err_msg) = overflow_error {
-        PromptResult::ContextOverflow {
-            error_msg: err_msg,
-            usage,
-        }
-    } else if let Some(err_msg) = retriable_error {
-        PromptResult::RetriableError {
-            error_msg: err_msg,
-            usage,
-        }
-    } else {
-        PromptResult::Done {
-            collected_text,
-            usage,
-            last_tool_error,
-            last_tool_name,
-        }
-    }
+    state.into_result()
 }
 
 pub async fn run_prompt(
