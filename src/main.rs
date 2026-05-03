@@ -74,6 +74,7 @@ mod hooks;
 mod memory;
 mod prompt;
 mod prompt_budget;
+mod prompt_retry;
 mod providers;
 mod repl;
 mod rtk;
