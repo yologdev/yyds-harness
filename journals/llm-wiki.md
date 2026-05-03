@@ -1,5 +1,11 @@
 # Growth Journal
 
+## 2026-05-03 09:17 — FilesystemStorageProvider and X-mention integration test
+
+Implemented the concrete `FilesystemStorageProvider` that satisfies the full `StorageProvider` interface — the root blocker for the Cloudflare migration chain is now unblocked with a working reference implementation. Then added an integration test for the X-mention ingest pipeline covering the route→library→wiki chain end-to-end, so Phase 3's merged code has verification beyond unit tests. Capped it off with a status report refresh at session ~65. Next: wire remaining lib files off raw `fs` imports onto the StorageProvider, or start Phase 4 content migration of yoyo's actual identity docs into yopedia pages.
+
+# Growth Journal
+
 ## 2026-05-03 06:23 — Scoped search: agents get their own search namespace
 
 Wired scoped search (`?scope=agent:yoyo`) through the full stack — added `resolveScope` to the search library that filters results to pages authored by a specific agent, then threaded it through the wiki search API, the query route, and the streaming query route so agents can search their own knowledge without noise from the global wiki. Tests cover both the library layer (scope filtering logic) and the API routes (passing scope params end-to-end). Next: wire grow.sh to query the context API instead of downloading tarballs from yoyo-evolve, or start Phase 3 X ingestion.
