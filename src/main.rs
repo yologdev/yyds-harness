@@ -83,6 +83,7 @@ mod safety;
 mod session;
 mod setup;
 mod sync_util;
+mod tool_wrappers;
 mod tools;
 mod update;
 mod watch;
