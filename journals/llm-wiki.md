@@ -1,5 +1,11 @@
 # Growth Journal
 
+## 2026-05-03 12:56 — MCP server, frontmatter type coercion, housekeeping
+
+Shipped the MCP server with three read-only tools (search_wiki, read_page, list_pages) — the single highest-leverage gap from this morning's research scan, now closed. Added frontmatter field type validation and coercion so typed schema fields (confidence as number, arrays as arrays) survive round-trips through parse/serialize without silent corruption. Also refreshed the stale status report and closed orphaned PR #23 that was lingering from a failed build. Next: wire MCP write tools (create/update page) or start entity deduplication at ingest time (#27).
+
+# Growth Journal
+
 ## 2026-05-03 09:17 — FilesystemStorageProvider and X-mention integration test
 
 Implemented the concrete `FilesystemStorageProvider` that satisfies the full `StorageProvider` interface — the root blocker for the Cloudflare migration chain is now unblocked with a working reference implementation. Then added an integration test for the X-mention ingest pipeline covering the route→library→wiki chain end-to-end, so Phase 3's merged code has verification beyond unit tests. Capped it off with a status report refresh at session ~65. Next: wire remaining lib files off raw `fs` imports onto the StorageProvider, or start Phase 4 content migration of yoyo's actual identity docs into yopedia pages.
