@@ -134,7 +134,56 @@ pub fn print_banner() {
     println!(
         "\n{BOLD}{CYAN}  yoyo{RESET} v{VERSION}{day_suffix} {DIM}— a coding agent growing up in public{RESET}"
     );
+
+    // Show project context if we can detect it
+    let dir = std::path::Path::new(".");
+    let project_type = crate::commands_project::detect_project_type(dir);
+    let name = crate::commands_project::detect_project_name(dir);
+    let branch = crate::git::git_branch();
+    if let Some(line) = banner_project_line(&project_type, &name, branch.as_deref()) {
+        println!("{DIM}  {line}{RESET}");
+    }
+
     println!("{DIM}  Type /help for commands, /quit to exit{RESET}\n");
+}
+
+/// Build the project context line for the startup banner.
+/// Returns `None` if the project type is Unknown (graceful degradation).
+pub fn banner_project_line(
+    project_type: &crate::commands_project::ProjectType,
+    name: &str,
+    branch: Option<&str>,
+) -> Option<String> {
+    use crate::commands_project::ProjectType;
+
+    if *project_type == ProjectType::Unknown {
+        return None;
+    }
+
+    let type_label = match project_type {
+        ProjectType::Rust => "Rust",
+        ProjectType::Node => "Node.js",
+        ProjectType::Python => "Python",
+        ProjectType::Go => "Go",
+        ProjectType::Make => "Make",
+        ProjectType::Unknown => unreachable!(),
+    };
+
+    let name_part = if name.is_empty() {
+        String::new()
+    } else {
+        format!(" ({name})")
+    };
+
+    let branch_part = if let Some(b) = branch {
+        format!(" on {b}")
+    } else {
+        String::new()
+    };
+
+    Some(format!(
+        "\u{1F4C1} {type_label} project{name_part}{branch_part}"
+    ))
 }
 
 /// Parse a thinking level string into a ThinkingLevel enum.
@@ -2527,6 +2576,54 @@ command = "server-two"
         // When built externally, option_env! returns None gracefully.
         // Either way, it must not panic.
         print_banner();
+    }
+
+    #[test]
+    fn test_banner_project_line_rust() {
+        use crate::commands_project::ProjectType;
+        let line = banner_project_line(&ProjectType::Rust, "my-app", Some("main"));
+        assert_eq!(
+            line,
+            Some("\u{1F4C1} Rust project (my-app) on main".to_string())
+        );
+    }
+
+    #[test]
+    fn test_banner_project_line_node_no_branch() {
+        use crate::commands_project::ProjectType;
+        let line = banner_project_line(&ProjectType::Node, "webapp", None);
+        assert_eq!(line, Some("\u{1F4C1} Node.js project (webapp)".to_string()));
+    }
+
+    #[test]
+    fn test_banner_project_line_unknown_returns_none() {
+        use crate::commands_project::ProjectType;
+        let line = banner_project_line(&ProjectType::Unknown, "something", Some("main"));
+        assert_eq!(line, None);
+    }
+
+    #[test]
+    fn test_banner_project_line_empty_name() {
+        use crate::commands_project::ProjectType;
+        let line = banner_project_line(&ProjectType::Python, "", Some("dev"));
+        assert_eq!(line, Some("\u{1F4C1} Python project on dev".to_string()));
+    }
+
+    #[test]
+    fn test_banner_project_line_go() {
+        use crate::commands_project::ProjectType;
+        let line = banner_project_line(&ProjectType::Go, "myservice", Some("feature/x"));
+        assert_eq!(
+            line,
+            Some("\u{1F4C1} Go project (myservice) on feature/x".to_string())
+        );
+    }
+
+    #[test]
+    fn test_banner_project_line_make_no_name_no_branch() {
+        use crate::commands_project::ProjectType;
+        let line = banner_project_line(&ProjectType::Make, "", None);
+        assert_eq!(line, Some("\u{1F4C1} Make project".to_string()));
     }
 
     // ── bare positional prompt tests ──────────────────────────────────
