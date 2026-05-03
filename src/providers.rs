@@ -47,6 +47,10 @@ pub fn known_models_for_provider(provider: &str) -> &'static [&'static str] {
             "claude-haiku-4-5-20250414",
         ],
         "openai" => &[
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5.5",
+            "gpt-5.5-mini",
             "gpt-4o",
             "gpt-4o-mini",
             "gpt-4.1",
@@ -56,13 +60,18 @@ pub fn known_models_for_provider(provider: &str) -> &'static [&'static str] {
             "o3-mini",
             "o4-mini",
         ],
-        "google" => &["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
+        "google" => &[
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash",
+        ],
         "groq" => &[
             "llama-3.3-70b-versatile",
             "llama-3.1-8b-instant",
             "mixtral-8x7b-32768",
         ],
-        "xai" => &["grok-3", "grok-3-mini", "grok-2"],
+        "xai" => &["grok-4", "grok-3", "grok-3-mini", "grok-2"],
         "deepseek" => &["deepseek-chat", "deepseek-reasoner"],
         "mistral" => &[
             "mistral-large-latest",
@@ -202,6 +211,36 @@ mod tests {
         assert!(
             KNOWN_PROVIDERS.contains(&"minimax"),
             "minimax should be in KNOWN_PROVIDERS"
+        );
+    }
+
+    #[test]
+    fn test_openai_known_models_includes_gpt5() {
+        let models = known_models_for_provider("openai");
+        assert!(models.contains(&"gpt-5"), "openai should include gpt-5");
+        assert!(
+            models.contains(&"gpt-5-mini"),
+            "openai should include gpt-5-mini"
+        );
+        assert!(models.contains(&"gpt-5.5"), "openai should include gpt-5.5");
+        assert!(
+            models.contains(&"gpt-5.5-mini"),
+            "openai should include gpt-5.5-mini"
+        );
+    }
+
+    #[test]
+    fn test_xai_known_models_includes_grok4() {
+        let models = known_models_for_provider("xai");
+        assert!(models.contains(&"grok-4"), "xai should include grok-4");
+    }
+
+    #[test]
+    fn test_google_known_models_includes_flash_lite() {
+        let models = known_models_for_provider("google");
+        assert!(
+            models.contains(&"gemini-2.5-flash-lite"),
+            "google should include gemini-2.5-flash-lite"
         );
     }
 }
