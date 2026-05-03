@@ -27,16 +27,18 @@ const DESTRUCTIVE_GIT_COMMANDS: &[&str] = &[
 /// Check whether a git invocation targets a destructive subcommand and is
 /// running from the project root (i.e., the real repo, not a temp dir).
 /// Returns `Some(subcommand)` when the call should be blocked, `None` when safe.
+///
+/// Accepts an explicit `cwd` so tests don't need `std::env::set_current_dir`
+/// (which is process-global and causes flaky races under parallel test execution).
 #[cfg(test)]
-fn destructive_guard<'a>(args: &'a [&'a str]) -> Option<&'a str> {
+fn destructive_guard<'a>(args: &'a [&'a str], cwd: &std::path::Path) -> Option<&'a str> {
     let subcmd = args.first()?;
     if !DESTRUCTIVE_GIT_COMMANDS.contains(subcmd) {
         return None;
     }
-    // Compare the current working dir against the compile-time project root.
+    // Compare the supplied working dir against the compile-time project root.
     // If they match, we're in the real repo — block it.
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let cwd = std::env::current_dir().ok()?;
     if cwd == manifest_dir {
         Some(subcmd)
     } else {
@@ -55,12 +57,14 @@ fn destructive_guard<'a>(args: &'a [&'a str]) -> Option<&'a str> {
 /// Tests that need destructive git operations should use a temp directory.
 pub fn run_git(args: &[&str]) -> Result<String, String> {
     #[cfg(test)]
-    if let Some(cmd) = destructive_guard(args) {
-        panic!(
-            "SAFETY: run_git() called with destructive command '{}' from project root during \
-             tests. Use a temp directory or mock instead.",
-            cmd
-        );
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(cmd) = destructive_guard(args, &cwd) {
+            panic!(
+                "SAFETY: run_git() called with destructive command '{}' from project root during \
+                 tests. Use a temp directory or mock instead.",
+                cmd
+            );
+        }
     }
     match std::process::Command::new("git").args(args).output() {
         Ok(output) if output.status.success() => {
@@ -1201,7 +1205,8 @@ stash@{1}: On feature: def5678 wip stuff";
 
     #[test]
     fn destructive_guard_allows_safe_commands() {
-        // Read-only commands should never be blocked
+        // Read-only commands should never be blocked, even from project root
+        let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         for safe in &[
             &["--version"][..],
             &["rev-parse", "--abbrev-ref", "HEAD"],
@@ -1211,7 +1216,7 @@ stash@{1}: On feature: def5678 wip stuff";
             &["show", "HEAD"],
         ] {
             assert!(
-                destructive_guard(safe).is_none(),
+                destructive_guard(safe, project_root).is_none(),
                 "Safe command {:?} should not be blocked",
                 safe
             );
@@ -1220,10 +1225,11 @@ stash@{1}: On feature: def5678 wip stuff";
 
     #[test]
     fn destructive_guard_blocks_known_bad_commands_in_project_root() {
-        // We're running from the project root during cargo test, so these should trigger
+        // Pass the project root explicitly — should trigger for every destructive command
+        let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         for cmd in DESTRUCTIVE_GIT_COMMANDS {
             let args = &[*cmd, "--help"];
-            let result = destructive_guard(&args[..]);
+            let result = destructive_guard(&args[..], project_root);
             assert!(
                 result.is_some(),
                 "Destructive command '{}' should be blocked from project root",
@@ -1235,12 +1241,10 @@ stash@{1}: On feature: def5678 wip stuff";
 
     #[test]
     fn destructive_guard_allows_destructive_in_temp_dir() {
-        // If we're in a temp directory, destructive commands should be allowed
+        // Pass a temp directory as cwd — destructive commands should be allowed.
+        // No std::env::set_current_dir needed — that was the source of the race.
         let tmp = std::env::temp_dir();
-        let original = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&tmp).unwrap();
-        let result = destructive_guard(&["commit", "-m", "test"]);
-        std::env::set_current_dir(&original).unwrap();
+        let result = destructive_guard(&["commit", "-m", "test"], &tmp);
         assert!(
             result.is_none(),
             "Destructive command in temp dir should NOT be blocked"
@@ -1249,7 +1253,11 @@ stash@{1}: On feature: def5678 wip stuff";
 
     #[test]
     fn destructive_guard_empty_args() {
-        assert!(destructive_guard(&[]).is_none(), "Empty args should pass");
+        let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(
+            destructive_guard(&[], project_root).is_none(),
+            "Empty args should pass"
+        );
     }
 
     #[test]
