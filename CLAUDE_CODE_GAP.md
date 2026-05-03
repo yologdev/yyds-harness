@@ -1,7 +1,7 @@
 # Gap Analysis: yoyo vs Claude Code
 
-Last verified: Day 63 (2026-05-02)
-Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54, Day 59, Day 61, Day 63
+Last verified: Day 64 (2026-05-03)
+Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54, Day 59, Day 61, Day 63, Day 64
 
 This document tracks the feature gap between yoyo and Claude Code, used to inform
 development priorities when there are no community issues to address. It is a
@@ -267,29 +267,45 @@ These were listed as gaps on Day 24 but have shipped since:
   (Day 61), `/skill search` GitHub skill discovery (Day 61),
   explore-codebase RLM skill (Day 61), `dispatch_sub.rs` extraction (Day 61),
   positional CLI arguments (Day 59).
+- ✅ Recently completed (Day 62–64): real-time subprocess streaming via
+  `on_progress` callback (Day 62), `/context files` showing touched files
+  by operation type (Day 62), synthesis skill for multi-source research
+  (Day 62), tool-specific recovery hints in retry prompts (Day 62),
+  non-interactive `yoyo review` for CI pipelines — commit ranges and PR
+  review (Day 63), `PromptEventState` struct consolidation (Day 63),
+  `ReplConfig` struct (Day 63), module extractions: `rtk.rs` from
+  `tools.rs`, `commands_plan.rs` and `commands_ast_grep.rs` from their
+  parents (Day 63), `prompt_retry.rs` and `prompt_utils.rs` from
+  `prompt.rs` (Day 64), `commands_goal.rs`, `commands_move.rs`,
+  `commands_rename.rs`, `commands_todo.rs`, `commands_git_review.rs`
+  extractions (Days 62–64), flaky test fix for destructive_guard CWD
+  race (Day 64).
 
-## Stats (Day 61)
+## Stats (Day 64)
 
-- yoyo: ~59,794 lines of Rust across 48 source files (incl. `src/format/`) + integration tests
-- 48 source files (was 45 on Day 59): added `commands_skill.rs`, `commands_lint.rs`,
-  `dispatch_sub.rs`; commands split into 17 `commands_*.rs` files
-  (`commands.rs`, `commands_bg.rs`, `commands_config.rs`, `commands_dev.rs`,
-  `commands_file.rs`, `commands_git.rs`, `commands_info.rs`, `commands_lint.rs`,
-  `commands_map.rs`, `commands_memory.rs`, `commands_project.rs`,
-  `commands_refactor.rs`, `commands_retry.rs`, `commands_run.rs`,
-  `commands_search.rs`, `commands_session.rs`, `commands_skill.rs`,
-  `commands_spawn.rs`),
+- yoyo: ~61,591 lines of Rust across 59 source files (incl. `src/format/`) + integration tests
+- 59 source files (was 48 on Day 61): commands split into 24 `commands_*.rs`
+  files (`commands.rs`, `commands_ast_grep.rs`, `commands_bg.rs`,
+  `commands_config.rs`, `commands_dev.rs`, `commands_file.rs`,
+  `commands_git.rs`, `commands_git_review.rs`, `commands_goal.rs`,
+  `commands_info.rs`, `commands_lint.rs`, `commands_map.rs`,
+  `commands_memory.rs`, `commands_move.rs`, `commands_plan.rs`,
+  `commands_project.rs`, `commands_refactor.rs`, `commands_rename.rs`,
+  `commands_retry.rs`, `commands_run.rs`, `commands_search.rs`,
+  `commands_session.rs`, `commands_skill.rs`, `commands_spawn.rs`,
+  `commands_todo.rs`),
   format split into `format/{mod,markdown,highlight,cost,tools,output,diff}.rs`,
   plus `agent_builder.rs`, `hooks.rs`, `memory.rs`, `setup.rs`, `docs.rs`,
   `repl.rs`, `git.rs`, `providers.rs`, `context.rs`, `config.rs`, `prompt.rs`,
-  `prompt_budget.rs`, `session.rs`, `sync_util.rs`, `dispatch.rs`,
-  `dispatch_sub.rs`, `tools.rs`, `safety.rs`, `help.rs`, `cli.rs`, `main.rs`,
-  `watch.rs`
-- 2,305 tests (2,216 unit + 89 integration)
-- 12 skills (7 core/creator, 5 yoyo-origin): self-assess, evolve, communicate,
+  `prompt_budget.rs`, `prompt_retry.rs`, `prompt_utils.rs`, `session.rs`,
+  `sync_util.rs`, `dispatch.rs`, `dispatch_sub.rs`, `tools.rs`, `rtk.rs`,
+  `safety.rs`, `help.rs`, `cli.rs`, `main.rs`, `watch.rs`,
+  `tool_wrappers.rs`, `update.rs`
+- 2,391 tests (2,303 unit + 88 integration)
+- 13 skills (7 core/creator, 6 yoyo-origin): self-assess, evolve, communicate,
   research, skill-evolve, skill-creator, analyze-trajectory (core);
-  social, family, release, explore-codebase, x-research (yoyo)
-- ~88 REPL commands, 32 shell subcommands (help, version, setup, init, diff,
+  social, family, release, explore-codebase, x-research, synthesis (yoyo)
+- ~88 REPL commands, ~36 shell subcommands (help, version, setup, init, diff,
   commit, review, blame, grep, find, index, lint, test, doctor, map, tree,
   run, watch, status, undo, docs, update, pr, config, health, skill, todo,
   outline, changelog, evolution, memories, permissions)
@@ -358,3 +374,11 @@ These were listed as gaps on Day 24 but have shipped since:
 - explore-codebase RLM skill (sub-agent codebase comprehension)
 - CHANGELOG generation
 - Non-interactive `yoyo review` for CI pipelines (commit ranges, PR review)
+- Real-time subprocess streaming via `on_progress` callback
+- `/context files` showing touched files by operation type
+- Synthesis skill for multi-source research (sub-agent dispatch + SharedState)
+- Tool-specific recovery hints in retry prompts
+- `PromptEventState` struct consolidation
+- `ReplConfig` struct for REPL configuration
+- Module extractions: `rtk.rs`, `prompt_retry.rs`, `prompt_utils.rs`, `commands_plan.rs`, `commands_ast_grep.rs`, `commands_goal.rs`, `commands_move.rs`, `commands_rename.rs`, `commands_todo.rs`, `commands_git_review.rs`
+- Flaky test fix for destructive_guard CWD race
