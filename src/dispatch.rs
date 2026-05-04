@@ -406,7 +406,7 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
                     }
                 }
                 // Build content blocks with proper text context for images
-                let content_blocks = crate::repl::build_add_content_blocks(&results);
+                let content_blocks = crate::conversations::build_add_content_blocks(&results);
                 let word = crate::format::pluralize(results.len(), "file", "files");
                 println!(
                     "{}  ({} {word} added to conversation){}\n",
@@ -668,7 +668,7 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             CommandResult::Continue
         }
         s if s == "/extended" || s.starts_with("/extended ") => {
-            if let Some(extended_prompt) = crate::repl::handle_extended(
+            if let Some(extended_prompt) = crate::conversations::handle_extended(
                 ctx.input,
                 ctx.agent,
                 ctx.session_total,
@@ -684,11 +684,11 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             CommandResult::Continue
         }
         s if s == "/side" || s.starts_with("/side ") => {
-            crate::repl::handle_side(ctx.input, ctx.agent_config).await;
+            crate::conversations::handle_side(ctx.input, ctx.agent_config).await;
             CommandResult::Continue
         }
         s if s == "/quick" || s.starts_with("/quick ") => {
-            crate::repl::handle_quick(ctx.input, ctx.agent_config).await;
+            crate::conversations::handle_quick(ctx.input, ctx.agent_config).await;
             CommandResult::Continue
         }
         // Custom slash commands: loaded from .yoyo/commands/ and ~/.yoyo/commands/

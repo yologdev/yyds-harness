@@ -65,6 +65,7 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `help.rs` — canonical source for all help content: `cli_help_text()` (`--help` output), `/help` REPL help, per-command detailed help
 - `config.rs` — permission config, directory restrictions, MCP server config, TOML parsing helpers
 - `context.rs` — project context loading, file listing, git status, recently changed files
+- `conversations.rs` — side, quick, and extended conversation handlers (extracted from `repl.rs`): `build_add_content_blocks`, `handle_side`, `handle_quick`, `handle_extended`
 - `providers.rs` — provider constants (KNOWN_PROVIDERS), API key env vars, default/known models per provider
 - `format/mod.rs` — Color, constants, utility functions, re-exports
 - `format/diff.rs` — LCS-based line diff algorithm, colored unified diff rendering

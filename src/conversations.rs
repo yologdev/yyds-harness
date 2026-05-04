@@ -1,0 +1,833 @@
+//! Side, quick, and extended conversation handlers.
+//!
+//! Extracted from `repl.rs` — these are self-contained conversation modes
+//! that don't depend on the REPL loop infrastructure.
+
+use std::time::{Duration, Instant};
+
+use crate::commands;
+use crate::format::*;
+use crate::prompt::*;
+use crate::session::SessionChanges;
+use crate::watch::run_watch_after_prompt;
+use crate::AgentConfig;
+use yoagent::*;
+
+/// Build content blocks from `/add` results, ensuring images always have
+/// accompanying text context so the model can see them.
+///
+/// For each `AddResult::Image`, a `Content::Text` label is inserted *before*
+/// the `Content::Image` block (e.g. `"[Image: photo.png (42 KB, image/png)]"`).
+/// If the entire batch contains only images (no text files), a general
+/// introductory text block is prepended at the start.
+pub fn build_add_content_blocks(results: &[commands::AddResult]) -> Vec<yoagent::types::Content> {
+    if results.is_empty() {
+        return Vec::new();
+    }
+
+    let mut blocks: Vec<yoagent::types::Content> = Vec::new();
+
+    let has_text_file = results
+        .iter()
+        .any(|r| matches!(r, commands::AddResult::Text { .. }));
+
+    // If there are only images and no text files, prepend a contextual intro
+    if !has_text_file {
+        blocks.push(yoagent::types::Content::Text {
+            text: "The user is sharing the following image(s) for you to analyze:".to_string(),
+        });
+    }
+
+    for result in results {
+        match result {
+            commands::AddResult::Text { content, .. } => {
+                blocks.push(yoagent::types::Content::Text {
+                    text: content.clone(),
+                });
+            }
+            commands::AddResult::Image {
+                summary,
+                data,
+                mime_type,
+            } => {
+                // Extract a readable label from the summary (which contains the
+                // filename, size, and mime type). The summary looks like:
+                //   "\x1b[32m  ✓ added image photo.png (42 KB, image/png)\x1b[0m"
+                // We extract what's between "added image " and the RESET code,
+                // but if parsing fails, fall back to the mime_type alone.
+                let label = extract_image_label(summary, mime_type);
+                blocks.push(yoagent::types::Content::Text {
+                    text: format!("[Image: {label}]"),
+                });
+                blocks.push(yoagent::types::Content::Image {
+                    data: data.clone(),
+                    mime_type: mime_type.clone(),
+                });
+            }
+        }
+    }
+
+    blocks
+}
+
+/// Extract a human-readable label from an AddResult::Image summary string.
+/// The summary has ANSI codes and looks like:
+///   "\x1b[32m  ✓ added image photo.png (42 KB, image/png)\x1b[0m"
+/// We want: "photo.png (42 KB, image/png)"
+fn extract_image_label(summary: &str, fallback_mime: &str) -> String {
+    // Strip ANSI escape codes first
+    let stripped: String = {
+        let mut out = String::new();
+        let mut in_escape = false;
+        for ch in summary.chars() {
+            if ch == '\x1b' {
+                in_escape = true;
+            } else if in_escape {
+                if ch.is_ascii_alphabetic() {
+                    in_escape = false;
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    };
+
+    // Try to find "added image " and extract everything after it
+    if let Some(idx) = stripped.find("added image ") {
+        let after = &stripped[idx + "added image ".len()..];
+        let trimmed = after.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    // Fallback
+    format!("image ({fallback_mime})")
+}
+
+// ── Side conversations ──
+
+/// Parse a `/side` question from the input. Returns `None` if no question provided.
+fn parse_side_question(input: &str) -> Option<String> {
+    let question = input.strip_prefix("/side").unwrap_or("").trim().to_string();
+    if question.is_empty() {
+        None
+    } else {
+        Some(question)
+    }
+}
+
+/// Handle a `/side <question>` command — quick Q&A without touching main context.
+pub(crate) async fn handle_side(input: &str, agent_config: &AgentConfig) {
+    let question = match parse_side_question(input) {
+        Some(q) => q,
+        None => {
+            eprintln!(
+                "{YELLOW}  Usage: /side <question>{RESET}\n\
+                 {DIM}  Ask a quick question without affecting the main conversation.\n\
+                 {DIM}  No tools — just text Q&A. Fast and cheap.\n\n\
+                 {DIM}  Examples:\n\
+                 {DIM}    /side what's the syntax for a match guard in Rust?\n\
+                 {DIM}    /side explain the difference between clone and copy{RESET}\n"
+            );
+            return;
+        }
+    };
+
+    eprintln!("{DIM}  [side] thinking...{RESET}");
+
+    let mut side_agent = agent_config.build_side_agent();
+    let mut rx = side_agent.prompt(&question).await;
+
+    let mut md_renderer = MarkdownRenderer::new();
+    let mut collected_text = String::new();
+    let mut started = false;
+
+    loop {
+        match rx.recv().await {
+            Some(AgentEvent::MessageUpdate {
+                delta: StreamDelta::Text { delta },
+                ..
+            }) => {
+                if !started {
+                    // Print a side-conversation header on first text
+                    print!("\n{DIM}[side]{RESET} ");
+                    started = true;
+                }
+                collected_text.push_str(&delta);
+                let rendered = md_renderer.render_delta(&delta);
+                if !rendered.is_empty() {
+                    print!("{rendered}");
+                }
+            }
+            Some(AgentEvent::MessageEnd { .. }) => {
+                let tail = md_renderer.flush();
+                if !tail.is_empty() {
+                    print!("{tail}");
+                }
+            }
+            Some(AgentEvent::AgentEnd { .. }) => break,
+            None => break,
+            _ => {}
+        }
+    }
+
+    side_agent.finish().await;
+
+    if !started {
+        eprintln!("{DIM}  [side] (no response){RESET}");
+    } else {
+        println!(); // newline after streamed text
+    }
+
+    // Show side conversation cost
+    let messages = side_agent.messages();
+    let mut side_usage = Usage::default();
+    for msg in messages {
+        if let AgentMessage::Llm(yoagent::types::Message::Assistant { usage, .. }) = msg {
+            side_usage.input += usage.input;
+            side_usage.output += usage.output;
+            side_usage.cache_read += usage.cache_read;
+            side_usage.cache_write += usage.cache_write;
+        }
+    }
+    let total_tokens = side_usage.input + side_usage.output;
+    if total_tokens > 0 {
+        let cost = estimate_cost(&side_usage, &agent_config.model);
+        if let Some(c) = cost {
+            eprintln!("{DIM}  [side] {} tokens, ${:.4}{RESET}\n", total_tokens, c);
+        } else {
+            eprintln!("{DIM}  [side] {} tokens{RESET}\n", total_tokens);
+        }
+    } else {
+        eprintln!();
+    }
+}
+
+// ── Quick mode ──
+
+fn parse_quick_question(input: &str) -> Option<String> {
+    let question = input
+        .strip_prefix("/quick")
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if question.is_empty() {
+        None
+    } else {
+        Some(question)
+    }
+}
+
+/// Handle a `/quick <question>` command — fast single-turn answer without tools or agent loop.
+pub(crate) async fn handle_quick(input: &str, agent_config: &AgentConfig) {
+    let question = match parse_quick_question(input) {
+        Some(q) => q,
+        None => {
+            eprintln!(
+                "{YELLOW}  Usage: /quick <question>{RESET}\n\
+                 {DIM}  Fast single-turn answer without tools or agent loop.\n\
+                 {DIM}  Great for quick lookups, syntax help, and explanations.\n\n\
+                 {DIM}  Examples:\n\
+                 {DIM}    /quick what does this error mean: borrow of moved value?\n\
+                 {DIM}    /quick how do I use sed to replace X with Y?\n\
+                 {DIM}    /quick explain the difference between async and threading{RESET}\n"
+            );
+            return;
+        }
+    };
+
+    eprintln!("{DIM}  [quick] thinking...{RESET}");
+
+    let mut side_agent = agent_config.build_side_agent();
+    let mut rx = side_agent.prompt(&question).await;
+
+    let mut md_renderer = MarkdownRenderer::new();
+    let mut collected_text = String::new();
+    let mut started = false;
+
+    loop {
+        match rx.recv().await {
+            Some(AgentEvent::MessageUpdate {
+                delta: StreamDelta::Text { delta },
+                ..
+            }) => {
+                if !started {
+                    print!("\n{DIM}[quick]{RESET} ");
+                    started = true;
+                }
+                collected_text.push_str(&delta);
+                let rendered = md_renderer.render_delta(&delta);
+                if !rendered.is_empty() {
+                    print!("{rendered}");
+                }
+            }
+            Some(AgentEvent::MessageEnd { .. }) => {
+                let tail = md_renderer.flush();
+                if !tail.is_empty() {
+                    print!("{tail}");
+                }
+            }
+            Some(AgentEvent::AgentEnd { .. }) => break,
+            None => break,
+            _ => {}
+        }
+    }
+
+    side_agent.finish().await;
+
+    if !started {
+        eprintln!("{DIM}  [quick] (no response){RESET}");
+    } else {
+        println!(); // newline after streamed text
+    }
+
+    // Show quick query cost
+    let messages = side_agent.messages();
+    let mut quick_usage = Usage::default();
+    for msg in messages {
+        if let AgentMessage::Llm(yoagent::types::Message::Assistant { usage, .. }) = msg {
+            quick_usage.input += usage.input;
+            quick_usage.output += usage.output;
+            quick_usage.cache_read += usage.cache_read;
+            quick_usage.cache_write += usage.cache_write;
+        }
+    }
+    let total_tokens = quick_usage.input + quick_usage.output;
+    if total_tokens > 0 {
+        let cost = estimate_cost(&quick_usage, &agent_config.model);
+        if let Some(c) = cost {
+            eprintln!("{DIM}  [quick] {} tokens, ${:.4}{RESET}\n", total_tokens, c);
+        } else {
+            eprintln!("{DIM}  [quick] {} tokens{RESET}\n", total_tokens);
+        }
+    } else {
+        eprintln!();
+    }
+}
+
+// ── Extended mode ──
+
+/// Default maximum turns for extended autonomous mode.
+const DEFAULT_EXTENDED_TURNS: usize = 20;
+
+/// Parse the `/extended` command input, extracting the prompt, optional `--turns N`,
+/// and optional `--budget N` (time limit in minutes).
+///
+/// Returns `(prompt, max_turns, budget)`. If `--turns N` is present, it is stripped
+/// from the prompt and used as the turn limit. If `--budget N` is present, it is
+/// stripped and returned as `Some(Duration)`. Otherwise defaults apply.
+fn parse_extended_args(input: &str) -> (String, usize, Option<Duration>) {
+    let raw = input
+        .strip_prefix("/extended")
+        .unwrap_or(input)
+        .trim()
+        .to_string();
+
+    // Look for --turns N and --budget N anywhere in the string
+    let mut turns = DEFAULT_EXTENDED_TURNS;
+    let mut budget: Option<Duration> = None;
+    let mut prompt_parts: Vec<&str> = Vec::new();
+    let words: Vec<&str> = raw.split_whitespace().collect();
+    let mut skip_next = false;
+
+    for (i, word) in words.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if *word == "--turns" {
+            if let Some(next) = words.get(i + 1) {
+                if let Ok(n) = next.parse::<usize>() {
+                    turns = n.max(1); // At least 1 turn
+                    skip_next = true;
+                    continue;
+                }
+            }
+        }
+        if *word == "--budget" {
+            if let Some(next) = words.get(i + 1) {
+                if let Ok(mins) = next.parse::<u64>() {
+                    if mins > 0 {
+                        budget = Some(Duration::from_secs(mins * 60));
+                    }
+                    skip_next = true;
+                    continue;
+                }
+            }
+        }
+        prompt_parts.push(word);
+    }
+
+    let prompt = prompt_parts.join(" ");
+    (prompt, turns, budget)
+}
+
+/// Build the system-level instruction for extended autonomous mode.
+fn build_extended_system_prompt(task: &str, max_turns: usize) -> String {
+    format!(
+        "You are in EXTENDED AUTONOMOUS MODE. Work on this task step by step:\n\n\
+         {task}\n\n\
+         Rules for extended mode:\n\
+         - Work autonomously — do NOT ask the user questions. Make your best judgment.\n\
+         - Break the task into steps and execute them one at a time.\n\
+         - Run tests after making changes to verify correctness.\n\
+         - If you get stuck, explain what you tried and move on.\n\
+         - You have up to {max_turns} turns to complete this task.\n\
+         - When the task is complete, summarize what you did and what files were modified."
+    )
+}
+
+/// Handle the `/extended` command — run the agent in autonomous mode with a turn budget.
+pub(crate) async fn handle_extended(
+    input: &str,
+    agent: &mut yoagent::agent::Agent,
+    session_total: &mut Usage,
+    model: &str,
+    session_changes: &SessionChanges,
+) -> Option<String> {
+    let (prompt, max_turns, budget) = parse_extended_args(input);
+
+    if prompt.is_empty() {
+        eprintln!(
+            "{YELLOW}  Usage: /extended <task description> [--turns N] [--budget N]{RESET}\n\
+             {DIM}  Run the agent autonomously on a task (default: {DEFAULT_EXTENDED_TURNS} turns).\n\
+             {DIM}  --budget N sets a wall-clock time limit in minutes.\n\
+             \n\
+             {DIM}  Examples:\n\
+             {DIM}    /extended add error handling to the parser module\n\
+             {DIM}    /extended refactor the auth system --turns 30\n\
+             {DIM}    /extended rebuild the test suite --budget 15{RESET}\n"
+        );
+        return None;
+    }
+
+    let budget_label = if let Some(dur) = budget {
+        format!(" | budget: {} min", dur.as_secs() / 60)
+    } else {
+        String::new()
+    };
+
+    eprintln!(
+        "\n{BOLD_CYAN}  🐙 Extended mode{RESET} — working autonomously ({max_turns} turns max{budget_label})\n\
+         {DIM}  Task: {prompt}{RESET}\n"
+    );
+
+    let extended_prompt = build_extended_system_prompt(&prompt, max_turns);
+
+    // Run the task using the existing prompt infrastructure with auto-retry.
+    // If a budget is set, wrap in tokio::time::timeout.
+    let prompt_start = Instant::now();
+    let timed_out;
+
+    if let Some(dur) = budget {
+        match tokio::time::timeout(
+            dur,
+            run_prompt_auto_retry(
+                agent,
+                &extended_prompt,
+                session_total,
+                model,
+                session_changes,
+            ),
+        )
+        .await
+        {
+            Ok(_outcome) => {
+                timed_out = false;
+            }
+            Err(_elapsed) => {
+                timed_out = true;
+            }
+        }
+    } else {
+        let _outcome = run_prompt_auto_retry(
+            agent,
+            &extended_prompt,
+            session_total,
+            model,
+            session_changes,
+        )
+        .await;
+        timed_out = false;
+    }
+
+    let elapsed = prompt_start.elapsed();
+
+    if timed_out {
+        let budget_mins = budget.map(|d| d.as_secs() / 60).unwrap_or(0);
+        eprintln!(
+            "\n{YELLOW}  🐙 Extended mode — time budget exhausted ({budget_mins} min){RESET}"
+        );
+    }
+
+    // Run watch command after prompt if active (auto lint/test loop)
+    if !timed_out {
+        run_watch_after_prompt(agent, session_total, model, session_changes).await;
+    }
+
+    // Summary
+    let files_changed = session_changes.snapshot().len();
+    eprintln!(
+        "\n{BOLD_CYAN}  🐙 Extended mode complete{RESET}\n\
+         {DIM}  Time: {elapsed:.1?} | Files modified: {files_changed}{RESET}\n"
+    );
+
+    // Return the prompt so it can be set as last_input for /retry
+    Some(extended_prompt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── build_add_content_blocks tests ──
+
+    // ── build_add_content_blocks ─────────────────────────────────────
+
+    #[test]
+    fn add_content_blocks_image_only_has_intro_and_label() {
+        let results = vec![commands::AddResult::Image {
+            summary: "\x1b[32m  ✓ added image photo.png (42 KB, image/png)\x1b[0m".to_string(),
+            data: "base64data".to_string(),
+            mime_type: "image/png".to_string(),
+        }];
+        let blocks = build_add_content_blocks(&results);
+
+        // Should be: intro text, label text, image = 3 blocks
+        assert_eq!(blocks.len(), 3, "expected intro + label + image");
+
+        // First block: introductory text
+        match &blocks[0] {
+            yoagent::types::Content::Text { text } => {
+                assert!(
+                    text.contains("image(s)"),
+                    "intro should mention images: {text}"
+                );
+            }
+            other => panic!("expected Text intro, got {other:?}"),
+        }
+
+        // Second block: image label text
+        match &blocks[1] {
+            yoagent::types::Content::Text { text } => {
+                assert!(
+                    text.starts_with("[Image:"),
+                    "label should start with [Image:: {text}"
+                );
+                assert!(
+                    text.contains("photo.png"),
+                    "label should contain filename: {text}"
+                );
+            }
+            other => panic!("expected Text label, got {other:?}"),
+        }
+
+        // Third block: actual image
+        match &blocks[2] {
+            yoagent::types::Content::Image { data, mime_type } => {
+                assert_eq!(data, "base64data");
+                assert_eq!(mime_type, "image/png");
+            }
+            other => panic!("expected Image, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_content_blocks_text_only_no_intro() {
+        let results = vec![commands::AddResult::Text {
+            summary: "added foo.rs".to_string(),
+            content: "fn main() {}".to_string(),
+        }];
+        let blocks = build_add_content_blocks(&results);
+
+        // Text-only: no intro, just the text block
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            yoagent::types::Content::Text { text } => {
+                assert_eq!(text, "fn main() {}");
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_content_blocks_mixed_text_and_image() {
+        let results = vec![
+            commands::AddResult::Text {
+                summary: "added main.rs".to_string(),
+                content: "fn main() {}".to_string(),
+            },
+            commands::AddResult::Image {
+                summary: "\x1b[32m  ✓ added image logo.png (10 KB, image/png)\x1b[0m".to_string(),
+                data: "imgdata".to_string(),
+                mime_type: "image/png".to_string(),
+            },
+        ];
+        let blocks = build_add_content_blocks(&results);
+
+        // Mixed: no intro (text file present), text + label + image = 3 blocks
+        assert_eq!(blocks.len(), 3, "expected text + label + image");
+
+        // First: text file content
+        match &blocks[0] {
+            yoagent::types::Content::Text { text } => {
+                assert_eq!(text, "fn main() {}");
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+
+        // Second: image label
+        match &blocks[1] {
+            yoagent::types::Content::Text { text } => {
+                assert!(text.starts_with("[Image:"), "label: {text}");
+                assert!(
+                    text.contains("logo.png"),
+                    "label should have filename: {text}"
+                );
+            }
+            other => panic!("expected Text label, got {other:?}"),
+        }
+
+        // Third: image data
+        match &blocks[2] {
+            yoagent::types::Content::Image { data, mime_type } => {
+                assert_eq!(data, "imgdata");
+                assert_eq!(mime_type, "image/png");
+            }
+            other => panic!("expected Image, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_content_blocks_multiple_images_each_has_label() {
+        let results = vec![
+            commands::AddResult::Image {
+                summary: "\x1b[32m  ✓ added image a.jpg (5 KB, image/jpeg)\x1b[0m".to_string(),
+                data: "d1".to_string(),
+                mime_type: "image/jpeg".to_string(),
+            },
+            commands::AddResult::Image {
+                summary: "\x1b[32m  ✓ added image b.webp (8 KB, image/webp)\x1b[0m".to_string(),
+                data: "d2".to_string(),
+                mime_type: "image/webp".to_string(),
+            },
+        ];
+        let blocks = build_add_content_blocks(&results);
+
+        // intro + (label + image) × 2 = 5 blocks
+        assert_eq!(blocks.len(), 5, "expected intro + 2×(label+image)");
+
+        // Verify intro
+        assert!(
+            matches!(&blocks[0], yoagent::types::Content::Text { text } if text.contains("image(s)"))
+        );
+
+        // Verify label-then-image ordering for first image
+        assert!(
+            matches!(&blocks[1], yoagent::types::Content::Text { text } if text.contains("a.jpg"))
+        );
+        assert!(matches!(&blocks[2], yoagent::types::Content::Image { data, .. } if data == "d1"));
+
+        // Verify label-then-image ordering for second image
+        assert!(
+            matches!(&blocks[3], yoagent::types::Content::Text { text } if text.contains("b.webp"))
+        );
+        assert!(matches!(&blocks[4], yoagent::types::Content::Image { data, .. } if data == "d2"));
+    }
+
+    #[test]
+    fn add_content_blocks_empty_input() {
+        let blocks = build_add_content_blocks(&[]);
+        assert!(blocks.is_empty(), "empty input should produce empty output");
+    }
+
+    #[test]
+    fn extract_image_label_parses_ansi_summary() {
+        let label = extract_image_label(
+            "\x1b[32m  ✓ added image photo.png (42 KB, image/png)\x1b[0m",
+            "image/png",
+        );
+        assert_eq!(label, "photo.png (42 KB, image/png)");
+    }
+
+    #[test]
+    fn extract_image_label_fallback() {
+        let label = extract_image_label("something unexpected", "image/jpeg");
+        assert_eq!(label, "image (image/jpeg)");
+    }
+
+    // ── parse_extended_args tests ──
+
+    #[test]
+    fn test_parse_extended_args_basic_prompt() {
+        let (prompt, turns, budget) = parse_extended_args("/extended build a REST API");
+        assert_eq!(prompt, "build a REST API");
+        assert_eq!(turns, DEFAULT_EXTENDED_TURNS);
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_args_with_turns() {
+        let (prompt, turns, budget) = parse_extended_args("/extended refactor auth --turns 10");
+        assert_eq!(prompt, "refactor auth");
+        assert_eq!(turns, 10);
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_args_turns_at_start() {
+        let (prompt, turns, budget) = parse_extended_args("/extended --turns 5 fix all bugs");
+        assert_eq!(prompt, "fix all bugs");
+        assert_eq!(turns, 5);
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_args_turns_in_middle() {
+        let (prompt, turns, budget) =
+            parse_extended_args("/extended add tests --turns 15 for parser");
+        assert_eq!(prompt, "add tests for parser");
+        assert_eq!(turns, 15);
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_args_no_prompt() {
+        let (prompt, turns, budget) = parse_extended_args("/extended");
+        assert!(prompt.is_empty());
+        assert_eq!(turns, DEFAULT_EXTENDED_TURNS);
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_args_turns_minimum_one() {
+        let (prompt, turns, budget) = parse_extended_args("/extended do stuff --turns 0");
+        assert_eq!(prompt, "do stuff");
+        assert_eq!(turns, 1); // Clamped to 1
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_args_invalid_turns_kept_as_prompt() {
+        let (prompt, turns, budget) = parse_extended_args("/extended do stuff --turns abc");
+        assert_eq!(prompt, "do stuff --turns abc");
+        assert_eq!(turns, DEFAULT_EXTENDED_TURNS);
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_args_turns_without_value() {
+        let (prompt, turns, budget) = parse_extended_args("/extended do stuff --turns");
+        assert_eq!(prompt, "do stuff --turns");
+        assert_eq!(turns, DEFAULT_EXTENDED_TURNS);
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_budget() {
+        let (prompt, turns, budget) = parse_extended_args("/extended do stuff --budget 10");
+        assert_eq!(prompt, "do stuff");
+        assert_eq!(turns, DEFAULT_EXTENDED_TURNS);
+        assert_eq!(budget, Some(Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn test_parse_extended_turns_and_budget() {
+        let (prompt, turns, budget) =
+            parse_extended_args("/extended rebuild tests --turns 30 --budget 15");
+        assert_eq!(prompt, "rebuild tests");
+        assert_eq!(turns, 30);
+        assert_eq!(budget, Some(Duration::from_secs(900)));
+    }
+
+    #[test]
+    fn test_parse_extended_no_budget() {
+        let (prompt, turns, budget) = parse_extended_args("/extended simple task");
+        assert_eq!(prompt, "simple task");
+        assert_eq!(turns, DEFAULT_EXTENDED_TURNS);
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_budget_zero_ignored() {
+        let (prompt, _turns, budget) = parse_extended_args("/extended task --budget 0");
+        assert_eq!(prompt, "task");
+        // --budget 0 is consumed (skip_next fires) but budget stays None
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_budget_invalid_kept_as_prompt() {
+        let (prompt, _turns, budget) = parse_extended_args("/extended task --budget abc");
+        assert_eq!(prompt, "task --budget abc");
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_parse_extended_budget_without_value() {
+        let (prompt, _turns, budget) = parse_extended_args("/extended task --budget");
+        assert_eq!(prompt, "task --budget");
+        assert!(budget.is_none());
+    }
+
+    #[test]
+    fn test_build_extended_system_prompt_contains_task() {
+        let prompt = build_extended_system_prompt("build a REST API", 20);
+        assert!(prompt.contains("build a REST API"));
+        assert!(prompt.contains("20"));
+        assert!(prompt.contains("EXTENDED AUTONOMOUS MODE"));
+        assert!(prompt.contains("do NOT ask the user questions"));
+    }
+
+    // ── /side parsing tests ──
+
+    #[test]
+    fn test_parse_side_question_basic() {
+        let q = parse_side_question("/side what is a monad?");
+        assert_eq!(q.unwrap(), "what is a monad?");
+    }
+
+    #[test]
+    fn test_parse_side_question_empty() {
+        assert!(parse_side_question("/side").is_none());
+        assert!(parse_side_question("/side   ").is_none());
+    }
+
+    #[test]
+    fn test_parse_side_question_preserves_whitespace_in_question() {
+        let q = parse_side_question("/side   what   is   this  ");
+        assert_eq!(q.unwrap(), "what   is   this");
+    }
+
+    #[test]
+    fn test_parse_side_question_multiword() {
+        let q = parse_side_question("/side how do I convert Vec<u8> to String in Rust?");
+        assert_eq!(q.unwrap(), "how do I convert Vec<u8> to String in Rust?");
+    }
+
+    #[test]
+    fn test_parse_quick_question_basic() {
+        let q = parse_quick_question("/quick what does borrow of moved value mean?");
+        assert_eq!(q.unwrap(), "what does borrow of moved value mean?");
+    }
+
+    #[test]
+    fn test_parse_quick_question_empty() {
+        assert!(parse_quick_question("/quick").is_none());
+        assert!(parse_quick_question("/quick   ").is_none());
+    }
+
+    #[test]
+    fn test_parse_quick_question_preserves_content() {
+        let q = parse_quick_question("/quick   how do I use sed?  ");
+        assert_eq!(q.unwrap(), "how do I use sed?");
+    }
+
+    #[test]
+    fn test_parse_quick_question_multiword() {
+        let q = parse_quick_question("/quick explain async vs threading in Rust");
+        assert_eq!(q.unwrap(), "explain async vs threading in Rust");
+    }
+}

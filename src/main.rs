@@ -64,6 +64,7 @@ mod commands_spawn;
 mod commands_todo;
 mod config;
 mod context;
+mod conversations;
 mod dispatch;
 mod dispatch_sub;
 mod docs;
