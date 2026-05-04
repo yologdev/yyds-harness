@@ -62,6 +62,16 @@ Each cycle produces **exactly one** of:
 
 If you find yourself wanting to do two things, pick the one with the strongest evidence and write the second to `memory/learnings.jsonl` for next cycle.
 
+### HARD RULE #4 — Refine and Create events must declare an expected outcome
+
+Every `refine` and `create` event in `skills/_journal.md` MUST include an `expected:` line — a freeform prose commitment naming (a) a concrete observable signal that should change, (b) a horizon (e.g. "within ~5 sessions" or "by next cycle"), and (c) a fallback move if the prediction does not hold.
+
+If you cannot articulate all three, the edit is not justified by evidence: NO-OP the cycle instead of committing a refine/create without an `expected:` line. This is decision-observability discipline (paper: arxiv 2604.25850) at the cognitive layer — there is no validator, but a future cycle re-reads the line as informal evidence and a human reads it as an audit trail.
+
+`expected:` is **forbidden** on `retire`, `revive`, `meta-suggestion`, `refused`, `NO-OP`, and `init` events (they do not ship a behavioral change, so there is nothing to predict).
+
+The body of the line is freeform prose. See "Step 7 — append the event" for the template position and worked examples; see "What an `expected:` line must do (and must not be)" later in this document for the anti-patterns to refuse.
+
 ## Glossary
 
 - **session** — one run of `scripts/evolve.sh` (the main evolution loop). There are ~3 per day.
@@ -375,10 +385,53 @@ Append (using `>>`, never overwrite):
 - validation: <pass | reason for refusal>
 - score-delta: <old> → <new>
 - parent-event: <evt-NNNN>
+- expected: <observable signal | horizon | fallback>          # required for refine/create only; forbidden on all other types
 - note: <optional one-line>
 ```
 
 Where `<type>` is one of: `init`, `refine`, `create`, `retire`, `revive`, `meta-suggestion`, `refused`, `NO-OP`.
+
+### What an `expected:` line must do (and must not be)
+
+A good `expected:` line names **all three** of: a concrete observable signal, a horizon, and a fallback move.
+
+**Concrete observables you may reference:**
+- A skill's frontmatter `uses` / `wins` / `score` (e.g. "social.uses should grow by ≥3 over the next 5 sessions")
+- A specific failure cluster's recurrence in audit-log sessions (e.g. "the gh-discussion-comment STUCK cluster should drop to 0 hits within 5 sessions")
+- A trace pattern from step 3b (e.g. "the `git checkout` revert-after-edit pattern on social/SKILL.md should not recur in the next 3 sessions")
+- A concrete tool-call sequence that should/should not appear in audit.jsonl
+
+**Horizons:** "by next cycle", "within ~3 sessions", "within ~5 sessions", "within 7 days". Do not say "eventually" or omit the horizon.
+
+**Fallbacks:** name the next move if the prediction does not hold. Examples: "...otherwise this is a sub-skill candidate, not a prose refine"; "...otherwise the `description:` is the wrong target — try refining the body instead"; "...otherwise retire the skill".
+
+**Worked examples:**
+
+For a `refine` event:
+```
+- expected: STUCK rate on the gh-discussion-comment cluster should drop to 0
+  within the next ~5 evolve sessions; if not, the prose tweak was insufficient
+  and a helper script (sub-skill) is the right next step
+```
+
+For a `create` event:
+```
+- expected: at least 2 sessions in the next 5 should match this skill's
+  keywords[] AND have outcome.json.test_ok=true (i.e. wins ≥ 2 by next cycle);
+  if uses < 2 by then, the description: is too narrow and needs widening, or
+  the pattern was a one-off and the skill should retire
+```
+
+**Anti-patterns to refuse** (these do not satisfy HARD RULE #4 — NO-OP instead of writing them):
+
+- "feels better"
+- "will be more readable"
+- "the prose is now clearer"
+- "users will like it"
+- "yoyo will use this skill more" *(no horizon, no signal)*
+- "this should help" *(no horizon, no signal, no fallback)*
+
+If your candidate `expected:` line reads like one of those, you do not have a theory of impact — the evidence does not justify a mutation this cycle. Write `NO-OP` and move on.
 
 ### 8. Commit
 
