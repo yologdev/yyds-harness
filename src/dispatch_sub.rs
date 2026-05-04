@@ -179,7 +179,7 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 return Some(None);
             }
             "update" => {
-                if let Err(e) = crate::commands_dev::handle_update() {
+                if let Err(e) = crate::commands_update::handle_update() {
                     eprintln!("{RED}  {e}{RESET}");
                 }
                 return Some(None);

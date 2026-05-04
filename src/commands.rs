@@ -485,8 +485,10 @@ pub use crate::commands_map::handle_map;
 pub use crate::commands_search::{handle_find, handle_grep, handle_index, handle_outline};
 
 pub use crate::commands_dev::{
-    handle_doctor, handle_fix, handle_health, handle_tree, handle_update, handle_watch,
+    handle_doctor, handle_fix, handle_health, handle_tree, handle_watch,
 };
+
+pub use crate::commands_update::handle_update;
 
 pub use crate::commands_lint::{handle_lint, handle_lint_fix, handle_test};
 
