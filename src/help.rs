@@ -440,7 +440,9 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
             "/history — Show summary of conversation messages\n\n\
              Displays a compact list of all messages in the current\n\
              conversation: role, length, and a preview of each message.\n\
-             Useful for understanding conversation flow.",
+             Useful for understanding conversation flow.\n\n\
+             Subcommands:\n\n\
+             \x20 /history detail — Per-turn breakdown with tools used and token counts",
         ),
         "hooks" => Some(
             "/hooks — Show active hooks (pre/post tool execution)\n\n\
@@ -550,14 +552,16 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              Usage:\n\
              \x20 /model <name>       Switch to the specified model\n\
              \x20 /model list         Show all available models by provider\n\
-             \x20 /model list <prov>  Show models for a specific provider\n\n\
+             \x20 /model list <prov>  Show models for a specific provider\n\
+             \x20 /model info [name]  Show details (pricing, context, provider)\n\n\
              Changes the active model while preserving the conversation.\n\
              Tab-completion is available for known model names.\n\n\
              Examples:\n\
              \x20 /model claude-sonnet-4-20250514\n\
              \x20 /model gpt-4o\n\
              \x20 /model list\n\
-             \x20 /model list anthropic",
+             \x20 /model list anthropic\n\
+             \x20 /model info gpt-4o",
         ),
         "think" => Some(
             "/think [level] — Show or change thinking level\n\n\
@@ -1322,6 +1326,10 @@ pub fn cli_help_text() -> String {
         s,
         "    /history           Show conversation message summary"
     );
+    let _ = writeln!(
+        s,
+        "    /history detail    Per-turn breakdown with tools and token counts"
+    );
     let _ = writeln!(s, "    /search <query>    Search conversation history");
     let _ = writeln!(s, "    /mark <name>       Bookmark conversation state");
     let _ = writeln!(s, "    /jump <name>       Restore to a bookmark");
@@ -1473,7 +1481,7 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(s, "  AI:");
     let _ = writeln!(
         s,
-        "    /model <name|list> Switch model or list available models"
+        "    /model <name|list|info> Switch, list, or inspect models"
     );
     let _ = writeln!(s, "    /provider <name>   Switch provider");
     let _ = writeln!(
@@ -1604,6 +1612,7 @@ pub fn help_text() -> String {
     out.push_str("  /version           Show yoyo version\n");
     out.push_str("  /update            Check for and install the latest version\n");
     out.push_str("  /history           Show summary of conversation messages\n");
+    out.push_str("  /history detail    Per-turn breakdown with tools and token counts\n");
     out.push_str("  /search <query>    Search conversation history for matching messages\n");
     out.push_str("  /mark <name>       Bookmark current conversation state\n");
     out.push_str(
@@ -1700,7 +1709,7 @@ pub fn help_text() -> String {
 
     // ── AI ──
     out.push_str("  ── AI ──\n");
-    out.push_str("  /model <name|list> Switch model or list available models\n");
+    out.push_str("  /model <name|list|info> Switch, list, or inspect models\n");
     out.push_str("  /provider <name>   Switch provider (resets model to provider default)\n");
     out.push_str("  /think [level]     Show or change thinking level (off/low/medium/high)\n");
     out.push_str("  /plan [on|off|task] Plan mode toggle or one-shot task plan (architect mode)\n");
@@ -1839,7 +1848,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "mark" => Some("Bookmark current conversation state"),
         "marks" => Some("List saved bookmarks"),
         "memories" => Some("List or search project memories"),
-        "model" => Some("Switch or show current model"),
+        "model" => Some("Switch, list, or inspect models"),
         "move" => Some("Move a method between files"),
         "outline" => Some("Search for symbols or show file structure"),
         "plan" => Some("Plan mode toggle or one-shot task plan"),

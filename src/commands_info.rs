@@ -248,6 +248,167 @@ pub fn handle_model_list(current_model: &str, current_provider: &str, filter: &s
 
 // ── /provider ────────────────────────────────────────────────────────────
 
+/// Return the context window size (in tokens) for well-known models.
+/// Returns `None` when the model isn't in our registry.
+pub fn model_context_window(model: &str) -> Option<u64> {
+    // Anthropic Claude family — all 200k
+    if model.contains("claude") {
+        return Some(200_000);
+    }
+    // OpenAI GPT-4.1 family — 1M
+    if model.contains("gpt-4.1") {
+        return Some(1_048_576);
+    }
+    // OpenAI GPT-4o family — 128k
+    if model.contains("gpt-4o") {
+        return Some(128_000);
+    }
+    // OpenAI GPT-5 family — 1M
+    if model.contains("gpt-5") {
+        return Some(1_048_576);
+    }
+    // OpenAI o-series reasoning models
+    if model.starts_with("o3") || model.starts_with("o4") {
+        return Some(200_000);
+    }
+    // Google Gemini 2.5 — 1M
+    if model.contains("gemini-2.5") {
+        return Some(1_048_576);
+    }
+    // Google Gemini 2.0 — 1M
+    if model.contains("gemini-2.0") {
+        return Some(1_048_576);
+    }
+    // xAI Grok — 131k
+    if model.contains("grok") {
+        return Some(131_072);
+    }
+    // DeepSeek — 128k
+    if model.contains("deepseek") {
+        return Some(128_000);
+    }
+    // Mistral Large — 128k
+    if model.contains("mistral") || model.contains("codestral") {
+        return Some(128_000);
+    }
+    None
+}
+
+/// Format a token count as a human-readable string (e.g. "200k", "1M").
+fn format_context_size(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        let m = tokens as f64 / 1_000_000.0;
+        if (m - m.round()).abs() < 0.001 {
+            format!("{}M tokens", m as u64)
+        } else {
+            format!("{:.1}M tokens", m)
+        }
+    } else {
+        format!("{}k tokens", tokens / 1_000)
+    }
+}
+
+/// Find which known provider serves a given model name.
+/// Scans all providers' model lists and returns the first match.
+pub fn find_provider_for_model(model: &str) -> Option<&'static str> {
+    for provider in KNOWN_PROVIDERS {
+        let models = known_models_for_provider(provider);
+        if models.contains(&model) {
+            return Some(provider);
+        }
+    }
+    // Heuristic fallback: infer from model name prefix
+    if model.contains("claude") {
+        return Some("anthropic");
+    }
+    if model.starts_with("gpt-") || model.starts_with("o3") || model.starts_with("o4") {
+        return Some("openai");
+    }
+    if model.contains("gemini") {
+        return Some("google");
+    }
+    if model.contains("grok") {
+        return Some("xai");
+    }
+    if model.contains("deepseek") {
+        return Some("deepseek");
+    }
+    if model.contains("mistral") || model.contains("codestral") {
+        return Some("mistral");
+    }
+    None
+}
+
+/// Display detailed information about a model: provider, context window, pricing.
+pub fn handle_model_info(model_name: &str, current_model: &str) {
+    let separator = "\u{2500}".repeat(model_name.len() + 6);
+    println!("\n  {DIM}{separator}{RESET}");
+    println!("  {BOLD}\u{2500}\u{2500} {model_name} \u{2500}\u{2500}{RESET}");
+    println!("  {DIM}{separator}{RESET}\n");
+
+    // Provider
+    let provider = find_provider_for_model(model_name);
+    match provider {
+        Some(p) => println!("  {DIM}Provider:{RESET}  {p}"),
+        None => println!("  {DIM}Provider:{RESET}  {YELLOW}unknown{RESET}"),
+    }
+
+    // Context window
+    match model_context_window(model_name) {
+        Some(ctx) => println!("  {DIM}Context:{RESET}   {}", format_context_size(ctx)),
+        None => println!("  {DIM}Context:{RESET}   {YELLOW}unknown{RESET}"),
+    }
+
+    // Pricing — use estimate_cost with synthetic Usage to extract per-MTok rates
+    let input_usage = yoagent::Usage {
+        input: 1_000_000,
+        output: 0,
+        cache_read: 0,
+        cache_write: 0,
+        total_tokens: 1_000_000,
+    };
+    let output_usage = yoagent::Usage {
+        input: 0,
+        output: 1_000_000,
+        cache_read: 0,
+        cache_write: 0,
+        total_tokens: 1_000_000,
+    };
+    let input_cost = estimate_cost(&input_usage, model_name);
+    let output_cost = estimate_cost(&output_usage, model_name);
+    match (input_cost, output_cost) {
+        (Some(ic), Some(oc)) => {
+            println!(
+                "  {DIM}Pricing:{RESET}   ${:.2} in / ${:.2} out (per MTok)",
+                ic, oc
+            );
+        }
+        _ => println!("  {DIM}Pricing:{RESET}   {YELLOW}unknown{RESET}"),
+    }
+
+    // Default model for the provider?
+    if let Some(p) = provider {
+        let default = default_model_for_provider(p);
+        if default == model_name {
+            println!("  {DIM}Default:{RESET}   {GREEN}\u{2713}{RESET} (for {p})");
+        }
+    }
+
+    // Active?
+    if model_name == current_model {
+        println!("  {DIM}Active:{RESET}    {GREEN}\u{2713}{RESET}");
+    }
+
+    // Not in registry?
+    if provider.is_none() {
+        println!(
+            "\n  {YELLOW}Not in known model registry \u{2014} pricing and context may be unavailable.{RESET}"
+        );
+    }
+
+    println!();
+}
+
 pub fn handle_provider_show(provider: &str) {
     println!("{DIM}  current provider: {provider}");
     println!("  usage: /provider <name>");
@@ -1442,5 +1603,96 @@ More text.
     fn test_handle_model_list_no_panic_unknown_provider() {
         // Should not panic with an unknown provider filter
         handle_model_list("claude-sonnet-4-20250514", "anthropic", "nonexistent");
+    }
+
+    #[test]
+    fn test_model_context_window_known_models() {
+        // Anthropic
+        assert_eq!(
+            model_context_window("claude-sonnet-4-20250514"),
+            Some(200_000)
+        );
+        assert_eq!(
+            model_context_window("claude-opus-4-20250514"),
+            Some(200_000)
+        );
+        // OpenAI
+        assert_eq!(model_context_window("gpt-4.1"), Some(1_048_576));
+        assert_eq!(model_context_window("gpt-4.1-mini"), Some(1_048_576));
+        assert_eq!(model_context_window("gpt-4o"), Some(128_000));
+        assert_eq!(model_context_window("gpt-5"), Some(1_048_576));
+        assert_eq!(model_context_window("o3"), Some(200_000));
+        assert_eq!(model_context_window("o4-mini"), Some(200_000));
+        // Google
+        assert_eq!(model_context_window("gemini-2.5-pro"), Some(1_048_576));
+        assert_eq!(model_context_window("gemini-2.0-flash"), Some(1_048_576));
+        // xAI
+        assert_eq!(model_context_window("grok-4"), Some(131_072));
+        // DeepSeek
+        assert_eq!(model_context_window("deepseek-chat"), Some(128_000));
+        // Mistral
+        assert_eq!(model_context_window("mistral-large"), Some(128_000));
+        assert_eq!(model_context_window("codestral"), Some(128_000));
+    }
+
+    #[test]
+    fn test_model_context_window_unknown() {
+        assert_eq!(model_context_window("totally-unknown-xyz"), None);
+        assert_eq!(model_context_window(""), None);
+    }
+
+    #[test]
+    fn test_find_provider_for_model_known() {
+        // Exact match in provider lists
+        assert_eq!(
+            find_provider_for_model("claude-sonnet-4-20250514"),
+            Some("anthropic")
+        );
+        assert_eq!(find_provider_for_model("gpt-4o"), Some("openai"));
+        assert_eq!(find_provider_for_model("gemini-2.5-pro"), Some("google"));
+        assert_eq!(find_provider_for_model("grok-4"), Some("xai"));
+        assert_eq!(find_provider_for_model("deepseek-chat"), Some("deepseek"));
+    }
+
+    #[test]
+    fn test_find_provider_for_model_heuristic() {
+        // Not in any provider's exact list, but inferred from name
+        assert_eq!(
+            find_provider_for_model("claude-some-future-model"),
+            Some("anthropic")
+        );
+        assert_eq!(find_provider_for_model("gpt-99-turbo"), Some("openai"));
+    }
+
+    #[test]
+    fn test_find_provider_for_model_unknown() {
+        assert_eq!(find_provider_for_model("totally-unknown-xyz"), None);
+    }
+
+    #[test]
+    fn test_handle_model_info_no_panic_known() {
+        // Known model — should print info without panic
+        handle_model_info("claude-sonnet-4-20250514", "claude-sonnet-4-20250514");
+    }
+
+    #[test]
+    fn test_handle_model_info_no_panic_unknown() {
+        // Unknown model — should print gracefully without panic
+        handle_model_info("totally-unknown-xyz", "claude-sonnet-4-20250514");
+    }
+
+    #[test]
+    fn test_handle_model_info_no_panic_inactive() {
+        // Known model that is not the active one
+        handle_model_info("gpt-4o", "claude-sonnet-4-20250514");
+    }
+
+    #[test]
+    fn test_format_context_size() {
+        assert_eq!(format_context_size(200_000), "200k tokens");
+        assert_eq!(format_context_size(128_000), "128k tokens");
+        assert_eq!(format_context_size(1_000_000), "1M tokens");
+        assert_eq!(format_context_size(1_048_576), "1.0M tokens");
+        assert_eq!(format_context_size(131_072), "131k tokens");
     }
 }

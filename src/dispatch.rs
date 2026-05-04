@@ -178,6 +178,16 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
                 );
                 return CommandResult::Continue;
             }
+            if arg == "info" || arg.starts_with("info ") {
+                let model_name = arg.strip_prefix("info").unwrap_or("").trim();
+                let target = if model_name.is_empty() {
+                    &ctx.agent_config.model
+                } else {
+                    model_name
+                };
+                commands::handle_model_info(target, &ctx.agent_config.model);
+                return CommandResult::Continue;
+            }
             let new_model = arg;
             ctx.agent_config.model = new_model.to_string();
             // Rebuild ctx.agent with new model, preserving conversation
@@ -314,8 +324,13 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             }
             CommandResult::Continue
         }
-        "/history" => {
-            commands::handle_history(ctx.agent);
+        s if s == "/history" || s.starts_with("/history ") => {
+            let sub = s.strip_prefix("/history").unwrap_or("").trim();
+            if sub == "detail" {
+                commands::handle_history_detail(ctx.agent);
+            } else {
+                commands::handle_history(ctx.agent);
+            }
             CommandResult::Continue
         }
         "/search" => {

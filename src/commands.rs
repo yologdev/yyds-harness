@@ -18,9 +18,9 @@ pub use crate::commands_bg::{handle_bg, BackgroundJobTracker};
 // Explicit re-exports keep the public API of `commands` unchanged so REPL
 // dispatch sites in main.rs / repl.rs don't need to know about the split.
 pub use crate::commands_info::{
-    handle_changelog, handle_cost, handle_evolution, handle_model_list, handle_model_show,
-    handle_profile, handle_provider_show, handle_status, handle_think_show, handle_tokens,
-    handle_version,
+    handle_changelog, handle_cost, handle_evolution, handle_model_info, handle_model_list,
+    handle_model_show, handle_profile, handle_provider_show, handle_status, handle_think_show,
+    handle_tokens, handle_version,
 };
 
 // Re-export /retry and /changes handlers extracted to commands_retry.rs
@@ -130,6 +130,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
 
 /// Well-known model names for `/model <Tab>` completion.
 pub const KNOWN_MODELS: &[&str] = &[
+    "info",
     "list",
     "claude-sonnet-4-20250514",
     "claude-opus-4-20250514",
@@ -178,6 +179,8 @@ pub const CONFIG_SUBCOMMANDS: &[&str] = &["show", "edit", "set", "get"];
 
 /// Subcommands for `/goal`.
 pub const GOAL_SUBCOMMANDS: &[&str] = &["set", "show", "clear", "check"];
+
+pub const HISTORY_SUBCOMMANDS: &[&str] = &["detail"];
 
 /// Return a hint string showing available arguments/subcommands for a command.
 ///
@@ -238,6 +241,7 @@ pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
         "plan" => Some("on | off | open | close | <description>"),
         "tree" => Some("[path] [--depth N]"),
         "index" => Some("[path]"),
+        "history" => Some("detail"),
         _ => None,
     }
 }
@@ -273,6 +277,7 @@ pub fn command_arg_completions(cmd: &str, partial_arg: &str) -> Vec<String> {
         ),
         "/skill" => filter_candidates(crate::commands_skill::SKILL_SUBCOMMANDS, &partial_lower),
         "/plan" => filter_candidates(crate::commands_plan::PLAN_SUBCOMMANDS, &partial_lower),
+        "/history" => filter_candidates(HISTORY_SUBCOMMANDS, &partial_lower),
         _ => Vec::new(),
     }
 }
@@ -494,9 +499,9 @@ pub use crate::commands_file::{
 // Session-related handlers
 pub use crate::commands_session::{
     auto_compact_if_needed, auto_save_on_exit, checkpoint_subcommands, clear_confirmation_message,
-    handle_checkpoint, handle_compact, handle_export, handle_history, handle_jump, handle_load,
-    handle_mark, handle_marks, handle_save, handle_search, handle_stash, last_session_exists,
-    reset_compact_thrash, Bookmarks, CheckpointStore,
+    handle_checkpoint, handle_compact, handle_export, handle_history, handle_history_detail,
+    handle_jump, handle_load, handle_mark, handle_marks, handle_save, handle_search, handle_stash,
+    last_session_exists, reset_compact_thrash, Bookmarks, CheckpointStore,
 };
 
 // Spawn subsystem

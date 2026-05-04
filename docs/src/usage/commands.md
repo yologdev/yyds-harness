@@ -51,6 +51,7 @@ All commands start with `/`. Type `/help` inside yoyo to see the full list.
 | `/compact` | Compress conversation to save context space (see [Context Management](../features/context.md)) |
 | `/retry` | Re-send your last input — useful when a response gets cut off or you want to try again |
 | `/history` | Show a summary of all messages in the conversation |
+| `/history detail` | Per-turn breakdown with tools used and token counts |
 | `/search <query>` | Search conversation history for messages containing the query (case-insensitive) |
 | `/mark <name>` | Bookmark the current conversation state |
 | `/jump <name>` | Restore conversation to a bookmark (discards messages after it) |
@@ -80,7 +81,7 @@ Bookmarks are stored in memory for the current session. Overwriting a bookmark w
 
 | Command | Description |
 |---------|-------------|
-| `/model <name\|list>` | Switch model or list available models |
+| `/model <name\|list\|info>` | Switch, list, or inspect models |
 | `/provider <name>` | Switch provider and reset model to the provider's default |
 | `/think [level]` | Show or change thinking level: `off`, `minimal`, `low`, `medium`, `high` |
 | `/teach [on\|off]` | Toggle teach mode — yoyo explains its reasoning as it works |

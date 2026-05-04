@@ -264,6 +264,142 @@ pub fn handle_history(agent: &Agent) {
     }
 }
 
+/// Count tool calls by name from an assistant message's content blocks.
+fn count_tool_calls(content: &[Content]) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for block in content {
+        if let Content::ToolCall { name, .. } = block {
+            *counts.entry(name.clone()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// Format tool call counts as a compact summary like "bash ×2, read_file ×1".
+fn format_tool_summary(counts: &HashMap<String, usize>) -> String {
+    if counts.is_empty() {
+        return "no tool calls".to_string();
+    }
+    let mut entries: Vec<_> = counts.iter().collect();
+    entries.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    entries
+        .iter()
+        .map(|(name, count)| format!("{name} ×{count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Extract the text preview from a user message's content blocks.
+fn extract_user_text(content: &[Content]) -> String {
+    content
+        .iter()
+        .filter_map(|c| match c {
+            Content::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Show per-turn breakdown with tools used and token counts.
+pub fn handle_history_detail(agent: &Agent) {
+    let messages = agent.messages();
+    if messages.is_empty() {
+        println!("{DIM}  (no messages in conversation){RESET}\n");
+        return;
+    }
+
+    // Group into turns: a turn = user message + following assistant/tool messages
+    // until the next user message (or end).
+    let mut turns: Vec<(Option<&[Content]>, Vec<&Message>)> = Vec::new();
+
+    for msg in messages {
+        match msg {
+            AgentMessage::Llm(m @ Message::User { content, .. }) => {
+                // Start a new turn
+                turns.push((Some(content), vec![m]));
+            }
+            AgentMessage::Llm(m) => {
+                // Assistant or ToolResult — append to current turn (or create orphan turn)
+                if let Some(turn) = turns.last_mut() {
+                    turn.1.push(m);
+                } else {
+                    turns.push((None, vec![m]));
+                }
+            }
+            AgentMessage::Extension(_) => {}
+        }
+    }
+
+    println!();
+    let mut total_input_tokens: u64 = 0;
+    let mut total_output_tokens: u64 = 0;
+
+    for (turn_idx, (user_content, msgs)) in turns.iter().enumerate() {
+        let turn_num = turn_idx + 1;
+
+        // Extract user text preview
+        let user_preview = if let Some(content) = user_content {
+            let text = extract_user_text(content);
+            if text.is_empty() {
+                "(no text)".to_string()
+            } else {
+                format!("\"{}\"", truncate_with_ellipsis(&text, 60))
+            }
+        } else {
+            "(system)".to_string()
+        };
+
+        // Gather assistant stats: tool calls, tokens
+        let mut all_tool_counts: HashMap<String, usize> = HashMap::new();
+        let mut turn_input: u64 = 0;
+        let mut turn_output: u64 = 0;
+        let mut has_assistant = false;
+
+        for m in msgs {
+            if let Message::Assistant { content, usage, .. } = m {
+                has_assistant = true;
+                turn_input += usage.input + usage.cache_read + usage.cache_write;
+                turn_output += usage.output;
+                for (name, count) in count_tool_calls(content) {
+                    *all_tool_counts.entry(name).or_insert(0) += count;
+                }
+            }
+        }
+
+        total_input_tokens += turn_input;
+        total_output_tokens += turn_output;
+
+        println!("  {BOLD}Turn {turn_num}{RESET}");
+        println!("    {GREEN}You:{RESET}   {user_preview}");
+        if has_assistant {
+            let tool_total: usize = all_tool_counts.values().sum();
+            let tool_summary = format_tool_summary(&all_tool_counts);
+            println!(
+                "    {CYAN}Agent:{RESET} {tool_total} tool call{}, {}, {} tok in / {} tok out",
+                if tool_total == 1 { "" } else { "s" },
+                tool_summary,
+                format_token_count(turn_input),
+                format_token_count(turn_output),
+            );
+        } else {
+            println!("    {DIM}(no assistant response){RESET}");
+        }
+        println!();
+    }
+
+    let total = total_input_tokens + total_output_tokens;
+    println!(
+        "  {BOLD}Total:{RESET} {} turn{}, ~{} tokens ({} in + {} out)",
+        turns.len(),
+        if turns.len() == 1 { "" } else { "s" },
+        format_token_count(total),
+        format_token_count(total_input_tokens),
+        format_token_count(total_output_tokens),
+    );
+    println!();
+}
+
 // ── /search ──────────────────────────────────────────────────────────────
 
 pub fn handle_search(agent: &Agent, input: &str) {
@@ -1731,5 +1867,94 @@ mod tests {
 
         let diff = store.diff("cp").unwrap();
         assert!(diff.contains("No changes"));
+    }
+
+    #[test]
+    fn test_count_tool_calls_empty() {
+        let content: Vec<Content> = vec![Content::Text {
+            text: "hello".to_string(),
+        }];
+        let counts = count_tool_calls(&content);
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_count_tool_calls_multiple() {
+        let content = vec![
+            Content::ToolCall {
+                id: "1".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::Value::Null,
+                provider_metadata: None,
+            },
+            Content::Text {
+                text: "thinking...".to_string(),
+            },
+            Content::ToolCall {
+                id: "2".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::Value::Null,
+                provider_metadata: None,
+            },
+            Content::ToolCall {
+                id: "3".to_string(),
+                name: "read_file".to_string(),
+                arguments: serde_json::Value::Null,
+                provider_metadata: None,
+            },
+        ];
+        let counts = count_tool_calls(&content);
+        assert_eq!(counts.get("bash"), Some(&2));
+        assert_eq!(counts.get("read_file"), Some(&1));
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn test_format_tool_summary_empty() {
+        let counts = HashMap::new();
+        assert_eq!(format_tool_summary(&counts), "no tool calls");
+    }
+
+    #[test]
+    fn test_format_tool_summary_sorted() {
+        let mut counts = HashMap::new();
+        counts.insert("read_file".to_string(), 1);
+        counts.insert("bash".to_string(), 3);
+        counts.insert("edit_file".to_string(), 2);
+        let summary = format_tool_summary(&counts);
+        // Should be sorted by count descending, then name ascending
+        assert_eq!(summary, "bash ×3, edit_file ×2, read_file ×1");
+    }
+
+    #[test]
+    fn test_extract_user_text() {
+        let content = vec![
+            Content::Text {
+                text: "hello".to_string(),
+            },
+            Content::Text {
+                text: "world".to_string(),
+            },
+        ];
+        assert_eq!(extract_user_text(&content), "hello world");
+    }
+
+    #[test]
+    fn test_extract_user_text_empty() {
+        let content: Vec<Content> = vec![];
+        assert_eq!(extract_user_text(&content), "");
+    }
+
+    #[test]
+    fn test_handle_history_detail_empty() {
+        use yoagent::agent::Agent;
+        use yoagent::provider::AnthropicProvider;
+
+        let agent = Agent::new(AnthropicProvider)
+            .with_system_prompt("test")
+            .with_model("test-model")
+            .with_api_key("test-key");
+        // Should not panic with no messages
+        handle_history_detail(&agent);
     }
 }

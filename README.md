@@ -350,6 +350,7 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 | `/goal [subcmd]` | Set, view, or check progress on a session goal (set/show/clear/check) |
 | `/health` | Run project health checks |
 | `/history` | Show conversation message summary |
+| `/history detail` | Per-turn breakdown with tools and token counts |
 | `/hooks` | Show active hooks (pre/post tool execution) |
 | `/index` | Build a lightweight codebase index |
 | `/init` | Generate a starter YOYO.md |
@@ -360,7 +361,7 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 | `/marks` | List all conversation bookmarks |
 | `/checkpoint [sub]` | Named file-state snapshots (save, list, restore, diff, delete) |
 | `/memories` | List project-specific memories |
-| `/model <name\|list>` | Switch model or list available models |
+| `/model <name\|list\|info>` | Switch, list, or inspect models |
 | `/pr [subcmd]` | PR workflow: list, view, create, diff, comment, checkout |
 | `/permissions` | Show active security and permission configuration |
 | `/provider <name>` | Switch provider mid-session |
