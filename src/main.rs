@@ -62,6 +62,7 @@ mod commands_session;
 mod commands_skill;
 mod commands_spawn;
 mod commands_todo;
+mod commands_tree;
 mod commands_update;
 mod config;
 mod context;

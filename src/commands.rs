@@ -484,7 +484,9 @@ pub use crate::commands_ast_grep::handle_ast_grep;
 pub use crate::commands_map::handle_map;
 pub use crate::commands_search::{handle_find, handle_grep, handle_index, handle_outline};
 
-pub use crate::commands_dev::{handle_doctor, handle_fix, handle_health, handle_tree};
+pub use crate::commands_dev::{handle_doctor, handle_fix, handle_health};
+
+pub use crate::commands_tree::handle_tree;
 
 pub use crate::watch::handle_watch;
 

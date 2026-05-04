@@ -124,7 +124,7 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
             }
             "tree" => {
                 let input = quote_args_as_command(args);
-                crate::commands_dev::handle_tree(&input);
+                crate::commands_tree::handle_tree(&input);
                 return Some(None);
             }
             "map" => {
