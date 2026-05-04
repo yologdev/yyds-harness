@@ -205,7 +205,7 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
             }
             "watch" => {
                 let input = quote_args_as_command(args);
-                crate::commands_dev::handle_watch(&input);
+                crate::watch::handle_watch(&input);
                 return Some(None);
             }
             "status" => {

@@ -155,7 +155,7 @@ async fn run_single_prompt(
 
     // Auto-enable watch mode if a project type is detected and config allows it
     if get_watch_command().is_none() && agent_config.auto_watch {
-        if let Some(cmd) = commands_dev::auto_detect_watch_command() {
+        if let Some(cmd) = watch::auto_detect_watch_command() {
             set_watch_command(&cmd);
             eprintln!("{DIM}  👀 Auto-watch: `{cmd}` (disable with auto_watch = false){RESET}");
         }
@@ -322,7 +322,7 @@ async fn run_piped_mode(
 
     // Auto-enable watch mode if a project type is detected and config allows it
     if get_watch_command().is_none() && agent_config.auto_watch {
-        if let Some(cmd) = commands_dev::auto_detect_watch_command() {
+        if let Some(cmd) = watch::auto_detect_watch_command() {
             set_watch_command(&cmd);
             eprintln!("{DIM}  👀 Auto-watch: `{cmd}` (disable with auto_watch = false){RESET}");
         }
