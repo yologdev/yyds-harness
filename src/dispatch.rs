@@ -163,12 +163,22 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             CommandResult::Continue
         }
         s if s.starts_with("/model ") => {
-            let new_model = s.trim_start_matches("/model ").trim();
-            if new_model.is_empty() {
+            let arg = s.trim_start_matches("/model ").trim();
+            if arg.is_empty() {
                 println!("{DIM}  current model: {}", ctx.agent_config.model);
                 println!("  usage: /model <name>{RESET}\n");
                 return CommandResult::Continue;
             }
+            if arg == "list" || arg.starts_with("list ") {
+                let filter = arg.strip_prefix("list").unwrap_or("").trim();
+                commands::handle_model_list(
+                    &ctx.agent_config.model,
+                    &ctx.agent_config.provider,
+                    filter,
+                );
+                return CommandResult::Continue;
+            }
+            let new_model = arg;
             ctx.agent_config.model = new_model.to_string();
             // Rebuild ctx.agent with new model, preserving conversation
             let saved = ctx.agent.save_messages().ok();

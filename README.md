@@ -360,7 +360,7 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 | `/marks` | List all conversation bookmarks |
 | `/checkpoint [sub]` | Named file-state snapshots (save, list, restore, diff, delete) |
 | `/memories` | List project-specific memories |
-| `/model <name>` | Switch model mid-session |
+| `/model <name\|list>` | Switch model or list available models |
 | `/pr [subcmd]` | PR workflow: list, view, create, diff, comment, checkout |
 | `/permissions` | Show active security and permission configuration |
 | `/provider <name>` | Switch provider mid-session |

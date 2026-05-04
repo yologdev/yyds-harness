@@ -9,7 +9,7 @@
 //! handlers are the safest possible first slice — no shared mutable state, no
 //! session-changes plumbing, no provider rebuild paths.
 
-use crate::cli::{KNOWN_PROVIDERS, VERSION};
+use crate::cli::{default_model_for_provider, known_models_for_provider, KNOWN_PROVIDERS, VERSION};
 use crate::commands::thinking_level_name;
 use crate::format::*;
 use crate::git::*;
@@ -188,6 +188,62 @@ pub fn handle_cost(session_total: &Usage, model: &str, messages: &[yoagent::Agen
 pub fn handle_model_show(model: &str) {
     println!("{DIM}  current model: {model}");
     println!("  usage: /model <name>{RESET}\n");
+}
+
+/// Display known models grouped by provider. If `filter` is non-empty and matches
+/// a provider name, only that provider's models are shown.
+pub fn handle_model_list(current_model: &str, current_provider: &str, filter: &str) {
+    // If filter matches a known provider, show only that one
+    let providers: Vec<&str> = if !filter.is_empty()
+        && KNOWN_PROVIDERS
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(filter))
+    {
+        KNOWN_PROVIDERS
+            .iter()
+            .filter(|p| p.eq_ignore_ascii_case(filter))
+            .copied()
+            .collect()
+    } else if !filter.is_empty() {
+        println!(
+            "{YELLOW}  unknown provider: {filter}. available: {}{RESET}\n",
+            KNOWN_PROVIDERS.join(", ")
+        );
+        return;
+    } else {
+        KNOWN_PROVIDERS.to_vec()
+    };
+
+    println!("{DIM}  Models by provider (active: {current_model}){RESET}\n");
+
+    for provider in &providers {
+        let models = known_models_for_provider(provider);
+        if models.is_empty() {
+            continue;
+        }
+        let default_model = default_model_for_provider(provider);
+        let provider_label = if *provider == current_provider {
+            format!("{BOLD}{provider}{RESET}")
+        } else {
+            format!("{DIM}{provider}{RESET}")
+        };
+        println!("  {provider_label}");
+
+        for model in models {
+            let is_active = *model == current_model;
+            let is_default = *model == default_model;
+            let marker = if is_active { "\u{25b8}" } else { " " };
+            let suffix = if is_default { "  (default)" } else { "" };
+            if is_active {
+                println!("  {marker} {GREEN}{model}{suffix}{RESET}");
+            } else {
+                println!("{DIM}  {marker} {model}{suffix}{RESET}");
+            }
+        }
+        println!();
+    }
+
+    println!("{DIM}  Use: /model <name> to switch{RESET}\n");
 }
 
 // ── /provider ────────────────────────────────────────────────────────────
@@ -1368,5 +1424,23 @@ More text.
         // Invalid timestamp should fallback gracefully
         let result = format_ci_time_ago("not-a-date");
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_handle_model_list_no_panic_empty_filter() {
+        // Should not panic with empty filter
+        handle_model_list("claude-sonnet-4-20250514", "anthropic", "");
+    }
+
+    #[test]
+    fn test_handle_model_list_no_panic_provider_filter() {
+        // Should not panic when filtering by a specific provider
+        handle_model_list("claude-sonnet-4-20250514", "anthropic", "openai");
+    }
+
+    #[test]
+    fn test_handle_model_list_no_panic_unknown_provider() {
+        // Should not panic with an unknown provider filter
+        handle_model_list("claude-sonnet-4-20250514", "anthropic", "nonexistent");
     }
 }

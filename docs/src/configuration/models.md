@@ -18,9 +18,11 @@ yoyo --model llama3.2 --provider ollama
 **During a session:**
 ```
 /model claude-sonnet-4-20250514
+/model list
+/model list openai
 ```
 
-> **Note:** Switching models with `/model` preserves your conversation history — you can change models mid-task without losing context.
+> **Note:** Switching models with `/model` preserves your conversation history — you can change models mid-task without losing context. Use `/model list` to see all available models grouped by provider.
 
 ## Providers
 

@@ -548,13 +548,16 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
         "model" => Some(
             "/model <name> — Switch the AI model\n\n\
              Usage:\n\
-             \x20 /model <name>    Switch to the specified model\n\n\
+             \x20 /model <name>       Switch to the specified model\n\
+             \x20 /model list         Show all available models by provider\n\
+             \x20 /model list <prov>  Show models for a specific provider\n\n\
              Changes the active model while preserving the conversation.\n\
              Tab-completion is available for known model names.\n\n\
              Examples:\n\
              \x20 /model claude-sonnet-4-20250514\n\
              \x20 /model gpt-4o\n\
-             \x20 /model gemini-2.5-pro",
+             \x20 /model list\n\
+             \x20 /model list anthropic",
         ),
         "think" => Some(
             "/think [level] — Show or change thinking level\n\n\
@@ -1470,7 +1473,7 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(s, "  AI:");
     let _ = writeln!(
         s,
-        "    /model <name>      Switch model (preserves conversation)"
+        "    /model <name|list> Switch model or list available models"
     );
     let _ = writeln!(s, "    /provider <name>   Switch provider");
     let _ = writeln!(
@@ -1697,7 +1700,7 @@ pub fn help_text() -> String {
 
     // ── AI ──
     out.push_str("  ── AI ──\n");
-    out.push_str("  /model <name>      Switch model (preserves conversation)\n");
+    out.push_str("  /model <name|list> Switch model or list available models\n");
     out.push_str("  /provider <name>   Switch provider (resets model to provider default)\n");
     out.push_str("  /think [level]     Show or change thinking level (off/low/medium/high)\n");
     out.push_str("  /plan [on|off|task] Plan mode toggle or one-shot task plan (architect mode)\n");
