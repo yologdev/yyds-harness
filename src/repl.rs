@@ -308,6 +308,263 @@ pub fn collect_multiline_rl(
     buf
 }
 
+/// Run the architect-mode two-phase turn: plan with a strong model, then
+/// implement with a cheaper editor model. Returns the editor's `PromptOutcome`
+/// (or a default if the architect returned an empty plan).
+async fn run_architect_turn(
+    agent_config: &mut AgentConfig,
+    effective_input: &str,
+    session_total: &mut Usage,
+    session_changes: &SessionChanges,
+) -> PromptOutcome {
+    let arch_model = commands::architect_model().unwrap_or_else(|| agent_config.model.clone());
+    let editor_model = commands::default_editor_model(&arch_model);
+
+    eprintln!("{DIM}  🏗️ architect mode: planning with {arch_model}...{RESET}");
+
+    // Phase 1: Get the plan from the architect (no tools, text-only)
+    let architect_input = format!("{}\n\n{}", commands::ARCHITECT_PROMPT, effective_input);
+    let mut arch_agent = agent_config.build_architect_agent(&arch_model);
+    let mut rx = arch_agent.prompt(&architect_input).await;
+
+    let mut md_renderer = MarkdownRenderer::new();
+    let mut plan_text = String::new();
+    let mut started = false;
+
+    loop {
+        match rx.recv().await {
+            Some(AgentEvent::MessageUpdate {
+                delta: StreamDelta::Text { delta },
+                ..
+            }) => {
+                if !started {
+                    eprintln!();
+                    eprint!("{DIM}[architect]{RESET} ");
+                    started = true;
+                }
+                plan_text.push_str(&delta);
+                let rendered = md_renderer.render_delta(&delta);
+                if !rendered.is_empty() {
+                    print!("{rendered}");
+                }
+            }
+            Some(AgentEvent::MessageEnd { .. }) => {
+                let tail = md_renderer.flush();
+                if !tail.is_empty() {
+                    print!("{tail}");
+                }
+            }
+            Some(AgentEvent::AgentEnd { .. }) => break,
+            None => break,
+            _ => {}
+        }
+    }
+
+    arch_agent.finish().await;
+
+    // Show architect cost
+    let arch_messages = arch_agent.messages();
+    let mut arch_usage = Usage::default();
+    for msg in arch_messages {
+        if let AgentMessage::Llm(yoagent::types::Message::Assistant { usage, .. }) = msg {
+            arch_usage.input += usage.input;
+            arch_usage.output += usage.output;
+            arch_usage.cache_read += usage.cache_read;
+            arch_usage.cache_write += usage.cache_write;
+        }
+    }
+    let arch_tokens = arch_usage.input + arch_usage.output;
+    if arch_tokens > 0 {
+        let cost = estimate_cost(&arch_usage, &arch_model);
+        if let Some(c) = cost {
+            eprintln!(
+                "\n{DIM}  [architect] {} tokens, ${:.4}{RESET}",
+                arch_tokens, c
+            );
+        } else {
+            eprintln!("\n{DIM}  [architect] {} tokens{RESET}", arch_tokens);
+        }
+    } else {
+        eprintln!();
+    }
+
+    if plan_text.trim().is_empty() {
+        eprintln!("{YELLOW}  architect returned empty plan — skipping editor phase{RESET}\n");
+        return PromptOutcome::default();
+    }
+
+    // Phase 2: Feed the plan to the editor model for implementation
+    eprintln!("{DIM}  🔧 implementing with {editor_model}...{RESET}\n");
+
+    let editor_prompt = format!(
+        "Implement the following plan exactly. The plan was written by an architect model \
+         analyzing the user's request.\n\n\
+         ## Original request\n\n{effective_input}\n\n\
+         ## Architect's plan\n\n{plan_text}"
+    );
+
+    // Build a separate editor agent with the cheaper model
+    let mut editor_agent = agent_config.build_editor_agent(&editor_model);
+    let editor_outcome = run_prompt_auto_retry(
+        &mut editor_agent,
+        &editor_prompt,
+        session_total,
+        &editor_model,
+        session_changes,
+    )
+    .await;
+
+    // Show editor cost
+    editor_agent.finish().await;
+    let editor_messages = editor_agent.messages();
+    let mut editor_usage = Usage::default();
+    for msg in editor_messages {
+        if let AgentMessage::Llm(yoagent::types::Message::Assistant { usage, .. }) = msg {
+            editor_usage.input += usage.input;
+            editor_usage.output += usage.output;
+            editor_usage.cache_read += usage.cache_read;
+            editor_usage.cache_write += usage.cache_write;
+        }
+    }
+    let editor_tokens = editor_usage.input + editor_usage.output;
+    if editor_tokens > 0 {
+        let cost = estimate_cost(&editor_usage, &editor_model);
+        if let Some(c) = cost {
+            eprintln!("{DIM}  [editor] {} tokens, ${:.4}{RESET}", editor_tokens, c);
+        } else {
+            eprintln!("{DIM}  [editor] {} tokens{RESET}", editor_tokens);
+        }
+    }
+
+    editor_outcome
+}
+
+/// Post-prompt handling: bell, error tracking, fallback retry, turn snapshots,
+/// watch-after-prompt, auto-commit, and auto-compact.
+#[allow(clippy::too_many_arguments)]
+async fn handle_post_prompt(
+    outcome: &PromptOutcome,
+    agent: &mut yoagent::agent::Agent,
+    agent_config: &mut AgentConfig,
+    session_total: &mut Usage,
+    session_changes: &SessionChanges,
+    turn_history: &mut TurnHistory,
+    mut turn_snap: TurnSnapshot,
+    changes_before: &[String],
+    last_error: &mut Option<String>,
+    prompt_start: Instant,
+    effective_input: &str,
+) {
+    crate::format::maybe_ring_bell(prompt_start.elapsed());
+    *last_error = outcome.last_tool_error.clone();
+
+    // Notify the user if the context was auto-compacted due to overflow
+    if outcome.was_overflow {
+        eprintln!("{YELLOW}  ℹ Context was auto-compacted (overflow detected){RESET}");
+    }
+
+    // Fallback provider: if the API failed and a fallback is configured, switch and retry
+    if outcome.last_api_error.is_some() {
+        let old_provider = agent_config.provider.clone();
+        let fallback_name = agent_config.fallback_provider.clone();
+        if agent_config.try_switch_to_fallback() {
+            let fallback = fallback_name.as_deref().unwrap_or("unknown");
+            eprintln!(
+                "\n{YELLOW}  ⚡ Primary provider '{}' failed. Switching to fallback '{}'...{RESET}",
+                old_provider, fallback
+            );
+
+            // Rebuild agent with the new provider
+            *agent = agent_config.build_agent();
+
+            eprintln!(
+                "{DIM}  now using: {} / {}{RESET}\n",
+                agent_config.provider, agent_config.model
+            );
+
+            // Retry the same prompt with the fallback provider
+            let retry_outcome = run_prompt_auto_retry(
+                agent,
+                effective_input,
+                session_total,
+                &agent_config.model,
+                session_changes,
+            )
+            .await;
+            *last_error = retry_outcome.last_tool_error.clone();
+
+            // If fallback also failed, restore original provider info for display
+            // but keep the fallback agent since the original was already broken
+            if retry_outcome.last_api_error.is_some() {
+                eprintln!(
+                    "{RED}  fallback provider '{}' also failed.{RESET}",
+                    fallback
+                );
+                eprintln!(
+                    "{DIM}  original provider was '{}'. Use /provider to switch manually.{RESET}",
+                    old_provider
+                );
+            }
+        }
+    }
+
+    // After the turn, find newly modified files and update the snapshot
+    let changes_after: Vec<String> = session_changes
+        .snapshot()
+        .iter()
+        .map(|c| c.path.clone())
+        .collect();
+    for path in &changes_after {
+        if !changes_before.contains(path) {
+            // This file was touched for the first time in this turn
+            if turn_snap.originals.contains_key(path.as_str()) {
+                // Already snapshotted (e.g., was in git diff) — keep the original
+            } else if std::path::Path::new(path).exists() {
+                // File was created during this turn
+                turn_snap.record_created(path);
+            }
+        }
+    }
+    // Also check for new files from git that weren't in session_changes
+    if let Ok(diff_files) = crate::git::run_git(&["diff", "--name-only"]) {
+        for f in diff_files.lines().filter(|l| !l.is_empty()) {
+            if !turn_snap.originals.contains_key(f) {
+                turn_snap.snapshot_file(f);
+            }
+        }
+    }
+    turn_history.push(turn_snap);
+
+    let files_modified = changes_after.len() > changes_before.len();
+    if files_modified {
+        let watch_result =
+            run_watch_after_prompt(agent, session_total, &agent_config.model, session_changes)
+                .await;
+        if !watch_result.passed {
+            *last_error = watch_result.last_tool_error;
+        }
+    }
+
+    // ── Auto-commit: stage and commit if flag is on and files changed ─────
+    if agent_config.auto_commit && files_modified {
+        let _ = run_git(&["add", "-A"]);
+        if let Some(diff) = get_staged_diff() {
+            if !diff.trim().is_empty() {
+                let msg = generate_commit_message(&diff);
+                let (ok, output) = run_git_commit(&msg);
+                if ok {
+                    eprintln!("{GREEN}  ✓ Auto-committed: {}{RESET}", output.trim());
+                } else {
+                    eprintln!("{DIM}  (auto-commit failed: {}){RESET}", output.trim());
+                }
+            }
+        }
+    }
+
+    // Auto-compact when context window is getting full
+    auto_compact_if_needed(agent);
+}
+
 /// Returns when the user exits (via /quit, /exit, Ctrl-D, etc.).
 pub async fn run_repl(
     agent_config: &mut AgentConfig,
@@ -550,130 +807,13 @@ pub async fn run_repl(
 
         // ── Architect mode: plan with strong model, implement with editor ──
         let outcome = if commands::is_architect_mode() {
-            let arch_model =
-                commands::architect_model().unwrap_or_else(|| agent_config.model.clone());
-            let editor_model = commands::default_editor_model(&arch_model);
-
-            eprintln!("{DIM}  🏗️ architect mode: planning with {arch_model}...{RESET}");
-
-            // Phase 1: Get the plan from the architect (no tools, text-only)
-            let architect_input = format!("{}\n\n{}", commands::ARCHITECT_PROMPT, effective_input);
-            let mut arch_agent = agent_config.build_architect_agent(&arch_model);
-            let mut rx = arch_agent.prompt(&architect_input).await;
-
-            let mut md_renderer = MarkdownRenderer::new();
-            let mut plan_text = String::new();
-            let mut started = false;
-
-            loop {
-                match rx.recv().await {
-                    Some(AgentEvent::MessageUpdate {
-                        delta: StreamDelta::Text { delta },
-                        ..
-                    }) => {
-                        if !started {
-                            eprintln!();
-                            eprint!("{DIM}[architect]{RESET} ");
-                            started = true;
-                        }
-                        plan_text.push_str(&delta);
-                        let rendered = md_renderer.render_delta(&delta);
-                        if !rendered.is_empty() {
-                            print!("{rendered}");
-                        }
-                    }
-                    Some(AgentEvent::MessageEnd { .. }) => {
-                        let tail = md_renderer.flush();
-                        if !tail.is_empty() {
-                            print!("{tail}");
-                        }
-                    }
-                    Some(AgentEvent::AgentEnd { .. }) => break,
-                    None => break,
-                    _ => {}
-                }
-            }
-
-            arch_agent.finish().await;
-
-            // Show architect cost
-            let arch_messages = arch_agent.messages();
-            let mut arch_usage = Usage::default();
-            for msg in arch_messages {
-                if let AgentMessage::Llm(yoagent::types::Message::Assistant { usage, .. }) = msg {
-                    arch_usage.input += usage.input;
-                    arch_usage.output += usage.output;
-                    arch_usage.cache_read += usage.cache_read;
-                    arch_usage.cache_write += usage.cache_write;
-                }
-            }
-            let arch_tokens = arch_usage.input + arch_usage.output;
-            if arch_tokens > 0 {
-                let cost = estimate_cost(&arch_usage, &arch_model);
-                if let Some(c) = cost {
-                    eprintln!(
-                        "\n{DIM}  [architect] {} tokens, ${:.4}{RESET}",
-                        arch_tokens, c
-                    );
-                } else {
-                    eprintln!("\n{DIM}  [architect] {} tokens{RESET}", arch_tokens);
-                }
-            } else {
-                eprintln!();
-            }
-
-            if plan_text.trim().is_empty() {
-                eprintln!(
-                    "{YELLOW}  architect returned empty plan — skipping editor phase{RESET}\n"
-                );
-                PromptOutcome::default()
-            } else {
-                // Phase 2: Feed the plan to the editor model for implementation
-                eprintln!("{DIM}  🔧 implementing with {editor_model}...{RESET}\n");
-
-                let editor_prompt = format!(
-                    "Implement the following plan exactly. The plan was written by an architect model \
-                     analyzing the user's request.\n\n\
-                     ## Original request\n\n{effective_input}\n\n\
-                     ## Architect's plan\n\n{plan_text}"
-                );
-
-                // Build a separate editor agent with the cheaper model
-                let mut editor_agent = agent_config.build_editor_agent(&editor_model);
-                let editor_outcome = run_prompt_auto_retry(
-                    &mut editor_agent,
-                    &editor_prompt,
-                    &mut session_total,
-                    &editor_model,
-                    &session_changes,
-                )
-                .await;
-
-                // Show editor cost
-                editor_agent.finish().await;
-                let editor_messages = editor_agent.messages();
-                let mut editor_usage = Usage::default();
-                for msg in editor_messages {
-                    if let AgentMessage::Llm(yoagent::types::Message::Assistant { usage, .. }) = msg
-                    {
-                        editor_usage.input += usage.input;
-                        editor_usage.output += usage.output;
-                        editor_usage.cache_read += usage.cache_read;
-                        editor_usage.cache_write += usage.cache_write;
-                    }
-                }
-                let editor_tokens = editor_usage.input + editor_usage.output;
-                if editor_tokens > 0 {
-                    let cost = estimate_cost(&editor_usage, &editor_model);
-                    if let Some(c) = cost {
-                        eprintln!("{DIM}  [editor] {} tokens, ${:.4}{RESET}", editor_tokens, c);
-                    } else {
-                        eprintln!("{DIM}  [editor] {} tokens{RESET}", editor_tokens);
-                    }
-                }
-
-                editor_outcome
-            }
+            run_architect_turn(
+                agent_config,
+                &effective_input,
+                &mut session_total,
+                &session_changes,
+            )
+            .await
         } else if !file_results.is_empty() {
             // Print summaries like /add does
             for result in &file_results {
@@ -715,119 +855,20 @@ pub async fn run_repl(
             )
             .await
         };
-        crate::format::maybe_ring_bell(prompt_start.elapsed());
-        last_error = outcome.last_tool_error.clone();
-
-        // Notify the user if the context was auto-compacted due to overflow
-        if outcome.was_overflow {
-            eprintln!("{YELLOW}  ℹ Context was auto-compacted (overflow detected){RESET}");
-        }
-
-        // Fallback provider: if the API failed and a fallback is configured, switch and retry
-        if outcome.last_api_error.is_some() {
-            let old_provider = agent_config.provider.clone();
-            let fallback_name = agent_config.fallback_provider.clone();
-            if agent_config.try_switch_to_fallback() {
-                let fallback = fallback_name.as_deref().unwrap_or("unknown");
-                eprintln!(
-                    "\n{YELLOW}  ⚡ Primary provider '{}' failed. Switching to fallback '{}'...{RESET}",
-                    old_provider, fallback
-                );
-
-                // Rebuild agent with the new provider
-                *agent = agent_config.build_agent();
-
-                eprintln!(
-                    "{DIM}  now using: {} / {}{RESET}\n",
-                    agent_config.provider, agent_config.model
-                );
-
-                // Retry the same prompt with the fallback provider
-                let retry_outcome = run_prompt_auto_retry(
-                    agent,
-                    input,
-                    &mut session_total,
-                    &agent_config.model,
-                    &session_changes,
-                )
-                .await;
-                last_error = retry_outcome.last_tool_error.clone();
-
-                // If fallback also failed, restore original provider info for display
-                // but keep the fallback agent since the original was already broken
-                if retry_outcome.last_api_error.is_some() {
-                    eprintln!(
-                        "{RED}  fallback provider '{}' also failed.{RESET}",
-                        fallback
-                    );
-                    eprintln!(
-                        "{DIM}  original provider was '{}'. Use /provider to switch manually.{RESET}",
-                        old_provider
-                    );
-                }
-            }
-        }
-
-        // After the turn, find newly modified files and update the snapshot
-        let changes_after: Vec<String> = session_changes
-            .snapshot()
-            .iter()
-            .map(|c| c.path.clone())
-            .collect();
-        for path in &changes_after {
-            if !changes_before.contains(path) {
-                // This file was touched for the first time in this turn
-                if turn_snap.originals.contains_key(path.as_str()) {
-                    // Already snapshotted (e.g., was in git diff) — keep the original
-                } else if std::path::Path::new(path).exists() {
-                    // File was created during this turn
-                    turn_snap.record_created(path);
-                }
-            }
-        }
-        // Also check for new files from git that weren't in session_changes
-        if let Ok(diff_files) = crate::git::run_git(&["diff", "--name-only"]) {
-            for f in diff_files.lines().filter(|l| !l.is_empty()) {
-                if !turn_snap.originals.contains_key(f) {
-                    turn_snap.snapshot_file(f);
-                }
-            }
-        }
-        turn_history.push(turn_snap);
-
-        // ── Watch mode: auto-run test/lint command after agent edits ───────
-        let files_modified = changes_after.len() > changes_before.len();
-        if files_modified {
-            let watch_result = run_watch_after_prompt(
-                agent,
-                &mut session_total,
-                &agent_config.model,
-                &session_changes,
-            )
-            .await;
-            if !watch_result.passed {
-                last_error = watch_result.last_tool_error;
-            }
-        }
-
-        // ── Auto-commit: stage and commit if flag is on and files changed ─────
-        if agent_config.auto_commit && files_modified {
-            let _ = run_git(&["add", "-A"]);
-            if let Some(diff) = get_staged_diff() {
-                if !diff.trim().is_empty() {
-                    let msg = generate_commit_message(&diff);
-                    let (ok, output) = run_git_commit(&msg);
-                    if ok {
-                        eprintln!("{GREEN}  ✓ Auto-committed: {}{RESET}", output.trim());
-                    } else {
-                        eprintln!("{DIM}  (auto-commit failed: {}){RESET}", output.trim());
-                    }
-                }
-            }
-        }
-
-        // Auto-compact when context window is getting full
-        auto_compact_if_needed(agent);
+        handle_post_prompt(
+            &outcome,
+            agent,
+            agent_config,
+            &mut session_total,
+            &session_changes,
+            &mut turn_history,
+            turn_snap,
+            &changes_before,
+            &mut last_error,
+            prompt_start,
+            &effective_input,
+        )
+        .await;
     }
 
     // Save readline history
