@@ -439,35 +439,38 @@ async fn run_architect_turn(
     editor_outcome
 }
 
+/// Bundles the parameters for [`handle_post_prompt`] into a single struct,
+/// eliminating a 13-parameter function signature.
+struct PostPromptContext<'a> {
+    outcome: &'a PromptOutcome,
+    agent: &'a mut yoagent::agent::Agent,
+    agent_config: &'a mut AgentConfig,
+    session_total: &'a mut Usage,
+    session_changes: &'a SessionChanges,
+    turn_history: &'a mut TurnHistory,
+    turn_snap: TurnSnapshot,
+    changes_before: &'a [String],
+    last_error: &'a mut Option<String>,
+    prompt_start: Instant,
+    effective_input: &'a str,
+}
+
 /// Post-prompt handling: bell, error tracking, fallback retry, turn snapshots,
 /// watch-after-prompt, auto-commit, and auto-compact.
-#[allow(clippy::too_many_arguments)]
-async fn handle_post_prompt(
-    outcome: &PromptOutcome,
-    agent: &mut yoagent::agent::Agent,
-    agent_config: &mut AgentConfig,
-    session_total: &mut Usage,
-    session_changes: &SessionChanges,
-    turn_history: &mut TurnHistory,
-    mut turn_snap: TurnSnapshot,
-    changes_before: &[String],
-    last_error: &mut Option<String>,
-    prompt_start: Instant,
-    effective_input: &str,
-) {
-    crate::format::maybe_ring_bell(prompt_start.elapsed());
-    *last_error = outcome.last_tool_error.clone();
+async fn handle_post_prompt(mut ctx: PostPromptContext<'_>) {
+    crate::format::maybe_ring_bell(ctx.prompt_start.elapsed());
+    *ctx.last_error = ctx.outcome.last_tool_error.clone();
 
     // Notify the user if the context was auto-compacted due to overflow
-    if outcome.was_overflow {
+    if ctx.outcome.was_overflow {
         eprintln!("{YELLOW}  ℹ Context was auto-compacted (overflow detected){RESET}");
     }
 
     // Fallback provider: if the API failed and a fallback is configured, switch and retry
-    if outcome.last_api_error.is_some() {
-        let old_provider = agent_config.provider.clone();
-        let fallback_name = agent_config.fallback_provider.clone();
-        if agent_config.try_switch_to_fallback() {
+    if ctx.outcome.last_api_error.is_some() {
+        let old_provider = ctx.agent_config.provider.clone();
+        let fallback_name = ctx.agent_config.fallback_provider.clone();
+        if ctx.agent_config.try_switch_to_fallback() {
             let fallback = fallback_name.as_deref().unwrap_or("unknown");
             eprintln!(
                 "\n{YELLOW}  ⚡ Primary provider '{}' failed. Switching to fallback '{}'...{RESET}",
@@ -475,23 +478,23 @@ async fn handle_post_prompt(
             );
 
             // Rebuild agent with the new provider
-            *agent = agent_config.build_agent();
+            *ctx.agent = ctx.agent_config.build_agent();
 
             eprintln!(
                 "{DIM}  now using: {} / {}{RESET}\n",
-                agent_config.provider, agent_config.model
+                ctx.agent_config.provider, ctx.agent_config.model
             );
 
             // Retry the same prompt with the fallback provider
             let retry_outcome = run_prompt_auto_retry(
-                agent,
-                effective_input,
-                session_total,
-                &agent_config.model,
-                session_changes,
+                ctx.agent,
+                ctx.effective_input,
+                ctx.session_total,
+                &ctx.agent_config.model,
+                ctx.session_changes,
             )
             .await;
-            *last_error = retry_outcome.last_tool_error.clone();
+            *ctx.last_error = retry_outcome.last_tool_error.clone();
 
             // If fallback also failed, restore original provider info for display
             // but keep the fallback agent since the original was already broken
@@ -509,44 +512,49 @@ async fn handle_post_prompt(
     }
 
     // After the turn, find newly modified files and update the snapshot
-    let changes_after: Vec<String> = session_changes
+    let changes_after: Vec<String> = ctx
+        .session_changes
         .snapshot()
         .iter()
         .map(|c| c.path.clone())
         .collect();
     for path in &changes_after {
-        if !changes_before.contains(path) {
+        if !ctx.changes_before.contains(path) {
             // This file was touched for the first time in this turn
-            if turn_snap.originals.contains_key(path.as_str()) {
+            if ctx.turn_snap.originals.contains_key(path.as_str()) {
                 // Already snapshotted (e.g., was in git diff) — keep the original
             } else if std::path::Path::new(path).exists() {
                 // File was created during this turn
-                turn_snap.record_created(path);
+                ctx.turn_snap.record_created(path);
             }
         }
     }
     // Also check for new files from git that weren't in session_changes
     if let Ok(diff_files) = crate::git::run_git(&["diff", "--name-only"]) {
         for f in diff_files.lines().filter(|l| !l.is_empty()) {
-            if !turn_snap.originals.contains_key(f) {
-                turn_snap.snapshot_file(f);
+            if !ctx.turn_snap.originals.contains_key(f) {
+                ctx.turn_snap.snapshot_file(f);
             }
         }
     }
-    turn_history.push(turn_snap);
+    ctx.turn_history.push(ctx.turn_snap);
 
-    let files_modified = changes_after.len() > changes_before.len();
+    let files_modified = changes_after.len() > ctx.changes_before.len();
     if files_modified {
-        let watch_result =
-            run_watch_after_prompt(agent, session_total, &agent_config.model, session_changes)
-                .await;
+        let watch_result = run_watch_after_prompt(
+            ctx.agent,
+            ctx.session_total,
+            &ctx.agent_config.model,
+            ctx.session_changes,
+        )
+        .await;
         if !watch_result.passed {
-            *last_error = watch_result.last_tool_error;
+            *ctx.last_error = watch_result.last_tool_error;
         }
     }
 
     // ── Auto-commit: stage and commit if flag is on and files changed ─────
-    if agent_config.auto_commit && files_modified {
+    if ctx.agent_config.auto_commit && files_modified {
         let _ = run_git(&["add", "-A"]);
         if let Some(diff) = get_staged_diff() {
             if !diff.trim().is_empty() {
@@ -562,7 +570,7 @@ async fn handle_post_prompt(
     }
 
     // Auto-compact when context window is getting full
-    auto_compact_if_needed(agent);
+    auto_compact_if_needed(ctx.agent);
 }
 
 /// Returns when the user exits (via /quit, /exit, Ctrl-D, etc.).
@@ -855,19 +863,19 @@ pub async fn run_repl(
             )
             .await
         };
-        handle_post_prompt(
-            &outcome,
+        handle_post_prompt(PostPromptContext {
+            outcome: &outcome,
             agent,
             agent_config,
-            &mut session_total,
-            &session_changes,
-            &mut turn_history,
+            session_total: &mut session_total,
+            session_changes: &session_changes,
+            turn_history: &mut turn_history,
             turn_snap,
-            &changes_before,
-            &mut last_error,
+            changes_before: &changes_before,
+            last_error: &mut last_error,
             prompt_start,
-            &effective_input,
-        )
+            effective_input: &effective_input,
+        })
         .await;
     }
 

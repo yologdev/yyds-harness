@@ -141,7 +141,48 @@ async fn run_single_prompt(
     image_path: &Option<String>,
     output_path: &Option<String>,
     json_output: bool,
+    output_format: cli::OutputFormat,
 ) {
+    // Stream-JSON mode: emit NDJSON events and return early
+    if output_format == cli::OutputFormat::StreamJson {
+        let mut session_total = Usage::default();
+        let response = if let Some(ref img_path) = image_path {
+            match commands_file::read_image_for_add(img_path) {
+                Ok((data, mime_type)) => {
+                    let content_blocks = vec![
+                        Content::Text {
+                            text: prompt_text.trim().to_string(),
+                        },
+                        Content::Image { data, mime_type },
+                    ];
+                    run_prompt_stream_json_with_content(
+                        agent,
+                        content_blocks,
+                        &mut session_total,
+                        &agent_config.model,
+                    )
+                    .await
+                }
+                Err(e) => {
+                    eprintln!("{RED}  error: {e}{RESET}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            run_prompt_stream_json(
+                agent,
+                prompt_text.trim(),
+                &mut session_total,
+                &agent_config.model,
+            )
+            .await
+        };
+        if response.last_api_error.is_some() {
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if agent_config.provider != "anthropic" {
         eprintln!(
             "{DIM}  yoyo (prompt mode) — provider: {}, model: {}{RESET}",
@@ -295,6 +336,7 @@ async fn run_piped_mode(
     agent: &mut Agent,
     output_path: &Option<String>,
     json_output: bool,
+    output_format: cli::OutputFormat,
 ) {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input).ok();
@@ -314,6 +356,17 @@ async fn run_piped_mode(
         eprintln!("    yoyo --prompt \"{input}\"        # send the literal text to the agent");
         eprintln!("    yoyo                           # interactive REPL");
         std::process::exit(2);
+    }
+
+    // Stream-JSON mode: emit NDJSON events and return early
+    if output_format == cli::OutputFormat::StreamJson {
+        let mut session_total = Usage::default();
+        let response =
+            run_prompt_stream_json(agent, input, &mut session_total, &agent_config.model).await;
+        if response.last_api_error.is_some() {
+            std::process::exit(1);
+        }
+        return;
     }
 
     eprintln!(
@@ -502,6 +555,7 @@ async fn main() {
     let image_path = config.image_path;
     let no_update_check = config.no_update_check;
     let json_output = config.json_output;
+    let output_format = config.output_format;
     let is_interactive = io::stdin().is_terminal() && config.prompt_arg.is_none();
     let auto_approve = config.auto_approve || !is_interactive;
 
@@ -560,6 +614,7 @@ async fn main() {
             &image_path,
             &output_path,
             json_output,
+            output_format,
         )
         .await;
         return;
@@ -567,7 +622,14 @@ async fn main() {
 
     // Piped mode: read all of stdin as a single prompt, run once, exit
     if !io::stdin().is_terminal() {
-        run_piped_mode(&mut agent_config, &mut agent, &output_path, json_output).await;
+        run_piped_mode(
+            &mut agent_config,
+            &mut agent,
+            &output_path,
+            json_output,
+            output_format,
+        )
+        .await;
         return;
     }
 

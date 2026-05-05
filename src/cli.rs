@@ -59,6 +59,17 @@ pub use crate::config::{
     parse_toml_array, user_config_path, DirectoryRestrictions, McpServerConfig, PermissionConfig,
 };
 
+/// Output format for non-interactive modes (--prompt, piped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// Default human-readable text output.
+    Text,
+    /// Single JSON blob at the end (--json / --output-format json).
+    Json,
+    /// Newline-delimited JSON events streamed in real-time (--output-format stream-json).
+    StreamJson,
+}
+
 /// Parsed CLI configuration.
 pub struct Config {
     pub model: String,
@@ -90,6 +101,7 @@ pub struct Config {
     pub fallback_model: Option<String>,
     pub no_update_check: bool,
     pub json_output: bool,
+    pub output_format: OutputFormat,
     pub audit: bool,
     pub print_system_prompt: bool,
     pub auto_watch: bool,
@@ -248,6 +260,7 @@ const KNOWN_FLAGS: &[&str] = &[
     "--no-rtk",
     "--no-update-check",
     "--json",
+    "--output-format",
     "--verbose",
     "-v",
     "--yes",
@@ -559,6 +572,7 @@ struct OutputFlags {
     auto_commit: bool,
     no_update_check: bool,
     json_output: bool,
+    output_format: OutputFormat,
     audit: bool,
     print_system_prompt: bool,
 }
@@ -578,6 +592,26 @@ fn parse_output_flags(args: &[String], file_config: &HashMap<String, String>) ->
 
     let json_output = args.iter().any(|a| a == "--json");
 
+    // Parse --output-format <value> (takes precedence over --json)
+    let output_format = if let Some(pos) = args.iter().position(|a| a == "--output-format") {
+        match args.get(pos + 1).map(|s| s.as_str()) {
+            Some("stream-json") => OutputFormat::StreamJson,
+            Some("json") => OutputFormat::Json,
+            Some("text") => OutputFormat::Text,
+            _ => {
+                if json_output {
+                    OutputFormat::Json
+                } else {
+                    OutputFormat::Text
+                }
+            }
+        }
+    } else if json_output {
+        OutputFormat::Json
+    } else {
+        OutputFormat::Text
+    };
+
     let audit = args.iter().any(|a| a == "--audit")
         || std::env::var("YOYO_AUDIT")
             .map(|v| v == "1")
@@ -595,6 +629,7 @@ fn parse_output_flags(args: &[String], file_config: &HashMap<String, String>) ->
         auto_commit,
         no_update_check,
         json_output,
+        output_format,
         audit,
         print_system_prompt,
     }
@@ -929,6 +964,7 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         fallback_model: mc.fallback_model,
         no_update_check: of.no_update_check,
         json_output: of.json_output,
+        output_format: of.output_format,
         audit: of.audit,
         print_system_prompt: of.print_system_prompt,
         auto_watch: crate::config::parse_auto_watch_from_config(&file_config),
@@ -2767,5 +2803,63 @@ command = "server-two"
         let args = vec!["yoyo".to_string()];
         let config = parse_args(&args).unwrap();
         assert_eq!(config.prompt_arg, None);
+    }
+
+    #[test]
+    fn test_output_format_flag_in_known_flags() {
+        assert!(KNOWN_FLAGS.contains(&"--output-format"));
+    }
+
+    #[test]
+    fn test_output_format_stream_json() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert_eq!(config.output_format, OutputFormat::StreamJson);
+    }
+
+    #[test]
+    fn test_output_format_json() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--output-format".to_string(),
+            "json".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert_eq!(config.output_format, OutputFormat::Json);
+    }
+
+    #[test]
+    fn test_output_format_text_explicit() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--output-format".to_string(),
+            "text".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert_eq!(config.output_format, OutputFormat::Text);
+    }
+
+    #[test]
+    fn test_json_flag_sets_output_format_json() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec!["yoyo".to_string(), "--json".to_string()];
+        let config = parse_args(&args).expect("should parse");
+        assert_eq!(config.output_format, OutputFormat::Json);
+        assert!(config.json_output); // legacy flag still set
+    }
+
+    #[test]
+    fn test_output_format_default_is_text() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec!["yoyo".to_string()];
+        let config = parse_args(&args).expect("should parse");
+        assert_eq!(config.output_format, OutputFormat::Text);
     }
 }

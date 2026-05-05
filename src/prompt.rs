@@ -1053,6 +1053,238 @@ pub async fn run_prompt_with_content_and_changes(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Streaming JSON event output (--output-format stream-json)
+// ---------------------------------------------------------------------------
+
+/// A single NDJSON event emitted during streaming JSON output.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "type")]
+pub enum StreamEvent {
+    /// Emitted at prompt start.
+    #[serde(rename = "message_start")]
+    MessageStart { model: String },
+    /// Emitted for each text chunk from the model.
+    #[serde(rename = "content_delta")]
+    ContentDelta { text: String },
+    /// Emitted when the model invokes a tool.
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        name: String,
+        input: serde_json::Value,
+    },
+    /// Emitted when a tool returns its result.
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        name: String,
+        output: String,
+        is_error: bool,
+    },
+    /// Emitted at the end of the prompt.
+    #[serde(rename = "message_end")]
+    MessageEnd {
+        usage: StreamUsage,
+        cost_usd: Option<f64>,
+    },
+}
+
+/// Token usage included in the message_end event.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StreamUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// Emit a single streaming JSON event line to stdout.
+fn emit_stream_event(event: &StreamEvent) {
+    if let Ok(json) = serde_json::to_string(event) {
+        println!("{json}");
+    }
+}
+
+/// Run a prompt in streaming JSON mode: emit NDJSON events to stdout as they arrive.
+/// Suppresses all stderr formatting (spinners, progress).
+/// Returns the same PromptOutcome as the normal `run_prompt`.
+pub async fn run_prompt_stream_json(
+    agent: &mut Agent,
+    input: &str,
+    session_total: &mut Usage,
+    model: &str,
+) -> PromptOutcome {
+    emit_stream_event(&StreamEvent::MessageStart {
+        model: model.to_string(),
+    });
+
+    let rx = agent.prompt(input).await;
+    let outcome = handle_stream_json_events(agent, rx, model).await;
+
+    session_total.input += outcome.1.input;
+    session_total.output += outcome.1.output;
+    session_total.cache_read += outcome.1.cache_read;
+    session_total.cache_write += outcome.1.cache_write;
+
+    let cost_usd = estimate_cost(&outcome.1, model);
+    emit_stream_event(&StreamEvent::MessageEnd {
+        usage: StreamUsage {
+            input_tokens: outcome.1.input,
+            output_tokens: outcome.1.output,
+        },
+        cost_usd,
+    });
+
+    outcome.0
+}
+
+/// Run a prompt with content blocks in streaming JSON mode.
+pub async fn run_prompt_stream_json_with_content(
+    agent: &mut Agent,
+    content: Vec<Content>,
+    session_total: &mut Usage,
+    model: &str,
+) -> PromptOutcome {
+    emit_stream_event(&StreamEvent::MessageStart {
+        model: model.to_string(),
+    });
+
+    let messages = vec![AgentMessage::Llm(Message::User {
+        content,
+        timestamp: 0,
+    })];
+    let rx = agent.prompt_messages(messages).await;
+    let outcome = handle_stream_json_events(agent, rx, model).await;
+
+    session_total.input += outcome.1.input;
+    session_total.output += outcome.1.output;
+    session_total.cache_read += outcome.1.cache_read;
+    session_total.cache_write += outcome.1.cache_write;
+
+    let cost_usd = estimate_cost(&outcome.1, model);
+    emit_stream_event(&StreamEvent::MessageEnd {
+        usage: StreamUsage {
+            input_tokens: outcome.1.input,
+            output_tokens: outcome.1.output,
+        },
+        cost_usd,
+    });
+
+    outcome.0
+}
+
+/// Internal event handler for streaming JSON mode.
+/// Returns (PromptOutcome, Usage).
+async fn handle_stream_json_events(
+    agent: &mut Agent,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    model: &str,
+) -> (PromptOutcome, Usage) {
+    let mut usage = Usage::default();
+    let mut collected_text = String::new();
+    let mut last_tool_error: Option<String> = None;
+    let mut last_tool_name: Option<String> = None;
+    let mut last_api_error: Option<String> = None;
+
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                let Some(event) = event else { break };
+                match event {
+                    AgentEvent::ToolExecutionStart {
+                        tool_name, args, ..
+                    } => {
+                        emit_stream_event(&StreamEvent::ToolUse {
+                            name: tool_name,
+                            input: args,
+                        });
+                    }
+                    AgentEvent::ToolExecutionEnd {
+                        tool_name, is_error, result, ..
+                    } => {
+                        // Extract text from tool result
+                        let output = result
+                            .content
+                            .iter()
+                            .filter_map(|c| {
+                                if let Content::Text { text } = c {
+                                    Some(text.as_str())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        emit_stream_event(&StreamEvent::ToolResult {
+                            name: tool_name.clone(),
+                            output: output.clone(),
+                            is_error,
+                        });
+                        if is_error {
+                            last_tool_error = Some(if output.is_empty() {
+                                "tool execution failed".to_string()
+                            } else {
+                                output
+                            });
+                            last_tool_name = Some(tool_name);
+                        } else {
+                            last_tool_error = None;
+                            last_tool_name = None;
+                        }
+                    }
+                    AgentEvent::MessageUpdate {
+                        delta: StreamDelta::Text { delta },
+                        ..
+                    } => {
+                        collected_text.push_str(&delta);
+                        emit_stream_event(&StreamEvent::ContentDelta { text: delta });
+                    }
+                    AgentEvent::AgentEnd { messages } => {
+                        // Extract usage from assistant messages
+                        for msg in &messages {
+                            if let AgentMessage::Llm(Message::Assistant {
+                                usage: msg_usage,
+                                ..
+                            }) = msg
+                            {
+                                usage.input += msg_usage.input;
+                                usage.output += msg_usage.output;
+                                usage.cache_read += msg_usage.cache_read;
+                                usage.cache_write += msg_usage.cache_write;
+                            }
+                        }
+                        // Finalize agent state
+                        agent.finish().await;
+                        break;
+                    }
+                    AgentEvent::InputRejected { reason } => {
+                        last_api_error = Some(reason.clone());
+                        if let Some(diagnostic) = diagnose_api_error(&reason, model) {
+                            last_api_error = Some(format!("{reason}: {diagnostic}"));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                agent.abort();
+                break;
+            }
+        }
+    }
+
+    // If we exited without AgentEnd, still try to finalize
+    if usage.input == 0 && usage.output == 0 {
+        agent.finish().await;
+    }
+
+    let outcome = PromptOutcome {
+        text: collected_text,
+        last_tool_error,
+        last_tool_name,
+        was_overflow: false,
+        last_api_error,
+    };
+    (outcome, usage)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1293,5 +1525,141 @@ mod tests {
             last_api_error: None,
         };
         assert!(outcome_none.last_tool_name.is_none());
+    }
+
+    #[test]
+    fn test_stream_event_message_start_serializes_to_valid_ndjson() {
+        let event = StreamEvent::MessageStart {
+            model: "claude-sonnet-4-20250514".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "message_start");
+        assert_eq!(parsed["model"], "claude-sonnet-4-20250514");
+    }
+
+    #[test]
+    fn test_stream_event_content_delta_serializes_to_valid_ndjson() {
+        let event = StreamEvent::ContentDelta {
+            text: "Hello, world!".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "content_delta");
+        assert_eq!(parsed["text"], "Hello, world!");
+    }
+
+    #[test]
+    fn test_stream_event_tool_use_serializes_to_valid_ndjson() {
+        let event = StreamEvent::ToolUse {
+            name: "bash".to_string(),
+            input: serde_json::json!({"command": "ls -la"}),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "tool_use");
+        assert_eq!(parsed["name"], "bash");
+        assert_eq!(parsed["input"]["command"], "ls -la");
+    }
+
+    #[test]
+    fn test_stream_event_tool_result_serializes_to_valid_ndjson() {
+        let event = StreamEvent::ToolResult {
+            name: "read_file".to_string(),
+            output: "file contents here".to_string(),
+            is_error: false,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "tool_result");
+        assert_eq!(parsed["name"], "read_file");
+        assert_eq!(parsed["output"], "file contents here");
+        assert_eq!(parsed["is_error"], false);
+    }
+
+    #[test]
+    fn test_stream_event_tool_result_error_serializes_correctly() {
+        let event = StreamEvent::ToolResult {
+            name: "bash".to_string(),
+            output: "command not found".to_string(),
+            is_error: true,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "tool_result");
+        assert_eq!(parsed["is_error"], true);
+    }
+
+    #[test]
+    fn test_stream_event_message_end_serializes_to_valid_ndjson() {
+        let event = StreamEvent::MessageEnd {
+            usage: StreamUsage {
+                input_tokens: 1500,
+                output_tokens: 300,
+            },
+            cost_usd: Some(0.0045),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "message_end");
+        assert_eq!(parsed["usage"]["input_tokens"], 1500);
+        assert_eq!(parsed["usage"]["output_tokens"], 300);
+        assert_eq!(parsed["cost_usd"], 0.0045);
+    }
+
+    #[test]
+    fn test_stream_event_message_end_with_no_cost() {
+        let event = StreamEvent::MessageEnd {
+            usage: StreamUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+            },
+            cost_usd: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "message_end");
+        assert!(parsed["cost_usd"].is_null());
+    }
+
+    #[test]
+    fn test_stream_events_produce_valid_ndjson_sequence() {
+        // Simulate a full session's NDJSON output
+        let events = vec![
+            StreamEvent::MessageStart {
+                model: "test-model".to_string(),
+            },
+            StreamEvent::ContentDelta {
+                text: "Hello".to_string(),
+            },
+            StreamEvent::ContentDelta {
+                text: " world".to_string(),
+            },
+            StreamEvent::ToolUse {
+                name: "bash".to_string(),
+                input: serde_json::json!({"command": "echo hi"}),
+            },
+            StreamEvent::ToolResult {
+                name: "bash".to_string(),
+                output: "hi\n".to_string(),
+                is_error: false,
+            },
+            StreamEvent::MessageEnd {
+                usage: StreamUsage {
+                    input_tokens: 500,
+                    output_tokens: 100,
+                },
+                cost_usd: Some(0.002),
+            },
+        ];
+
+        // Each event should serialize to a single line of valid JSON
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            // No newlines in individual event JSON
+            assert!(!json.contains('\n'), "NDJSON events must be single-line");
+            // Must be valid JSON
+            let _: serde_json::Value = serde_json::from_str(&json).unwrap();
+        }
     }
 }

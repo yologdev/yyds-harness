@@ -1116,6 +1116,10 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "  --output-format <fmt>  Output format: text, json, stream-json (NDJSON events)"
+    );
+    let _ = writeln!(
+        s,
         "  --audit           Enable audit logging of all tool calls to .yoyo/audit.jsonl"
     );
     let _ = writeln!(
