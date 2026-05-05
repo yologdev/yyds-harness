@@ -530,15 +530,6 @@ pub fn handle_lint_unsafe() -> Option<String> {
 
 // ── /watch ──────────────────────────────────────────────────────────────
 
-/// Auto-detect the test command for the current project.
-/// Returns the command string (e.g. "cargo test") if a project type is detected.
-#[allow(dead_code)]
-fn detect_test_command() -> Option<String> {
-    let dir = std::env::current_dir().unwrap_or_default();
-    let project_type = detect_project_type(&dir);
-    test_command_for_project(&project_type).map(|(label, _args)| label.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -36,8 +36,8 @@ pub use crate::commands_memory::{handle_forget, handle_memories, handle_remember
 pub use crate::commands_config::{
     architect_model, default_editor_model, handle_architect, handle_config, handle_config_edit,
     handle_config_get, handle_config_set, handle_config_show, handle_hooks, handle_mcp,
-    handle_permissions, handle_teach, is_architect_mode, is_teach_mode, ARCHITECT_PROMPT,
-    TEACH_MODE_PROMPT,
+    handle_permissions, handle_teach, is_architect_mode, is_teach_mode, ConfigDisplay,
+    ARCHITECT_PROMPT, TEACH_MODE_PROMPT,
 };
 
 use yoagent::agent::Agent;

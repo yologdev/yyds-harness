@@ -79,7 +79,7 @@ pub fn handle_tree(input: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{is_unknown_command, KNOWN_COMMANDS};
+    use crate::commands::is_unknown_command;
 
     #[test]
     fn format_tree_basic() {
@@ -225,13 +225,5 @@ mod tests {
         assert!(!is_unknown_command("/tree"));
         assert!(!is_unknown_command("/tree 2"));
         assert!(!is_unknown_command("/tree 5"));
-    }
-
-    #[allow(dead_code)]
-    fn _assert_known_commands_has_tree() {
-        assert!(
-            KNOWN_COMMANDS.contains(&"/tree"),
-            "/tree should be in KNOWN_COMMANDS"
-        );
     }
 }

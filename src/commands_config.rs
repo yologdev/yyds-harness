@@ -198,67 +198,69 @@ pub fn architect_status(current_model: &str) -> Option<String> {
 
 // ── /config ──────────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
-pub fn handle_config(
-    provider: &str,
-    model: &str,
-    base_url: &Option<String>,
-    thinking: ThinkingLevel,
-    max_tokens: Option<u32>,
-    max_turns: Option<usize>,
-    temperature: Option<f32>,
-    skills: &yoagent::skills::SkillSet,
-    system_prompt: &str,
-    mcp_count: u32,
-    openapi_count: u32,
-    hook_count: usize,
-    agent: &Agent,
-    cwd: &str,
-) {
+/// Bundled parameters for `/config` display, replacing a long argument list.
+pub struct ConfigDisplay<'a> {
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub base_url: &'a Option<String>,
+    pub thinking: ThinkingLevel,
+    pub max_tokens: Option<u32>,
+    pub max_turns: Option<usize>,
+    pub temperature: Option<f32>,
+    pub skills: &'a yoagent::skills::SkillSet,
+    pub system_prompt: &'a str,
+    pub mcp_count: u32,
+    pub openapi_count: u32,
+    pub hook_count: usize,
+    pub agent: &'a Agent,
+    pub cwd: &'a str,
+}
+
+pub fn handle_config(cfg: &ConfigDisplay<'_>) {
     println!("{DIM}  Configuration:");
-    println!("    provider:   {provider}");
-    println!("    model:      {model}");
-    if let Some(ref url) = base_url {
+    println!("    provider:   {}", cfg.provider);
+    println!("    model:      {}", cfg.model);
+    if let Some(ref url) = cfg.base_url {
         println!("    base_url:   {url}");
     }
-    println!("    thinking:   {}", thinking_level_name(thinking));
+    println!("    thinking:   {}", thinking_level_name(cfg.thinking));
     println!(
         "    max_tokens: {}",
-        max_tokens
+        cfg.max_tokens
             .map(|m| m.to_string())
             .unwrap_or_else(|| "default (8192)".to_string())
     );
     println!(
         "    max_turns:  {}",
-        max_turns
+        cfg.max_turns
             .map(|m| m.to_string())
             .unwrap_or_else(|| "default (200)".to_string())
     );
     println!(
         "    temperature: {}",
-        temperature
+        cfg.temperature
             .map(|t| format!("{t:.1}"))
             .unwrap_or_else(|| "default".to_string())
     );
     println!(
         "    skills:     {}",
-        if skills.is_empty() {
+        if cfg.skills.is_empty() {
             "none".to_string()
         } else {
-            format!("{} loaded", skills.len())
+            format!("{} loaded", cfg.skills.len())
         }
     );
     let system_preview =
-        truncate_with_ellipsis(system_prompt.lines().next().unwrap_or("(empty)"), 60);
+        truncate_with_ellipsis(cfg.system_prompt.lines().next().unwrap_or("(empty)"), 60);
     println!("    system:     {system_preview}");
-    if mcp_count > 0 {
-        println!("    mcp:        {mcp_count} server(s)");
+    if cfg.mcp_count > 0 {
+        println!("    mcp:        {} server(s)", cfg.mcp_count);
     }
-    if openapi_count > 0 {
-        println!("    openapi:    {openapi_count} spec(s)");
+    if cfg.openapi_count > 0 {
+        println!("    openapi:    {} spec(s)", cfg.openapi_count);
     }
-    if hook_count > 0 {
-        println!("    hooks:      {hook_count} active");
+    if cfg.hook_count > 0 {
+        println!("    hooks:      {} active", cfg.hook_count);
     }
     println!(
         "    verbose:    {}",
@@ -267,7 +269,7 @@ pub fn handle_config(
     if let Some(branch) = git_branch() {
         println!("    git:        {branch}");
     }
-    println!("    cwd:        {cwd}");
+    println!("    cwd:        {}", cfg.cwd);
     println!(
         "    context:    {} max tokens",
         format_token_count(crate::cli::effective_context_tokens())
@@ -276,7 +278,7 @@ pub fn handle_config(
         "    auto-compact: at {:.0}%",
         AUTO_COMPACT_THRESHOLD * 100.0
     );
-    println!("    messages:   {}", agent.messages().len());
+    println!("    messages:   {}", cfg.agent.messages().len());
     println!(
         "    session:    auto-save on exit ({})",
         crate::cli::AUTO_SAVE_SESSION_PATH

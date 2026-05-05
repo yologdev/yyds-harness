@@ -11,7 +11,7 @@ use std::time::Instant;
 use crate::cli::{effective_context_tokens, parse_thinking_level, McpServerConfig};
 use crate::commands::{
     self, auto_compact_if_needed, clear_confirmation_message, is_unknown_command,
-    reset_compact_thrash, suggest_command, thinking_level_name,
+    reset_compact_thrash, suggest_command, thinking_level_name, ConfigDisplay,
 };
 use crate::format::*;
 use crate::prompt::*;
@@ -362,22 +362,22 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             CommandResult::Continue
         }
         "/config" => {
-            commands::handle_config(
-                &ctx.agent_config.provider,
-                &ctx.agent_config.model,
-                &ctx.agent_config.base_url,
-                ctx.agent_config.thinking,
-                ctx.agent_config.max_tokens,
-                ctx.agent_config.max_turns,
-                ctx.agent_config.temperature,
-                &ctx.agent_config.skills,
-                &ctx.agent_config.system_prompt,
-                ctx.mcp_count,
-                ctx.openapi_count,
-                ctx.agent_config.shell_hooks.len(),
-                ctx.agent,
-                ctx.cwd,
-            );
+            commands::handle_config(&ConfigDisplay {
+                provider: &ctx.agent_config.provider,
+                model: &ctx.agent_config.model,
+                base_url: &ctx.agent_config.base_url,
+                thinking: ctx.agent_config.thinking,
+                max_tokens: ctx.agent_config.max_tokens,
+                max_turns: ctx.agent_config.max_turns,
+                temperature: ctx.agent_config.temperature,
+                skills: &ctx.agent_config.skills,
+                system_prompt: &ctx.agent_config.system_prompt,
+                mcp_count: ctx.mcp_count,
+                openapi_count: ctx.openapi_count,
+                hook_count: ctx.agent_config.shell_hooks.len(),
+                agent: ctx.agent,
+                cwd: ctx.cwd,
+            });
             CommandResult::Continue
         }
         s if s == "/config show" || s.starts_with("/config show ") => {
