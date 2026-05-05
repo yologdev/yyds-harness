@@ -27,6 +27,52 @@ pub use crate::prompt_budget::{
 // `use crate::prompt::*;` call sites keep working without changes.
 pub use crate::session::{format_changes, ChangeKind, SessionChanges, TurnHistory, TurnSnapshot};
 
+/// Accumulate usage from `delta` into `total`.
+///
+/// Replaces the recurring 4-line pattern:
+/// ```ignore
+/// total.input  += delta.input;
+/// total.output += delta.output;
+/// total.cache_read  += delta.cache_read;
+/// total.cache_write += delta.cache_write;
+/// ```
+fn accumulate_usage(total: &mut Usage, delta: &Usage) {
+    total.input += delta.input;
+    total.output += delta.output;
+    total.cache_read += delta.cache_read;
+    total.cache_write += delta.cache_write;
+}
+
+/// Shared epilogue for `run_prompt_with_changes` and
+/// `run_prompt_with_content_and_changes`.
+///
+/// Accumulates prompt-level usage into the session total, prints the usage
+/// and context bars, checks for context budget warnings, rings the bell,
+/// and returns `(ctx_used, ctx_max)` for callers that need them.
+async fn finish_prompt_epilogue(
+    agent: &mut Agent,
+    total_usage: &Usage,
+    session_total: &mut Usage,
+    model: &str,
+    prompt_start: Instant,
+) {
+    accumulate_usage(session_total, total_usage);
+    print_usage(total_usage, session_total, model, prompt_start.elapsed());
+    // Issue #258: yoagent 0.7.x runs the agent loop in a background task; the
+    // agent's internal `self.messages` is only updated when `finish()` is awaited.
+    // Without this, `agent.messages()` returns stale state and the context bar
+    // permanently reads "0% used". Call finish() before reading messages.
+    agent.finish().await;
+    let ctx_used = total_tokens(agent.messages()) as u64;
+    let ctx_max = crate::cli::effective_context_tokens();
+    print_context_usage(ctx_used, ctx_max);
+    if let Some(warning) = crate::format::context_budget_warning(ctx_used, ctx_max) {
+        eprintln!("{warning}");
+    }
+    maybe_ring_bell(prompt_start.elapsed());
+    println!();
+}
+
 /// Outcome of a prompt execution, including the text response and any tool error.
 #[derive(Debug, Clone, Default)]
 pub struct PromptOutcome {
@@ -440,10 +486,7 @@ impl PromptEventState {
                 ..
             }) = msg
             {
-                self.usage.input += msg_usage.input;
-                self.usage.output += msg_usage.output;
-                self.usage.cache_read += msg_usage.cache_read;
-                self.usage.cache_write += msg_usage.cache_write;
+                accumulate_usage(&mut self.usage, msg_usage);
 
                 if *stop_reason == StopReason::Error {
                     if let Some(err_msg) = error_message {
@@ -694,20 +737,14 @@ pub async fn run_prompt_with_changes(
                 last_tool_error: tool_err,
                 last_tool_name: tool_nm,
             } => {
-                total_usage.input += usage.input;
-                total_usage.output += usage.output;
-                total_usage.cache_read += usage.cache_read;
-                total_usage.cache_write += usage.cache_write;
+                accumulate_usage(&mut total_usage, &usage);
                 collected_text = text;
                 last_tool_error = tool_err;
                 last_tool_name = tool_nm;
                 break;
             }
             PromptResult::RetriableError { error_msg, usage } => {
-                total_usage.input += usage.input;
-                total_usage.output += usage.output;
-                total_usage.cache_read += usage.cache_read;
-                total_usage.cache_write += usage.cache_write;
+                accumulate_usage(&mut total_usage, &usage);
 
                 if attempt < MAX_RETRIES {
                     let delay = retry_delay(attempt + 1);
@@ -732,10 +769,7 @@ pub async fn run_prompt_with_changes(
                 }
             }
             PromptResult::ContextOverflow { error_msg, usage } => {
-                total_usage.input += usage.input;
-                total_usage.output += usage.output;
-                total_usage.cache_read += usage.cache_read;
-                total_usage.cache_write += usage.cache_write;
+                accumulate_usage(&mut total_usage, &usage);
 
                 // Auto-compact and retry once
                 eprintln!(
@@ -767,10 +801,7 @@ pub async fn run_prompt_with_changes(
                         last_tool_error: tool_err,
                         last_tool_name: tool_nm,
                     } => {
-                        total_usage.input += retry_usage.input;
-                        total_usage.output += retry_usage.output;
-                        total_usage.cache_read += retry_usage.cache_read;
-                        total_usage.cache_write += retry_usage.cache_write;
+                        accumulate_usage(&mut total_usage, &retry_usage);
                         collected_text = text;
                         last_tool_error = tool_err;
                         last_tool_name = tool_nm;
@@ -783,10 +814,7 @@ pub async fn run_prompt_with_changes(
                         error_msg: retry_err,
                         usage: retry_usage,
                     } => {
-                        total_usage.input += retry_usage.input;
-                        total_usage.output += retry_usage.output;
-                        total_usage.cache_read += retry_usage.cache_read;
-                        total_usage.cache_write += retry_usage.cache_write;
+                        accumulate_usage(&mut total_usage, &retry_usage);
                         eprintln!("\n{RED}  error: {retry_err}{RESET}");
                         eprintln!(
                             "{DIM}  (overflow retry also failed — try /compact manually){RESET}"
@@ -799,24 +827,7 @@ pub async fn run_prompt_with_changes(
         }
     }
 
-    session_total.input += total_usage.input;
-    session_total.output += total_usage.output;
-    session_total.cache_read += total_usage.cache_read;
-    session_total.cache_write += total_usage.cache_write;
-    print_usage(&total_usage, session_total, model, prompt_start.elapsed());
-    // Issue #258: yoagent 0.7.x runs the agent loop in a background task; the
-    // agent's internal `self.messages` is only updated when `finish()` is awaited.
-    // Without this, `agent.messages()` returns stale state and the context bar
-    // permanently reads "0% used". Call finish() before reading messages.
-    agent.finish().await;
-    let ctx_used = total_tokens(agent.messages()) as u64;
-    let ctx_max = crate::cli::effective_context_tokens();
-    print_context_usage(ctx_used, ctx_max);
-    if let Some(warning) = crate::format::context_budget_warning(ctx_used, ctx_max) {
-        eprintln!("{warning}");
-    }
-    maybe_ring_bell(prompt_start.elapsed());
-    println!();
+    finish_prompt_epilogue(agent, &total_usage, session_total, model, prompt_start).await;
     PromptOutcome {
         text: collected_text,
         last_tool_error,
@@ -976,20 +987,14 @@ pub async fn run_prompt_with_content_and_changes(
                 last_tool_error: tool_err,
                 last_tool_name: tool_nm,
             } => {
-                total_usage.input += usage.input;
-                total_usage.output += usage.output;
-                total_usage.cache_read += usage.cache_read;
-                total_usage.cache_write += usage.cache_write;
+                accumulate_usage(&mut total_usage, &usage);
                 collected_text = text;
                 last_tool_error = tool_err;
                 last_tool_name = tool_nm;
                 break;
             }
             PromptResult::RetriableError { error_msg, usage } => {
-                total_usage.input += usage.input;
-                total_usage.output += usage.output;
-                total_usage.cache_read += usage.cache_read;
-                total_usage.cache_write += usage.cache_write;
+                accumulate_usage(&mut total_usage, &usage);
 
                 if attempt < MAX_RETRIES {
                     let delay = retry_delay(attempt + 1);
@@ -1013,10 +1018,7 @@ pub async fn run_prompt_with_content_and_changes(
                 }
             }
             PromptResult::ContextOverflow { error_msg, usage } => {
-                total_usage.input += usage.input;
-                total_usage.output += usage.output;
-                total_usage.cache_read += usage.cache_read;
-                total_usage.cache_write += usage.cache_write;
+                accumulate_usage(&mut total_usage, &usage);
 
                 eprintln!(
                     "\n{YELLOW}  ⚡ context overflow detected — cannot retry with image content{RESET}"
@@ -1028,22 +1030,7 @@ pub async fn run_prompt_with_content_and_changes(
         }
     }
 
-    session_total.input += total_usage.input;
-    session_total.output += total_usage.output;
-    session_total.cache_read += total_usage.cache_read;
-    session_total.cache_write += total_usage.cache_write;
-    print_usage(&total_usage, session_total, model, prompt_start.elapsed());
-    // Issue #258: see run_prompt_with_changes — yoagent 0.7.x requires finish()
-    // before reading messages, otherwise the context bar reads stale "0%".
-    agent.finish().await;
-    let ctx_used = total_tokens(agent.messages()) as u64;
-    let ctx_max = crate::cli::effective_context_tokens();
-    print_context_usage(ctx_used, ctx_max);
-    if let Some(warning) = crate::format::context_budget_warning(ctx_used, ctx_max) {
-        eprintln!("{warning}");
-    }
-    maybe_ring_bell(prompt_start.elapsed());
-    println!();
+    finish_prompt_epilogue(agent, &total_usage, session_total, model, prompt_start).await;
     PromptOutcome {
         text: collected_text,
         last_tool_error,
@@ -1118,10 +1105,7 @@ pub async fn run_prompt_stream_json(
     let rx = agent.prompt(input).await;
     let outcome = handle_stream_json_events(agent, rx, model).await;
 
-    session_total.input += outcome.1.input;
-    session_total.output += outcome.1.output;
-    session_total.cache_read += outcome.1.cache_read;
-    session_total.cache_write += outcome.1.cache_write;
+    accumulate_usage(session_total, &outcome.1);
 
     let cost_usd = estimate_cost(&outcome.1, model);
     emit_stream_event(&StreamEvent::MessageEnd {
@@ -1153,10 +1137,7 @@ pub async fn run_prompt_stream_json_with_content(
     let rx = agent.prompt_messages(messages).await;
     let outcome = handle_stream_json_events(agent, rx, model).await;
 
-    session_total.input += outcome.1.input;
-    session_total.output += outcome.1.output;
-    session_total.cache_read += outcome.1.cache_read;
-    session_total.cache_write += outcome.1.cache_write;
+    accumulate_usage(session_total, &outcome.1);
 
     let cost_usd = estimate_cost(&outcome.1, model);
     emit_stream_event(&StreamEvent::MessageEnd {
@@ -1244,10 +1225,7 @@ async fn handle_stream_json_events(
                                 ..
                             }) = msg
                             {
-                                usage.input += msg_usage.input;
-                                usage.output += msg_usage.output;
-                                usage.cache_read += msg_usage.cache_read;
-                                usage.cache_write += msg_usage.cache_write;
+                                accumulate_usage(&mut usage, msg_usage);
                             }
                         }
                         // Finalize agent state
@@ -1288,6 +1266,66 @@ async fn handle_stream_json_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_accumulate_usage_adds_all_fields() {
+        let mut total = Usage {
+            input: 10,
+            output: 20,
+            cache_read: 30,
+            cache_write: 40,
+            ..Default::default()
+        };
+        let delta = Usage {
+            input: 1,
+            output: 2,
+            cache_read: 3,
+            cache_write: 4,
+            ..Default::default()
+        };
+        accumulate_usage(&mut total, &delta);
+        assert_eq!(total.input, 11);
+        assert_eq!(total.output, 22);
+        assert_eq!(total.cache_read, 33);
+        assert_eq!(total.cache_write, 44);
+    }
+
+    #[test]
+    fn test_accumulate_usage_with_zero_delta() {
+        let mut total = Usage {
+            input: 100,
+            output: 200,
+            cache_read: 300,
+            cache_write: 400,
+            ..Default::default()
+        };
+        let delta = Usage::default();
+        accumulate_usage(&mut total, &delta);
+        assert_eq!(total.input, 100);
+        assert_eq!(total.output, 200);
+        assert_eq!(total.cache_read, 300);
+        assert_eq!(total.cache_write, 400);
+    }
+
+    #[test]
+    fn test_accumulate_usage_multiple_deltas() {
+        let mut total = Usage::default();
+        for i in 1..=5 {
+            let delta = Usage {
+                input: i,
+                output: i * 2,
+                cache_read: i * 3,
+                cache_write: i * 4,
+                ..Default::default()
+            };
+            accumulate_usage(&mut total, &delta);
+        }
+        // Sum of 1..=5 = 15
+        assert_eq!(total.input, 15);
+        assert_eq!(total.output, 30);
+        assert_eq!(total.cache_read, 45);
+        assert_eq!(total.cache_write, 60);
+    }
 
     // Issue #258 / Day 33 lesson (test from the user's perspective):
     // After draining the event stream from prompt_messages, the agent's
