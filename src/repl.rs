@@ -575,12 +575,8 @@ async fn handle_post_prompt(mut ctx: PostPromptContext<'_>) {
     auto_compact_if_needed(ctx.agent);
 }
 
-/// Returns when the user exits (via /quit, /exit, Ctrl-D, etc.).
-pub async fn run_repl(
-    agent_config: &mut AgentConfig,
-    agent: &mut yoagent::agent::Agent,
-    repl_config: ReplConfig,
-) {
+/// Print the startup banner and all session configuration info.
+fn print_startup_info(agent_config: &AgentConfig, repl_config: &ReplConfig) {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "(unknown)".to_string());
@@ -658,6 +654,19 @@ pub async fn run_repl(
             );
         }
     }
+}
+
+/// Returns when the user exits (via /quit, /exit, Ctrl-D, etc.).
+pub async fn run_repl(
+    agent_config: &mut AgentConfig,
+    agent: &mut yoagent::agent::Agent,
+    repl_config: ReplConfig,
+) {
+    print_startup_info(agent_config, &repl_config);
+
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "(unknown)".to_string());
 
     // Set up rustyline editor with slash-command tab-completion
     let config = rustyline::config::Builder::new()
