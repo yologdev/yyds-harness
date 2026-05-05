@@ -9,23 +9,22 @@ use yoagent::agent::Agent;
 use yoagent::context::total_tokens;
 use yoagent::*;
 
-// Extracted into `watch` module (Day 58). Re-exported here so
-// `use crate::prompt::*;` call sites keep working without changes.
+// Extracted into `watch` module (Day 58). Still needed by main.rs and
+// other callers via `crate::prompt::*`; will migrate in a future batch.
 pub use crate::watch::{get_watch_command, run_watch_after_prompt, set_watch_command};
 
 // ── Audit log + session budget ──────────────────────────────────────────
-// Extracted into `prompt_budget` module. Re-exported here so the existing
-// `use crate::prompt::*;` call sites in `main.rs` and `repl.rs` keep working
-// without any changes, and `crate::prompt::foo` paths continue to resolve.
-// Only symbols actually referenced via the `prompt::` path today are
-// re-exported; the rest remain accessible at `crate::prompt_budget::`.
-pub use crate::prompt_budget::{
-    audit_log_tool_call, enable_audit_log, is_audit_enabled, session_budget_exhausted,
-};
+// Extracted into `prompt_budget` module. Re-exported here for callers that
+// still reach these symbols via `crate::prompt::*` (main.rs, hooks.rs,
+// agent_builder.rs). `session_budget_exhausted` is only used within this
+// module, so it stays private.
+use crate::prompt_budget::session_budget_exhausted;
+pub use crate::prompt_budget::{audit_log_tool_call, enable_audit_log, is_audit_enabled};
 
-// Extracted into `session` module (Day 54). Re-exported here so
-// `use crate::prompt::*;` call sites keep working without changes.
-pub use crate::session::{format_changes, ChangeKind, SessionChanges, TurnHistory, TurnSnapshot};
+// Extracted into `session` module (Day 54). Still needed by commands_git.rs,
+// commands_session.rs, commands_retry.rs, main.rs via `crate::prompt::*`;
+// will migrate in a future batch.
+pub use crate::session::{format_changes, ChangeKind, SessionChanges, TurnHistory};
 
 /// Accumulate usage from `delta` into `total`.
 ///
@@ -94,17 +93,20 @@ pub struct PromptOutcome {
     pub last_api_error: Option<String>,
 }
 
-// Extracted into `prompt_retry` module (Day 64). Re-exported here so
-// `use crate::prompt::*;` call sites keep working without changes.
-pub use crate::prompt_retry::{
-    build_auto_retry_prompt, build_overflow_retry_prompt, build_retry_prompt, diagnose_api_error,
-    is_overflow_error, is_retriable_error, retry_delay, MAX_AUTO_RETRIES,
+// Extracted into `prompt_retry` module (Day 64). Only `build_retry_prompt`
+// is still needed by external callers (commands_retry.rs); the rest are
+// used only within this module.
+pub use crate::prompt_retry::build_retry_prompt;
+use crate::prompt_retry::{
+    build_auto_retry_prompt, build_overflow_retry_prompt, diagnose_api_error, is_overflow_error,
+    is_retriable_error, retry_delay, MAX_AUTO_RETRIES,
 };
 // MAX_RETRIES is pub(crate), so import without re-exporting.
 use crate::prompt_retry::MAX_RETRIES;
 
-// Extracted into `prompt_utils` module (Day 64). Re-exported here so
-// `use crate::prompt::*;` call sites keep working without changes.
+// Extracted into `prompt_utils` module (Day 64). Still needed by
+// commands_session.rs, commands_spawn.rs, main.rs via `crate::prompt::*`;
+// will migrate in a future batch.
 use crate::prompt_utils::tool_result_preview;
 pub use crate::prompt_utils::{search_messages, summarize_message, write_output_file};
 

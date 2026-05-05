@@ -1830,7 +1830,8 @@ mod tests {
 
     #[test]
     fn handle_undo_returns_some_when_files_reverted() {
-        use crate::prompt::{TurnHistory, TurnSnapshot};
+        use crate::prompt::TurnHistory;
+        use crate::session::TurnSnapshot;
         use std::fs;
 
         // Create a temp file to snapshot

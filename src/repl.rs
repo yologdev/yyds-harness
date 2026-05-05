@@ -8,7 +8,9 @@ use crate::conversations::build_add_content_blocks;
 use crate::dispatch::CommandResult;
 use crate::format::*;
 use crate::git::*;
-use crate::prompt::*;
+use crate::prompt::{run_prompt_auto_retry, run_prompt_auto_retry_with_content, PromptOutcome};
+use crate::session::{SessionChanges, TurnHistory, TurnSnapshot};
+use crate::watch::{get_watch_command, run_watch_after_prompt, set_watch_command};
 use crate::AgentConfig;
 
 /// Configuration for the REPL session, bundling the positional arguments

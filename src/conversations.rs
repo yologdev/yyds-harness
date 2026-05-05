@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::commands;
 use crate::format::*;
-use crate::prompt::*;
+use crate::prompt::run_prompt_auto_retry;
 use crate::session::SessionChanges;
 use crate::watch::run_watch_after_prompt;
 use crate::AgentConfig;

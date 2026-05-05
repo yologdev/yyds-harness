@@ -14,7 +14,8 @@ use crate::commands::{
     reset_compact_thrash, suggest_command, thinking_level_name, ConfigDisplay,
 };
 use crate::format::*;
-use crate::prompt::*;
+use crate::prompt::run_prompt_with_changes;
+use crate::session::{SessionChanges, TurnHistory};
 use crate::AgentConfig;
 use yoagent::context::total_tokens;
 use yoagent::*;
