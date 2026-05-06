@@ -1,7 +1,7 @@
 //! Lint and test command handlers: /test, /lint, /lint fix, /lint unsafe.
 
-use crate::commands::auto_compact_if_needed;
 use crate::commands_project::{detect_project_type, ProjectType};
+use crate::commands_session::auto_compact_if_needed;
 use crate::format::*;
 use crate::prompt::*;
 

@@ -1,8 +1,8 @@
 //! Dev workflow command handlers: /doctor, /health, /fix.
 
 use crate::cli;
-use crate::commands::auto_compact_if_needed;
 use crate::commands_project::{detect_project_type, ProjectType};
+use crate::commands_session::auto_compact_if_needed;
 use crate::format::*;
 use crate::prompt::run_prompt;
 

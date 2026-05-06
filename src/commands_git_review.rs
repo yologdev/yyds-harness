@@ -1,6 +1,6 @@
 //! Code review command handlers: /review, /blame, and non-interactive review.
 
-use crate::commands::auto_compact_if_needed;
+use crate::commands_session::auto_compact_if_needed;
 use crate::format::*;
 use crate::git::*;
 use crate::prompt::run_prompt;
