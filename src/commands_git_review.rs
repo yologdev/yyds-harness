@@ -3,7 +3,7 @@
 use crate::commands::auto_compact_if_needed;
 use crate::format::*;
 use crate::git::*;
-use crate::prompt::*;
+use crate::prompt::run_prompt;
 
 use yoagent::agent::Agent;
 use yoagent::*;

@@ -2,7 +2,8 @@
 
 use crate::format::*;
 use crate::git::*;
-use crate::prompt::*;
+use crate::prompt::run_prompt;
+use crate::session::TurnHistory;
 
 use std::io::{self, Write};
 use yoagent::agent::Agent;
@@ -466,7 +467,7 @@ fn build_undo_context(actions: &[String]) -> String {
 ///
 /// Returns `Some(context)` when files were actually reverted, so the REPL can
 /// inject the summary into the agent's next turn for causal consistency.
-pub fn handle_undo(input: &str, history: &mut crate::prompt::TurnHistory) -> Option<String> {
+pub fn handle_undo(input: &str, history: &mut TurnHistory) -> Option<String> {
     let arg = input.strip_prefix("/undo").unwrap_or("").trim();
 
     // Nuclear fallback: /undo --all
@@ -614,7 +615,7 @@ fn handle_undo_last_commit() -> Option<String> {
 /// Clears turn history as well.
 ///
 /// Returns `Some(context)` when changes were actually reverted.
-fn handle_undo_all(history: &mut crate::prompt::TurnHistory) -> Option<String> {
+fn handle_undo_all(history: &mut TurnHistory) -> Option<String> {
     let diff_stat = run_git(&["diff", "--stat"]).unwrap_or_default();
     let untracked_text =
         run_git(&["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
@@ -1823,14 +1824,13 @@ mod tests {
 
     #[test]
     fn handle_undo_returns_none_on_empty_history() {
-        let mut history = crate::prompt::TurnHistory::new();
+        let mut history = TurnHistory::new();
         let result = handle_undo("/undo", &mut history);
         assert!(result.is_none(), "Should return None when history is empty");
     }
 
     #[test]
     fn handle_undo_returns_some_when_files_reverted() {
-        use crate::prompt::TurnHistory;
         use crate::session::TurnSnapshot;
         use std::fs;
 
@@ -1884,14 +1884,14 @@ mod tests {
 
     #[test]
     fn handle_undo_returns_none_on_zero_count() {
-        let mut history = crate::prompt::TurnHistory::new();
+        let mut history = TurnHistory::new();
         let result = handle_undo("/undo 0", &mut history);
         assert!(result.is_none());
     }
 
     #[test]
     fn handle_undo_returns_none_on_bad_arg() {
-        let mut history = crate::prompt::TurnHistory::new();
+        let mut history = TurnHistory::new();
         let result = handle_undo("/undo xyz", &mut history);
         assert!(result.is_none());
     }
