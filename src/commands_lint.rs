@@ -3,7 +3,7 @@
 use crate::commands_project::{detect_project_type, ProjectType};
 use crate::commands_session::auto_compact_if_needed;
 use crate::format::*;
-use crate::prompt::*;
+use crate::prompt::run_prompt;
 
 use yoagent::agent::Agent;
 use yoagent::*;

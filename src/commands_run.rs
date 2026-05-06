@@ -3,7 +3,7 @@
 use crate::agent_builder::AgentConfig;
 use crate::commands::auto_compact_if_needed;
 use crate::format::*;
-use crate::prompt::*;
+use crate::prompt::run_prompt_auto_retry;
 use crate::session::SessionChanges;
 
 use yoagent::agent::Agent;

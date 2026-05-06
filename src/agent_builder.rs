@@ -18,7 +18,8 @@ use crate::cli;
 use crate::config;
 use crate::format::*;
 use crate::hooks;
-use crate::prompt::*;
+use crate::prompt::{run_prompt, run_prompt_with_content, PromptOutcome};
+use crate::prompt_budget::is_audit_enabled;
 use crate::tools::{build_sub_agent_tool, build_tools};
 
 /// Return the User-Agent header value for yoyo.
