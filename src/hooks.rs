@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::prompt::{audit_log_tool_call, is_audit_enabled};
+use crate::prompt_budget::{audit_log_tool_call, is_audit_enabled};
 use yoagent::types::{AgentTool, ToolError, ToolResult};
 use yoagent::Content;
 

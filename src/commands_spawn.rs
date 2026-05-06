@@ -5,7 +5,8 @@
 //! parser, context builder, and handler.
 
 use crate::format::*;
-use crate::prompt::*;
+use crate::prompt::run_prompt;
+use crate::prompt_utils::summarize_message;
 use crate::sync_util::lock_or_recover;
 
 use std::sync::{Arc, Mutex};

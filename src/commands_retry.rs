@@ -10,7 +10,9 @@
 use crate::commands_session::auto_compact_if_needed;
 use crate::format::*;
 use crate::git::{colorize_diff, run_git};
-use crate::prompt::{build_retry_prompt, format_changes, run_prompt, ChangeKind, SessionChanges};
+use crate::prompt::run_prompt;
+use crate::prompt_retry::build_retry_prompt;
+use crate::session::{format_changes, ChangeKind, SessionChanges};
 
 use std::time::Instant;
 use yoagent::agent::Agent;

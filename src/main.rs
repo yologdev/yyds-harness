@@ -93,7 +93,14 @@ mod watch;
 
 use cli::*;
 use format::*;
-use prompt::*;
+use prompt::{
+    run_prompt, run_prompt_stream_json, run_prompt_stream_json_with_content,
+    run_prompt_with_content, PromptOutcome,
+};
+use prompt_budget::enable_audit_log;
+use prompt_utils::write_output_file;
+use session::SessionChanges;
+use watch::{get_watch_command, run_watch_after_prompt, set_watch_command};
 
 use agent_builder::try_fallback_prompt;
 pub(crate) use agent_builder::{connect_external_servers, AgentConfig, FallbackRetry};
@@ -465,7 +472,7 @@ fn apply_config_flags(config: &Config) -> bool {
     }
 
     if config.audit {
-        prompt::enable_audit_log();
+        enable_audit_log();
     }
 
     true

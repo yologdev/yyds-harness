@@ -226,7 +226,7 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 // Support --last-commit which works standalone; for other args,
                 // explain that turn-based undo requires a session.
                 let input = quote_args_as_command(args);
-                let mut history = crate::prompt::TurnHistory::new();
+                let mut history = crate::session::TurnHistory::new();
                 crate::commands_git::handle_undo(&input, &mut history);
                 return Some(None);
             }

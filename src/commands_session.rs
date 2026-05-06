@@ -2,7 +2,8 @@
 //! /mark, /jump, /marks, /export, /stash, /checkpoint.
 
 use crate::format::*;
-use crate::prompt::*;
+use crate::prompt_utils::{search_messages, summarize_message};
+use crate::session::SessionChanges;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -1100,6 +1101,7 @@ mod tests {
     use super::*;
     use crate::cli::AUTO_SAVE_SESSION_PATH;
     use crate::commands::{is_unknown_command, KNOWN_COMMANDS};
+    use crate::session::ChangeKind;
     use yoagent::types::Usage;
 
     // ── compact thrash detection tests ────────────────────────────────────
