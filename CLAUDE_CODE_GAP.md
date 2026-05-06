@@ -337,10 +337,10 @@ These were listed as gaps on Day 24 but have shipped since:
   extractions (Days 62–64), flaky test fix for destructive_guard CWD
   race (Day 64).
 
-## Stats (Day 64)
+## Stats (Day 67)
 
-- yoyo: ~61,591 lines of Rust across 59 source files (incl. `src/format/`) + integration tests
-- 59 source files (was 48 on Day 61): commands split into 24 `commands_*.rs`
+- yoyo: ~62,886 lines of Rust across 62 source files (incl. `src/format/`) + integration tests
+- 62 source files (was 59 on Day 64): commands split into 26 `commands_*.rs`
   files (`commands.rs`, `commands_ast_grep.rs`, `commands_bg.rs`,
   `commands_config.rs`, `commands_dev.rs`, `commands_file.rs`,
   `commands_git.rs`, `commands_git_review.rs`, `commands_goal.rs`,
@@ -349,15 +349,15 @@ These were listed as gaps on Day 24 but have shipped since:
   `commands_project.rs`, `commands_refactor.rs`, `commands_rename.rs`,
   `commands_retry.rs`, `commands_run.rs`, `commands_search.rs`,
   `commands_session.rs`, `commands_skill.rs`, `commands_spawn.rs`,
-  `commands_todo.rs`),
+  `commands_todo.rs`, `commands_tree.rs`, `commands_update.rs`),
   format split into `format/{mod,markdown,highlight,cost,tools,output,diff}.rs`,
   plus `agent_builder.rs`, `hooks.rs`, `memory.rs`, `setup.rs`, `docs.rs`,
   `repl.rs`, `git.rs`, `providers.rs`, `context.rs`, `config.rs`, `prompt.rs`,
   `prompt_budget.rs`, `prompt_retry.rs`, `prompt_utils.rs`, `session.rs`,
   `sync_util.rs`, `dispatch.rs`, `dispatch_sub.rs`, `tools.rs`, `rtk.rs`,
   `safety.rs`, `help.rs`, `cli.rs`, `main.rs`, `watch.rs`,
-  `tool_wrappers.rs`, `update.rs`
-- 2,391 tests (2,303 unit + 88 integration)
+  `tool_wrappers.rs`, `update.rs`, `conversations.rs`
+- 2,430 tests (2,342 unit + 88 integration)
 - 13 skills (7 core/creator, 6 yoyo-origin): self-assess, evolve, communicate,
   research, skill-evolve, skill-creator, analyze-trajectory (core);
   social, family, release, explore-codebase, x-research, synthesis (yoyo)
