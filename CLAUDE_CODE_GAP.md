@@ -1,7 +1,7 @@
 # Gap Analysis: yoyo vs Claude Code
 
-Last verified: Day 64 (2026-05-03)
-Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54, Day 59, Day 61, Day 63, Day 64
+Last verified: Day 67 (2026-05-06)
+Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54, Day 59, Day 61, Day 63, Day 64, Day 67
 
 This document tracks the feature gap between yoyo and Claude Code, used to inform
 development priorities when there are no community issues to address. It is a
@@ -71,6 +71,7 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Smart context injection | ✅ | ✅ | `/add` with intelligent truncation — files over 500 lines get head+tail with omission marker (Day 56) |
 | Cost estimation | ✅ | ✅ | Per-request and session totals |
 | Context window awareness | ✅ | ✅ | Per-model context limit tracked (no longer hardcoded to 200k — #195 fix) |
+| Persistent cross-session memory | ✅ | ✅ | yoyo has `memory/` system with JSONL archives + synthesized active context (learnings, social); Codex Chronicle has similar persistent project memory. Different implementation, same capability (Day 67) |
 
 ## Permission System
 
@@ -106,6 +107,8 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Multi-file refactoring | ✅ | ✅ | `/refactor` umbrella command (rename, extract, move); `rename_symbol` agent tool for cross-project renames (Day 23) |
 | Architect mode | ✅ | ✅ | `/architect` dual-model mode — cheap model plans, expensive model edits; inspired by Aider's architect mode (Day 59) |
 | Iterative prompt loop | ✅ | ❌ | `/loop <N|until-pass> <prompt>` runs a prompt repeatedly, useful for iterative refinement (Day 59) |
+| Auto-lint-test per edit | 🟡 | ✅ | Aider runs lint+test after each individual file write; yoyo's `/watch` runs after the full prompt cycle completes. Same capability, different granularity — per-edit vs per-turn (Day 67) |
+| Automated PR review agent | 🟡 | ✅ | Cursor BugBot provides event-driven automated PR review; yoyo has `/review` but it's on-demand, not triggered automatically by PR events (Day 67) |
 
 ## Configuration
 
@@ -132,12 +135,21 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Graceful degradation | 🟡 | ✅ | Retry logic, error handling, context overflow recovery, provider fallback; not yet full fallback on partial tool failures |
 | Ctrl+C handling | ✅ | ✅ | Both handle interrupts |
 
+## Deployment & Isolation
+
+| Feature | yoyo | Claude Code | Notes |
+|---------|------|-------------|-------|
+| Cloud background agents | ❌ | ✅ | Cursor Cloud Agents run on cloud git worktrees while user works locally; different deployment model (cloud vs CLI) — yoyo is a local CLI tool by design (Day 67) |
+| Event-driven triggers / webhooks | ❌ | ✅ | Cursor agents triggered by GitHub events (PR opened, issue filed, etc.); yoyo has cron-based evolution but no event-driven hooks for arbitrary repo events (Day 67) |
+| Sandboxed execution | ❌ | ✅ | Codex uses Docker/VM-based tool isolation for safe execution; yoyo runs tools directly in the user's environment (Day 67) |
+
 ---
 
 ## Priority Queue (real remaining gaps)
 
 After the Day 38 refresh, the gaps that are actually still gaps. Re-evaluated
-on Day 61 — three core gaps remain, plus one new sub-gap from the skills work.
+on Day 67 — three core gaps remain, plus deployment-model gaps and one
+skills sub-gap.
 
 1. **Persistent named subagents with orchestration** (since Day ≤38) — yoyo now has
    `/spawn`, yoagent's `SubAgentTool`, AND `SharedState` for parent↔child data
@@ -148,33 +160,77 @@ on Day 61 — three core gaps remain, plus one new sub-gap from the skills work.
 2. **Full graceful degradation on partial tool failures** (since Day ≤38) — provider fallback
    covers hard API errors, but there's no story for "this tool call failed,
    try a different tool that achieves the same effect."
-3. **Skill marketplace curation** (since Day 61) — `/skill install` and `/skill search`
+3. **Per-edit auto-lint-test** (Aider parity, Day 67) — Aider runs lint+test after
+   each individual file write, catching errors before the agent moves on. yoyo's
+   `/watch` runs after the full prompt cycle. Closing this granularity gap would
+   catch more errors earlier.
+4. **Skill marketplace curation** (since Day 61) — `/skill install` and `/skill search`
    shipped on Days 60-61, closing the install/discovery gap. Still missing vs
    Claude Code: signed skill bundles, curation/ratings system, formal marketplace
    with reviews. A real but lower-priority gap — the install mechanics work,
    the trust/quality layer doesn't exist yet.
 
-### Competitive landscape shift (Day 61)
+### Competitive landscape shift (Day 67)
 
-The gap is no longer just yoyo vs Claude Code. The field has widened:
+The gap is no longer just yoyo vs Claude Code. The field has widened, and the
+nature of the gaps has shifted:
 
+**The biggest remaining gaps are deployment-model, not feature-level.** Cloud
+agents (Cursor Cloud Agents running on remote worktrees), event-driven triggers
+(Cursor BugBot auto-reviewing PRs), and sandboxed execution (Codex Docker/VM
+isolation) represent architectural choices that a CLI tool can't replicate
+without fundamentally changing what it is. These are ❌ by design choice, not
+by oversight.
+
+**Feature parity is close.** MCP, hooks, skills, multi-provider support,
+sub-agent dispatch, persistent memory — these are now table-stakes across
+competitors. yoyo has all of them (✅), which means they're no longer
+differentiators but keep-pace requirements.
+
+**Competitor highlights (Day 67):**
 - **Claude Code** has a formal plugin ecosystem with 12+ bundled plugins,
   a marketplace with discoverability and install commands, and exposes web
   search, web fetch, code execution, advisor, and memory tools as first-class
   API capabilities. yoyo now matches on install/discovery mechanics
   (`/skill install`, `/skill search`) but lacks the curation/trust layer.
+- **Cursor** has Cloud Agents (background cloud worktrees), BugBot (automated
+  PR review), and event-driven triggers — pushing toward always-on agent
+  presence rather than on-demand invocation.
 - **Codex CLI** (OpenAI) has npm/brew install, ChatGPT plan integration,
-  and a desktop app — lowering the barrier to entry for non-terminal users.
+  sandboxed Docker execution, and a desktop app — lowering the barrier to
+  entry for non-terminal users.
 - **Aider** v0.85–0.86 added GPT-5 family, Grok-4, and o3-pro support,
-  continuing to iterate on model compatibility and edit formats.
+  plus per-edit auto-lint-test that catches errors at finer granularity
+  than yoyo's per-turn watch mode.
 
 yoyo's differentiators remain and have grown: open-source self-evolution,
 multi-provider support (25 backends), the skills ecosystem (`/skill install`,
-`/skill search`, `/skill create`, 12 skills), `/architect` dual-model mode
+`/skill search`, `/skill create`, 13 skills), `/architect` dual-model mode
 (Aider parity), `/loop` iterative refinement, `SharedState` for sub-agent
-data sharing, and the explore-codebase + x-research skills for RLM-style
+data sharing, persistent memory system (`memory/` JSONL + active context),
+and the explore-codebase + x-research + synthesis skills for RLM-style
 sub-agent dispatch. The plugin gap has shifted from "no install/discovery
 at all" to "install works, curation doesn't exist yet."
+
+### Competitive Notes (Day 67)
+
+The competitive landscape has matured. The key insight: **the biggest gaps
+are now deployment-model (cloud agents, IDE integration, sandboxed execution)
+rather than feature-level.** Feature parity is close — yoyo has MCP, hooks,
+skills, memory, multi-provider, sub-agents, and most developer workflow
+commands that competitors offer. The remaining feature-level gaps (per-edit
+lint-test, persistent named subagents) are tractable engineering work.
+
+The deployment-model gaps (cloud worktrees, event-driven triggers, Docker
+isolation) represent a different class of challenge: they require
+fundamentally rethinking what a CLI tool is. These aren't bugs to fix
+or features to add — they're architectural decisions about where and how
+the agent runs. yoyo's strength as a lightweight, local, open-source CLI
+tool is precisely what makes these gaps hard to close, and possibly not
+worth closing. A CLI tool that tries to be a cloud service is neither.
+
+MCP and hooks are now table-stakes — all competitors have them. They're
+no longer differentiators but ✅ means yoyo keeps pace.
 
 ### What was on the old priority queue and is now done
 
