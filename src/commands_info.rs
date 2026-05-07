@@ -14,9 +14,86 @@ use crate::commands::thinking_level_name;
 use crate::format::*;
 use crate::git::*;
 
+use std::sync::OnceLock;
 use yoagent::agent::Agent;
 use yoagent::context::total_tokens;
 use yoagent::*;
+
+/// Session-level cache for self-written percentage so repeated calls
+/// don't re-run git blame.
+static SELF_WRITTEN_CACHE: OnceLock<Option<(usize, usize, f64)>> = OnceLock::new();
+
+/// Compute the percentage of source code lines written by the bot (yoyo-evolve).
+///
+/// Returns `(self_written_lines, total_lines, percentage)` or `None` if git blame
+/// fails (not a git repo, no git installed, etc.).
+///
+/// This runs `git blame --line-porcelain` across all `src/**/*.rs` files and counts
+/// lines where the author contains "yoyo". The result is cached for the session
+/// duration via `OnceLock`, so repeated calls are free after the first.
+pub fn compute_self_written_pct() -> Option<(usize, usize, f64)> {
+    *SELF_WRITTEN_CACHE.get_or_init(compute_self_written_pct_inner)
+}
+
+/// Inner (uncached) implementation. Finds source files via `git ls-files`,
+/// then runs `git blame --line-porcelain` and counts author lines.
+fn compute_self_written_pct_inner() -> Option<(usize, usize, f64)> {
+    // Find all tracked .rs files under src/
+    let ls_output = std::process::Command::new("git")
+        .args(["ls-files", "src/"])
+        .output()
+        .ok()?;
+    if !ls_output.status.success() {
+        return None;
+    }
+    let file_list = String::from_utf8_lossy(&ls_output.stdout);
+    let rs_files: Vec<&str> = file_list.lines().filter(|f| f.ends_with(".rs")).collect();
+    if rs_files.is_empty() {
+        return None;
+    }
+
+    // Run git blame --line-porcelain on all files at once
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("blame").arg("--line-porcelain");
+    for f in &rs_files {
+        cmd.arg(f);
+    }
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut total = 0usize;
+    let mut self_written = 0usize;
+    for line in stdout.lines() {
+        if let Some(author) = line.strip_prefix("author ") {
+            total += 1;
+            // Match bot author: "yoyo-evolve[bot]", "yoyo-evolve", or anything with "yoyo"
+            let author_lower = author.to_lowercase();
+            if author_lower.contains("yoyo") {
+                self_written += 1;
+            }
+        }
+    }
+
+    if total == 0 {
+        return None;
+    }
+
+    let pct = (self_written as f64 / total as f64) * 100.0;
+    Some((self_written, total, pct))
+}
+
+/// Format the self-written percentage for display.
+fn format_self_written(self_written: usize, total: usize, pct: f64) -> String {
+    format!(
+        "self-written: {:.1}% ({} / {} lines)",
+        pct,
+        format_token_count(self_written as u64),
+        format_token_count(total as u64),
+    )
+}
 
 // ── /version ─────────────────────────────────────────────────────────────
 
@@ -42,7 +119,11 @@ pub fn handle_version_verbose(provider: &str, model: &str) {
     println!("{DIM}  {}", version_line());
     println!("  provider: {provider}  model: {model}");
     let yoagent_ver = option_env!("YOAGENT_VERSION").unwrap_or("unknown");
-    println!("  yoagent:  v{yoagent_ver}{RESET}\n");
+    println!("  yoagent:  v{yoagent_ver}");
+    if let Some((s, t, pct)) = compute_self_written_pct() {
+        println!("  {}", format_self_written(s, t, pct));
+    }
+    println!("{RESET}");
 }
 
 // ── /status ──────────────────────────────────────────────────────────────
@@ -88,6 +169,9 @@ pub fn handle_status(
             format_token_count(context_used),
             format_token_count(context_max),
         );
+    }
+    if let Some((s, t, pct)) = compute_self_written_pct() {
+        println!("  {}", format_self_written(s, t, pct));
     }
     println!("{RESET}");
 }
@@ -1694,5 +1778,133 @@ More text.
         assert_eq!(format_context_size(1_000_000), "1M tokens");
         assert_eq!(format_context_size(1_048_576), "1.0M tokens");
         assert_eq!(format_context_size(131_072), "131k tokens");
+    }
+
+    #[test]
+    fn test_format_self_written() {
+        let result = format_self_written(1000, 1000, 100.0);
+        assert!(result.contains("100.0%"));
+        assert!(result.contains("1.0k")); // format_token_count uses k/M suffixes
+        assert!(result.contains("self-written"));
+
+        let result = format_self_written(500, 1000, 50.0);
+        assert!(result.contains("50.0%"));
+
+        let result = format_self_written(42, 100, 42.0);
+        assert!(result.contains("42 / 100 lines"));
+    }
+
+    #[test]
+    fn test_compute_self_written_pct_in_yoyo_repo() {
+        // When run in the yoyo repo, this should return Some with valid data.
+        // The yoyo codebase is 100% self-written by yoyo-evolve[bot].
+        // We skip if not in a git repo (e.g. CI without full clone).
+        if std::process::Command::new("git")
+            .args(["rev-parse", "--git-dir"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            // Only test inner function to avoid OnceLock caching issues across tests
+            let result = compute_self_written_pct_inner();
+            if let Some((self_written, total, pct)) = result {
+                assert!(total > 0, "should have some source lines");
+                assert!(self_written > 0, "should have some self-written lines");
+                assert!((0.0..=100.0).contains(&pct), "percentage should be valid");
+                // In yoyo's repo, expect very high self-written %
+                assert!(
+                    pct > 90.0,
+                    "yoyo codebase should be >90% self-written, got {pct:.1}%"
+                );
+            }
+            // result can be None if src/ has no tracked .rs files (unlikely but graceful)
+        }
+    }
+
+    #[test]
+    fn test_compute_self_written_pct_not_in_git_repo() {
+        // In a temp dir with no git repo, should return None
+        let tmp = std::env::temp_dir().join("yoyo_test_no_git");
+        let _ = std::fs::create_dir_all(&tmp);
+
+        // Save and change cwd
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+
+        let result = compute_self_written_pct_inner();
+        assert!(result.is_none(), "should return None outside a git repo");
+
+        // Restore cwd
+        std::env::set_current_dir(&original_dir).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_compute_self_written_temp_repo() {
+        // Create a temp git repo with a known author to verify counting logic
+        let tmp = std::env::temp_dir().join("yoyo_test_self_written");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+
+        // Init repo
+        let _ = std::process::Command::new("git").args(["init"]).output();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.name", "yoyo-evolve[bot]"])
+            .output();
+
+        // Create a source file and commit as yoyo
+        std::fs::write(
+            tmp.join("src/main.rs"),
+            "fn main() {\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["add", "."])
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .output();
+
+        let result = compute_self_written_pct_inner();
+        assert!(result.is_some(), "should compute in temp git repo");
+        let (self_written, total, pct) = result.unwrap();
+        assert_eq!(total, 3, "should have 3 lines");
+        assert_eq!(self_written, 3, "all lines by yoyo");
+        assert!((pct - 100.0).abs() < 0.01, "should be 100%");
+
+        // Now add a line from a different author
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.name", "someone-else"])
+            .output();
+        std::fs::write(
+            tmp.join("src/main.rs"),
+            "fn main() {\n    println!(\"hello\");\n    println!(\"world\");\n}\n",
+        )
+        .unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["add", "."])
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "add line"])
+            .output();
+
+        let result = compute_self_written_pct_inner();
+        assert!(result.is_some());
+        let (self_written, total, pct) = result.unwrap();
+        assert_eq!(total, 4, "should have 4 lines now");
+        // git blame might attribute changed lines differently, but we expect
+        // at least some yoyo lines and some non-yoyo lines
+        assert!(self_written < total, "not all lines should be yoyo's now");
+        assert!(pct < 100.0, "percentage should be less than 100%");
+
+        // Restore
+        std::env::set_current_dir(&original_dir).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
