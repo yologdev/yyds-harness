@@ -107,7 +107,7 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Multi-file refactoring | ✅ | ✅ | `/refactor` umbrella command (rename, extract, move); `rename_symbol` agent tool for cross-project renames (Day 23) |
 | Architect mode | ✅ | ✅ | `/architect` dual-model mode — cheap model plans, expensive model edits; inspired by Aider's architect mode (Day 59) |
 | Iterative prompt loop | ✅ | ❌ | `/loop <N|until-pass> <prompt>` runs a prompt repeatedly, useful for iterative refinement (Day 59) |
-| Auto-lint-test per edit | 🟡 | ✅ | Aider runs lint+test after each individual file write; yoyo's `/watch` runs after the full prompt cycle completes. Same capability, different granularity — per-edit vs per-turn (Day 67) |
+| Auto-lint-test per edit | ✅ | ✅ | `AutoCheckTool` wrapper runs the first watch phase (typically lint/check) after each write_file/edit_file and appends errors inline; uses existing `/watch set` mechanism (Day 68) |
 | Automated PR review agent | 🟡 | ✅ | Cursor BugBot provides event-driven automated PR review; yoyo has `/review` but it's on-demand, not triggered automatically by PR events (Day 67) |
 
 ## Configuration
@@ -160,10 +160,8 @@ skills sub-gap.
 2. **Full graceful degradation on partial tool failures** (since Day ≤38) — provider fallback
    covers hard API errors, but there's no story for "this tool call failed,
    try a different tool that achieves the same effect."
-3. **Per-edit auto-lint-test** (Aider parity, Day 67) — Aider runs lint+test after
-   each individual file write, catching errors before the agent moves on. yoyo's
-   `/watch` runs after the full prompt cycle. Closing this granularity gap would
-   catch more errors earlier.
+3. ~~**Per-edit auto-lint-test** (Aider parity)~~ — ✅ Closed Day 68.
+   `AutoCheckTool` wrapper runs the first watch phase after each write_file/edit_file.
 4. **Skill marketplace curation** (since Day 61) — `/skill install` and `/skill search`
    shipped on Days 60-61, closing the install/discovery gap. Still missing vs
    Claude Code: signed skill bundles, curation/ratings system, formal marketplace
@@ -200,8 +198,8 @@ differentiators but keep-pace requirements.
   sandboxed Docker execution, and a desktop app — lowering the barrier to
   entry for non-terminal users.
 - **Aider** v0.85–0.86 added GPT-5 family, Grok-4, and o3-pro support,
-  plus per-edit auto-lint-test that catches errors at finer granularity
-  than yoyo's per-turn watch mode.
+  plus per-edit auto-lint-test — yoyo now matches this with `AutoCheckTool`
+  (Day 68).
 
 yoyo's differentiators remain and have grown: open-source self-evolution,
 multi-provider support (25 backends), the skills ecosystem (`/skill install`,
@@ -218,8 +216,8 @@ The competitive landscape has matured. The key insight: **the biggest gaps
 are now deployment-model (cloud agents, IDE integration, sandboxed execution)
 rather than feature-level.** Feature parity is close — yoyo has MCP, hooks,
 skills, memory, multi-provider, sub-agents, and most developer workflow
-commands that competitors offer. The remaining feature-level gaps (per-edit
-lint-test, persistent named subagents) are tractable engineering work.
+commands that competitors offer. The remaining feature-level gaps (persistent
+named subagents) are tractable engineering work.
 
 The deployment-model gaps (cloud worktrees, event-driven triggers, Docker
 isolation) represent a different class of challenge: they require

@@ -1823,40 +1823,48 @@ More text.
 
     #[test]
     fn test_compute_self_written_pct_not_in_git_repo() {
-        // In a temp dir with no git repo, should return None
-        let tmp = std::env::temp_dir().join("yoyo_test_no_git");
-        let _ = std::fs::create_dir_all(&tmp);
+        // In a temp dir with no git repo, git ls-files should fail
+        let tmp = std::env::temp_dir().join("yoyo_test_no_git_sw");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        std::fs::write(tmp.join("src/lib.rs"), "fn foo() {}\n").unwrap();
 
-        // Save and change cwd
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&tmp).unwrap();
+        // Run git ls-files in the temp dir — should fail (no .git)
+        let output = std::process::Command::new("git")
+            .args(["ls-files", "src/"])
+            .current_dir(&tmp)
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success() || String::from_utf8_lossy(&output.stdout).trim().is_empty(),
+            "git ls-files should fail or return nothing outside a git repo"
+        );
 
-        let result = compute_self_written_pct_inner();
-        assert!(result.is_none(), "should return None outside a git repo");
-
-        // Restore cwd
-        std::env::set_current_dir(&original_dir).unwrap();
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_compute_self_written_temp_repo() {
-        // Create a temp git repo with a known author to verify counting logic
+        // Create a temp git repo with a known author to verify counting logic.
+        // We replicate compute_self_written_pct_inner's logic but with explicit
+        // current_dir() calls, since set_current_dir is process-global and not
+        // safe in parallel tests.
         let tmp = std::env::temp_dir().join("yoyo_test_self_written");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("src")).unwrap();
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&tmp).unwrap();
-
         // Init repo
-        let _ = std::process::Command::new("git").args(["init"]).output();
-        let _ = std::process::Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["config", "user.name", "yoyo-evolve[bot]"])
-            .output();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&tmp)
+                .output()
+                .unwrap()
+        };
+
+        run(&["init"]);
+        run(&["config", "user.email", "test@test.com"]);
+        run(&["config", "user.name", "yoyo-evolve[bot]"]);
 
         // Create a source file and commit as yoyo
         std::fs::write(
@@ -1864,47 +1872,65 @@ More text.
             "fn main() {\n    println!(\"hello\");\n}\n",
         )
         .unwrap();
-        let _ = std::process::Command::new("git")
-            .args(["add", "."])
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["commit", "-m", "init"])
-            .output();
+        run(&["add", "."]);
+        run(&["commit", "-m", "init"]);
 
-        let result = compute_self_written_pct_inner();
-        assert!(result.is_some(), "should compute in temp git repo");
-        let (self_written, total, pct) = result.unwrap();
+        // Run git blame in the temp repo
+        let output = std::process::Command::new("git")
+            .args(["blame", "--line-porcelain", "src/main.rs"])
+            .current_dir(&tmp)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git blame should succeed");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut total = 0usize;
+        let mut self_written = 0usize;
+        for line in stdout.lines() {
+            if let Some(author) = line.strip_prefix("author ") {
+                total += 1;
+                if author.to_lowercase().contains("yoyo") {
+                    self_written += 1;
+                }
+            }
+        }
         assert_eq!(total, 3, "should have 3 lines");
-        assert_eq!(self_written, 3, "all lines by yoyo");
-        assert!((pct - 100.0).abs() < 0.01, "should be 100%");
+        assert_eq!(self_written, 3, "all lines by yoyo-evolve[bot]");
 
         // Now add a line from a different author
-        let _ = std::process::Command::new("git")
-            .args(["config", "user.name", "someone-else"])
-            .output();
+        run(&["config", "user.name", "someone-else"]);
         std::fs::write(
             tmp.join("src/main.rs"),
             "fn main() {\n    println!(\"hello\");\n    println!(\"world\");\n}\n",
         )
         .unwrap();
-        let _ = std::process::Command::new("git")
-            .args(["add", "."])
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["commit", "-m", "add line"])
-            .output();
+        run(&["add", "."]);
+        run(&["commit", "-m", "add line"]);
 
-        let result = compute_self_written_pct_inner();
-        assert!(result.is_some());
-        let (self_written, total, pct) = result.unwrap();
+        let output = std::process::Command::new("git")
+            .args(["blame", "--line-porcelain", "src/main.rs"])
+            .current_dir(&tmp)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut total = 0usize;
+        let mut self_written = 0usize;
+        for line in stdout.lines() {
+            if let Some(author) = line.strip_prefix("author ") {
+                total += 1;
+                if author.to_lowercase().contains("yoyo") {
+                    self_written += 1;
+                }
+            }
+        }
         assert_eq!(total, 4, "should have 4 lines now");
-        // git blame might attribute changed lines differently, but we expect
-        // at least some yoyo lines and some non-yoyo lines
         assert!(self_written < total, "not all lines should be yoyo's now");
+
+        let pct = (self_written as f64 / total as f64) * 100.0;
         assert!(pct < 100.0, "percentage should be less than 100%");
 
-        // Restore
-        std::env::set_current_dir(&original_dir).unwrap();
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

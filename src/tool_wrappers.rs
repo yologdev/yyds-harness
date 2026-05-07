@@ -387,12 +387,113 @@ pub(crate) fn maybe_confirm(
 }
 
 // ---------------------------------------------------------------------------
+// AutoCheckTool — runs check command after successful file edits
+// ---------------------------------------------------------------------------
+
+/// Maximum characters of auto-check output to append to tool results.
+const AUTO_CHECK_MAX_CHARS: usize = 2000;
+
+/// A tool wrapper that automatically runs a check command after file edits.
+/// When a watch command is configured (via `/watch set`), it runs the first
+/// watch phase (typically lint) after successful write_file or edit_file
+/// operations and appends any errors to the tool result.
+///
+/// This gives the agent immediate compilation feedback inline with each edit,
+/// catching errors before moving on to the next file — similar to how Aider
+/// runs lint+test after each individual file write.
+pub(crate) struct AutoCheckTool {
+    inner: Box<dyn AgentTool>,
+}
+
+#[async_trait::async_trait]
+impl AgentTool for AutoCheckTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn label(&self) -> &str {
+        self.inner.label()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.inner.parameters_schema()
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: yoagent::types::ToolContext,
+    ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+        let result = self.inner.execute(params, ctx).await?;
+
+        // Only run check when a watch command is active
+        let commands = crate::watch::get_watch_commands();
+        if commands.is_empty() {
+            return Ok(result);
+        }
+
+        // Use only the first phase (typically lint/check, not the full test suite)
+        let check_cmd = &commands[0];
+        let (passed, output) = crate::watch::run_watch_command(check_cmd);
+
+        if passed {
+            return Ok(result);
+        }
+
+        // Append check failure output to the tool result
+        let truncated_output = if output.len() > AUTO_CHECK_MAX_CHARS {
+            // Find safe char boundary for truncation
+            let mut b = AUTO_CHECK_MAX_CHARS;
+            while b > 0 && !output.is_char_boundary(b) {
+                b -= 1;
+            }
+            format!(
+                "{}...\n[auto-check output truncated at {AUTO_CHECK_MAX_CHARS} chars]",
+                &output[..b]
+            )
+        } else {
+            output
+        };
+
+        let check_notice = format!("\n\n⚠ Auto-check failed ({check_cmd}):\n{truncated_output}");
+
+        // Append the check notice to each text content block
+        let new_content = result
+            .content
+            .into_iter()
+            .map(|c| match c {
+                yoagent::Content::Text { text } => yoagent::Content::Text {
+                    text: format!("{text}{check_notice}"),
+                },
+                other => other,
+            })
+            .collect();
+
+        Ok(yoagent::types::ToolResult {
+            content: new_content,
+            details: result.details,
+        })
+    }
+}
+
+/// Wrap a tool with auto-check: runs the watch command after successful edits
+/// and appends any errors to the tool result for immediate feedback.
+pub(crate) fn with_auto_check(tool: Box<dyn AgentTool>) -> Box<dyn AgentTool> {
+    Box::new(AutoCheckTool { inner: tool })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     // === describe_file_operation tests ===
 
@@ -657,5 +758,215 @@ mod tests {
             _ => panic!("Expected text content"),
         };
         assert_eq!(text, short_text, "Short text should be unchanged");
+    }
+
+    // === AutoCheckTool tests ===
+
+    /// A simple mock tool that always succeeds with the given text.
+    struct MockTool {
+        tool_name: &'static str,
+        result_text: String,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentTool for MockTool {
+        fn name(&self) -> &str {
+            self.tool_name
+        }
+        fn label(&self) -> &str {
+            self.tool_name
+        }
+        fn description(&self) -> &str {
+            "mock tool"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        async fn execute(
+            &self,
+            _params: serde_json::Value,
+            _ctx: yoagent::types::ToolContext,
+        ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+            Ok(yoagent::types::ToolResult {
+                content: vec![yoagent::Content::Text {
+                    text: self.result_text.clone(),
+                }],
+                details: serde_json::Value::Null,
+            })
+        }
+    }
+
+    fn test_tool_context() -> yoagent::types::ToolContext {
+        yoagent::types::ToolContext {
+            tool_call_id: "test".to_string(),
+            tool_name: "test".to_string(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            on_update: None,
+            on_progress: None,
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_auto_check_passthrough_no_watch_command() {
+        // Clear any watch commands to ensure passthrough
+        crate::watch::clear_watch_command();
+
+        let tool = with_auto_check(Box::new(MockTool {
+            tool_name: "write_file",
+            result_text: "File written successfully.".to_string(),
+        }));
+
+        let result = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap();
+
+        let text = match &result.content[0] {
+            yoagent::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+        assert_eq!(text, "File written successfully.");
+        assert!(
+            !text.contains("Auto-check"),
+            "Should not contain check output when no watch command"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_auto_check_appends_failure_output() {
+        // Set a watch command that always fails
+        crate::watch::set_watch_command("echo 'error[E0433]: module not found' && exit 1");
+
+        let tool = with_auto_check(Box::new(MockTool {
+            tool_name: "edit_file",
+            result_text: "Edit applied.".to_string(),
+        }));
+
+        let result = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap();
+
+        let text = match &result.content[0] {
+            yoagent::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+
+        // Clean up
+        crate::watch::clear_watch_command();
+
+        assert!(
+            text.starts_with("Edit applied."),
+            "Should start with original result"
+        );
+        assert!(
+            text.contains("⚠ Auto-check failed"),
+            "Should contain check failure notice"
+        );
+        assert!(
+            text.contains("error[E0433]"),
+            "Should contain the actual error output"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_auto_check_silent_on_success() {
+        // Set a watch command that succeeds
+        crate::watch::set_watch_command("true");
+
+        let tool = with_auto_check(Box::new(MockTool {
+            tool_name: "write_file",
+            result_text: "File written successfully.".to_string(),
+        }));
+
+        let result = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap();
+
+        let text = match &result.content[0] {
+            yoagent::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+
+        // Clean up
+        crate::watch::clear_watch_command();
+
+        assert_eq!(
+            text, "File written successfully.",
+            "Should pass through unchanged when check passes"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_auto_check_truncates_long_output() {
+        // Set a watch command that produces output longer than AUTO_CHECK_MAX_CHARS
+        // Generate ~3000 chars of output
+        let long_cmd = "python3 -c \"print('x' * 3000)\" && exit 1";
+        crate::watch::set_watch_command(long_cmd);
+
+        let tool = with_auto_check(Box::new(MockTool {
+            tool_name: "write_file",
+            result_text: "OK".to_string(),
+        }));
+
+        let result = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap();
+
+        let text = match &result.content[0] {
+            yoagent::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+
+        // Clean up
+        crate::watch::clear_watch_command();
+
+        assert!(
+            text.contains("auto-check output truncated"),
+            "Long output should be truncated: {text}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_auto_check_uses_first_phase_only() {
+        // Set multi-phase watch commands — only first phase should run
+        crate::watch::set_watch_commands(&[
+            "echo 'lint phase' && exit 1",
+            "echo 'test phase' && exit 1",
+        ]);
+
+        let tool = with_auto_check(Box::new(MockTool {
+            tool_name: "write_file",
+            result_text: "OK".to_string(),
+        }));
+
+        let result = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap();
+
+        let text = match &result.content[0] {
+            yoagent::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+
+        // Clean up
+        crate::watch::clear_watch_command();
+
+        assert!(
+            text.contains("lint phase"),
+            "Should run first phase: {text}"
+        );
+        assert!(
+            !text.contains("test phase"),
+            "Should NOT run second phase: {text}"
+        );
     }
 }

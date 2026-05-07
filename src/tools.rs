@@ -17,7 +17,9 @@ use crate::commands_todo;
 use crate::format::*;
 use crate::hooks::{self, maybe_hook, AuditHook, HookRegistry};
 use crate::safety::analyze_bash_command;
-use crate::tool_wrappers::{maybe_confirm, maybe_guard, maybe_guard_arc, with_truncation};
+use crate::tool_wrappers::{
+    maybe_confirm, maybe_guard, maybe_guard_arc, with_auto_check, with_truncation,
+};
 use crate::AgentConfig;
 
 use std::io::{self, IsTerminal, Write};
@@ -775,8 +777,14 @@ pub fn build_tools(
             ),
             &hooks,
         ),
-        maybe_hook(with_truncation(write_tool, max_tool_output), &hooks),
-        maybe_hook(with_truncation(edit_tool, max_tool_output), &hooks),
+        maybe_hook(
+            with_truncation(with_auto_check(write_tool), max_tool_output),
+            &hooks,
+        ),
+        maybe_hook(
+            with_truncation(with_auto_check(edit_tool), max_tool_output),
+            &hooks,
+        ),
         maybe_hook(
             with_truncation(
                 maybe_guard(Box::new(ListFilesTool::default()), dir_restrictions),
