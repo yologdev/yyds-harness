@@ -704,7 +704,13 @@ pub async fn run_prompt_with_changes(
     let mut api_error: Option<String> = None;
 
     // Save message state before the first attempt so we can restore on retry
-    let saved_state = agent.save_messages().ok();
+    let saved_state = match agent.save_messages() {
+        Ok(state) => Some(state),
+        Err(e) => {
+            eprintln!("{DIM}  ⚠ Could not save message state for retry: {e}{RESET}");
+            None
+        }
+    };
 
     for attempt in 0..=MAX_RETRIES {
         // On retry, restore pre-prompt state so we don't duplicate the user message
@@ -954,7 +960,13 @@ pub async fn run_prompt_with_content_and_changes(
     });
 
     // Save message state before the first attempt so we can restore on retry
-    let saved_state = agent.save_messages().ok();
+    let saved_state = match agent.save_messages() {
+        Ok(state) => Some(state),
+        Err(e) => {
+            eprintln!("{DIM}  ⚠ Could not save message state for retry: {e}{RESET}");
+            None
+        }
+    };
 
     for attempt in 0..=MAX_RETRIES {
         // On retry, restore pre-prompt state so we don't duplicate the user message

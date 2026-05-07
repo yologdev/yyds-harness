@@ -346,7 +346,10 @@ async fn run_piped_mode(
     output_format: cli::OutputFormat,
 ) {
     let mut input = String::new();
-    io::stdin().read_to_string(&mut input).ok();
+    if let Err(e) = io::stdin().read_to_string(&mut input) {
+        eprintln!("Error reading stdin: {e}");
+        std::process::exit(1);
+    }
     let input = input.trim();
     if input.is_empty() {
         eprintln!("No input on stdin.");
