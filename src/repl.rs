@@ -888,6 +888,75 @@ pub async fn run_repl(
             effective_input: &effective_input,
         })
         .await;
+
+        // ── Auto-continue: if the model stopped mid-work, send a follow-up ──
+        {
+            let mut auto_continue_count: u32 = 0;
+            let mut last_text = outcome.text.clone();
+            let mut had_error =
+                outcome.last_tool_error.is_some() || outcome.last_api_error.is_some();
+
+            while auto_continue_count < MAX_AUTO_CONTINUES
+                && !had_error
+                && looks_incomplete(&last_text)
+                && !crate::prompt_budget::session_budget_exhausted(30)
+            {
+                auto_continue_count += 1;
+                eprintln!(
+                    "\n{DIM}  ⚡ auto-continuing ({auto_continue_count}/{MAX_AUTO_CONTINUES} \
+                     — response appears incomplete)...{RESET}"
+                );
+
+                // Snapshot state for the continuation turn
+                let cont_changes_before: Vec<String> = session_changes
+                    .snapshot()
+                    .iter()
+                    .map(|c| c.path.clone())
+                    .collect();
+                let mut cont_turn_snap = TurnSnapshot::new();
+                for path in &cont_changes_before {
+                    cont_turn_snap.snapshot_file(path);
+                }
+                if let Ok(diff_files) = crate::git::run_git(&["diff", "--name-only"]) {
+                    for f in diff_files.lines().filter(|l| !l.is_empty()) {
+                        cont_turn_snap.snapshot_file(f);
+                    }
+                }
+
+                let cont_prompt = "Continue with the remaining work. Pick up where you left off.";
+                let cont_start = Instant::now();
+                turn_count += 1;
+
+                let cont_outcome = run_prompt_auto_retry(
+                    agent,
+                    cont_prompt,
+                    &mut session_total,
+                    &agent_config.model,
+                    &session_changes,
+                )
+                .await;
+
+                // Update tracking for the next iteration
+                last_text = cont_outcome.text.clone();
+                had_error =
+                    cont_outcome.last_tool_error.is_some() || cont_outcome.last_api_error.is_some();
+
+                handle_post_prompt(PostPromptContext {
+                    outcome: &cont_outcome,
+                    agent,
+                    agent_config,
+                    session_total: &mut session_total,
+                    session_changes: &session_changes,
+                    turn_history: &mut turn_history,
+                    turn_snap: cont_turn_snap,
+                    changes_before: &cont_changes_before,
+                    last_error: &mut last_error,
+                    prompt_start: cont_start,
+                    effective_input: cont_prompt,
+                })
+                .await;
+            }
+        }
     }
 
     // Save readline history
@@ -910,6 +979,121 @@ pub async fn run_repl(
     } else {
         println!("\n{DIM}  bye 👋{RESET}\n");
     }
+}
+
+/// Maximum number of automatic follow-up prompts per user turn.
+const MAX_AUTO_CONTINUES: u32 = 3;
+
+/// Heuristic check: does the agent's response text suggest it stopped mid-work
+/// and intends to continue? Conservative — only triggers on clear signals.
+pub(crate) fn looks_incomplete(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() || text.len() < 20 {
+        return false;
+    }
+
+    // Check the tail of the response (last ~300 chars) for continuation signals.
+    let tail_start = {
+        let target = text.len().saturating_sub(300);
+        let mut b = target;
+        while b > 0 && !text.is_char_boundary(b) {
+            b -= 1;
+        }
+        b
+    };
+    let tail = &text[tail_start..];
+    let tail_lower = tail.to_lowercase();
+
+    // ── Pattern 1: explicit continuation phrases near the end ──
+    let continuation_phrases = [
+        "next, i'll",
+        "next i'll",
+        "i'll now ",
+        "let me continue",
+        "let me proceed",
+        "i'll continue",
+        "moving on to",
+        "let me move on",
+        "i'll move on",
+        "now let's",
+        "now i'll",
+        "now i need to",
+        "let me now",
+        "i still need to",
+        "i need to continue",
+    ];
+    for phrase in &continuation_phrases {
+        if tail_lower.contains(phrase) {
+            return true;
+        }
+    }
+
+    // ── Pattern 2: "remaining" + steps/tasks/items near the end ──
+    if tail_lower.contains("remaining") {
+        for word in &["step", "task", "item", "change", "file", "fix", "issue"] {
+            if tail_lower.contains(word) {
+                return true;
+            }
+        }
+    }
+
+    // ── Pattern 3: response ends with "..." suggesting continuation ──
+    if text.ends_with("...") || text.ends_with("…") {
+        return true;
+    }
+
+    // ── Pattern 4: numbered steps where later steps haven't been addressed ──
+    // Look for "Step N:" or "N." patterns and check if the last mentioned step
+    // is less than the total count announced.
+    let mut max_announced: u32 = 0;
+    let mut max_reached: u32 = 0;
+    for line in text.lines() {
+        let trimmed = line.trim().to_lowercase();
+        // Match patterns like "Step 3:" or "3. " or "**Step 3**"
+        if let Some(n) = extract_step_number(&trimmed) {
+            if n > max_announced {
+                max_announced = n;
+            }
+        }
+    }
+    // Now check which steps actually have content after them
+    // (simplification: the last step number mentioned in the text is the last reached)
+    for line in text.lines().rev() {
+        let trimmed = line.trim().to_lowercase();
+        if let Some(n) = extract_step_number(&trimmed) {
+            max_reached = n;
+            break;
+        }
+    }
+    if max_announced >= 3 && max_reached > 0 && max_reached < max_announced {
+        // Announced N steps but only reached step M < N
+        return true;
+    }
+
+    false
+}
+
+/// Extract a step number from patterns like "step 3:", "3. ", "**step 3**"
+fn extract_step_number(line: &str) -> Option<u32> {
+    // "step N:" or "**step N**" or "step N."
+    if let Some(rest) = line
+        .strip_prefix("step ")
+        .or_else(|| line.strip_prefix("**step "))
+    {
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() {
+            return digits.parse().ok();
+        }
+    }
+    // "N. " at the start of a line (numbered list)
+    let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if !digits.is_empty() && digits.len() <= 2 {
+        let rest = &line[digits.len()..];
+        if rest.starts_with(". ") || rest.starts_with(") ") {
+            return digits.parse().ok();
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1352,5 +1536,91 @@ mod tests {
         // Cursor at position 2, but line is 5 chars
         let hint = helper.hint("/help", 2, &ctx);
         assert!(hint.is_none());
+    }
+
+    // ── looks_incomplete tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_looks_incomplete_empty_and_short() {
+        assert!(!looks_incomplete(""));
+        assert!(!looks_incomplete("ok"));
+        assert!(!looks_incomplete("short response"));
+    }
+
+    #[test]
+    fn test_looks_incomplete_continuation_phrases() {
+        assert!(looks_incomplete(
+            "I've fixed the first file. Next, I'll update the remaining tests."
+        ));
+        assert!(looks_incomplete(
+            "The build passes now. Let me continue with the second module."
+        ));
+        assert!(looks_incomplete(
+            "That's done. I'll now update the configuration."
+        ));
+        assert!(looks_incomplete(
+            "Changes applied successfully. Moving on to the documentation."
+        ));
+        assert!(looks_incomplete(
+            "First part is complete. Now I need to handle the edge cases."
+        ));
+        assert!(looks_incomplete(
+            "I still need to update the tests for this module."
+        ));
+    }
+
+    #[test]
+    fn test_looks_incomplete_remaining_pattern() {
+        assert!(looks_incomplete(
+            "I've handled 3 of the 5 files. The remaining files need the same fix."
+        ));
+        assert!(looks_incomplete(
+            "Two remaining tasks need to be completed."
+        ));
+    }
+
+    #[test]
+    fn test_looks_incomplete_trailing_ellipsis() {
+        assert!(looks_incomplete("I'll update these files next..."));
+        assert!(looks_incomplete("There are a few more things to handle…"));
+    }
+
+    #[test]
+    fn test_looks_incomplete_numbered_steps() {
+        let text = "Here's the plan:\n\
+                     1. Fix the parser\n\
+                     2. Update tests\n\
+                     3. Fix formatting\n\
+                     4. Update docs\n\n\
+                     I've completed step 1. Fixed the parser.\n\
+                     2. Now updating the tests.";
+        assert!(looks_incomplete(text));
+    }
+
+    #[test]
+    fn test_looks_incomplete_completed_work() {
+        // These should NOT trigger
+        assert!(!looks_incomplete(
+            "All done! The tests pass and everything is working correctly."
+        ));
+        assert!(!looks_incomplete(
+            "I've completed all the changes. The build succeeds and tests pass."
+        ));
+        assert!(!looks_incomplete(
+            "Everything looks good. All 5 files have been updated successfully."
+        ));
+        assert!(!looks_incomplete(
+            "The refactoring is complete. Here's a summary of what changed."
+        ));
+    }
+
+    #[test]
+    fn test_looks_incomplete_step_number_extraction() {
+        assert_eq!(extract_step_number("step 3: do something"), Some(3));
+        assert_eq!(extract_step_number("**step 2**"), Some(2));
+        assert_eq!(extract_step_number("1. first item"), Some(1));
+        assert_eq!(extract_step_number("12) twelfth item"), Some(12));
+        assert_eq!(extract_step_number("no step here"), None);
+        assert_eq!(extract_step_number(""), None);
     }
 }

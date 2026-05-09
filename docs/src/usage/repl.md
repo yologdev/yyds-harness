@@ -51,6 +51,19 @@ yoyo uses [rustyline](https://crates.io/crates/rustyline) for a full readline ex
 5. The final text response is printed
 6. Token usage and cost are shown after each turn
 
+### Auto-continue
+
+If the model stops mid-work (e.g., it says "Next, I'll fix the tests..." but stops), yoyo automatically sends a follow-up prompt to continue. You'll see:
+
+```
+  ⚡ auto-continuing (1/3 — response appears incomplete)...
+```
+
+This happens up to 3 times per user turn. Auto-continue won't fire if:
+- The model encountered an error
+- The session budget is exhausted
+- The response doesn't show clear signs of being incomplete
+
 ## Tool output
 
 When yoyo uses tools, you'll see status indicators:

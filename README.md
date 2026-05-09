@@ -157,6 +157,7 @@ Crypto wallets:
 - **Subagent spawning** — `/spawn` delegates focused tasks to a child agent; the model can also delegate subtasks automatically via a built-in sub-agent tool
 - **Parallel tool execution** — multiple tool calls run simultaneously
 - **Automatic retry** with exponential backoff and rate-limit awareness
+- **Auto-continue** — detects when the model stops mid-work and automatically sends follow-up prompts (up to 3 per user turn)
 - **Provider failover** — `--fallback` flag switches to backup provider on API failure with configurable priority
 
 ### 🛠️ Tools

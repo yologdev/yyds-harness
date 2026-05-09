@@ -55,7 +55,7 @@ pub fn build_auto_retry_prompt(
     };
     match tool_name {
         Some(name) => {
-            let hint = tool_recovery_hint(name);
+            let hint = tool_recovery_hint(name, attempt);
             format!(
                 "[Auto-retry {attempt}/{MAX_AUTO_RETRIES}: {name} failed with: {summary}. \
                  {hint}]\n\n{original_input}"
@@ -71,29 +71,67 @@ pub fn build_auto_retry_prompt(
 }
 
 /// Return a tool-specific recovery hint for the given tool name.
-/// These hints guide the agent toward productive retry strategies instead of
-/// generic "try something different" advice.
-pub fn tool_recovery_hint(tool_name: &str) -> &'static str {
-    match tool_name {
-        "bash" => {
-            "The shell command failed. Check if the command exists, \
-             try a simpler version, or use a different approach."
+///
+/// Hints escalate based on the retry attempt number:
+/// - **Attempt 1**: diagnostic advice (fix the immediate error, same tool)
+/// - **Attempt 2+**: concrete alternative tool suggestions (switch tools entirely)
+///
+/// This prevents premature tool-switching on transient failures while ensuring
+/// the agent doesn't get stuck retrying the same failing approach.
+pub fn tool_recovery_hint(tool_name: &str, attempt: u32) -> &'static str {
+    if attempt >= 2 {
+        // Escalate: suggest a concrete alternative tool
+        match tool_name {
+            "edit_file" => {
+                "Try write_file instead: use read_file to get the full current contents, \
+                 apply your edit to the full text, then use write_file to replace the entire file."
+            }
+            "read_file" => {
+                "Try bash instead: use `cat <path>` or `head -n 100 <path>` to read \
+                 the file contents directly."
+            }
+            "search" => {
+                "Try bash instead: use `grep -rn '<pattern>' <path>` for regex search, \
+                 or `find . -name '<pattern>'` for file name search."
+            }
+            "write_file" => {
+                "Try bash instead: use `cat > <path> << 'HEREDOC'` with a heredoc to \
+                 write the file contents, or check directory permissions with `ls -la`."
+            }
+            "rename_symbol" => {
+                "Try search + edit_file instead: use search to find all occurrences of \
+                 the symbol, then use edit_file on each file to replace them."
+            }
+            "bash" => {
+                "Try a simpler command: break the command into smaller steps, \
+                 check if the binary exists with `which <cmd>`, or try an alternative \
+                 tool (e.g., read_file instead of cat, search instead of grep)."
+            }
+            _ => "The tool call failed again. Try a completely different tool or approach.",
         }
-        "edit_file" => {
-            "The edit failed (likely old_text mismatch). Use read_file to see \
-             current contents, then retry with the exact text."
+    } else {
+        // Attempt 1: diagnostic hint (fix the immediate error)
+        match tool_name {
+            "bash" => {
+                "The shell command failed. Check if the command exists, \
+                 try a simpler version, or use a different approach."
+            }
+            "edit_file" => {
+                "The edit failed (likely old_text mismatch). Use read_file to see \
+                 current contents, then retry with the exact text."
+            }
+            "write_file" => {
+                "The file write failed. Check that the path exists and you have \
+                 the right permissions."
+            }
+            "read_file" => {
+                "The file read failed. Use list_files to verify the path, or \
+                 search for the file."
+            }
+            "search" => "The search failed. Try a simpler pattern or check the path.",
+            "rename_symbol" => "The rename failed. Verify the symbol exists with search first.",
+            _ => "The tool call failed. Try a different approach.",
         }
-        "write_file" => {
-            "The file write failed. Check that the path exists and you have \
-             the right permissions."
-        }
-        "read_file" => {
-            "The file read failed. Use list_files to verify the path, or \
-             search for the file."
-        }
-        "search" => "The search failed. Try a simpler pattern or check the path.",
-        "rename_symbol" => "The rename failed. Verify the symbol exists with search first.",
-        _ => "The tool call failed. Try a different approach.",
     }
 }
 
@@ -624,14 +662,27 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_recovery_hint_bash() {
-        let hint = tool_recovery_hint("bash");
+    fn test_tool_recovery_hint_bash_attempt1() {
+        let hint = tool_recovery_hint("bash", 1);
         assert!(hint.contains("shell command failed"), "bash hint: {hint}");
     }
 
     #[test]
-    fn test_tool_recovery_hint_edit_file() {
-        let hint = tool_recovery_hint("edit_file");
+    fn test_tool_recovery_hint_bash_attempt2() {
+        let hint = tool_recovery_hint("bash", 2);
+        assert!(
+            hint.contains("simpler command"),
+            "bash escalated hint should suggest simpler command: {hint}"
+        );
+        assert!(
+            hint.contains("which"),
+            "bash escalated hint should suggest checking binary existence: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_edit_file_attempt1() {
+        let hint = tool_recovery_hint("edit_file", 1);
         assert!(hint.contains("edit failed"), "edit_file hint: {hint}");
         assert!(
             hint.contains("read_file"),
@@ -640,8 +691,73 @@ mod tests {
     }
 
     #[test]
+    fn test_tool_recovery_hint_edit_file_attempt2() {
+        let hint = tool_recovery_hint("edit_file", 2);
+        assert!(
+            hint.contains("write_file"),
+            "edit_file escalated hint should suggest write_file: {hint}"
+        );
+        assert!(
+            hint.contains("read_file"),
+            "edit_file escalated hint should mention read_file for getting contents: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_read_file_attempt2() {
+        let hint = tool_recovery_hint("read_file", 2);
+        assert!(
+            hint.contains("bash"),
+            "read_file escalated hint should suggest bash: {hint}"
+        );
+        assert!(
+            hint.contains("cat"),
+            "read_file escalated hint should suggest cat: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_search_attempt2() {
+        let hint = tool_recovery_hint("search", 2);
+        assert!(
+            hint.contains("bash"),
+            "search escalated hint should suggest bash: {hint}"
+        );
+        assert!(
+            hint.contains("grep"),
+            "search escalated hint should suggest grep: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_write_file_attempt2() {
+        let hint = tool_recovery_hint("write_file", 2);
+        assert!(
+            hint.contains("bash"),
+            "write_file escalated hint should suggest bash: {hint}"
+        );
+        assert!(
+            hint.contains("HEREDOC"),
+            "write_file escalated hint should suggest heredoc: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_rename_symbol_attempt2() {
+        let hint = tool_recovery_hint("rename_symbol", 2);
+        assert!(
+            hint.contains("search"),
+            "rename_symbol escalated hint should suggest search: {hint}"
+        );
+        assert!(
+            hint.contains("edit_file"),
+            "rename_symbol escalated hint should suggest edit_file: {hint}"
+        );
+    }
+
+    #[test]
     fn test_tool_recovery_hint_unknown() {
-        let hint = tool_recovery_hint("some_unknown_tool");
+        let hint = tool_recovery_hint("some_unknown_tool", 1);
         assert!(
             hint.contains("different approach"),
             "unknown tool hint: {hint}"
@@ -649,8 +765,17 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_recovery_hint_known_tools() {
-        // All known tools should return specific (non-default) hints
+    fn test_tool_recovery_hint_unknown_attempt2() {
+        let hint = tool_recovery_hint("some_unknown_tool", 2);
+        assert!(
+            hint.contains("completely different"),
+            "unknown tool escalated hint: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_known_tools_both_attempts() {
+        // All known tools should return specific (non-default) hints at both attempt levels
         for tool in &[
             "bash",
             "edit_file",
@@ -659,10 +784,20 @@ mod tests {
             "search",
             "rename_symbol",
         ] {
-            let hint = tool_recovery_hint(tool);
+            let hint1 = tool_recovery_hint(tool, 1);
             assert!(
-                !hint.contains("The tool call failed"),
-                "{tool} should have a specific hint, got default: {hint}"
+                !hint1.contains("The tool call failed"),
+                "{tool} attempt 1 should have a specific hint, got default: {hint1}"
+            );
+            let hint2 = tool_recovery_hint(tool, 2);
+            assert!(
+                !hint2.contains("The tool call failed"),
+                "{tool} attempt 2 should have a specific hint, got default: {hint2}"
+            );
+            // Escalated hint should differ from diagnostic hint
+            assert_ne!(
+                hint1, hint2,
+                "{tool} should have different hints for attempt 1 vs 2"
             );
         }
     }
@@ -682,10 +817,38 @@ mod tests {
             prompt.contains("file not found"),
             "retry prompt should include error summary: {prompt}"
         );
-        // Should contain the recovery hint for read_file
+        // Attempt 1: should contain the diagnostic hint for read_file
         assert!(
             prompt.contains("list_files"),
-            "retry prompt should include read_file recovery hint: {prompt}"
+            "retry prompt should include read_file diagnostic hint: {prompt}"
+        );
+    }
+
+    #[test]
+    fn test_build_auto_retry_prompt_escalates_on_attempt2() {
+        let prompt = build_auto_retry_prompt("fix the bug", "file not found", Some("read_file"), 2);
+        assert!(
+            prompt.contains("read_file"),
+            "retry prompt should include tool name: {prompt}"
+        );
+        // Attempt 2: should contain the escalated alternative tool hint
+        assert!(
+            prompt.contains("bash"),
+            "retry prompt attempt 2 should suggest bash alternative: {prompt}"
+        );
+        assert!(
+            prompt.contains("cat"),
+            "retry prompt attempt 2 should suggest cat command: {prompt}"
+        );
+    }
+
+    #[test]
+    fn test_build_auto_retry_prompt_edit_escalation() {
+        let prompt =
+            build_auto_retry_prompt("refactor code", "old_text not found", Some("edit_file"), 2);
+        assert!(
+            prompt.contains("write_file"),
+            "edit_file attempt 2 should suggest write_file: {prompt}"
         );
     }
 
