@@ -335,8 +335,24 @@ pub fn handle_model_list(current_model: &str, current_provider: &str, filter: &s
 /// Return the context window size (in tokens) for well-known models.
 /// Returns `None` when the model isn't in our registry.
 pub fn model_context_window(model: &str) -> Option<u64> {
-    // Anthropic Claude family — all 200k
+    // Anthropic Claude family
     if model.contains("claude") {
+        // Sonnet 4+ all have 1M context
+        if model.contains("sonnet-4") || model.contains("sonnet-4.") {
+            return Some(1_000_000);
+        }
+        if model.contains("opus") {
+            // Opus 4.6+ have 1M; older Opus (4.0, 4.1, 4.5) have 200k
+            if model.contains("4-6")
+                || model.contains("4.6")
+                || model.contains("4-7")
+                || model.contains("4.7")
+            {
+                return Some(1_000_000);
+            }
+            return Some(200_000);
+        }
+        // Haiku and older Claude models: 200k
         return Some(200_000);
     }
     // OpenAI GPT-4.1 family — 1M
@@ -1691,15 +1707,22 @@ More text.
 
     #[test]
     fn test_model_context_window_known_models() {
-        // Anthropic
+        // Anthropic — Sonnet 4+ has 1M context
         assert_eq!(
             model_context_window("claude-sonnet-4-20250514"),
-            Some(200_000)
+            Some(1_000_000)
         );
+        assert_eq!(model_context_window("claude-sonnet-4-6"), Some(1_000_000));
+        assert_eq!(model_context_window("claude-sonnet-4-5"), Some(1_000_000));
+        // Opus 4.6+ has 1M, older Opus has 200k
+        assert_eq!(model_context_window("claude-opus-4-7"), Some(1_000_000));
+        assert_eq!(model_context_window("claude-opus-4-6"), Some(1_000_000));
         assert_eq!(
             model_context_window("claude-opus-4-20250514"),
             Some(200_000)
         );
+        // Haiku: 200k
+        assert_eq!(model_context_window("claude-haiku-4-5"), Some(200_000));
         // OpenAI
         assert_eq!(model_context_window("gpt-4.1"), Some(1_048_576));
         assert_eq!(model_context_window("gpt-4.1-mini"), Some(1_048_576));

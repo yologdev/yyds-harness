@@ -18,10 +18,12 @@ fn model_pricing(model: &str) -> Option<(f64, f64, f64, f64)> {
     // ── Anthropic ─────────────────────────────────────────────────────
     // https://docs.anthropic.com/en/about-claude/pricing
     if model.contains("opus") {
-        if model.contains("4-6")
-            || model.contains("4-5")
-            || model.contains("4.6")
+        if model.contains("4-5")
+            || model.contains("4-6")
+            || model.contains("4-7")
             || model.contains("4.5")
+            || model.contains("4.6")
+            || model.contains("4.7")
         {
             return Some((5.0, 6.25, 0.50, 25.0));
         } else {

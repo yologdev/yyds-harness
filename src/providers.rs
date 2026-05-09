@@ -42,9 +42,13 @@ pub fn provider_api_key_env(provider: &str) -> Option<&'static str> {
 pub fn known_models_for_provider(provider: &str) -> &'static [&'static str] {
     match provider {
         "anthropic" => &[
+            "claude-opus-4-7",
             "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5",
             "claude-sonnet-4-20250514",
-            "claude-haiku-4-5-20250414",
+            "claude-haiku-4-5",
+            "claude-haiku-4-5-20251001",
         ],
         "openai" => &[
             "gpt-5",
@@ -89,8 +93,11 @@ pub fn known_models_for_provider(provider: &str) -> &'static [&'static str] {
             "MiniMax-M1-40k",
         ],
         "bedrock" => &[
+            "anthropic.claude-opus-4-7",
+            "anthropic.claude-sonnet-4-6",
+            "anthropic.claude-sonnet-4-5-20250929-v1:0",
             "anthropic.claude-sonnet-4-20250514-v1:0",
-            "anthropic.claude-haiku-4-5-20250414-v1:0",
+            "anthropic.claude-haiku-4-5-20251001-v1:0",
             "amazon.nova-pro-v1:0",
             "amazon.nova-lite-v1:0",
         ],
@@ -104,7 +111,7 @@ pub fn default_model_for_provider(provider: &str) -> String {
     match provider {
         "openai" => "gpt-4o".into(),
         "google" => "gemini-2.0-flash".into(),
-        "openrouter" => "anthropic/claude-sonnet-4-20250514".into(),
+        "openrouter" => "anthropic/claude-sonnet-4-6".into(),
         "ollama" => "llama3.2".into(),
         "xai" => "grok-3".into(),
         "groq" => "llama-3.3-70b-versatile".into(),
@@ -241,6 +248,57 @@ mod tests {
         assert!(
             models.contains(&"gemini-2.5-flash-lite"),
             "google should include gemini-2.5-flash-lite"
+        );
+    }
+
+    #[test]
+    fn test_anthropic_known_models_includes_new_variants() {
+        let models = known_models_for_provider("anthropic");
+        assert!(
+            models.contains(&"claude-opus-4-7"),
+            "anthropic should include claude-opus-4-7"
+        );
+        assert!(
+            models.contains(&"claude-sonnet-4-6"),
+            "anthropic should include claude-sonnet-4-6"
+        );
+        assert!(
+            models.contains(&"claude-sonnet-4-5"),
+            "anthropic should include claude-sonnet-4-5"
+        );
+        assert!(
+            models.contains(&"claude-haiku-4-5"),
+            "anthropic should include claude-haiku-4-5"
+        );
+        // Older models still present
+        assert!(
+            models.contains(&"claude-opus-4-6"),
+            "anthropic should still include claude-opus-4-6"
+        );
+        assert!(
+            models.contains(&"claude-sonnet-4-20250514"),
+            "anthropic should still include claude-sonnet-4-20250514"
+        );
+    }
+
+    #[test]
+    fn test_bedrock_known_models_includes_new_variants() {
+        let models = known_models_for_provider("bedrock");
+        assert!(
+            models.contains(&"anthropic.claude-opus-4-7"),
+            "bedrock should include anthropic.claude-opus-4-7"
+        );
+        assert!(
+            models.contains(&"anthropic.claude-sonnet-4-6"),
+            "bedrock should include anthropic.claude-sonnet-4-6"
+        );
+    }
+
+    #[test]
+    fn test_openrouter_default_uses_sonnet_4_6() {
+        assert_eq!(
+            default_model_for_provider("openrouter"),
+            "anthropic/claude-sonnet-4-6"
         );
     }
 }
