@@ -13,6 +13,7 @@ use crate::git::{colorize_diff, run_git};
 use crate::prompt::run_prompt;
 use crate::prompt_retry::build_retry_prompt;
 use crate::session::{format_changes, ChangeKind, SessionChanges};
+use crate::AgentConfig;
 
 use std::time::Instant;
 use yoagent::agent::Agent;
@@ -139,6 +140,14 @@ fn wants_diff(input: &str) -> bool {
         .any(|arg| arg == "--diff")
 }
 
+/// Returns `true` if the raw `/changes` input contains the `summary` subcommand.
+pub(crate) fn wants_summary(input: &str) -> bool {
+    input
+        .split_whitespace()
+        .skip(1) // skip "/changes" itself
+        .any(|arg| arg == "summary")
+}
+
 /// Collect colorized git diffs for the given file paths.
 ///
 /// For each file we try both unstaged (`git diff`) and staged
@@ -165,6 +174,93 @@ fn collect_diffs(paths: &[String]) -> String {
         }
     }
     out
+}
+
+/// Handle `/changes summary` — generate an AI-written summary of session changes.
+///
+/// Collects diffs for every file modified this session, sends them to a
+/// side agent, and streams the natural-language summary to stdout.
+pub(crate) async fn handle_changes_summary(changes: &SessionChanges, agent_config: &AgentConfig) {
+    let snapshot = changes.snapshot();
+    if snapshot.is_empty() {
+        eprintln!("{DIM}  No files modified yet this session — nothing to summarize.{RESET}\n");
+        return;
+    }
+
+    // Collect diffs for all changed files
+    let paths: Vec<String> = snapshot.iter().map(|c| c.path.clone()).collect();
+    let mut diff_sections = String::new();
+    for path in &paths {
+        let unstaged = run_git(&["diff", "--", path]).unwrap_or_default();
+        let staged = run_git(&["diff", "--cached", "--", path]).unwrap_or_default();
+        let combined = match (unstaged.is_empty(), staged.is_empty()) {
+            (false, false) => format!("{unstaged}\n{staged}"),
+            (false, true) => unstaged,
+            (true, false) => staged,
+            (true, true) => String::new(),
+        };
+
+        diff_sections.push_str(&format!("### {path}\n"));
+        if combined.is_empty() {
+            diff_sections.push_str("(new file or no diff available)\n\n");
+        } else {
+            diff_sections.push_str("```diff\n");
+            diff_sections.push_str(&combined);
+            diff_sections.push_str("\n```\n\n");
+        }
+    }
+
+    let prompt = format!(
+        "Here are the file changes made during this coding session.\n\
+         Write a concise summary suitable for a PR description or commit message.\n\
+         Group related changes together. Be specific about what changed and why \
+         (infer the purpose from the diff content).\n\
+         Use markdown with bullet points. Start with a one-line overall summary, \
+         then list each logical change.\n\n\
+         ## Changed files\n\n{diff_sections}"
+    );
+
+    eprintln!("{DIM}  [summary] generating...{RESET}");
+
+    let mut side_agent = agent_config.build_side_agent();
+    let mut rx = side_agent.prompt(&prompt).await;
+
+    let mut md_renderer = MarkdownRenderer::new();
+    let mut started = false;
+
+    loop {
+        match rx.recv().await {
+            Some(AgentEvent::MessageUpdate {
+                delta: StreamDelta::Text { delta },
+                ..
+            }) => {
+                if !started {
+                    print!("\n{DIM}[summary]{RESET} ");
+                    started = true;
+                }
+                let rendered = md_renderer.render_delta(&delta);
+                if !rendered.is_empty() {
+                    print!("{rendered}");
+                }
+            }
+            Some(AgentEvent::MessageEnd { .. }) => {
+                let tail = md_renderer.flush();
+                if !tail.is_empty() {
+                    print!("{tail}");
+                }
+            }
+            Some(AgentEvent::AgentEnd { .. }) => break,
+            None => break,
+            _ => {}
+        }
+    }
+
+    side_agent.finish().await;
+
+    if !started {
+        eprintln!("{DIM}  (no summary generated){RESET}");
+    }
+    println!();
 }
 
 pub fn handle_changes(changes: &SessionChanges, input: &str) {
@@ -240,6 +336,17 @@ mod tests {
         assert!(wants_diff("/changes   --diff"));
         assert!(!wants_diff("/changes --dif"));
         assert!(!wants_diff("/changes --verbose"));
+    }
+
+    #[test]
+    fn test_wants_summary_parsing() {
+        assert!(!wants_summary("/changes"));
+        assert!(!wants_summary("/changes --diff"));
+        assert!(wants_summary("/changes summary"));
+        assert!(wants_summary("/changes   summary"));
+        // summary is a subcommand, not a flag — "summari" shouldn't match
+        assert!(!wants_summary("/changes summari"));
+        assert!(!wants_summary("/changes --summary"));
     }
 
     #[test]

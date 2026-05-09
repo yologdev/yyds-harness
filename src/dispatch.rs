@@ -359,7 +359,11 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             CommandResult::Continue
         }
         s if s == "/changes" || s.starts_with("/changes ") => {
-            commands::handle_changes(ctx.session_changes, ctx.input);
+            if commands::wants_summary(ctx.input) {
+                commands::handle_changes_summary(ctx.session_changes, ctx.agent_config).await;
+            } else {
+                commands::handle_changes(ctx.session_changes, ctx.input);
+            }
             CommandResult::Continue
         }
         s if s == "/export" || s.starts_with("/export ") => {

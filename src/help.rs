@@ -880,11 +880,15 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              Lists all files that were written or edited by the AI during\n\
              the current session. Useful for reviewing what the AI touched\n\
              before committing.\n\n\
+             Subcommands:\n\
+             \x20 summary   Generate an AI-written natural-language summary of all\n\
+             \x20           session changes (suitable for PR descriptions or commit messages)\n\n\
              Flags:\n\
              \x20 --diff    Show colorized git diff for each modified file\n\n\
              Examples:\n\
-             \x20 /changes          List modified files\n\
-             \x20 /changes --diff   List files and show diffs",
+             \x20 /changes              List modified files\n\
+             \x20 /changes --diff       List files and show diffs\n\
+             \x20 /changes summary      AI-generated summary of what changed and why",
         ),
         "changelog" => Some(
             "/changelog [count] — Show recent git commit history\n\n\
@@ -1342,7 +1346,10 @@ pub fn cli_help_text() -> String {
         s,
         "    /checkpoint [sub]  Named file-state snapshots (save/list/restore/diff/delete)"
     );
-    let _ = writeln!(s, "    /changes           Show files modified this session");
+    let _ = writeln!(
+        s,
+        "    /changes [sub]     Show files modified this session (summary, --diff)"
+    );
     let _ = writeln!(s, "    /changelog [N]     Show recent git commit history");
     let _ = writeln!(
         s,
@@ -1626,7 +1633,7 @@ pub fn help_text() -> String {
     out.push_str(
         "  /checkpoint [sub]  Named file-state snapshots (save, list, restore, diff, delete)\n",
     );
-    out.push_str("  /changes [--diff]  Show files modified (written/edited) during this session\n");
+    out.push_str("  /changes [sub]     Show files modified this session (summary, --diff)\n");
     out.push_str("  /changelog [N]     Show recent git commit history (default: 15, max: 100)\n");
     out.push_str(
         "  /export [path]     Export conversation as readable markdown (default: conversation.md)\n",
