@@ -67,6 +67,23 @@ fn model_pricing(model: &str) -> Option<(f64, f64, f64, f64)> {
         return Some((2.00, 0.0, 0.0, 8.00));
     }
 
+    // GPT-5 family (estimated, based on comparable model tiers)
+    // Note: gpt-5.5 must be checked before gpt-5 since "gpt-5.5".starts_with("gpt-5") is true
+    if model.starts_with("gpt-5.5") {
+        if model.contains("mini") {
+            return Some((0.40, 0.0, 0.0, 1.60)); // gpt-5.5-mini (estimated)
+        } else {
+            return Some((5.00, 0.0, 0.0, 20.00)); // gpt-5.5 (estimated)
+        }
+    }
+    if model.starts_with("gpt-5") {
+        if model.contains("mini") {
+            return Some((0.40, 0.0, 0.0, 1.60)); // gpt-5-mini (estimated)
+        } else {
+            return Some((2.00, 0.0, 0.0, 8.00)); // gpt-5 (estimated)
+        }
+    }
+
     // ── Google Gemini ─────────────────────────────────────────────────
     // https://ai.google.dev/pricing
     if model.contains("gemini-2.5-pro") {
@@ -102,6 +119,9 @@ fn model_pricing(model: &str) -> Option<(f64, f64, f64, f64)> {
 
     // ── xAI (Grok) ───────────────────────────────────────────────────
     // https://docs.x.ai/docs/models#models-and-pricing
+    if model.contains("grok-4") {
+        return Some((3.00, 0.0, 0.0, 15.00)); // grok-4 (estimated)
+    }
     if model.contains("grok-3") {
         if model.contains("mini") {
             return Some((0.30, 0.0, 0.0, 0.50));
@@ -598,6 +618,76 @@ mod tests {
         // o4-mini: $1.10/MTok input, $4.40/MTok output
         let cost = estimate_cost(&usage, "o4-mini").unwrap();
         assert!((cost - 1.54).abs() < 0.001, "o4-mini cost: {cost}");
+    }
+
+    #[test]
+    fn test_estimate_cost_gpt5() {
+        let usage = yoagent::Usage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 0,
+        };
+        // gpt-5: $2.00/MTok input, $8.00/MTok output
+        let cost = estimate_cost(&usage, "gpt-5").unwrap();
+        assert!((cost - 10.0).abs() < 0.01, "gpt-5 cost: {cost}");
+    }
+
+    #[test]
+    fn test_estimate_cost_gpt5_mini() {
+        let usage = yoagent::Usage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 0,
+        };
+        // gpt-5-mini: $0.40/MTok input, $1.60/MTok output
+        let cost = estimate_cost(&usage, "gpt-5-mini").unwrap();
+        assert!((cost - 2.0).abs() < 0.01, "gpt-5-mini cost: {cost}");
+    }
+
+    #[test]
+    fn test_estimate_cost_gpt55() {
+        let usage = yoagent::Usage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 0,
+        };
+        // gpt-5.5: $5.00/MTok input, $20.00/MTok output
+        let cost = estimate_cost(&usage, "gpt-5.5").unwrap();
+        assert!((cost - 25.0).abs() < 0.01, "gpt-5.5 cost: {cost}");
+    }
+
+    #[test]
+    fn test_estimate_cost_gpt55_mini() {
+        let usage = yoagent::Usage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 0,
+        };
+        // gpt-5.5-mini: $0.40/MTok input, $1.60/MTok output
+        let cost = estimate_cost(&usage, "gpt-5.5-mini").unwrap();
+        assert!((cost - 2.0).abs() < 0.01, "gpt-5.5-mini cost: {cost}");
+    }
+
+    #[test]
+    fn test_estimate_cost_grok4() {
+        let usage = yoagent::Usage {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 0,
+        };
+        // grok-4: $3.00/MTok input, $15.00/MTok output
+        let cost = estimate_cost(&usage, "grok-4").unwrap();
+        assert!((cost - 18.0).abs() < 0.01, "grok-4 cost: {cost}");
     }
 
     // ── Google Gemini pricing tests ──────────────────────────────────
