@@ -192,7 +192,13 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             let new_model = arg;
             ctx.agent_config.model = new_model.to_string();
             // Rebuild ctx.agent with new model, preserving conversation
-            let saved = ctx.agent.save_messages().ok();
+            let saved = match ctx.agent.save_messages() {
+                Ok(json) => Some(json),
+                Err(e) => {
+                    eprintln!("{DIM}  ⚠ could not preserve conversation: {e}{RESET}");
+                    None
+                }
+            };
             *ctx.agent = ctx.agent_config.build_agent();
             let restored = if let Some(json) = saved {
                 ctx.agent.restore_messages(&json).is_ok()
@@ -239,7 +245,13 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             }
             ctx.agent_config.thinking = new_thinking;
             // Rebuild ctx.agent with new thinking level, preserving conversation
-            let saved = ctx.agent.save_messages().ok();
+            let saved = match ctx.agent.save_messages() {
+                Ok(json) => Some(json),
+                Err(e) => {
+                    eprintln!("{DIM}  ⚠ could not preserve conversation: {e}{RESET}");
+                    None
+                }
+            };
             *ctx.agent = ctx.agent_config.build_agent();
             let restored = if let Some(json) = saved {
                 ctx.agent.restore_messages(&json).is_ok()

@@ -631,7 +631,13 @@ fn apply_config_to_runtime(
     match key {
         "model" => {
             agent_config.model = value.to_string();
-            let saved = agent.save_messages().ok();
+            let saved = match agent.save_messages() {
+                Ok(json) => Some(json),
+                Err(e) => {
+                    eprintln!("{DIM}  ⚠ could not preserve conversation: {e}{RESET}");
+                    None
+                }
+            };
             *agent = agent_config.build_agent();
             if let Some(json) = saved {
                 let _ = agent.restore_messages(&json);
@@ -643,7 +649,13 @@ fn apply_config_to_runtime(
         "thinking" => {
             let level = crate::cli::parse_thinking_level(value);
             agent_config.thinking = level;
-            let saved = agent.save_messages().ok();
+            let saved = match agent.save_messages() {
+                Ok(json) => Some(json),
+                Err(e) => {
+                    eprintln!("{DIM}  ⚠ could not preserve conversation: {e}{RESET}");
+                    None
+                }
+            };
             *agent = agent_config.build_agent();
             if let Some(json) = saved {
                 let _ = agent.restore_messages(&json);
