@@ -928,6 +928,23 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /web https://docs.rs/serde/latest\n\
              \x20 /web https://rust-lang.org",
         ),
+        "open" => Some(
+            "/open <file>[:<line>] — Open a file in your editor\n\n\
+             Usage:\n\
+             \x20 /open <file>          Open file in $VISUAL/$EDITOR/fallback\n\
+             \x20 /open <file>:<line>   Open file at a specific line number\n\
+             \x20 /open <file> <line>   Alternative line number syntax\n\n\
+             Editor resolution order:\n\
+             \x20 1. $VISUAL environment variable\n\
+             \x20 2. $EDITOR environment variable\n\
+             \x20 3. First found in PATH: code, vim, vi, nano\n\n\
+             Line numbers use +N syntax (works with vim, nano, VS Code, emacs).\n\
+             If the file doesn't exist, the editor is still launched (it may create it).\n\n\
+             Examples:\n\
+             \x20 /open src/main.rs\n\
+             \x20 /open src/main.rs:42\n\
+             \x20 /open Cargo.toml 10",
+        ),
         "export" => Some(
             "/export [path] — Export conversation as readable markdown\n\n\
              Usage:\n\
@@ -1489,6 +1506,7 @@ pub fn cli_help_text() -> String {
         s,
         "    /web <url>         Fetch and display web page content"
     );
+    let _ = writeln!(s, "    /open <file>[:<line>]  Open a file in $EDITOR");
     let _ = writeln!(
         s,
         "    /copy [last|code]  Copy text to the system clipboard"
@@ -1726,6 +1744,9 @@ pub fn help_text() -> String {
     out.push_str("  /tree [depth]      Show project directory tree (default depth: 3)\n");
     out.push_str("  /web <url>         Fetch a web page and display clean readable text content\n");
     out.push_str(
+        "  /open <file>[:<line>]  Open a file in $EDITOR (supports line number with +N)\n",
+    );
+    out.push_str(
         "  /watch [cmd|all|lint]  Auto-run lint+test after agent edits (off/status to control)\n",
     );
     out.push_str(
@@ -1915,6 +1936,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "version" => Some("Show yoyo version"),
         "watch" => Some("Auto-run lint+test after file changes"),
         "web" => Some("Fetch a web page"),
+        "open" => Some("Open a file in your editor"),
         _ => None,
     }
 }

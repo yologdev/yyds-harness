@@ -50,12 +50,22 @@ pub fn maybe_ring_bell(elapsed: Duration) {
         let _ = io::stdout().write_all(b"\x07");
         let _ = io::stdout().flush();
     }
-    if notify_enabled() && elapsed.as_secs() >= 10 {
+    if notify_enabled() && should_send_notification(elapsed) {
         send_desktop_notification(elapsed);
     }
 }
 
 // --- Desktop notification support with YOYO_NO_NOTIFY and --no-notify ---
+
+/// Notification duration threshold in seconds.
+const NOTIFICATION_THRESHOLD_SECS: u64 = 10;
+
+/// Returns true if the elapsed duration meets the threshold for sending a
+/// desktop notification (≥10s). This is the pure decision logic, separated
+/// from the side-effectful `send_desktop_notification` for testability.
+pub fn should_send_notification(elapsed: Duration) -> bool {
+    elapsed.as_secs() >= NOTIFICATION_THRESHOLD_SECS
+}
 
 /// Whether desktop notifications have been disabled (via --no-notify flag or YOYO_NO_NOTIFY env).
 static NOTIFY_DISABLED: OnceLock<bool> = OnceLock::new();
@@ -1477,5 +1487,63 @@ mod tests {
             msg.contains("2m") && !msg.contains("0s"),
             "exact minutes should omit seconds: {msg}"
         );
+    }
+
+    // --- Notification threshold tests ---
+
+    #[test]
+    fn test_should_send_notification_below_threshold() {
+        // Durations below 10s should NOT trigger a notification.
+        assert!(!should_send_notification(Duration::from_secs(0)));
+        assert!(!should_send_notification(Duration::from_secs(1)));
+        assert!(!should_send_notification(Duration::from_secs(5)));
+        assert!(!should_send_notification(Duration::from_secs(9)));
+        assert!(!should_send_notification(Duration::from_millis(9999)));
+    }
+
+    #[test]
+    fn test_should_send_notification_at_threshold() {
+        // Exactly 10s should trigger.
+        assert!(should_send_notification(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn test_should_send_notification_above_threshold() {
+        // Durations above 10s should trigger.
+        assert!(should_send_notification(Duration::from_secs(11)));
+        assert!(should_send_notification(Duration::from_secs(30)));
+        assert!(should_send_notification(Duration::from_secs(120)));
+        assert!(should_send_notification(Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn test_notification_threshold_constant() {
+        // The threshold should be 10 seconds.
+        assert_eq!(NOTIFICATION_THRESHOLD_SECS, 10);
+    }
+
+    #[test]
+    fn test_maybe_ring_bell_does_not_panic_short_duration() {
+        // Short durations should not cause any issues (no notification sent).
+        maybe_ring_bell(Duration::from_secs(1));
+        maybe_ring_bell(Duration::from_secs(0));
+    }
+
+    #[test]
+    fn test_maybe_ring_bell_does_not_panic_long_duration() {
+        // Long durations trigger the notification path — should not panic.
+        maybe_ring_bell(Duration::from_secs(15));
+        maybe_ring_bell(Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_notification_platform_command_selection() {
+        // Since platform detection uses #[cfg], we can only verify the logic
+        // for the current compile target. The key assertion is that
+        // send_desktop_notification doesn't panic and is fire-and-forget.
+        // On macOS: osascript, on Linux: notify-send, on Windows: powershell.
+        // We verify the function is safe to call regardless of platform.
+        send_desktop_notification(Duration::from_secs(20));
+        // If we got here, the platform-specific branch didn't panic.
     }
 }

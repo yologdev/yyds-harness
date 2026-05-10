@@ -1124,6 +1124,125 @@ pub fn handle_copy(input: &str, messages: &[yoagent::AgentMessage]) {
     }
 }
 
+// ── /open command ──
+
+/// Parse the input for `/open`, extracting file path and optional line number.
+/// Supports:
+/// - `/open path/to/file`
+/// - `/open path/to/file:42`
+/// - `/open path/to/file 42`
+pub fn parse_open_args(input: &str) -> (String, Option<u32>) {
+    let args = input.strip_prefix("/open").unwrap_or("").trim().to_string();
+    if args.is_empty() {
+        return (String::new(), None);
+    }
+
+    // Try "path:line" syntax first
+    if let Some(colon_pos) = args.rfind(':') {
+        let path_part = &args[..colon_pos];
+        let line_part = &args[colon_pos + 1..];
+        if let Ok(line) = line_part.parse::<u32>() {
+            if line > 0 {
+                return (path_part.to_string(), Some(line));
+            }
+        }
+    }
+
+    // Try "path line" syntax (last token is a number)
+    let parts: Vec<&str> = args.rsplitn(2, ' ').collect();
+    if parts.len() == 2 {
+        if let Ok(line) = parts[0].parse::<u32>() {
+            if line > 0 {
+                return (parts[1].to_string(), Some(line));
+            }
+        }
+    }
+
+    // Just a path, no line number
+    (args, None)
+}
+
+/// Resolve the editor command to use. Checks $VISUAL, $EDITOR, then tries
+/// common editors in PATH.
+pub fn resolve_editor() -> Option<String> {
+    // Check env vars first
+    if let Ok(editor) = std::env::var("VISUAL") {
+        if !editor.is_empty() {
+            return Some(editor);
+        }
+    }
+    if let Ok(editor) = std::env::var("EDITOR") {
+        if !editor.is_empty() {
+            return Some(editor);
+        }
+    }
+
+    // Try common editors in PATH
+    let candidates = ["code", "vim", "vi", "nano"];
+    for candidate in &candidates {
+        let output = std::process::Command::new("which").arg(candidate).output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Format editor args with optional line number.
+/// Most editors support `+N` before the filename for line jumping.
+pub fn format_editor_args(_editor: &str, file: &str, line: Option<u32>) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(n) = line {
+        // +N syntax works for vim, vi, nano, emacs, code (VS Code)
+        args.push(format!("+{n}"));
+    }
+    args.push(file.to_string());
+    args
+}
+
+/// Handle the `/open` slash command.
+pub fn handle_open(input: &str) {
+    let (file, line) = parse_open_args(input);
+    if file.is_empty() {
+        eprintln!("{YELLOW}  Usage: /open <file>[:<line>] or /open <file> <line>{RESET}");
+        return;
+    }
+
+    // Warn if file doesn't exist but don't block — editor may create it
+    if !std::path::Path::new(&file).exists() {
+        eprintln!("{YELLOW}  Warning: {file} does not exist (editor may create it){RESET}");
+    }
+
+    let Some(editor) = resolve_editor() else {
+        eprintln!(
+            "{RED}  No editor found. Set $VISUAL or $EDITOR, or install vim/nano/code.{RESET}"
+        );
+        return;
+    };
+
+    let args = format_editor_args(&editor, &file, line);
+    let line_suffix = line.map_or(String::new(), |n| format!(" at line {n}"));
+    // Extract just the command name for display (strip path if any)
+    let editor_display = editor.rsplit('/').next().unwrap_or(&editor);
+    eprintln!("{DIM}  Opening {file} in {editor_display}{line_suffix}...{RESET}");
+
+    // Use .status() so we wait for terminal editors (vim, nano, etc.)
+    let result = std::process::Command::new(&editor).args(&args).status();
+    match result {
+        Ok(status) => {
+            if !status.success() {
+                let code = status.code().unwrap_or(-1);
+                eprintln!("{YELLOW}  Editor exited with status {code}{RESET}");
+            }
+        }
+        Err(e) => {
+            eprintln!("{RED}  Failed to launch editor '{editor}': {e}{RESET}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2258,5 +2377,73 @@ mod tests {
             // args can be empty (pbcopy, clip.exe) or non-empty (xclip)
             let _ = args;
         }
+    }
+
+    // ── /open tests ──
+
+    #[test]
+    fn test_parse_open_args_empty() {
+        let (file, line) = parse_open_args("/open");
+        assert!(file.is_empty());
+        assert_eq!(line, None);
+    }
+
+    #[test]
+    fn test_parse_open_args_file_only() {
+        let (file, line) = parse_open_args("/open src/main.rs");
+        assert_eq!(file, "src/main.rs");
+        assert_eq!(line, None);
+    }
+
+    #[test]
+    fn test_parse_open_args_colon_line() {
+        let (file, line) = parse_open_args("/open src/main.rs:42");
+        assert_eq!(file, "src/main.rs");
+        assert_eq!(line, Some(42));
+    }
+
+    #[test]
+    fn test_parse_open_args_space_line() {
+        let (file, line) = parse_open_args("/open src/main.rs 100");
+        assert_eq!(file, "src/main.rs");
+        assert_eq!(line, Some(100));
+    }
+
+    #[test]
+    fn test_parse_open_args_colon_not_a_number() {
+        // Windows-style path with colon that's not a line number
+        let (file, line) = parse_open_args("/open C:/Users/file.txt");
+        // The "C" part won't parse as u32, so treat as plain path
+        assert_eq!(file, "C:/Users/file.txt");
+        assert_eq!(line, None);
+    }
+
+    #[test]
+    fn test_parse_open_args_line_zero_ignored() {
+        // Line 0 is not valid
+        let (file, line) = parse_open_args("/open src/main.rs:0");
+        assert_eq!(file, "src/main.rs:0");
+        assert_eq!(line, None);
+    }
+
+    #[test]
+    fn test_format_editor_args_no_line() {
+        let args = format_editor_args("vim", "src/main.rs", None);
+        assert_eq!(args, vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn test_format_editor_args_with_line() {
+        let args = format_editor_args("vim", "src/main.rs", Some(42));
+        assert_eq!(args, vec!["+42", "src/main.rs"]);
+    }
+
+    #[test]
+    fn test_resolve_editor_from_env() {
+        // This test sets $VISUAL to verify env var resolution
+        std::env::set_var("VISUAL", "test-editor-that-doesnt-exist");
+        let editor = resolve_editor();
+        assert_eq!(editor, Some("test-editor-that-doesnt-exist".to_string()));
+        std::env::remove_var("VISUAL");
     }
 }

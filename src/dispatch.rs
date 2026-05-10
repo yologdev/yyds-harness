@@ -552,6 +552,10 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             commands::handle_web(ctx.input);
             CommandResult::Continue
         }
+        s if s == "/open" || s.starts_with("/open ") => {
+            commands::handle_open(ctx.input);
+            CommandResult::Continue
+        }
         s if s == "/copy" || s.starts_with("/copy ") => {
             commands::handle_copy(ctx.input, ctx.agent.messages());
             CommandResult::Continue

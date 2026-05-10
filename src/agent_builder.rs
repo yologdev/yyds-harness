@@ -1025,6 +1025,18 @@ mod tests {
             CacheStrategy::Auto,
             "architect agent should use Auto caching strategy"
         );
+
+        // Editor agent (delegates to build_agent internally)
+        let editor = config.build_editor_agent("claude-sonnet-4-20250514");
+        assert!(
+            editor.cache_config.enabled,
+            "editor agent cache should be enabled"
+        );
+        assert_eq!(
+            editor.cache_config.strategy,
+            CacheStrategy::Auto,
+            "editor agent should use Auto caching strategy"
+        );
     }
 
     #[test]
@@ -1819,5 +1831,38 @@ mod tests {
             BUILTIN_TOOL_NAMES.contains(&"shared_state"),
             "BUILTIN_TOOL_NAMES must include 'shared_state' to guard against MCP collisions"
         );
+    }
+
+    #[test]
+    fn test_cache_config_values_match_expected() {
+        // Verify that the CacheConfig we set has the exact fields we expect:
+        // enabled=true and strategy=Auto. This catches silent changes to yoagent
+        // defaults or accidental overwrites.
+        let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
+        let agent = config.build_agent();
+
+        let cache = &agent.cache_config;
+        assert!(cache.enabled, "caching must be enabled");
+        assert_eq!(cache.strategy, CacheStrategy::Auto);
+
+        // Verify the explicit construction matches CacheConfig default
+        let expected = CacheConfig {
+            enabled: true,
+            strategy: CacheStrategy::Auto,
+        };
+        assert_eq!(agent.cache_config, expected);
+    }
+
+    #[test]
+    fn test_cache_config_openai_provider() {
+        // Cache config should be enabled even for non-Anthropic providers
+        // (the provider may not support it, but we set it unconditionally).
+        let config = test_agent_config("openai", "gpt-4o");
+        let agent = config.build_agent();
+        assert!(
+            agent.cache_config.enabled,
+            "cache should be enabled for openai provider too"
+        );
+        assert_eq!(agent.cache_config.strategy, CacheStrategy::Auto);
     }
 }
