@@ -1,4 +1,4 @@
-//! File operation command handlers: /add, /apply, /web, @file mentions.
+//! File operation command handlers: /add, /apply, /copy, /web, @file mentions.
 
 use crate::commands_map::detect_language;
 use crate::format::*;
@@ -943,6 +943,185 @@ pub fn build_explain_prompt(input: &str) -> Option<String> {
     );
 
     Some(prompt)
+}
+
+// ---------------------------------------------------------------------------
+// /copy — clipboard integration
+// ---------------------------------------------------------------------------
+
+/// Subcommands for `/copy`.
+pub const COPY_SUBCOMMANDS: &[&str] = &["last", "code"];
+
+/// Extract the text content of the last assistant message from the message
+/// list.  Returns `None` if there are no assistant messages.
+pub(crate) fn extract_last_assistant_text(messages: &[yoagent::AgentMessage]) -> Option<String> {
+    for msg in messages.iter().rev() {
+        if let yoagent::AgentMessage::Llm(yoagent::Message::Assistant { content, .. }) = msg {
+            let text: String = content
+                .iter()
+                .filter_map(|c| match c {
+                    yoagent::Content::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+    }
+    None
+}
+
+/// Extract the last fenced code block (` ```...``` `) from a markdown string.
+/// Returns the code content without the fence markers.
+pub(crate) fn extract_last_code_block(text: &str) -> Option<String> {
+    let mut blocks: Vec<String> = Vec::new();
+    let mut in_block = false;
+    let mut current_block = String::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            if in_block {
+                // Closing fence
+                blocks.push(current_block.clone());
+                current_block.clear();
+                in_block = false;
+            } else {
+                // Opening fence — skip the language tag
+                in_block = true;
+                current_block.clear();
+            }
+        } else if in_block {
+            if !current_block.is_empty() {
+                current_block.push('\n');
+            }
+            current_block.push_str(line);
+        }
+    }
+
+    blocks.last().cloned()
+}
+
+/// Return the platform-appropriate clipboard command name.
+///
+/// Returns `(command, args)` for the clipboard tool that should receive text
+/// on stdin.  Returns `None` if no known tool is available.
+fn clipboard_command() -> Option<(&'static str, Vec<&'static str>)> {
+    if cfg!(target_os = "macos") {
+        Some(("pbcopy", vec![]))
+    } else if cfg!(target_os = "windows") {
+        Some(("clip.exe", vec![]))
+    } else {
+        // Linux: try Wayland first, then X11 tools
+        if command_exists("wl-copy") {
+            Some(("wl-copy", vec![]))
+        } else if command_exists("xclip") {
+            Some(("xclip", vec!["-selection", "clipboard"]))
+        } else if command_exists("xsel") {
+            Some(("xsel", vec!["--clipboard", "--input"]))
+        } else {
+            None
+        }
+    }
+}
+
+/// Check if a command exists on the system PATH.
+fn command_exists(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Copy text to the system clipboard.  Returns `Ok(())` on success.
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    let (cmd, args) = clipboard_command().ok_or_else(|| {
+        if cfg!(target_os = "linux") {
+            "No clipboard tool found. Install one of: wl-copy (Wayland), xclip, or xsel".to_string()
+        } else {
+            "No clipboard tool found".to_string()
+        }
+    })?;
+
+    let mut child = std::process::Command::new(cmd)
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to run {cmd}: {e}"))?;
+
+    if let Some(ref mut stdin) = child.stdin {
+        use std::io::Write;
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("Failed to write to {cmd}: {e}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to wait for {cmd}: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("{cmd} failed: {}", stderr.trim()))
+    }
+}
+
+/// Handle the `/copy` slash command.
+///
+/// - `/copy` or `/copy last` — copy the last assistant message text
+/// - `/copy code` — copy the last code block from the last assistant message
+/// - `/copy <text>` — copy the literal text argument
+pub fn handle_copy(input: &str, messages: &[yoagent::AgentMessage]) {
+    let args = input.strip_prefix("/copy").unwrap_or("").trim().to_string();
+
+    let text = if args.is_empty() || args == "last" {
+        // Copy last assistant message text
+        match extract_last_assistant_text(messages) {
+            Some(t) => t,
+            None => {
+                eprintln!("{YELLOW}  No assistant messages to copy{RESET}");
+                return;
+            }
+        }
+    } else if args == "code" {
+        // Copy last code block from last assistant message
+        let assistant_text = match extract_last_assistant_text(messages) {
+            Some(t) => t,
+            None => {
+                eprintln!("{YELLOW}  No assistant messages to copy{RESET}");
+                return;
+            }
+        };
+        match extract_last_code_block(&assistant_text) {
+            Some(code) => code,
+            None => {
+                eprintln!("{YELLOW}  No code blocks found in the last response{RESET}");
+                return;
+            }
+        }
+    } else {
+        // Copy the literal text
+        args
+    };
+
+    let char_count = text.len();
+    match copy_to_clipboard(&text) {
+        Ok(()) => {
+            eprintln!("{GREEN}  ✓ Copied {char_count} chars to clipboard{RESET}");
+        }
+        Err(e) => {
+            eprintln!("{RED}  ✗ {e}{RESET}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1974,6 +2153,110 @@ mod tests {
                 );
             }
             _ => panic!("Expected Text result"),
+        }
+    }
+
+    #[test]
+    fn test_extract_last_code_block_single() {
+        let md = "Here is some code:\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n";
+        let block = extract_last_code_block(md).unwrap();
+        assert!(block.contains("fn main()"));
+        assert!(block.contains("println!"));
+        assert!(!block.contains("```"));
+    }
+
+    #[test]
+    fn test_extract_last_code_block_multiple() {
+        let md = "First:\n```\nfirst block\n```\nSecond:\n```python\nprint('hi')\n```\n";
+        let block = extract_last_code_block(md).unwrap();
+        assert_eq!(block, "print('hi')");
+    }
+
+    #[test]
+    fn test_extract_last_code_block_none() {
+        let md = "No code blocks here, just text.";
+        assert!(extract_last_code_block(md).is_none());
+    }
+
+    #[test]
+    fn test_extract_last_code_block_unclosed() {
+        // Unclosed fence should not produce a block
+        let md = "```rust\nfn foo() {}\n";
+        assert!(extract_last_code_block(md).is_none());
+    }
+
+    #[test]
+    fn test_extract_last_assistant_text_finds_last() {
+        use yoagent::*;
+        let messages = vec![
+            AgentMessage::Llm(Message::User {
+                content: vec![Content::Text {
+                    text: "hello".into(),
+                }],
+                timestamp: 0,
+            }),
+            AgentMessage::Llm(Message::Assistant {
+                content: vec![Content::Text {
+                    text: "first response".into(),
+                }],
+                stop_reason: StopReason::Stop,
+                model: "test".into(),
+                provider: "test".into(),
+                usage: Usage::default(),
+                timestamp: 1,
+                error_message: None,
+            }),
+            AgentMessage::Llm(Message::User {
+                content: vec![Content::Text {
+                    text: "followup".into(),
+                }],
+                timestamp: 2,
+            }),
+            AgentMessage::Llm(Message::Assistant {
+                content: vec![Content::Text {
+                    text: "second response".into(),
+                }],
+                stop_reason: StopReason::Stop,
+                model: "test".into(),
+                provider: "test".into(),
+                usage: Usage::default(),
+                timestamp: 3,
+                error_message: None,
+            }),
+        ];
+        let text = extract_last_assistant_text(&messages).unwrap();
+        assert_eq!(text, "second response");
+    }
+
+    #[test]
+    fn test_extract_last_assistant_text_empty() {
+        let messages: Vec<yoagent::AgentMessage> = vec![];
+        assert!(extract_last_assistant_text(&messages).is_none());
+    }
+
+    #[test]
+    fn test_extract_last_assistant_text_no_assistant() {
+        use yoagent::*;
+        let messages = vec![AgentMessage::Llm(Message::User {
+            content: vec![Content::Text {
+                text: "hello".into(),
+            }],
+            timestamp: 0,
+        })];
+        assert!(extract_last_assistant_text(&messages).is_none());
+    }
+
+    #[test]
+    fn test_clipboard_command_platform() {
+        // We can't test what clipboard_command returns deterministically
+        // across CI environments, but we can verify it doesn't panic
+        // and returns a valid shape.
+        let result = super::clipboard_command();
+        // On CI (Linux without display), it may return None — that's fine.
+        if let Some((cmd, args)) = result {
+            assert!(!cmd.is_empty());
+            // args can be empty (pbcopy, clip.exe) or non-empty (xclip)
+            let _ = args;
         }
     }
 }

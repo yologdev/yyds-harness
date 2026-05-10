@@ -618,6 +618,22 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
                                  listed, or searched during the current session,\n\
                                  grouped by action type and deduplicated.",
         ),
+        "copy" => Some(
+            "/copy [last|code|<text>] — Copy text to the system clipboard\n\n\
+             Usage:\n\
+             \x20 /copy              Copy the last assistant message (plain text)\n\
+             \x20 /copy last         Same as /copy with no arguments\n\
+             \x20 /copy code         Copy the last code block from the last response\n\
+             \x20 /copy <text>       Copy the literal text argument\n\n\
+             Platform support:\n\
+             \x20 • macOS: uses pbcopy\n\
+             \x20 • Linux: tries wl-copy (Wayland), xclip, then xsel\n\
+             \x20 • Windows: uses clip.exe\n\n\
+             Examples:\n\
+             \x20 /copy\n\
+             \x20 /copy code\n\
+             \x20 /copy hello world",
+        ),
         "init" => Some(
             "/init — Scan project and generate a YOYO.md context file\n\n\
              Analyzes the project structure, detects the tech stack, and\n\
@@ -1475,6 +1491,10 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "    /copy [last|code]  Copy text to the system clipboard"
+    );
+    let _ = writeln!(
+        s,
         "    /watch [cmd|all|lint]  Auto-run lint+test after agent edits"
     );
     let _ = writeln!(
@@ -1829,6 +1849,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "compact" => Some("Compact conversation to save context"),
         "config" => Some("Show current settings"),
         "context" => Some("Show project context, system prompt sections, or token budget"),
+        "copy" => Some("Copy text to the system clipboard"),
         "cost" => Some("Show estimated session cost"),
         "diff" => Some("Show git changes"),
         "doctor" => Some("Run environment diagnostics"),

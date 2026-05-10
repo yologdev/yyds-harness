@@ -552,6 +552,10 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             commands::handle_web(ctx.input);
             CommandResult::Continue
         }
+        s if s == "/copy" || s.starts_with("/copy ") => {
+            commands::handle_copy(ctx.input, ctx.agent.messages());
+            CommandResult::Continue
+        }
         s if s == "/watch" || s.starts_with("/watch ") => {
             commands::handle_watch(ctx.input);
             CommandResult::Continue

@@ -59,6 +59,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "/clear!",
     "/compact",
     "/commit",
+    "/copy",
     "/cost",
     "/doctor",
     "/docs",
@@ -201,6 +202,7 @@ pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
         "pr" => Some("create | describe | status | diff"),
         "help" => Some("<command>"),
         "config" => Some("show | edit | set <key> <value> | get <key>"),
+        "copy" => Some("last | code | <text>"),
         "save" => Some("<filename.json>"),
         "load" => Some("<filename.json>"),
         "add" => Some("<file-or-url> ..."),
@@ -276,6 +278,7 @@ pub fn command_arg_completions(cmd: &str, partial_arg: &str) -> Vec<String> {
         "/lint" => filter_candidates(crate::commands_lint::LINT_SUBCOMMANDS, &partial_lower),
         "/ast" => filter_candidates(crate::commands_ast_grep::AST_GREP_FLAGS, &partial_lower),
         "/apply" => filter_candidates(crate::commands_file::APPLY_FLAGS, &partial_lower),
+        "/copy" => filter_candidates(COPY_SUBCOMMANDS, &partial_lower),
         "/context" => filter_candidates(
             crate::commands_project::context_subcommands(),
             &partial_lower,
@@ -508,7 +511,8 @@ pub use crate::commands_lint::{handle_lint, handle_lint_fix, handle_test};
 pub use crate::commands_run::{handle_loop, handle_run, handle_run_usage};
 
 pub use crate::commands_file::{
-    build_explain_prompt, expand_file_mentions, handle_add, handle_apply, handle_web, AddResult,
+    build_explain_prompt, expand_file_mentions, handle_add, handle_apply, handle_copy, handle_web,
+    AddResult, COPY_SUBCOMMANDS,
 };
 
 // Session-related handlers
