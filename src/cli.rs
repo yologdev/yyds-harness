@@ -257,6 +257,7 @@ const KNOWN_FLAGS: &[&str] = &[
     "--context-window",
     "--no-color",
     "--no-bell",
+    "--no-notify",
     "--no-rtk",
     "--no-update-check",
     "--json",

@@ -44,10 +44,101 @@ pub fn bell_enabled() -> bool {
 /// Ring the terminal bell if enabled and elapsed time exceeds threshold.
 /// The bell character (\x07) causes most terminal emulators to flash the tab
 /// or play a sound, alerting multitasking developers.
+/// Also sends a desktop notification for genuinely long waits (≥10s).
 pub fn maybe_ring_bell(elapsed: Duration) {
     if bell_enabled() && elapsed.as_secs() >= 3 {
         let _ = io::stdout().write_all(b"\x07");
         let _ = io::stdout().flush();
+    }
+    if notify_enabled() && elapsed.as_secs() >= 10 {
+        send_desktop_notification(elapsed);
+    }
+}
+
+// --- Desktop notification support with YOYO_NO_NOTIFY and --no-notify ---
+
+/// Whether desktop notifications have been disabled (via --no-notify flag or YOYO_NO_NOTIFY env).
+static NOTIFY_DISABLED: OnceLock<bool> = OnceLock::new();
+
+/// Disable desktop notifications. Call from CLI arg parsing.
+pub fn disable_notify() {
+    let _ = NOTIFY_DISABLED.set(true);
+}
+
+/// Check if desktop notifications are enabled. Respects YOYO_NO_NOTIFY env var.
+pub fn notify_enabled() -> bool {
+    !*NOTIFY_DISABLED.get_or_init(|| std::env::var("YOYO_NO_NOTIFY").is_ok())
+}
+
+/// Build a human-friendly notification message for a completed prompt.
+pub fn build_notification_message(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs >= 60 {
+        let mins = secs / 60;
+        let rem = secs % 60;
+        if rem == 0 {
+            format!("yoyo finished after {}m", mins)
+        } else {
+            format!("yoyo finished after {}m {}s", mins, rem)
+        }
+    } else {
+        format!("yoyo finished after {}s", secs)
+    }
+}
+
+/// Send a desktop notification (best-effort, fire-and-forget).
+///
+/// Uses platform-native commands:
+/// - macOS: `osascript -e 'display notification ...'`
+/// - Linux: `notify-send`
+/// - Windows: PowerShell toast notification
+///
+/// Silently ignores failures (command not found, etc.).
+pub fn send_desktop_notification(elapsed: Duration) {
+    let message = build_notification_message(elapsed);
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display notification \"{}\" with title \"yoyo\"",
+            message.replace('\\', "\\\\").replace('"', "\\\"")
+        );
+        let _ = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .arg("yoyo")
+            .arg(&message)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let ps_script = format!(
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
+             $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
+             $textNodes = $template.GetElementsByTagName('text'); \
+             $textNodes.Item(0).AppendChild($template.CreateTextNode('yoyo')) > $null; \
+             $textNodes.Item(1).AppendChild($template.CreateTextNode('{}')) > $null; \
+             $toast = [Windows.UI.Notifications.ToastNotification]::new($template); \
+             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('yoyo').Show($toast)",
+            message.replace('\'', "''")
+        );
+        let _ = std::process::Command::new("powershell")
+            .arg("-Command")
+            .arg(&ps_script)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
     }
 }
 
@@ -1332,5 +1423,59 @@ mod tests {
         // We verify it's at least callable and stable.
         let result = is_quiet();
         assert_eq!(result, is_quiet());
+    }
+
+    #[test]
+    fn test_send_desktop_notification_does_not_panic() {
+        // Best-effort fire-and-forget — should never panic regardless of platform.
+        send_desktop_notification(Duration::from_secs(15));
+    }
+
+    #[test]
+    fn test_notify_enabled_returns_bool() {
+        // Like bell_enabled, just verify it's callable and stable (OnceLock is global).
+        let result = notify_enabled();
+        assert_eq!(result, notify_enabled());
+    }
+
+    #[test]
+    fn test_disable_notify_is_callable() {
+        // Should not panic even if OnceLock is already initialized.
+        disable_notify();
+        let result = notify_enabled();
+        assert_eq!(result, notify_enabled());
+    }
+
+    #[test]
+    fn test_build_notification_message_contains_yoyo() {
+        let msg = build_notification_message(Duration::from_secs(15));
+        assert!(msg.contains("yoyo"), "message should contain 'yoyo': {msg}");
+    }
+
+    #[test]
+    fn test_build_notification_message_contains_duration_seconds() {
+        let msg = build_notification_message(Duration::from_secs(42));
+        assert!(
+            msg.contains("42s"),
+            "message should contain duration: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_build_notification_message_minutes_format() {
+        let msg = build_notification_message(Duration::from_secs(125));
+        assert!(
+            msg.contains("2m 5s"),
+            "message should format minutes and seconds: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_build_notification_message_exact_minutes() {
+        let msg = build_notification_message(Duration::from_secs(120));
+        assert!(
+            msg.contains("2m") && !msg.contains("0s"),
+            "exact minutes should omit seconds: {msg}"
+        );
     }
 }

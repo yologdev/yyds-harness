@@ -1106,6 +1106,7 @@ pub fn cli_help_text() -> String {
         "  --no-color        Disable colored output (also respects NO_COLOR env)"
     );
     let _ = writeln!(s, "  --no-bell         Disable terminal bell on long completions (also respects YOYO_NO_BELL env)");
+    let _ = writeln!(s, "  --no-notify       Disable desktop notifications on long completions (also respects YOYO_NO_NOTIFY env)");
     let _ = writeln!(
         s,
         "  --no-rtk          Disable RTK (Rust Token Killer) proxy even when installed"
