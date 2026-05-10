@@ -216,6 +216,9 @@ pub fn handle_tokens(agent: &Agent, session_total: &Usage, model: &str) {
         "    cache write: {} tokens",
         format_token_count(session_total.cache_write)
     );
+    if let Some(cache_line) = format_cache_stats(session_total) {
+        println!("    {cache_line}");
+    }
     if let Some(cost) = estimate_cost(session_total, model) {
         println!("    est. cost:   {}", format_cost(cost));
     }
@@ -238,6 +241,9 @@ pub fn handle_cost(session_total: &Usage, model: &str, messages: &[yoagent::Agen
                 format_token_count(session_total.cache_read),
                 format_token_count(session_total.cache_write)
             );
+            if let Some(cache_line) = format_cache_stats(session_total) {
+                println!("    {cache_line}");
+            }
         }
         if let Some((input_cost, cw_cost, cr_cost, output_cost)) =
             cost_breakdown(session_total, model)

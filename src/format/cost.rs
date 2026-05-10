@@ -228,6 +228,22 @@ pub fn format_token_count(count: u64) -> String {
 }
 
 /// Build a context usage bar (e.g., "████████░░░░░░░░░░░░ 40%").
+/// Format cache statistics for display. Returns `None` if there's no caching activity.
+/// Example output: `"Cache: 85% hit rate (150.2k read, 12.0k written)"`
+pub fn format_cache_stats(usage: &yoagent::Usage) -> Option<String> {
+    if usage.cache_read == 0 && usage.cache_write == 0 {
+        return None;
+    }
+    let rate = usage.cache_hit_rate();
+    let pct = (rate * 100.0) as u32;
+    Some(format!(
+        "Cache: {}% hit rate ({} read, {} written)",
+        pct,
+        format_token_count(usage.cache_read),
+        format_token_count(usage.cache_write),
+    ))
+}
+
 pub fn context_bar(used: u64, max: u64) -> String {
     let pct = if max == 0 {
         0.0
@@ -1190,5 +1206,64 @@ mod tests {
         let output = format_turn_costs(&costs);
         // Should show dash for unknown cost
         assert!(output.contains("—"));
+    }
+
+    #[test]
+    fn test_format_cache_stats_no_activity() {
+        let usage = yoagent::Usage {
+            input: 10_000,
+            output: 5_000,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 15_000,
+        };
+        assert!(format_cache_stats(&usage).is_none());
+    }
+
+    #[test]
+    fn test_format_cache_stats_with_reads() {
+        let usage = yoagent::Usage {
+            input: 10_000,
+            output: 5_000,
+            cache_read: 150_000,
+            cache_write: 0,
+            total_tokens: 165_000,
+        };
+        let result = format_cache_stats(&usage).unwrap();
+        // cache_hit_rate = 150k / (10k + 150k + 0k) = 150/160 = 93.75% → 93%
+        assert!(result.contains("93%"), "got: {result}");
+        assert!(result.contains("hit rate"));
+        assert!(result.contains("150.0k read"));
+    }
+
+    #[test]
+    fn test_format_cache_stats_with_writes_only() {
+        let usage = yoagent::Usage {
+            input: 50_000,
+            output: 10_000,
+            cache_read: 0,
+            cache_write: 12_000,
+            total_tokens: 72_000,
+        };
+        let result = format_cache_stats(&usage).unwrap();
+        // cache_hit_rate = 0 / (50k + 0 + 12k) = 0%
+        assert!(result.contains("0%"), "got: {result}");
+        assert!(result.contains("12.0k written"));
+    }
+
+    #[test]
+    fn test_format_cache_stats_mixed() {
+        let usage = yoagent::Usage {
+            input: 20_000,
+            output: 5_000,
+            cache_read: 80_000,
+            cache_write: 10_000,
+            total_tokens: 115_000,
+        };
+        let result = format_cache_stats(&usage).unwrap();
+        // cache_hit_rate = 80k / (20k + 80k + 10k) = 80/110 ≈ 72.7% → 72%
+        assert!(result.contains("72%"), "got: {result}");
+        assert!(result.contains("80.0k read"));
+        assert!(result.contains("10.0k written"));
     }
 }
