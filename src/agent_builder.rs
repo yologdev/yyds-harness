@@ -458,6 +458,16 @@ impl AgentConfig {
             tool_output_max_lines: 50,
         });
 
+        // Enable prompt caching — Anthropic caches the system prompt, tool
+        // definitions, and conversation history prefix, reducing input-token
+        // costs by ~90% for cached content.  CacheStrategy::Auto places cache
+        // breakpoints automatically at system prompt, last tool, and the
+        // second-to-last message.
+        agent = agent.with_cache_config(CacheConfig {
+            enabled: true,
+            strategy: CacheStrategy::Auto,
+        });
+
         // Always set execution limits — use user's --max-turns or a generous default
         agent = agent.with_execution_limits(ExecutionLimits {
             max_turns: self.max_turns.unwrap_or(200),
@@ -557,6 +567,10 @@ impl AgentConfig {
             .with_system_prompt(side_prompt)
             .with_model(&self.model)
             .with_api_key(&self.api_key)
+            .with_cache_config(CacheConfig {
+                enabled: true,
+                strategy: CacheStrategy::Auto,
+            })
             .with_execution_limits(ExecutionLimits {
                 max_turns: 1,
                 ..ExecutionLimits::default()
@@ -594,6 +608,10 @@ impl AgentConfig {
             .with_system_prompt(&self.system_prompt)
             .with_model(architect_model)
             .with_api_key(&self.api_key)
+            .with_cache_config(CacheConfig {
+                enabled: true,
+                strategy: CacheStrategy::Auto,
+            })
             .with_execution_limits(ExecutionLimits {
                 max_turns: 1,
                 ..ExecutionLimits::default()
@@ -965,6 +983,48 @@ mod tests {
         // Both should have empty message history
         assert_eq!(agent1.messages().len(), 0);
         assert_eq!(agent2.messages().len(), 0);
+    }
+
+    #[test]
+    fn test_cache_config_enabled_on_all_agents() {
+        // All agent construction paths should enable prompt caching with Auto strategy
+        let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
+
+        // Main agent
+        let agent = config.build_agent();
+        assert!(
+            agent.cache_config.enabled,
+            "main agent cache should be enabled"
+        );
+        assert_eq!(
+            agent.cache_config.strategy,
+            CacheStrategy::Auto,
+            "main agent should use Auto caching strategy"
+        );
+
+        // Side agent
+        let side = config.build_side_agent();
+        assert!(
+            side.cache_config.enabled,
+            "side agent cache should be enabled"
+        );
+        assert_eq!(
+            side.cache_config.strategy,
+            CacheStrategy::Auto,
+            "side agent should use Auto caching strategy"
+        );
+
+        // Architect agent
+        let architect = config.build_architect_agent("claude-sonnet-4-20250514");
+        assert!(
+            architect.cache_config.enabled,
+            "architect agent cache should be enabled"
+        );
+        assert_eq!(
+            architect.cache_config.strategy,
+            CacheStrategy::Auto,
+            "architect agent should use Auto caching strategy"
+        );
     }
 
     #[test]
