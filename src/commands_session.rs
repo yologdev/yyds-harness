@@ -810,6 +810,306 @@ pub fn stash_default_description(index: usize) -> String {
     format!("stash@{{{index}}}")
 }
 
+// ---------------------------------------------------------------------------
+// Conversation branching — /fork
+// ---------------------------------------------------------------------------
+
+/// A named branch of the conversation.
+struct ConversationBranch {
+    name: String,
+    messages_json: String,
+    created_at: String, // HH:MM:SS UTC
+    message_count: usize,
+}
+
+/// Global branch store: named conversation branches + current branch tracker.
+struct BranchStore {
+    branches: HashMap<String, ConversationBranch>,
+    current: Option<String>,
+}
+
+static BRANCH_STORE: RwLock<Option<BranchStore>> = RwLock::new(None);
+
+/// Acquire a mutable reference to the branch store, initializing it if needed.
+fn with_branch_store_mut<R>(f: impl FnOnce(&mut BranchStore) -> R) -> R {
+    let mut guard = rw_write_or_recover(&BRANCH_STORE);
+    let store = guard.get_or_insert_with(|| BranchStore {
+        branches: HashMap::new(),
+        current: None,
+    });
+    f(store)
+}
+
+/// Acquire a read reference to the branch store.
+fn with_branch_store<R>(f: impl FnOnce(&BranchStore) -> R) -> R {
+    let guard = rw_read_or_recover(&BRANCH_STORE);
+    match guard.as_ref() {
+        Some(store) => f(store),
+        None => {
+            // Store not initialized — treat as empty
+            let empty = BranchStore {
+                branches: HashMap::new(),
+                current: None,
+            };
+            f(&empty)
+        }
+    }
+}
+
+/// Subcommands for `/fork <Tab>` completion.
+pub const FORK_SUBCOMMANDS: &[&str] = &["switch", "list", "delete", "rename"];
+
+/// Return the name of the current conversation branch, if any.
+#[allow(dead_code)]
+pub fn current_branch_name() -> Option<String> {
+    with_branch_store(|store| store.current.clone())
+}
+
+/// Generate a UTC HH:MM:SS timestamp.
+fn utc_timestamp() -> String {
+    use std::time::SystemTime;
+    let secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let h = (secs % 86400) / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
+/// Parse a `/fork` subcommand from user input.
+///
+/// Returns `(subcommand, rest)` where subcommand is one of:
+/// `"create"`, `"switch"`, `"list"`, `"delete"`, `"rename"`, or `"help"`.
+pub fn parse_fork_subcommand(input: &str) -> (&str, &str) {
+    let rest = input.strip_prefix("/fork").unwrap_or("").trim();
+    if rest.is_empty() {
+        return ("help", "");
+    }
+    if rest == "list" {
+        return ("list", "");
+    }
+    if let Some(arg) = rest.strip_prefix("switch") {
+        return ("switch", arg.trim());
+    }
+    if let Some(arg) = rest.strip_prefix("delete") {
+        return ("delete", arg.trim());
+    }
+    if let Some(arg) = rest.strip_prefix("rename") {
+        return ("rename", arg.trim());
+    }
+    // Bare name → create
+    ("create", rest)
+}
+
+/// Create a new named branch from the current conversation.
+pub fn handle_fork_create(agent: &mut Agent, name: &str) -> String {
+    if name.is_empty() {
+        return format!("{DIM}  usage: /fork <name> — create a named branch{RESET}\n");
+    }
+
+    let messages_json = match agent.save_messages() {
+        Ok(json) => json,
+        Err(e) => return format!("{RED}  failed to save conversation: {e}{RESET}\n"),
+    };
+
+    let msg_count = agent.messages().len();
+    let timestamp = utc_timestamp();
+
+    with_branch_store_mut(|store| {
+        // If we're currently on a branch, auto-save it before creating the new one
+        if let Some(cur) = store.current.clone() {
+            if let Some(branch) = store.branches.get_mut(&cur) {
+                branch.messages_json = messages_json.clone();
+                branch.message_count = msg_count;
+            }
+        }
+
+        let branch = ConversationBranch {
+            name: name.to_string(),
+            messages_json,
+            created_at: timestamp,
+            message_count: msg_count,
+        };
+
+        let overwritten = store.branches.insert(name.to_string(), branch).is_some();
+        store.current = Some(name.to_string());
+
+        let verb = if overwritten { "updated" } else { "created" };
+        format!(
+            "{GREEN}  ✓ branch {verb}: \"{name}\" ({msg_count} messages) — now on this branch{RESET}\n"
+        )
+    })
+}
+
+/// Switch to an existing named branch.
+pub fn handle_fork_switch(agent: &mut Agent, name: &str) -> String {
+    if name.is_empty() {
+        return format!("{DIM}  usage: /fork switch <name>{RESET}\n");
+    }
+
+    // First, save the current conversation to the current branch (if any)
+    let current_json = match agent.save_messages() {
+        Ok(json) => json,
+        Err(e) => return format!("{RED}  failed to save current conversation: {e}{RESET}\n"),
+    };
+    let current_count = agent.messages().len();
+
+    let target_json = with_branch_store_mut(|store| {
+        // Auto-save current branch
+        if let Some(cur) = store.current.clone() {
+            if let Some(branch) = store.branches.get_mut(&cur) {
+                branch.messages_json = current_json;
+                branch.message_count = current_count;
+            }
+        }
+
+        // Look up the target branch
+        match store.branches.get(name) {
+            Some(b) => {
+                let json = b.messages_json.clone();
+                store.current = Some(name.to_string());
+                Ok(json)
+            }
+            None => {
+                let available: Vec<String> = store.branches.keys().cloned().collect();
+                Err(available)
+            }
+        }
+    });
+
+    match target_json {
+        Ok(json) => match agent.restore_messages(&json) {
+            Ok(_) => format!(
+                "{GREEN}  ✓ switched to branch \"{name}\" ({} messages){RESET}\n",
+                agent.messages().len()
+            ),
+            Err(e) => format!("{RED}  failed to restore branch: {e}{RESET}\n"),
+        },
+        Err(available) => {
+            if available.is_empty() {
+                format!("{RED}  branch \"{name}\" not found (no branches exist){RESET}\n")
+            } else {
+                format!(
+                    "{RED}  branch \"{name}\" not found. Available: {}{RESET}\n",
+                    available.join(", ")
+                )
+            }
+        }
+    }
+}
+
+/// List all conversation branches.
+pub fn handle_fork_list() -> String {
+    with_branch_store(|store| {
+        if store.branches.is_empty() {
+            return format!("{DIM}  (no branches — use /fork <name> to create one){RESET}\n");
+        }
+
+        let mut out = String::new();
+        out.push_str(&format!(
+            "{DIM}  Conversation branches ({} total):\n",
+            store.branches.len()
+        ));
+
+        // Sort by name for stable output
+        let mut names: Vec<&String> = store.branches.keys().collect();
+        names.sort();
+
+        for name in names {
+            let branch = &store.branches[name];
+            let marker = if store.current.as_deref() == Some(name.as_str()) {
+                format!("{GREEN}* ")
+            } else {
+                "  ".to_string()
+            };
+            out.push_str(&format!(
+                "  {marker}{}{DIM} ({} messages) [{}]{RESET}\n",
+                branch.name, branch.message_count, branch.created_at
+            ));
+        }
+        out
+    })
+}
+
+/// Delete a named branch.
+pub fn handle_fork_delete(name: &str) -> String {
+    if name.is_empty() {
+        return format!("{DIM}  usage: /fork delete <name>{RESET}\n");
+    }
+
+    with_branch_store_mut(|store| {
+        if store.current.as_deref() == Some(name) {
+            return format!(
+                "{RED}  cannot delete the current branch \"{name}\" — switch to another first{RESET}\n"
+            );
+        }
+
+        match store.branches.remove(name) {
+            Some(_) => format!("{GREEN}  ✓ deleted branch \"{name}\"{RESET}\n"),
+            None => format!("{RED}  branch \"{name}\" not found{RESET}\n"),
+        }
+    })
+}
+
+/// Rename a branch.
+pub fn handle_fork_rename(args: &str) -> String {
+    let parts: Vec<&str> = args.split_whitespace().collect();
+    if parts.len() != 2 {
+        return format!("{DIM}  usage: /fork rename <old> <new>{RESET}\n");
+    }
+    let old = parts[0];
+    let new = parts[1];
+
+    with_branch_store_mut(|store| {
+        if store.branches.contains_key(new) {
+            return format!("{RED}  branch \"{new}\" already exists{RESET}\n");
+        }
+
+        match store.branches.remove(old) {
+            Some(mut branch) => {
+                branch.name = new.to_string();
+                // Update current pointer if we're renaming the current branch
+                if store.current.as_deref() == Some(old) {
+                    store.current = Some(new.to_string());
+                }
+                store.branches.insert(new.to_string(), branch);
+                format!("{GREEN}  ✓ renamed branch \"{old}\" → \"{new}\"{RESET}\n")
+            }
+            None => format!("{RED}  branch \"{old}\" not found{RESET}\n"),
+        }
+    })
+}
+
+/// Show fork help text.
+fn fork_help() -> String {
+    format!(
+        "{DIM}  /fork — conversation branching\n\n\
+         \x20 /fork <name>             Create/update a named branch from current conversation\n\
+         \x20 /fork switch <name>      Switch to a named branch (auto-saves current)\n\
+         \x20 /fork list               List all branches\n\
+         \x20 /fork delete <name>      Delete a branch (cannot delete current)\n\
+         \x20 /fork rename <old> <new> Rename a branch\n\n\
+         \x20 Like git branches for your conversation. Explore different\n\
+         \x20 directions and switch between them freely.{RESET}\n"
+    )
+}
+
+/// Dispatch a `/fork` command.
+pub fn handle_fork(agent: &mut Agent, input: &str) -> String {
+    let (subcmd, arg) = parse_fork_subcommand(input);
+    match subcmd {
+        "create" => handle_fork_create(agent, arg),
+        "switch" => handle_fork_switch(agent, arg),
+        "list" => handle_fork_list(),
+        "delete" => handle_fork_delete(arg),
+        "rename" => handle_fork_rename(arg),
+        "help" => fork_help(),
+        _ => fork_help(),
+    }
+}
+
 // ── clear confirmation ──────────────────────────────────────────────────
 
 /// Build a confirmation prompt for `/clear` when the conversation has significant history.
@@ -1958,5 +2258,87 @@ mod tests {
             .with_api_key("test-key");
         // Should not panic with no messages
         handle_history_detail(&agent);
+    }
+
+    // --- Fork tests ---
+
+    #[test]
+    fn test_fork_list_empty() {
+        // Clear state for test isolation
+        {
+            let mut guard = rw_write_or_recover(&BRANCH_STORE);
+            *guard = None;
+        }
+        let result = handle_fork_list();
+        assert!(result.contains("no branches"));
+    }
+
+    #[test]
+    fn test_fork_delete_nonexistent() {
+        {
+            let mut guard = rw_write_or_recover(&BRANCH_STORE);
+            *guard = None;
+        }
+        let result = handle_fork_delete("nope");
+        assert!(result.contains("not found"));
+    }
+
+    #[test]
+    fn test_fork_rename_nonexistent() {
+        {
+            let mut guard = rw_write_or_recover(&BRANCH_STORE);
+            *guard = None;
+        }
+        let result = handle_fork_rename("old new");
+        assert!(result.contains("not found"));
+    }
+
+    #[test]
+    fn test_fork_parse_subcommands() {
+        assert_eq!(parse_fork_subcommand("/fork"), ("help", ""));
+        assert_eq!(parse_fork_subcommand("/fork list"), ("list", ""));
+        assert_eq!(
+            parse_fork_subcommand("/fork switch main"),
+            ("switch", "main")
+        );
+        assert_eq!(parse_fork_subcommand("/fork delete old"), ("delete", "old"));
+        assert_eq!(
+            parse_fork_subcommand("/fork rename old new"),
+            ("rename", "old new")
+        );
+        assert_eq!(
+            parse_fork_subcommand("/fork my-branch"),
+            ("create", "my-branch")
+        );
+    }
+
+    #[test]
+    fn test_fork_delete_empty_name() {
+        let result = handle_fork_delete("");
+        assert!(result.contains("usage:"));
+    }
+
+    #[test]
+    fn test_fork_rename_wrong_arg_count() {
+        let result = handle_fork_rename("only-one");
+        assert!(result.contains("usage:"));
+        let result = handle_fork_rename("");
+        assert!(result.contains("usage:"));
+    }
+
+    #[test]
+    fn test_fork_help_on_bare_command() {
+        use yoagent::agent::Agent;
+        use yoagent::provider::AnthropicProvider;
+
+        let agent = Agent::new(AnthropicProvider)
+            .with_system_prompt("test")
+            .with_model("test-model")
+            .with_api_key("test-key");
+        let mut agent = agent;
+        let result = handle_fork(&mut agent, "/fork");
+        assert!(result.contains("/fork"));
+        assert!(result.contains("switch"));
+        assert!(result.contains("list"));
     }
 }

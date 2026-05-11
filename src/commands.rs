@@ -52,6 +52,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "/architect",
     "/bg",
     "/checkpoint",
+    "/fork",
     "/help",
     "/quit",
     "/exit",
@@ -270,6 +271,7 @@ pub fn command_arg_completions(cmd: &str, partial_arg: &str) -> Vec<String> {
         "/provider" => filter_candidates(KNOWN_PROVIDERS, &partial_lower),
         "/bg" => filter_candidates(BG_SUBCOMMANDS, &partial_lower),
         "/checkpoint" => filter_candidates(checkpoint_subcommands(), &partial_lower),
+        "/fork" => filter_candidates(FORK_SUBCOMMANDS, &partial_lower),
         "/config" => filter_candidates(CONFIG_SUBCOMMANDS, &partial_lower),
         "/save" | "/load" => list_json_files(partial_arg),
         "/help" => help_command_completions(&partial_lower),
@@ -519,9 +521,10 @@ pub use crate::commands_file::{
 // Session-related handlers
 pub use crate::commands_session::{
     auto_compact_if_needed, auto_save_on_exit, checkpoint_subcommands, clear_confirmation_message,
-    handle_checkpoint, handle_compact, handle_export, handle_history, handle_history_detail,
-    handle_jump, handle_load, handle_mark, handle_marks, handle_save, handle_search, handle_stash,
-    last_session_exists, reset_compact_thrash, Bookmarks, CheckpointStore,
+    handle_checkpoint, handle_compact, handle_export, handle_fork, handle_history,
+    handle_history_detail, handle_jump, handle_load, handle_mark, handle_marks, handle_save,
+    handle_search, handle_stash, last_session_exists, reset_compact_thrash, Bookmarks,
+    CheckpointStore, FORK_SUBCOMMANDS,
 };
 
 // Spawn subsystem

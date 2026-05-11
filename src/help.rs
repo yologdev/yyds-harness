@@ -180,6 +180,23 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /find main\n\
              \x20 /find test",
         ),
+        "fork" => Some(
+            "/fork — Conversation branching\n\n\
+             Usage:\n\
+             \x20 /fork <name>             Create a named branch from current conversation\n\
+             \x20 /fork switch <name>      Switch to a named branch (auto-saves current)\n\
+             \x20 /fork list               List all branches\n\
+             \x20 /fork delete <name>      Delete a branch (cannot delete current)\n\
+             \x20 /fork rename <old> <new> Rename a branch\n\n\
+             Like git branches for your conversation. Explore different directions\n\
+             and switch between them freely. When you switch, the current branch\n\
+             is auto-saved so you never lose work.\n\n\
+             Examples:\n\
+             \x20 /fork refactor-approach\n\
+             \x20 /fork switch main-idea\n\
+             \x20 /fork list\n\
+             \x20 /fork rename old-idea better-name",
+        ),
         "grep" => Some(
             "/grep [-s|--case] <pattern> [path] — Search file contents directly\n\n\
              Usage:\n\
@@ -1396,6 +1413,10 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "    /fork [sub]        Branch conversations (switch/list/delete/rename)"
+    );
+    let _ = writeln!(
+        s,
         "    /todo [subcmd]     Track tasks (add/done/wip/remove/clear)"
     );
     let _ = writeln!(s);
@@ -1680,6 +1701,7 @@ pub fn help_text() -> String {
     out.push_str(
         "  /stash [desc]      Stash conversation and start fresh (like git stash for chat)\n",
     );
+    out.push_str("  /fork [sub]        Branch conversations (switch, list, delete, rename)\n");
     out.push_str(
         "  /todo [subcmd]     Track tasks: add, done, wip, remove, clear (in-session checklist)\n",
     );
@@ -1884,6 +1906,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "find" => Some("Find files by name pattern"),
         "fix" => Some("Auto-fix build/lint errors"),
         "forget" => Some("Remove a saved memory"),
+        "fork" => Some("Branch conversations and switch between them"),
         "git" => Some("Quick git commands"),
         "goal" => Some("Set, view, or check progress on a session goal"),
         "grep" => Some("Search file contents"),
