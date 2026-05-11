@@ -5,6 +5,7 @@ use crate::format::*;
 use crate::prompt::run_prompt;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use yoagent::agent::Agent;
 use yoagent::*;
 
@@ -15,6 +16,32 @@ use yoagent::*;
 // ---------------------------------------------------------------------------
 
 static PLAN_MODE: AtomicBool = AtomicBool::new(false);
+
+// ---------------------------------------------------------------------------
+// Last plan storage — holds the text of the most recently generated plan so
+// the user can review (/plan show) or execute (/plan apply) it later.
+// ---------------------------------------------------------------------------
+
+static LAST_PLAN: Mutex<Option<String>> = Mutex::new(None);
+
+/// Store the text of the last generated plan.
+pub fn set_last_plan(plan: String) {
+    if let Ok(mut guard) = LAST_PLAN.lock() {
+        *guard = Some(plan);
+    }
+}
+
+/// Retrieve the last stored plan, if any.
+pub fn get_last_plan() -> Option<String> {
+    LAST_PLAN.lock().ok().and_then(|g| g.clone())
+}
+
+/// Clear the stored plan.
+pub fn clear_last_plan() {
+    if let Ok(mut guard) = LAST_PLAN.lock() {
+        *guard = None;
+    }
+}
 
 /// Enable or disable plan mode.
 pub fn set_plan_mode(enabled: bool) {
@@ -36,7 +63,7 @@ but you MUST NOT modify any files or run destructive commands. Specifically:
 Analyze the codebase, explain your plan, and describe what changes you WOULD make without making them.";
 
 /// Subcommand names for `/plan <Tab>` completion.
-pub const PLAN_SUBCOMMANDS: &[&str] = &["on", "off", "open", "close"];
+pub const PLAN_SUBCOMMANDS: &[&str] = &["on", "off", "open", "close", "show", "apply", "clear"];
 
 /// Parse a `/plan` command and extract the task description.
 /// Returns None if no task was provided or if the input is a mode toggle keyword.
@@ -47,7 +74,7 @@ pub fn parse_plan_task(input: &str) -> Option<String> {
     } else {
         // Don't treat mode toggle keywords as plan tasks
         match task.as_str() {
-            "on" | "off" | "open" | "close" => None,
+            "on" | "off" | "open" | "close" | "show" | "apply" | "clear" => None,
             _ => Some(task),
         }
     }
@@ -77,20 +104,42 @@ Keep the plan actionable — someone (or you, in the next step) should be able t
     )
 }
 
-/// Handle the `/plan` command: toggle plan mode or create a structured plan.
+/// Build a prompt that instructs the agent to execute a previously generated plan.
+pub fn build_apply_prompt(plan_text: &str) -> String {
+    format!(
+        "Execute the following plan. Implement each step, writing code and running tests as you go.\n\n\
+         ## Plan\n{plan_text}\n\n\
+         Work through each step. After completing all steps, verify with `cargo build && cargo test` \
+         (or the project's equivalent)."
+    )
+}
+
+/// Result of handling a `/plan` command.
+pub enum PlanResult {
+    /// Command handled internally (toggle, show, clear, or no-op). Continue the REPL.
+    Handled,
+    /// A plan was generated. Contains the plan prompt used (stored as last_input).
+    PlanGenerated(String),
+    /// The user requested `/plan apply` — the returned string should be sent to the agent.
+    Apply(String),
+}
+
+/// Handle the `/plan` command: toggle plan mode, create a structured plan,
+/// or manage stored plans.
 ///
 /// - `/plan on` or `/plan open` — enable plan mode (read-only)
 /// - `/plan off` or `/plan close` — disable plan mode
 /// - `/plan` (no args) — show current mode + usage
-/// - `/plan <task>` — existing single-shot plan behavior (unchanged)
-///
-/// Returns Some(plan_prompt) if a single-shot plan was requested, None otherwise.
+/// - `/plan <task>` — single-shot plan (generates + stores for later apply)
+/// - `/plan show` — display the last generated plan
+/// - `/plan apply` — execute the last plan via the agent
+/// - `/plan clear` — discard the stored plan
 pub async fn handle_plan(
     input: &str,
     agent: &mut Agent,
     session_total: &mut Usage,
     model: &str,
-) -> Option<String> {
+) -> PlanResult {
     let arg = input.strip_prefix("/plan").unwrap_or("").trim();
 
     // Handle mode toggle subcommands
@@ -101,12 +150,41 @@ pub async fn handle_plan(
                 "{GREEN}  📋 Plan mode ON — agent will read and think but not modify files or run commands.{RESET}"
             );
             println!("{DIM}  Use /plan off to return to normal mode.{RESET}\n");
-            return None;
+            return PlanResult::Handled;
         }
         "off" | "close" => {
             set_plan_mode(false);
             println!("{DIM}  Plan mode OFF — normal operation resumed.{RESET}\n");
-            return None;
+            return PlanResult::Handled;
+        }
+        "show" => {
+            match get_last_plan() {
+                Some(plan) => {
+                    println!("{BOLD}  📋 Last generated plan:{RESET}\n");
+                    println!("{plan}\n");
+                }
+                None => {
+                    println!("{DIM}  No plan stored. Use /plan <task> to create one.{RESET}\n");
+                }
+            }
+            return PlanResult::Handled;
+        }
+        "apply" => match get_last_plan() {
+            Some(plan) => {
+                let prompt = build_apply_prompt(&plan);
+                println!("{GREEN}  🚀 Applying stored plan…{RESET}\n");
+                clear_last_plan();
+                return PlanResult::Apply(prompt);
+            }
+            None => {
+                println!("{DIM}  No plan stored. Use /plan <task> to create one first.{RESET}\n");
+                return PlanResult::Handled;
+            }
+        },
+        "clear" => {
+            clear_last_plan();
+            println!("{DIM}  Stored plan cleared.{RESET}\n");
+            return PlanResult::Handled;
         }
         "" => {
             // No args: show status + usage
@@ -115,14 +193,24 @@ pub async fn handle_plan(
                 println!("{DIM}  The agent can read and search but will not modify files.{RESET}");
                 println!("{DIM}  Use /plan off to return to normal mode.{RESET}\n");
             } else {
+                let has_plan = get_last_plan().is_some();
                 println!("{DIM}  📋 Plan mode is OFF (normal operation){RESET}");
-                println!("{DIM}  usage: /plan on         Enter plan mode (read-only){RESET}");
-                println!("{DIM}         /plan off        Return to normal mode{RESET}");
+                println!("{DIM}  usage: /plan on          Enter plan mode (read-only){RESET}");
+                println!("{DIM}         /plan off         Return to normal mode{RESET}");
                 println!(
-                    "{DIM}         /plan <task>     One-shot plan without executing tools{RESET}\n"
+                    "{DIM}         /plan <task>      One-shot plan without executing tools{RESET}"
                 );
+                println!("{DIM}         /plan show        Display the last generated plan{RESET}");
+                println!("{DIM}         /plan apply       Execute the last generated plan{RESET}");
+                println!("{DIM}         /plan clear       Discard the stored plan{RESET}");
+                if has_plan {
+                    println!(
+                        "{GREEN}  ✓ A plan is currently stored. Use /plan show to view it.{RESET}"
+                    );
+                }
+                println!();
             }
-            return None;
+            return PlanResult::Handled;
         }
         _ => {}
     }
@@ -132,7 +220,7 @@ pub async fn handle_plan(
         Some(t) => t,
         None => {
             // Shouldn't reach here given the match above, but be safe
-            return None;
+            return PlanResult::Handled;
         }
     };
 
@@ -142,11 +230,16 @@ pub async fn handle_plan(
     run_prompt(agent, &plan_prompt, session_total, model).await;
     auto_compact_if_needed(agent);
 
+    // Capture the plan text from the last assistant message for later retrieval
+    if let Some(plan_text) = crate::commands_file::extract_last_assistant_text(agent.messages()) {
+        set_last_plan(plan_text);
+    }
+
     println!(
-        "\n{DIM}  💡 Review the plan above. Say \"go ahead\" to execute it, or refine it.{RESET}\n"
+        "\n{DIM}  💡 Review the plan above. Use /plan apply to execute it, or refine it.{RESET}\n"
     );
 
-    Some(plan_prompt)
+    PlanResult::PlanGenerated(plan_prompt)
 }
 
 #[cfg(test)]
@@ -290,6 +383,9 @@ mod tests {
         assert!(PLAN_SUBCOMMANDS.contains(&"off"));
         assert!(PLAN_SUBCOMMANDS.contains(&"open"));
         assert!(PLAN_SUBCOMMANDS.contains(&"close"));
+        assert!(PLAN_SUBCOMMANDS.contains(&"show"));
+        assert!(PLAN_SUBCOMMANDS.contains(&"apply"));
+        assert!(PLAN_SUBCOMMANDS.contains(&"clear"));
     }
 
     #[test]

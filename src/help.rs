@@ -339,7 +339,7 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /map --all        Include private symbols\n\
              \x20 /map --all src/   All symbols under src/\n\
              \x20 /map --regex      Force regex backend (skip ast-grep)\n\n\
-             Supported languages: Rust, Python, JavaScript, TypeScript, Go, Java.\n\n\
+             Supported languages: Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, Ruby, Shell.\n\n\
              The repo map is also automatically included in the system prompt\n\
              for structural codebase awareness.",
         ),
@@ -841,19 +841,27 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              including their names and the message count at each point.",
         ),
         "plan" => Some(
-            "/plan — Plan mode toggle & one-shot planning (architect mode)\n\n\
+            "/plan — Plan mode toggle, one-shot planning, and plan-then-apply workflow\n\n\
              Usage:\n\
              \x20 /plan on|open        Enter plan mode (read-only, agent thinks but won't modify)\n\
              \x20 /plan off|close      Exit plan mode (return to normal operation)\n\
              \x20 /plan                Show current plan mode status\n\
-             \x20 /plan <task>         One-shot plan: create a step-by-step plan without tools\n\n\
+             \x20 /plan <task>         One-shot plan: create a step-by-step plan without tools\n\
+             \x20 /plan show           Display the last generated plan\n\
+             \x20 /plan apply          Execute the last generated plan (agent runs it with tools)\n\
+             \x20 /plan clear          Discard the stored plan\n\n\
              Plan mode restricts the agent to read-only operations — it can read files,\n\
              search, and analyze, but will not modify files or run destructive commands.\n\
              Useful for understanding a codebase before making changes.\n\n\
+             Plan-then-apply workflow:\n\
+             \x20 1. /plan <task>  — generate a structured plan (stored automatically)\n\
+             \x20 2. /plan show    — review the plan\n\
+             \x20 3. /plan apply   — agent executes the plan with full tool access\n\n\
              Examples:\n\
              \x20 /plan on\n\
              \x20 /plan add authentication to the API\n\
-             \x20 /plan migrate database from SQLite to PostgreSQL",
+             \x20 /plan show\n\
+             \x20 /plan apply",
         ),
         "remember" => Some(
             "/remember <note> — Save a project-specific memory\n\n\
@@ -1559,7 +1567,10 @@ pub fn cli_help_text() -> String {
         s,
         "    /think [level]     Show/change thinking (off/low/medium/high)"
     );
-    let _ = writeln!(s, "    /plan <task>       Plan a task without executing");
+    let _ = writeln!(
+        s,
+        "    /plan <task>       Plan a task without executing (show/apply/clear)"
+    );
     let _ = writeln!(
         s,
         "    /architect [on|off] Architect mode — plan strong, implement cheap"
@@ -1791,7 +1802,7 @@ pub fn help_text() -> String {
     out.push_str("  /model <name|list|info> Switch, list, or inspect models\n");
     out.push_str("  /provider <name>   Switch provider (resets model to provider default)\n");
     out.push_str("  /think [level]     Show or change thinking level (off/low/medium/high)\n");
-    out.push_str("  /plan [on|off|task] Plan mode toggle or one-shot task plan (architect mode)\n");
+    out.push_str("  /plan [on|off|task] Plan mode toggle, one-shot plan, show/apply/clear\n");
     out.push_str(
         "  /architect [on|off] Toggle architect mode — plan with strong model, implement cheap\n",
     );
@@ -1932,7 +1943,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "model" => Some("Switch, list, or inspect models"),
         "move" => Some("Move a method between files"),
         "outline" => Some("Search for symbols or show file structure"),
-        "plan" => Some("Plan mode toggle or one-shot task plan"),
+        "plan" => Some("Plan mode toggle, one-shot plan, show/apply/clear"),
         "permissions" => Some("Show active security and permission configuration"),
         "pr" => Some("List, view, or create pull requests"),
         "profile" => Some("Show session statistics (tokens, cost, time, turns)"),

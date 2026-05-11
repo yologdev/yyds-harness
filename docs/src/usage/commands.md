@@ -752,7 +752,7 @@ src/cli.rs (400 lines)
 | `/map --all src/` | All symbols under a specific directory |
 | `/map --regex` | Force regex backend (skip ast-grep) |
 
-**Supported languages:** Rust, Python, JavaScript, TypeScript, Go, Java.
+**Supported languages:** Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, Ruby, Shell.
 
 **ast-grep integration:** When [ast-grep](https://ast-grep.github.io/) (`sg`) is installed, `/map` uses it for more accurate AST-based symbol extraction. When ast-grep is not available, it falls back to built-in regex extractors. The output footer shows which backend was used. Use `--regex` to force the regex backend for comparison or debugging.
 

@@ -247,7 +247,7 @@ pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
         "changes" => Some("summary | --diff"),
         "evolution" => Some("[count]"),
         "extended" | "ext" => Some("<prompt>"),
-        "plan" => Some("on | off | open | close | <description>"),
+        "plan" => Some("on | off | show | apply | clear | <task>"),
         "tree" => Some("[path] [--depth N]"),
         "index" => Some("[path]"),
         "history" => Some("detail"),
@@ -486,7 +486,7 @@ pub use crate::commands_goal::handle_goal;
 pub use crate::commands_git_review::{handle_blame, handle_review};
 
 // Project-related handlers
-pub use crate::commands_plan::{handle_plan, is_plan_mode, PLAN_MODE_PROMPT};
+pub use crate::commands_plan::{handle_plan, is_plan_mode, PlanResult, PLAN_MODE_PROMPT};
 pub use crate::commands_project::{
     handle_context, handle_docs, handle_extract, handle_init, handle_move, handle_refactor,
     handle_rename,

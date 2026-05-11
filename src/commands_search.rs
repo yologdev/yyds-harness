@@ -500,6 +500,8 @@ fn format_outline_match(m: &OutlineMatch) -> String {
         SymbolKind::Const => format!("{CYAN}const{RESET}"),
         SymbolKind::Impl => format!("{MAGENTA}impl{RESET}"),
         SymbolKind::Module => format!("{MAGENTA}mod{RESET}"),
+        SymbolKind::Macro => format!("{CYAN}macro{RESET}"),
+        SymbolKind::Namespace => format!("{MAGENTA}namespace{RESET}"),
     };
     // Pad kind keyword for alignment (longest is "interface" = 9 chars)
     let kind_plain = match m.kind {
@@ -513,6 +515,8 @@ fn format_outline_match(m: &OutlineMatch) -> String {
         SymbolKind::Const => "const",
         SymbolKind::Impl => "impl",
         SymbolKind::Module => "mod",
+        SymbolKind::Macro => "macro",
+        SymbolKind::Namespace => "namespace",
     };
     let pad = " ".repeat(9_usize.saturating_sub(kind_plain.len()));
     format!(

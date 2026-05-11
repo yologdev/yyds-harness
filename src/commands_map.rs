@@ -73,6 +73,36 @@ static RE_JAVA_METHOD: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+// ── C regexes ──
+static RE_C_FUNC: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-zA-Z_][\w\s\*]*\s+(\w+)\s*\(").unwrap());
+static RE_C_STRUCT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:typedef\s+)?struct\s+(\w+)").unwrap());
+static RE_C_ENUM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:typedef\s+)?enum\s+(\w+)").unwrap());
+static RE_C_DEFINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#define\s+(\w+)").unwrap());
+
+// ── C++ regexes (extends C) ──
+static RE_CPP_CLASS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:template\s*<[^>]*>\s*)?class\s+(\w+)").unwrap());
+static RE_CPP_NAMESPACE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^namespace\s+(\w+)").unwrap());
+
+// ── Ruby regexes ──
+static RE_RUBY_DEF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*def\s+([\w\?\!]+)").unwrap());
+static RE_RUBY_CLASS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*class\s+(\w+)").unwrap());
+static RE_RUBY_MODULE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*module\s+(\w+)").unwrap());
+static RE_RUBY_CONST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*([A-Z][A-Z_0-9]+)\s*=").unwrap());
+
+// ── Shell regexes ──
+static RE_SHELL_FUNC_PARENS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(\w+)\s*\(\)\s*\{").unwrap());
+static RE_SHELL_FUNC_KEYWORD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*function\s+(\w+)").unwrap());
+
 // ── /map — structural codebase understanding ────────────────────────────
 
 /// Kind of structural symbol extracted from source code.
@@ -88,6 +118,8 @@ pub enum SymbolKind {
     Const,
     Impl,
     Module,
+    Macro,
+    Namespace,
 }
 
 /// A structural symbol extracted from a source file.
@@ -116,6 +148,10 @@ pub fn detect_language(path: &str) -> Option<&'static str> {
         "ts" | "tsx" => Some("typescript"),
         "go" => Some("go"),
         "java" => Some("java"),
+        "c" | "h" => Some("c"),
+        "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "hh" => Some("cpp"),
+        "rb" => Some("ruby"),
+        "sh" | "bash" | "zsh" => Some("shell"),
         _ => None,
     }
 }
@@ -132,6 +168,10 @@ pub fn extract_symbols(code: &str, language: &str) -> Vec<Symbol> {
         "typescript" => extract_ts_symbols(code),
         "go" => extract_go_symbols(code),
         "java" => extract_java_symbols(code),
+        "c" => extract_c_symbols(code),
+        "cpp" => extract_cpp_symbols(code),
+        "ruby" => extract_ruby_symbols(code),
+        "shell" => extract_shell_symbols(code),
         _ => Vec::new(),
     }
 }
@@ -522,6 +562,254 @@ fn extract_java_symbols(code: &str) -> Vec<Symbol> {
                     line: line_num + 1,
                 });
             }
+        }
+    }
+
+    symbols
+}
+
+/// C keywords that match the function regex but aren't function definitions.
+const C_NON_FUNC_KEYWORDS: &[&str] = &[
+    "if", "for", "while", "switch", "return", "else", "do", "sizeof", "typedef", "extern",
+    "static", "inline", "volatile", "register", "goto", "case", "break", "continue",
+];
+
+/// Extract symbols from C source code.
+fn extract_c_symbols(code: &str) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+
+    let re_func = &*RE_C_FUNC;
+    let re_struct = &*RE_C_STRUCT;
+    let re_enum = &*RE_C_ENUM;
+    let re_define = &*RE_C_DEFINE;
+
+    for (line_num, line) in code.lines().enumerate() {
+        let trimmed = line.trim_start();
+
+        if let Some(caps) = re_define.captures(trimmed) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Macro,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_struct.captures(trimmed) {
+            let name = caps.get(2).map_or("", |m| m.as_str());
+            // If no typedef group matched, try group 1 as the struct name
+            let name = if name.is_empty() {
+                caps.get(1).map_or("", |m| m.as_str())
+            } else {
+                name
+            };
+            symbols.push(Symbol {
+                name: name.to_string(),
+                kind: SymbolKind::Struct,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_enum.captures(trimmed) {
+            let name = caps.get(2).map_or("", |m| m.as_str());
+            let name = if name.is_empty() {
+                caps.get(1).map_or("", |m| m.as_str())
+            } else {
+                name
+            };
+            symbols.push(Symbol {
+                name: name.to_string(),
+                kind: SymbolKind::Enum,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if !trimmed.starts_with("//")
+            && !trimmed.starts_with("/*")
+            && !trimmed.starts_with('*')
+            && !trimmed.starts_with('#')
+        {
+            // Only match functions at top-level (non-indented) lines
+            if line.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+                if let Some(caps) = re_func.captures(trimmed) {
+                    let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+                    if !C_NON_FUNC_KEYWORDS.contains(&name.as_str()) {
+                        symbols.push(Symbol {
+                            name,
+                            kind: SymbolKind::Function,
+                            is_public: true,
+                            line: line_num + 1,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    symbols
+}
+
+/// Extract symbols from C++ source code.
+///
+/// Extends C extraction with classes, namespaces, and templates.
+fn extract_cpp_symbols(code: &str) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+
+    let re_func = &*RE_C_FUNC;
+    let re_struct = &*RE_C_STRUCT;
+    let re_enum = &*RE_C_ENUM;
+    let re_define = &*RE_C_DEFINE;
+    let re_class = &*RE_CPP_CLASS;
+    let re_namespace = &*RE_CPP_NAMESPACE;
+
+    for (line_num, line) in code.lines().enumerate() {
+        let trimmed = line.trim_start();
+
+        if let Some(caps) = re_define.captures(trimmed) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Macro,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_namespace.captures(trimmed) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Namespace,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_class.captures(trimmed) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Class,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_struct.captures(trimmed) {
+            let name = caps.get(2).map_or("", |m| m.as_str());
+            let name = if name.is_empty() {
+                caps.get(1).map_or("", |m| m.as_str())
+            } else {
+                name
+            };
+            symbols.push(Symbol {
+                name: name.to_string(),
+                kind: SymbolKind::Struct,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_enum.captures(trimmed) {
+            let name = caps.get(2).map_or("", |m| m.as_str());
+            let name = if name.is_empty() {
+                caps.get(1).map_or("", |m| m.as_str())
+            } else {
+                name
+            };
+            symbols.push(Symbol {
+                name: name.to_string(),
+                kind: SymbolKind::Enum,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if !trimmed.starts_with("//")
+            && !trimmed.starts_with("/*")
+            && !trimmed.starts_with('*')
+            && !trimmed.starts_with('#')
+        {
+            if let Some(caps) = re_func.captures(trimmed) {
+                let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+                if !C_NON_FUNC_KEYWORDS.contains(&name.as_str())
+                    && name != "class"
+                    && name != "namespace"
+                {
+                    symbols.push(Symbol {
+                        name,
+                        kind: SymbolKind::Function,
+                        is_public: true,
+                        line: line_num + 1,
+                    });
+                }
+            }
+        }
+    }
+
+    symbols
+}
+
+/// Extract symbols from Ruby source code.
+fn extract_ruby_symbols(code: &str) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+
+    let re_def = &*RE_RUBY_DEF;
+    let re_class = &*RE_RUBY_CLASS;
+    let re_module = &*RE_RUBY_MODULE;
+    let re_const = &*RE_RUBY_CONST;
+
+    for (line_num, line) in code.lines().enumerate() {
+        if let Some(caps) = re_class.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Class,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_module.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Module,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_def.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            let is_public = !name.starts_with('_');
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Function,
+                is_public,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_const.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Const,
+                is_public: true,
+                line: line_num + 1,
+            });
+        }
+    }
+
+    symbols
+}
+
+/// Extract symbols from Shell scripts (bash/sh/zsh).
+fn extract_shell_symbols(code: &str) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+
+    let re_parens = &*RE_SHELL_FUNC_PARENS;
+    let re_keyword = &*RE_SHELL_FUNC_KEYWORD;
+
+    for (line_num, line) in code.lines().enumerate() {
+        if let Some(caps) = re_keyword.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_parens.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: line_num + 1,
+            });
         }
     }
 
@@ -942,6 +1230,8 @@ pub fn format_repo_map_colored(entries: &[FileSymbols]) -> String {
                 SymbolKind::Const => format!("{CYAN}const{RESET}"),
                 SymbolKind::Impl => format!("{MAGENTA}impl{RESET}"),
                 SymbolKind::Module => format!("{MAGENTA}mod{RESET}"),
+                SymbolKind::Macro => format!("{CYAN}macro{RESET}"),
+                SymbolKind::Namespace => format!("{MAGENTA}namespace{RESET}"),
             };
             let vis = if sym.is_public {
                 format!("{GREEN}pub{RESET} ")
@@ -979,6 +1269,8 @@ pub fn format_repo_map(entries: &[FileSymbols]) -> String {
                 SymbolKind::Const => "const",
                 SymbolKind::Impl => "impl",
                 SymbolKind::Module => "mod",
+                SymbolKind::Macro => "macro",
+                SymbolKind::Namespace => "namespace",
             };
             output.push_str(&format!("  {kind_label} {}\n", sym.name));
         }
@@ -1016,6 +1308,8 @@ pub fn generate_repo_map_for_prompt_with_limit(max_chars: usize) -> Option<Strin
                     SymbolKind::Const => "const",
                     SymbolKind::Impl => "impl",
                     SymbolKind::Module => "mod",
+                    SymbolKind::Macro => "macro",
+                    SymbolKind::Namespace => "namespace",
                 };
                 file_block.push_str(&format!("  {kind_label} {}\n", sym.name));
             }
@@ -1701,5 +1995,397 @@ public enum Status { OK, ERROR }
         assert_eq!(MapBackend::AstGrep, MapBackend::AstGrep);
         assert_eq!(MapBackend::Regex, MapBackend::Regex);
         assert_ne!(MapBackend::AstGrep, MapBackend::Regex);
+    }
+
+    // ── C extraction tests ──
+
+    #[test]
+    fn extract_c_symbols_basic() {
+        let code = r#"
+#include <stdio.h>
+
+#define MAX_SIZE 100
+#define MIN(a,b) ((a)<(b)?(a):(b))
+
+typedef struct point {
+    int x;
+    int y;
+} Point;
+
+enum color { RED, GREEN, BLUE };
+
+int main(int argc, char **argv) {
+    return 0;
+}
+
+void helper(void) {
+    printf("hello\n");
+}
+"#;
+        let symbols = extract_symbols(code, "c");
+
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "MAX_SIZE" && s.kind == SymbolKind::Macro),
+            "should find #define MAX_SIZE"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "MIN" && s.kind == SymbolKind::Macro),
+            "should find #define MIN"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "point" && s.kind == SymbolKind::Struct),
+            "should find struct point"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "color" && s.kind == SymbolKind::Enum),
+            "should find enum color"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "main" && s.kind == SymbolKind::Function),
+            "should find function main"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "helper" && s.kind == SymbolKind::Function),
+            "should find function helper"
+        );
+    }
+
+    #[test]
+    fn extract_c_symbols_skips_control_flow() {
+        let code = r#"
+int process(int x) {
+    if (x > 0) {
+        return x;
+    }
+    for (int i = 0; i < x; i++) {
+        while (1) break;
+    }
+    switch (x) {
+        case 1: return 1;
+    }
+    return 0;
+}
+"#;
+        let symbols = extract_symbols(code, "c");
+        let func_names: Vec<&str> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Function)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(func_names.contains(&"process"), "should find process");
+        assert!(
+            !func_names.contains(&"if"),
+            "should not match 'if' as function"
+        );
+        assert!(
+            !func_names.contains(&"for"),
+            "should not match 'for' as function"
+        );
+        assert!(
+            !func_names.contains(&"while"),
+            "should not match 'while' as function"
+        );
+        assert!(
+            !func_names.contains(&"switch"),
+            "should not match 'switch' as function"
+        );
+    }
+
+    // ── C++ extraction tests ──
+
+    #[test]
+    fn extract_cpp_symbols_basic() {
+        let code = r#"
+#include <iostream>
+
+#define VERSION 1
+
+namespace mylib {
+
+class Widget {
+public:
+    void draw();
+};
+
+struct Point {
+    int x, y;
+};
+
+enum Color { Red, Green, Blue };
+
+template<typename T>
+class Container {
+    T value;
+};
+
+void free_function(int x) {
+    std::cout << x;
+}
+
+} // namespace mylib
+"#;
+        let symbols = extract_symbols(code, "cpp");
+
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "VERSION" && s.kind == SymbolKind::Macro),
+            "should find #define VERSION"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "mylib" && s.kind == SymbolKind::Namespace),
+            "should find namespace mylib"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Widget" && s.kind == SymbolKind::Class),
+            "should find class Widget"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Point" && s.kind == SymbolKind::Struct),
+            "should find struct Point"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Color" && s.kind == SymbolKind::Enum),
+            "should find enum Color"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Container" && s.kind == SymbolKind::Class),
+            "should find template class Container"
+        );
+    }
+
+    #[test]
+    fn extract_cpp_symbols_template_class() {
+        let code = "template<typename T>\nclass Vector {\n    T* data;\n};\n";
+        let symbols = extract_symbols(code, "cpp");
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Vector" && s.kind == SymbolKind::Class),
+            "should find template class Vector"
+        );
+    }
+
+    // ── Ruby extraction tests ──
+
+    #[test]
+    fn extract_ruby_symbols_basic() {
+        let code = r#"
+module MyApp
+  class User
+    MAX_RETRIES = 3
+    DEFAULT_NAME = "anonymous"
+
+    def initialize(name)
+      @name = name
+    end
+
+    def greet
+      "Hello, #{@name}"
+    end
+
+    def valid?
+      !@name.nil?
+    end
+
+    def _private_helper
+      true
+    end
+  end
+end
+"#;
+        let symbols = extract_symbols(code, "ruby");
+
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "MyApp" && s.kind == SymbolKind::Module),
+            "should find module MyApp"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "User" && s.kind == SymbolKind::Class),
+            "should find class User"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "MAX_RETRIES" && s.kind == SymbolKind::Const),
+            "should find constant MAX_RETRIES"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "DEFAULT_NAME" && s.kind == SymbolKind::Const),
+            "should find constant DEFAULT_NAME"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "initialize" && s.kind == SymbolKind::Function),
+            "should find def initialize"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "greet" && s.kind == SymbolKind::Function),
+            "should find def greet"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "valid?" && s.kind == SymbolKind::Function),
+            "should find def valid?"
+        );
+        // Private method: is_public should be false
+        let priv_method = symbols.iter().find(|s| s.name == "_private_helper");
+        assert!(priv_method.is_some(), "should find _private_helper");
+        assert!(
+            !priv_method.unwrap().is_public,
+            "_private_helper should not be public"
+        );
+    }
+
+    #[test]
+    fn extract_ruby_symbols_edge_cases() {
+        let code = "class Base\nend\nclass Child < Base\nend\n";
+        let symbols = extract_symbols(code, "ruby");
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Base" && s.kind == SymbolKind::Class),
+            "should find class Base"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Child" && s.kind == SymbolKind::Class),
+            "should find class Child (with inheritance)"
+        );
+    }
+
+    // ── Shell extraction tests ──
+
+    #[test]
+    fn extract_shell_symbols_basic() {
+        let code = r#"#!/bin/bash
+
+setup() {
+    echo "setting up"
+}
+
+function cleanup {
+    echo "cleaning up"
+}
+
+function run_tests {
+    setup
+    echo "running tests"
+    cleanup
+}
+
+main() {
+    run_tests
+}
+
+main "$@"
+"#;
+        let symbols = extract_symbols(code, "shell");
+
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "setup" && s.kind == SymbolKind::Function),
+            "should find setup() function"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "cleanup" && s.kind == SymbolKind::Function),
+            "should find 'function cleanup'"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "run_tests" && s.kind == SymbolKind::Function),
+            "should find 'function run_tests'"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "main" && s.kind == SymbolKind::Function),
+            "should find main() function"
+        );
+    }
+
+    #[test]
+    fn extract_shell_symbols_indented() {
+        let code = "  helper() {\n    echo hi\n  }\n  function inner_func {\n    true\n  }\n";
+        let symbols = extract_symbols(code, "shell");
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "helper" && s.kind == SymbolKind::Function),
+            "should find indented helper()"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "inner_func" && s.kind == SymbolKind::Function),
+            "should find indented function inner_func"
+        );
+    }
+
+    // ── Language detection tests for new languages ──
+
+    #[test]
+    fn detect_language_c_extensions() {
+        assert_eq!(detect_language("main.c"), Some("c"));
+        assert_eq!(detect_language("header.h"), Some("c"));
+    }
+
+    #[test]
+    fn detect_language_cpp_extensions() {
+        assert_eq!(detect_language("main.cpp"), Some("cpp"));
+        assert_eq!(detect_language("main.cc"), Some("cpp"));
+        assert_eq!(detect_language("main.cxx"), Some("cpp"));
+        assert_eq!(detect_language("header.hpp"), Some("cpp"));
+        assert_eq!(detect_language("header.hxx"), Some("cpp"));
+        assert_eq!(detect_language("header.hh"), Some("cpp"));
+    }
+
+    #[test]
+    fn detect_language_ruby_extension() {
+        assert_eq!(detect_language("app.rb"), Some("ruby"));
+    }
+
+    #[test]
+    fn detect_language_shell_extensions() {
+        assert_eq!(detect_language("script.sh"), Some("shell"));
+        assert_eq!(detect_language("build.bash"), Some("shell"));
+        assert_eq!(detect_language("init.zsh"), Some("shell"));
     }
 }

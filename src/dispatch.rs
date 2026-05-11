@@ -939,7 +939,7 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             CommandResult::Continue
         }
         CommandRoute::Plan => {
-            if let Some(plan_prompt) = commands::handle_plan(
+            match commands::handle_plan(
                 ctx.input,
                 ctx.agent,
                 ctx.session_total,
@@ -947,11 +947,18 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             )
             .await
             {
-                *ctx.last_input = Some(plan_prompt);
-                *ctx.last_error = None;
-                auto_compact_if_needed(ctx.agent);
+                commands::PlanResult::PlanGenerated(plan_prompt) => {
+                    *ctx.last_input = Some(plan_prompt);
+                    *ctx.last_error = None;
+                    auto_compact_if_needed(ctx.agent);
+                    CommandResult::Continue
+                }
+                commands::PlanResult::Apply(apply_prompt) => {
+                    *ctx.last_error = None;
+                    CommandResult::SendToAgent(apply_prompt)
+                }
+                commands::PlanResult::Handled => CommandResult::Continue,
             }
-            CommandResult::Continue
         }
         CommandRoute::Extended => {
             if let Some(extended_prompt) = crate::conversations::handle_extended(
