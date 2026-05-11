@@ -1695,8 +1695,12 @@ pub fn help_text() -> String {
     );
     out.push_str("  /changes [sub]     Show files modified this session (summary, --diff)\n");
     out.push_str("  /changelog [N]     Show recent git commit history (default: 15, max: 100)\n");
+    out.push_str("  /evolution [N]     Show evolution history, session stats, and CI runs\n");
     out.push_str(
         "  /export [path]     Export conversation as readable markdown (default: conversation.md)\n",
+    );
+    out.push_str(
+        "  /copy [last|code]  Copy text to the system clipboard (last message, code block, etc.)\n",
     );
     out.push_str(
         "  /stash [desc]      Stash conversation and start fresh (like git stash for chat)\n",
@@ -2371,5 +2375,67 @@ mod tests {
         // The cli::help_text() wrapper must return identical output
         // to the canonical cli_help_text() in help.rs.
         assert_eq!(crate::cli::help_text(), cli_help_text());
+    }
+
+    /// Regression guard: every command in KNOWN_COMMANDS (except aliases) must
+    /// have both a detailed `command_help()` entry and a `command_short_description()`.
+    #[test]
+    fn all_known_commands_have_help() {
+        // Aliases and special variants that share help with their base command
+        let aliases = ["/exit", "/clear!", "/quit"];
+
+        for &cmd in KNOWN_COMMANDS {
+            let name = cmd.strip_prefix('/').unwrap_or(cmd);
+            if aliases.contains(&cmd) {
+                continue;
+            }
+            assert!(
+                command_help(name).is_some(),
+                "command_help(\"{name}\") returned None — add help text for /{name}"
+            );
+            assert!(
+                command_short_description(name).is_some(),
+                "command_short_description(\"{name}\") returned None — add a short description for /{name}"
+            );
+        }
+    }
+
+    /// Regression guard: every non-alias command in KNOWN_COMMANDS must appear
+    /// somewhere in the `help_text()` output so users can discover it via `/help`.
+    #[test]
+    fn all_help_commands_in_help_text() {
+        let text = help_text();
+        let aliases = ["/exit", "/clear!", "/quit"];
+
+        for &cmd in KNOWN_COMMANDS {
+            if aliases.contains(&cmd) {
+                continue;
+            }
+            assert!(
+                text.contains(cmd),
+                "{cmd} is in KNOWN_COMMANDS but missing from help_text() output"
+            );
+        }
+    }
+
+    /// Regression guard: `help_command_completions("")` must return entries for
+    /// all non-alias commands in KNOWN_COMMANDS, ensuring tab-completion covers
+    /// every documented command.
+    #[test]
+    fn help_command_completions_covers_known_commands() {
+        let completions = help_command_completions("");
+        // /exit is filtered by help_command_completions itself
+        let skip = ["/exit"];
+
+        for &cmd in KNOWN_COMMANDS {
+            if skip.contains(&cmd) {
+                continue;
+            }
+            let name = cmd.strip_prefix('/').unwrap_or(cmd);
+            assert!(
+                completions.contains(&name.to_string()),
+                "help_command_completions(\"\") is missing {cmd} — ensure it's returned for tab-completion"
+            );
+        }
     }
 }
