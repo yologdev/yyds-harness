@@ -4,6 +4,51 @@ All notable changes to **yoyo-agent** (`cargo install yoyo-agent`) are documente
 
 This project is a self-evolving coding agent — every change was planned, implemented, and tested by yoyo itself during automated evolution sessions. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] — 2026-05-11
+
+14 sessions spanning Days 64–72. Prompt caching cuts repeated system prompt costs ~90%, native desktop notifications tell you when long completions finish, clipboard integration via `/copy`, and a deep consolidation arc that deduplicated 13-way token arithmetic, extracted 6+ modules, and cleaned every re-export middleman out of `prompt.rs`.
+
+### Added
+
+- **Prompt caching via yoagent's CacheConfig** — automatic `cache_control` on system prompt and long tool results, ~90% cost reduction on repeated system prompts; cache hit rate visible in `/cost` and `/tokens` (Day 71)
+- **Native desktop notifications** — OS-level notification + terminal bell when completions take >10s; configurable via `notify = false` in config (Day 71)
+- **`/copy` command** — clipboard integration detecting `pbcopy`/`xclip`/`wl-copy`/`clip.exe`; subcommands: `/copy last`, `/copy code`, `/copy all` (Day 71)
+- **`/changes summary` subcommand** — AI-generated overview of files modified in the current session and why (Day 70)
+- **`/model list` command** — browse all known models grouped by provider, with context window sizes (Day 64)
+- **Model registry updated** — added GPT-5, GPT-5-mini, GPT-5.5, Grok-4, Grok-4-mini, Gemini 2.5 Flash Lite to provider registry and pricing (Days 64, 70)
+
+### Improved
+
+- **Tool recovery with concrete alternative suggestions** — retry prompts now suggest specific alternative tools when one fails (e.g. `edit_file` failing → suggests `write_file`), improving agent self-recovery (Day 70)
+- **Banner shows project context at startup** — `📁 Rust project (yoyo-evolve) on main` with auto-detected project type, name, and branch (Day 64)
+- **`/evolution` command** — shows CI run status, session stats, and recent evolution history (Day 68)
+- **Competitive gap analysis refreshed** — updated scorecard against Claude Code, Cursor, Gemini CLI, Codex, and Aider; identified phase transition from missing features to architectural divergences (Day 67)
+
+### Fixed
+
+- **Silent `.ok()` error swallowing in piped mode and retry path** — errors now properly propagated instead of silently discarded (Day 68)
+- **Silent data loss in `save_messages`** — messages no longer silently dropped across provider/model/thinking switches (Day 70)
+
+### Changed (Internal / Architecture)
+
+- **Command routing extraction** — pure `route_command()` function extracted from `dispatch_command` with full test coverage, enabling deterministic testing of command routing (Day 72)
+- **`accumulate_usage` helper** — deduplicated 13-way token-accumulation arithmetic across `prompt.rs` into a single function (Day 66)
+- **`finish_prompt_epilogue` helper** — collapsed duplicated 15-line post-prompt epilogue (cost display, bell, context bar) into one call (Day 66)
+- **`PostPromptContext` / `ConfigDisplay` structs** — replaced 13- and 14-parameter functions with named structs (Day 66)
+- **6 module extractions** continuing the consolidation arc:
+  - `conversations.rs` from `repl.rs` — side, quick, and extended conversation handlers (Day 64)
+  - `prompt_retry.rs` from `prompt.rs` — retry logic, error classification, backoff (Day 64)
+  - `prompt_utils.rs` from `prompt.rs` — search, highlighting, summarization utilities (Day 64)
+  - `commands_update.rs` from `commands_dev.rs` — `/update` command (Day 65)
+  - `commands_tree.rs` from `commands_dev.rs` — `/tree` command (Day 65)
+  - Watch-mode auto-detection moved to `watch.rs` where it belongs (Day 65)
+- **`prompt.rs` reduced from ~2,425 to ~1,300 lines** — retry, utility, and re-export middleman cleanup (Days 64, 66–67)
+- **`commands_dev.rs` reduced from ~1,693 to ~714 lines** — three command extractions (Day 65)
+- **Re-export cleanup** — removed `pub use` middlemen from `prompt.rs`; all dependents now import directly from source modules (Days 66–67)
+- **`run_repl` readability** — architect mode and post-prompt handling extracted into named functions; startup banner pulled into its own function (Days 65–66)
+- **Test race condition fix** — `set_current_dir` race in parallel tests replaced with parameter-passing approach (Day 64)
+- **`tool_wrappers.rs` extraction** — tool decorator types pulled out of `tools.rs` (Day 64)
+
 ## [0.1.10] — 2026-05-02
 
 6 sessions spanning Days 61–63. Real-time bash streaming closes the #1 competitive gap, non-interactive code review enables CI pipeline integration, three new skills (synthesis, explore-codebase, x-research) expand the RLM substrate, and the skill ecosystem gains GitHub-based discovery and remote installation.
