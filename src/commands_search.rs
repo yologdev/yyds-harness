@@ -653,11 +653,15 @@ pub struct GrepArgs {
     /// Set by `-C N` (symmetric), `-B N` (before only), `-A N` (after only).
     /// Flags combine: `-B 2 -A 1` → `Some((2, 1))`.
     pub context_lines: Option<(u32, u32)>,
+    /// Glob pattern to filter files (e.g. `*.rs`).
+    /// For git grep, added as a pathspec after `--`.
+    /// For plain grep, passed as `--include=<glob>`.
+    pub include: Option<String>,
 }
 
 /// Parse `/grep` arguments.
 ///
-/// Syntax: `/grep [-s|--case] [-C N|--context N] [-B N|--before N] [-A N|--after N] <pattern> [path]`
+/// Syntax: `/grep [-s|--case] [-C N|--context N] [-B N|--before N] [-A N|--after N] [--include <glob>] <pattern> [path]`
 ///
 /// Supports double-quoted patterns for multi-word searches:
 /// `/grep "fn main" src/` → pattern = "fn main", path = "src/"
@@ -666,6 +670,9 @@ pub struct GrepArgs {
 /// - `-C N` / `--context N` — show N lines before and after each match
 /// - `-B N` / `--before N` — show N lines before each match
 /// - `-A N` / `--after N` — show N lines after each match
+///
+/// File filter:
+/// - `--include <glob>` — only search files matching the glob (e.g. `*.rs`)
 ///
 /// Flags combine: `-B 2 -A 1` shows 2 before, 1 after.
 ///
@@ -682,6 +689,7 @@ pub fn parse_grep_args(input: &str) -> Option<GrepArgs> {
     let mut case_sensitive = false;
     let mut context_before: Option<u32> = None;
     let mut context_after: Option<u32> = None;
+    let mut include: Option<String> = None;
     let mut remaining_parts: Vec<String> = Vec::new();
 
     let mut i = 0;
@@ -710,6 +718,13 @@ pub fn parse_grep_args(input: &str) -> Option<GrepArgs> {
                     context_after = Some(n);
                     i += 1;
                 }
+            }
+            "--include" => {
+                if let Some(glob) = tokens.get(i + 1) {
+                    include = Some(glob.clone());
+                    i += 1; // consume the glob pattern
+                }
+                // If no value follows, flag is silently ignored
             }
             _ => {
                 remaining_parts.push(token.clone());
@@ -741,6 +756,7 @@ pub fn parse_grep_args(input: &str) -> Option<GrepArgs> {
         path,
         case_sensitive,
         context_lines,
+        include,
     })
 }
 
@@ -776,12 +792,18 @@ pub fn run_grep(args: &GrepArgs) -> Result<Vec<GrepMatch>, String> {
         if args.path != "." {
             cmd.arg(&args.path);
         }
+        if let Some(ref glob) = args.include {
+            cmd.arg(glob);
+        }
         cmd.output()
     } else {
         let mut cmd = std::process::Command::new("grep");
         cmd.args(["-rn", "--color=never"]);
         if !args.case_sensitive {
             cmd.arg("-i");
+        }
+        if let Some(ref glob) = args.include {
+            cmd.arg(format!("--include={glob}"));
         }
         cmd.args([
             "--exclude-dir=.git",
@@ -855,6 +877,9 @@ fn run_grep_with_context(args: &GrepArgs) -> Result<String, String> {
         if args.path != "." {
             cmd.arg(&args.path);
         }
+        if let Some(ref glob) = args.include {
+            cmd.arg(glob);
+        }
         cmd.output()
     } else {
         let mut cmd = std::process::Command::new("grep");
@@ -867,6 +892,9 @@ fn run_grep_with_context(args: &GrepArgs) -> Result<String, String> {
         }
         if after > 0 {
             cmd.args(["-A", &after.to_string()]);
+        }
+        if let Some(ref glob) = args.include {
+            cmd.arg(format!("--include={glob}"));
         }
         cmd.args([
             "--exclude-dir=.git",
@@ -1144,7 +1172,7 @@ pub fn handle_grep(input: &str) {
     let args = match parse_grep_args(input) {
         Some(a) => a,
         None => {
-            println!("{DIM}  usage: /grep [-s|--case] [-C N] [-B N] [-A N] <pattern> [path]");
+            println!("{DIM}  usage: /grep [-s|--case] [-C N] [-B N] [-A N] [--include <glob>] <pattern> [path]");
             println!("  Search file contents directly — no AI, no tokens, instant results.");
             println!("  Case-insensitive by default. Use -s or --case for case-sensitive.");
             println!();
@@ -1153,12 +1181,17 @@ pub fn handle_grep(input: &str) {
             println!("    -B N / --before N   Show N lines before each match");
             println!("    -A N / --after N    Show N lines after each match");
             println!();
+            println!("  File filter:");
+            println!("    --include <glob>    Only search files matching the glob (e.g. *.rs)");
+            println!();
             println!("  Examples:");
             println!("    /grep TODO");
             println!("    /grep \"fn main\" src/");
             println!("    /grep -s MyStruct src/lib.rs");
             println!("    /grep -C 3 \"fn main\" src/");
-            println!("    /grep -B 2 -A 1 TODO{RESET}\n");
+            println!("    /grep -B 2 -A 1 TODO");
+            println!("    /grep --include \"*.rs\" fn main");
+            println!("    /grep -C 3 --include \"*.toml\" version{RESET}\n");
             return;
         }
     };
@@ -1715,6 +1748,7 @@ mod tests {
             path: "src/".to_string(),
             case_sensitive: true,
             context_lines: None,
+            include: None,
         };
         let matches = run_grep(&args).unwrap();
         assert!(
@@ -1798,6 +1832,82 @@ mod tests {
     }
 
     #[test]
+    fn parse_grep_args_include_flag() {
+        let args = parse_grep_args(r#"/grep --include "*.rs" fn_main"#).unwrap();
+        assert_eq!(args.pattern, "fn_main");
+        assert_eq!(args.include, Some("*.rs".to_string()));
+    }
+
+    #[test]
+    fn parse_grep_args_include_with_other_flags() {
+        let args = parse_grep_args(r#"/grep -C 3 --include "*.rs" TODO src/"#).unwrap();
+        assert_eq!(args.pattern, "TODO");
+        assert_eq!(args.path, "src/");
+        assert_eq!(args.context_lines, Some((3, 3)));
+        assert_eq!(args.include, Some("*.rs".to_string()));
+    }
+
+    #[test]
+    fn parse_grep_args_no_include_by_default() {
+        let args = parse_grep_args("/grep TODO").unwrap();
+        assert_eq!(args.include, None);
+    }
+
+    #[test]
+    fn parse_grep_args_include_without_value_ignored() {
+        // --include at end with no value: --include is consumed but has no next token,
+        // so include stays None. The word after --include would be consumed as pattern.
+        // With just "/grep --include" there's no pattern left → returns None.
+        assert!(parse_grep_args("/grep --include").is_none());
+    }
+
+    #[test]
+    fn run_grep_with_include_filter() {
+        // Search for "fn main" but only in *.rs files — should find it
+        let args = GrepArgs {
+            pattern: "fn main".to_string(),
+            path: "src/".to_string(),
+            case_sensitive: true,
+            context_lines: None,
+            include: Some("*.rs".to_string()),
+        };
+        let matches = run_grep(&args).unwrap();
+        assert!(
+            !matches.is_empty(),
+            "Should find 'fn main' in *.rs files under src/"
+        );
+        // All results should be .rs files
+        for m in &matches {
+            assert!(
+                m.file.ends_with(".rs"),
+                "Expected .rs file, got: {}",
+                m.file
+            );
+        }
+    }
+
+    #[test]
+    fn run_grep_include_filter_excludes_non_matching() {
+        // Search for "version" only in *.toml files — should not match any .rs files
+        let args = GrepArgs {
+            pattern: "version".to_string(),
+            path: ".".to_string(),
+            case_sensitive: false,
+            context_lines: None,
+            include: Some("*.toml".to_string()),
+        };
+        let matches = run_grep(&args).unwrap();
+        // All results should be .toml files (no .rs, .md, etc.)
+        for m in &matches {
+            assert!(
+                m.file.ends_with(".toml"),
+                "Expected .toml file, got: {}",
+                m.file
+            );
+        }
+    }
+
+    #[test]
     fn format_grep_context_empty() {
         let formatted = format_grep_results_with_context("", "pattern", false);
         assert!(formatted.contains("No matches found"));
@@ -1854,6 +1964,7 @@ src/b.rs:20:match two";
             path: "src/main.rs".to_string(),
             case_sensitive: true,
             context_lines: Some((1, 1)),
+            include: None,
         };
         let result = run_grep_with_context(&args).unwrap();
         assert!(

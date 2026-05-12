@@ -200,25 +200,30 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /fork rename old-idea better-name",
         ),
         "grep" => Some(
-            "/grep [-s|--case] [-C N] [-B N] [-A N] <pattern> [path] — Search file contents directly\n\n\
+            "/grep [-s|--case] [-C N] [-B N] [-A N] [--include <glob>] <pattern> [path] — Search file contents directly\n\n\
              Usage:\n\
              \x20 /grep <pattern>           Search all files for pattern\n\
              \x20 /grep <pattern> <path>    Search within a specific file or directory\n\
              \x20 /grep -s <pattern>        Case-sensitive search\n\
              \x20 /grep -C N <pattern>      Show N lines of context around each match\n\
              \x20 /grep -B N <pattern>      Show N lines before each match\n\
-             \x20 /grep -A N <pattern>      Show N lines after each match\n\n\
+             \x20 /grep -A N <pattern>      Show N lines after each match\n\
+             \x20 /grep --include \"*.rs\" <pattern>  Only search files matching glob\n\n\
              Fast, direct file content search — no AI, no token cost, instant results.\n\
              Uses git grep in git repos (respects .gitignore), falls back to grep.\n\
              Case-insensitive by default. Limited to 50 results.\n\n\
              Context flags can be combined: /grep -B 2 -A 1 TODO shows 2 lines\n\
              before and 1 line after each match.\n\n\
+             The --include flag filters by file glob (e.g. *.rs, *.toml, *.md).\n\
+             For git grep this is a pathspec; for plain grep it uses --include.\n\n\
              Examples:\n\
              \x20 /grep TODO\n\
              \x20 /grep \"fn main\" src/\n\
              \x20 /grep -s MyStruct src/lib.rs\n\
              \x20 /grep -C 3 \"fn main\" src/\n\
-             \x20 /grep -B 2 -A 1 TODO",
+             \x20 /grep -B 2 -A 1 TODO\n\
+             \x20 /grep --include \"*.rs\" fn main\n\
+             \x20 /grep -C 3 --include \"*.toml\" version",
         ),
         "rename" => Some(
             "/rename <old_name> <new_name> — Cross-file symbol renaming\n\n\

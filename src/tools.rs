@@ -1688,4 +1688,267 @@ mod tests {
             _ => panic!("Expected text content"),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // TodoTool — additional parameter validation tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_todo_tool_wip_missing_id() {
+        let tool = TodoTool;
+        let ctx = test_tool_context(None);
+        let result = tool
+            .execute(serde_json::json!({"action": "wip"}), ctx)
+            .await;
+        assert!(result.is_err(), "wip without id should fail");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("id"),
+            "Error should mention missing 'id', got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_todo_tool_remove_missing_id() {
+        let tool = TodoTool;
+        let ctx = test_tool_context(None);
+        let result = tool
+            .execute(serde_json::json!({"action": "remove"}), ctx)
+            .await;
+        assert!(result.is_err(), "remove without id should fail");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("id"),
+            "Error should mention missing 'id', got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_todo_tool_clear() {
+        commands_todo::todo_clear();
+        let tool = TodoTool;
+
+        // Add a task first
+        let ctx = test_tool_context(None);
+        tool.execute(
+            serde_json::json!({"action": "add", "description": "Temp task"}),
+            ctx,
+        )
+        .await
+        .unwrap();
+
+        // Clear all tasks
+        let ctx = test_tool_context(None);
+        let result = tool
+            .execute(serde_json::json!({"action": "clear"}), ctx)
+            .await;
+        assert!(result.is_ok());
+        let text = match &result.unwrap().content[0] {
+            yoagent::types::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+        assert!(
+            text.contains("cleared"),
+            "Clear result should mention 'cleared', got: {text}"
+        );
+
+        // Verify list is now empty
+        let ctx = test_tool_context(None);
+        let result = tool
+            .execute(serde_json::json!({"action": "list"}), ctx)
+            .await
+            .unwrap();
+        let text = match &result.content[0] {
+            yoagent::types::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+        assert!(
+            text.contains("No tasks"),
+            "List after clear should show no tasks, got: {text}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_todo_tool_wip_marks_in_progress() {
+        commands_todo::todo_clear();
+        let tool = TodoTool;
+
+        // Add then mark wip
+        let ctx = test_tool_context(None);
+        tool.execute(
+            serde_json::json!({"action": "add", "description": "WIP task"}),
+            ctx,
+        )
+        .await
+        .unwrap();
+
+        let ctx = test_tool_context(None);
+        let result = tool
+            .execute(serde_json::json!({"action": "wip", "id": 1}), ctx)
+            .await;
+        assert!(result.is_ok());
+        let text = match &result.unwrap().content[0] {
+            yoagent::types::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+        assert!(
+            text.contains("in-progress"),
+            "WIP result should mention 'in-progress', got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_todo_tool_schema_action_required() {
+        let tool = TodoTool;
+        let schema = tool.parameters_schema();
+        let required = schema["required"].as_array().unwrap();
+        let required_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(
+            required_strs.contains(&"action"),
+            "action should be required, got: {required_strs:?}"
+        );
+    }
+
+    #[test]
+    fn test_todo_tool_schema_action_enum_values() {
+        let tool = TodoTool;
+        let schema = tool.parameters_schema();
+        let action_enum = schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action should have enum");
+        let values: Vec<&str> = action_enum.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(values.len(), 6, "Should have 6 action values");
+        for expected in &["list", "add", "done", "wip", "remove", "clear"] {
+            assert!(
+                values.contains(expected),
+                "Action enum should contain '{expected}', got: {values:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // RenameSymbolTool — parameter validation tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_rename_symbol_tool_missing_old_name() {
+        let tool = RenameSymbolTool;
+        let ctx = test_tool_context(None);
+        let result = tool
+            .execute(serde_json::json!({"new_name": "foo"}), ctx)
+            .await;
+        assert!(result.is_err(), "Missing old_name should fail");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("old_name"),
+            "Error should mention 'old_name', got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rename_symbol_tool_missing_new_name() {
+        let tool = RenameSymbolTool;
+        let ctx = test_tool_context(None);
+        let result = tool
+            .execute(serde_json::json!({"old_name": "foo"}), ctx)
+            .await;
+        assert!(result.is_err(), "Missing new_name should fail");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("new_name"),
+            "Error should mention 'new_name', got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_rename_symbol_tool_schema_required_fields() {
+        let tool = RenameSymbolTool;
+        let schema = tool.parameters_schema();
+        let required = schema["required"].as_array().unwrap();
+        let required_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(
+            required_strs.len(),
+            2,
+            "Should have exactly 2 required fields"
+        );
+        assert!(required_strs.contains(&"old_name"));
+        assert!(required_strs.contains(&"new_name"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool metadata consistency tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_all_tool_names_unique() {
+        let perms = cli::PermissionConfig::default();
+        let dirs = cli::DirectoryRestrictions::default();
+        let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        let mut seen = std::collections::HashSet::new();
+        for name in &names {
+            assert!(
+                seen.insert(name),
+                "Duplicate tool name found: '{name}' in {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_tools_have_descriptions() {
+        let perms = cli::PermissionConfig::default();
+        let dirs = cli::DirectoryRestrictions::default();
+        let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+        for tool in &tools {
+            let desc = tool.description();
+            assert!(
+                !desc.is_empty(),
+                "Tool '{}' has empty description",
+                tool.name()
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // build_tools with directory restrictions and audit
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_tools_with_dir_restrictions() {
+        let perms = cli::PermissionConfig::default();
+        let dirs = cli::DirectoryRestrictions {
+            allow: vec!["./src".to_string()],
+            deny: vec!["/etc".to_string(), "/tmp/secret".to_string()],
+        };
+        let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+        assert_eq!(
+            tools.len(),
+            8,
+            "Directory restrictions should not change tool count"
+        );
+    }
+
+    #[test]
+    fn test_build_tools_with_audit_wrapping() {
+        let perms = cli::PermissionConfig::default();
+        let dirs = cli::DirectoryRestrictions::default();
+        let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, true, vec![]);
+        assert_eq!(
+            tools.len(),
+            8,
+            "Audit wrapping should not change tool count"
+        );
+        // Verify tool names survive wrapping
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(
+            names.contains(&"bash"),
+            "Should still have bash after audit wrap"
+        );
+        assert!(
+            names.contains(&"todo"),
+            "Should still have todo after audit wrap"
+        );
+    }
 }
