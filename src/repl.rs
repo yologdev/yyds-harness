@@ -694,6 +694,9 @@ pub async fn run_repl(
     let mut undo_context: Option<String> = None;
     let mut checkpoint_store = commands::CheckpointStore::new();
 
+    // Load config for auto-continue settings (re-read each turn for live updates)
+    let repl_file_config = crate::config::load_config_file().0;
+
     loop {
         // Build mode indicators
         let mode_indicators = {
@@ -891,19 +894,21 @@ pub async fn run_repl(
 
         // ── Auto-continue: if the model stopped mid-work, send a follow-up ──
         {
+            let max_continues =
+                get_max_auto_continues(&repl_file_config, crate::commands::is_plan_apply_active());
             let mut auto_continue_count: u32 = 0;
             let mut last_text = outcome.text.clone();
             let mut had_error =
                 outcome.last_tool_error.is_some() || outcome.last_api_error.is_some();
 
-            while auto_continue_count < MAX_AUTO_CONTINUES
+            while auto_continue_count < max_continues
                 && !had_error
                 && looks_incomplete(&last_text)
                 && !crate::prompt_budget::session_budget_exhausted(30)
             {
                 auto_continue_count += 1;
                 eprintln!(
-                    "\n{DIM}  ⚡ auto-continuing ({auto_continue_count}/{MAX_AUTO_CONTINUES} \
+                    "\n{DIM}  ⚡ auto-continuing ({auto_continue_count}/{max_continues} \
                      — response appears incomplete)...{RESET}"
                 );
 
@@ -957,6 +962,11 @@ pub async fn run_repl(
                 .await;
             }
         }
+
+        // Clear plan-apply flag after prompt + auto-continue finishes
+        if crate::commands::is_plan_apply_active() {
+            crate::commands::set_plan_apply_active(false);
+        }
     }
 
     // Save readline history
@@ -981,8 +991,34 @@ pub async fn run_repl(
     }
 }
 
-/// Maximum number of automatic follow-up prompts per user turn.
-const MAX_AUTO_CONTINUES: u32 = 5;
+/// Default maximum number of automatic follow-up prompts per user turn.
+const DEFAULT_MAX_AUTO_CONTINUES: u32 = 5;
+
+/// Compute the effective auto-continue limit for the current turn.
+///
+/// Takes into account:
+/// 1. If `auto_continue` is disabled in config → returns 0
+/// 2. If `max_auto_continues` is set in config → uses that value
+/// 3. If a `/plan apply` is active → uses `max(config_limit, 10)` so the
+///    agent can work through a full plan without hitting the normal cap
+pub(crate) fn get_max_auto_continues(
+    config: &std::collections::HashMap<String, String>,
+    in_plan_apply: bool,
+) -> u32 {
+    use crate::config::{parse_auto_continue_from_config, parse_max_auto_continues_from_config};
+
+    if !parse_auto_continue_from_config(config) {
+        return 0;
+    }
+
+    let base = parse_max_auto_continues_from_config(config).unwrap_or(DEFAULT_MAX_AUTO_CONTINUES);
+
+    if in_plan_apply {
+        base.max(10)
+    } else {
+        base
+    }
+}
 
 /// Heuristic check: does the agent's response text suggest it stopped mid-work
 /// and intends to continue? Conservative — only triggers on clear signals.
@@ -1834,5 +1870,55 @@ mod tests {
         assert_eq!(step_x_of_y_incomplete("step 5 of 5"), Some(false));
         assert_eq!(step_x_of_y_incomplete("step 7 of 5"), Some(false));
         assert_eq!(step_x_of_y_incomplete("no steps here"), None);
+    }
+
+    #[test]
+    fn test_get_max_auto_continues_default() {
+        let config = std::collections::HashMap::new();
+        assert_eq!(get_max_auto_continues(&config, false), 5);
+    }
+
+    #[test]
+    fn test_get_max_auto_continues_disabled() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("auto_continue".to_string(), "false".to_string());
+        assert_eq!(get_max_auto_continues(&config, false), 0);
+    }
+
+    #[test]
+    fn test_get_max_auto_continues_custom_value() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("max_auto_continues".to_string(), "8".to_string());
+        assert_eq!(get_max_auto_continues(&config, false), 8);
+    }
+
+    #[test]
+    fn test_get_max_auto_continues_plan_apply_raises_minimum() {
+        let config = std::collections::HashMap::new();
+        // Default is 5, but plan-apply mode raises minimum to 10
+        assert_eq!(get_max_auto_continues(&config, true), 10);
+    }
+
+    #[test]
+    fn test_get_max_auto_continues_plan_apply_keeps_higher() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("max_auto_continues".to_string(), "15".to_string());
+        // User set 15, plan-apply minimum is 10, so 15 wins
+        assert_eq!(get_max_auto_continues(&config, true), 15);
+    }
+
+    #[test]
+    fn test_get_max_auto_continues_disabled_overrides_plan_apply() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("auto_continue".to_string(), "false".to_string());
+        // Disabled means 0 even in plan-apply mode
+        assert_eq!(get_max_auto_continues(&config, true), 0);
+    }
+
+    #[test]
+    fn test_get_max_auto_continues_zero_explicit() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("max_auto_continues".to_string(), "0".to_string());
+        assert_eq!(get_max_auto_continues(&config, false), 0);
     }
 }

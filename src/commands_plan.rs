@@ -18,6 +18,24 @@ use yoagent::*;
 static PLAN_MODE: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
+// Plan-apply mode — tracks whether `/plan apply` is currently executing.
+// When active, the auto-continue limit is raised so the agent can work
+// through the full plan without hitting the normal follow-up cap.
+// ---------------------------------------------------------------------------
+
+static PLAN_APPLY_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Set whether a `/plan apply` execution is currently in progress.
+pub fn set_plan_apply_active(active: bool) {
+    PLAN_APPLY_ACTIVE.store(active, Ordering::Relaxed);
+}
+
+/// Check whether a `/plan apply` execution is currently in progress.
+pub fn is_plan_apply_active() -> bool {
+    PLAN_APPLY_ACTIVE.load(Ordering::Relaxed)
+}
+
+// ---------------------------------------------------------------------------
 // Last plan storage — holds the text of the most recently generated plan so
 // the user can review (/plan show) or execute (/plan apply) it later.
 // ---------------------------------------------------------------------------

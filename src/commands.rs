@@ -486,7 +486,10 @@ pub use crate::commands_goal::handle_goal;
 pub use crate::commands_git_review::{handle_blame, handle_review};
 
 // Project-related handlers
-pub use crate::commands_plan::{handle_plan, is_plan_mode, PlanResult, PLAN_MODE_PROMPT};
+pub use crate::commands_plan::{
+    handle_plan, is_plan_apply_active, is_plan_mode, set_plan_apply_active, PlanResult,
+    PLAN_MODE_PROMPT,
+};
 pub use crate::commands_project::{
     handle_context, handle_docs, handle_extract, handle_init, handle_move, handle_refactor,
     handle_rename,

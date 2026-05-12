@@ -457,6 +457,31 @@ pub fn parse_auto_watch_from_config(config: &std::collections::HashMap<String, S
     }
 }
 
+/// Check whether auto-continue is enabled in the config.
+///
+/// Reads `auto_continue` from the given config map. Defaults to `true`
+/// when the key is absent — auto-continuation is on by default so
+/// incomplete responses are automatically followed up.
+pub fn parse_auto_continue_from_config(config: &std::collections::HashMap<String, String>) -> bool {
+    match config.get("auto_continue").map(|v| v.as_str()) {
+        Some("false") | Some("0") | Some("no") | Some("off") => false,
+        _ => true, // default: enabled
+    }
+}
+
+/// Parse `max_auto_continues` from the config map.
+///
+/// Returns the configured value (clamped to 0-20) or `None` if the key
+/// is absent or unparseable, letting the caller fall back to the default.
+pub fn parse_max_auto_continues_from_config(
+    config: &std::collections::HashMap<String, String>,
+) -> Option<u32> {
+    config
+        .get("max_auto_continues")
+        .and_then(|v| v.parse::<u32>().ok())
+        .map(|n| n.min(20))
+}
+
 /// Keys that `/config set` understands. Each entry is a key name and a
 /// human-readable description used in error messages.
 pub const SETTABLE_KEYS: &[(&str, &str)] = &[
@@ -467,6 +492,14 @@ pub const SETTABLE_KEYS: &[(&str, &str)] = &[
     ("max_tokens", "maximum response tokens"),
     ("max_turns", "maximum agent turns per prompt"),
     ("auto_watch", "auto-enable watch mode on start (true/false)"),
+    (
+        "auto_continue",
+        "auto-continue incomplete responses (true/false)",
+    ),
+    (
+        "max_auto_continues",
+        "max auto-continue follow-ups per turn (0-20)",
+    ),
 ];
 
 /// Validate a config value for a given key. Returns `Ok(canonical_value)`
@@ -516,6 +549,21 @@ pub fn validate_config_value(key: &str, value: &str) -> Result<String, String> {
                 )),
             }
         }
+        "auto_continue" => {
+            let lower = value.to_ascii_lowercase();
+            match lower.as_str() {
+                "true" | "1" | "yes" | "on" => Ok("true".to_string()),
+                "false" | "0" | "no" | "off" => Ok("false".to_string()),
+                _ => Err(format!(
+                    "invalid auto_continue value '{value}' — use true or false"
+                )),
+            }
+        }
+        "max_auto_continues" => match value.parse::<u32>() {
+            Ok(n) if n <= 20 => Ok(n.to_string()),
+            Ok(n) => Err(format!("max_auto_continues {n} out of range (0-20)")),
+            Err(_) => Err(format!("'{value}' is not a valid integer")),
+        },
         _ => Err(format!(
             "unknown config key '{key}' — settable keys: {}",
             SETTABLE_KEYS
@@ -1090,6 +1138,107 @@ env = { API_KEY = "secret" }
             Ok("false".to_string())
         );
         assert!(validate_config_value("auto_watch", "maybe").is_err());
+    }
+
+    #[test]
+    fn auto_continue_defaults_to_true() {
+        let config = std::collections::HashMap::new();
+        assert!(parse_auto_continue_from_config(&config));
+    }
+
+    #[test]
+    fn auto_continue_respects_false() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("auto_continue".to_string(), "false".to_string());
+        assert!(!parse_auto_continue_from_config(&config));
+    }
+
+    #[test]
+    fn auto_continue_respects_off() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("auto_continue".to_string(), "off".to_string());
+        assert!(!parse_auto_continue_from_config(&config));
+    }
+
+    #[test]
+    fn auto_continue_explicit_true() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("auto_continue".to_string(), "true".to_string());
+        assert!(parse_auto_continue_from_config(&config));
+    }
+
+    #[test]
+    fn validate_auto_continue_values() {
+        assert_eq!(
+            validate_config_value("auto_continue", "true"),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            validate_config_value("auto_continue", "false"),
+            Ok("false".to_string())
+        );
+        assert_eq!(
+            validate_config_value("auto_continue", "yes"),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            validate_config_value("auto_continue", "no"),
+            Ok("false".to_string())
+        );
+        assert!(validate_config_value("auto_continue", "maybe").is_err());
+    }
+
+    #[test]
+    fn max_auto_continues_defaults_to_none() {
+        let config = std::collections::HashMap::new();
+        assert_eq!(parse_max_auto_continues_from_config(&config), None);
+    }
+
+    #[test]
+    fn max_auto_continues_parses_valid() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("max_auto_continues".to_string(), "10".to_string());
+        assert_eq!(parse_max_auto_continues_from_config(&config), Some(10));
+    }
+
+    #[test]
+    fn max_auto_continues_clamps_to_20() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("max_auto_continues".to_string(), "50".to_string());
+        assert_eq!(parse_max_auto_continues_from_config(&config), Some(20));
+    }
+
+    #[test]
+    fn max_auto_continues_zero_is_valid() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("max_auto_continues".to_string(), "0".to_string());
+        assert_eq!(parse_max_auto_continues_from_config(&config), Some(0));
+    }
+
+    #[test]
+    fn max_auto_continues_non_numeric_returns_none() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("max_auto_continues".to_string(), "abc".to_string());
+        assert_eq!(parse_max_auto_continues_from_config(&config), None);
+    }
+
+    #[test]
+    fn validate_max_auto_continues_values() {
+        assert_eq!(
+            validate_config_value("max_auto_continues", "5"),
+            Ok("5".to_string())
+        );
+        assert_eq!(
+            validate_config_value("max_auto_continues", "0"),
+            Ok("0".to_string())
+        );
+        assert_eq!(
+            validate_config_value("max_auto_continues", "20"),
+            Ok("20".to_string())
+        );
+        assert!(validate_config_value("max_auto_continues", "21").is_err());
+        assert!(validate_config_value("max_auto_continues", "-1").is_err());
+        assert!(validate_config_value("max_auto_continues", "abc").is_err());
     }
 
     // === Config-file path resolution tests (moved from cli.rs) ===

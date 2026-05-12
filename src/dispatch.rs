@@ -955,6 +955,7 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
                 }
                 commands::PlanResult::Apply(apply_prompt) => {
                     *ctx.last_error = None;
+                    commands::set_plan_apply_active(true);
                     CommandResult::SendToAgent(apply_prompt)
                 }
                 commands::PlanResult::Handled => CommandResult::Continue,
