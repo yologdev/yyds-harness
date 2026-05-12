@@ -470,6 +470,13 @@ pub fn format_usage_line(
 
     let elapsed_str = format_duration(elapsed);
 
+    // Calculate output tokens/sec (only meaningful when elapsed > 0.1s)
+    let tok_per_sec = if elapsed.as_secs_f64() > 0.1 {
+        Some((usage.output as f64 / elapsed.as_secs_f64()) as u32)
+    } else {
+        None
+    };
+
     if verbose {
         let cache_info = if usage.cache_read > 0 || usage.cache_write > 0 {
             format!(
@@ -485,16 +492,22 @@ pub fn format_usage_line(
         let total_cost_info = estimate_cost(total, model)
             .map(|c| format!("  total: {}", format_cost(c)))
             .unwrap_or_default();
+        let speed_info = tok_per_sec
+            .map(|s| format!("  speed: {} tok/s", s))
+            .unwrap_or_default();
         Some(format!(
-            "tokens: {} in / {} out{cache_info}  (session: {} in / {} out){cost_info}{total_cost_info}  ⏱ {elapsed_str}",
+            "tokens: {} in / {} out{cache_info}  (session: {} in / {} out){cost_info}{total_cost_info}{speed_info}  ⏱ {elapsed_str}",
             usage.input, usage.output, total.input, total.output
         ))
     } else {
+        let speed_suffix = tok_per_sec
+            .map(|s| format!(" ({} tok/s)", s))
+            .unwrap_or_default();
         let cost_suffix = estimate_cost(usage, model)
             .map(|c| format!(" · {}", format_cost(c)))
             .unwrap_or_default();
         Some(format!(
-            "↳ {elapsed_str} · {}→{} tokens{cost_suffix}",
+            "↳ {elapsed_str} · {}→{} tokens{speed_suffix}{cost_suffix}",
             usage.input, usage.output
         ))
     }
@@ -1268,6 +1281,86 @@ mod tests {
             "unknown model should have no cost: {line}"
         );
         assert!(line.contains("100→50 tokens"), "got: {line}");
+    }
+
+    #[test]
+    fn test_format_usage_compact_shows_tok_per_sec() {
+        let usage = yoagent::Usage {
+            input: 500,
+            output: 100,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 0,
+        };
+        let total = usage.clone();
+        // 100 output tokens in 2.0s = 50 tok/s
+        let elapsed = Duration::from_secs_f64(2.0);
+        let line = format_usage_line(&usage, &total, "unknown-model-xyz", elapsed, false)
+            .expect("should produce output");
+        assert!(
+            line.contains("(50 tok/s)"),
+            "compact should include tok/s: {line}"
+        );
+    }
+
+    #[test]
+    fn test_format_usage_compact_omits_tok_per_sec_when_fast() {
+        let usage = yoagent::Usage {
+            input: 500,
+            output: 100,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 0,
+        };
+        let total = usage.clone();
+        // elapsed < 0.1s → no tok/s
+        let elapsed = Duration::from_millis(50);
+        let line = format_usage_line(&usage, &total, "unknown-model-xyz", elapsed, false)
+            .expect("should produce output");
+        assert!(
+            !line.contains("tok/s"),
+            "should omit tok/s for tiny elapsed: {line}"
+        );
+    }
+
+    #[test]
+    fn test_format_usage_verbose_shows_speed() {
+        let usage = yoagent::Usage {
+            input: 1000,
+            output: 200,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 0,
+        };
+        let total = usage.clone();
+        // 200 output tokens in 4.0s = 50 tok/s
+        let elapsed = Duration::from_secs_f64(4.0);
+        let line = format_usage_line(&usage, &total, "unknown-model-xyz", elapsed, true)
+            .expect("should produce output");
+        assert!(
+            line.contains("speed: 50 tok/s"),
+            "verbose should include speed: {line}"
+        );
+    }
+
+    #[test]
+    fn test_format_usage_tok_per_sec_calculation() {
+        let usage = yoagent::Usage {
+            input: 300,
+            output: 177,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 0,
+        };
+        let total = usage.clone();
+        // 177 output tokens in 1.0s = 177 tok/s
+        let elapsed = Duration::from_secs_f64(1.0);
+        let line = format_usage_line(&usage, &total, "unknown-model-xyz", elapsed, false)
+            .expect("should produce output");
+        assert!(
+            line.contains("(177 tok/s)"),
+            "should show correct calculation: {line}"
+        );
     }
 
     // ── ThinkBlockFilter tests ───────────────────────────────────────

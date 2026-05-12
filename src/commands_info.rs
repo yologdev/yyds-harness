@@ -586,24 +586,35 @@ pub fn handle_profile(
     };
     let ctx_color = context_usage_color(pct_val);
 
+    // Speed string (avg output tok/s, only if session > 1s)
+    let speed_str = if elapsed.as_secs_f64() > 1.0 && session_total.output > 0 {
+        let tps = (session_total.output as f64 / elapsed.as_secs_f64()) as u32;
+        format!("~{} tok/s", tps)
+    } else {
+        String::new()
+    };
+
     let label = "Session Profile";
     // Build content lines: (key, plain_value, display_value)
     // plain_value is for width calculation, display_value may contain ANSI
     let duration_str = format_duration(elapsed);
     let turns_str = format!("{turns}");
-    let lines: Vec<(&str, &str, String)> = vec![
+    let mut lines: Vec<(&str, &str, String)> = vec![
         ("Model", model, model.to_string()),
         ("Provider", provider, provider.to_string()),
         ("Duration", &duration_str, duration_str.clone()),
         ("Turns", &turns_str, turns_str.clone()),
         ("Tokens", &tokens_str, tokens_str.clone()),
         ("Cost", &cost_str, cost_str.clone()),
-        (
-            "Context",
-            &ctx_plain,
-            format!("{ctx_color}{ctx_plain}{DIM}"),
-        ),
     ];
+    if !speed_str.is_empty() {
+        lines.push(("Speed", &speed_str, speed_str.clone()));
+    }
+    lines.push((
+        "Context",
+        &ctx_plain,
+        format!("{ctx_color}{ctx_plain}{DIM}"),
+    ));
 
     // Use fixed label column of 10 chars (longest key is "Provider" = 8 + ":  " = 11)
     let label_col = 10;
