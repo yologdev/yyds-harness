@@ -657,11 +657,17 @@ pub struct GrepArgs {
     /// For git grep, added as a pathspec after `--`.
     /// For plain grep, passed as `--include=<glob>`.
     pub include: Option<String>,
+    /// Glob pattern to exclude files (e.g. `*.md`).
+    /// For git grep, added as a negative pathspec `:(exclude)<glob>`.
+    /// For plain grep, passed as `--exclude=<glob>`.
+    pub exclude: Option<String>,
+    /// When true, show match counts per file instead of individual lines.
+    pub count_only: bool,
 }
 
 /// Parse `/grep` arguments.
 ///
-/// Syntax: `/grep [-s|--case] [-C N|--context N] [-B N|--before N] [-A N|--after N] [--include <glob>] <pattern> [path]`
+/// Syntax: `/grep [-s|--case] [-c|--count] [-C N|--context N] [-B N|--before N] [-A N|--after N] [--include <glob>] [--exclude <glob>] <pattern> [path]`
 ///
 /// Supports double-quoted patterns for multi-word searches:
 /// `/grep "fn main" src/` → pattern = "fn main", path = "src/"
@@ -673,6 +679,10 @@ pub struct GrepArgs {
 ///
 /// File filter:
 /// - `--include <glob>` — only search files matching the glob (e.g. `*.rs`)
+/// - `--exclude <glob>` — skip files matching the glob (e.g. `*.md`)
+///
+/// Count mode:
+/// - `-c` / `--count` — show match counts per file instead of individual lines
 ///
 /// Flags combine: `-B 2 -A 1` shows 2 before, 1 after.
 ///
@@ -687,9 +697,11 @@ pub fn parse_grep_args(input: &str) -> Option<GrepArgs> {
     let tokens = tokenize_quoted(rest);
 
     let mut case_sensitive = false;
+    let mut count_only = false;
     let mut context_before: Option<u32> = None;
     let mut context_after: Option<u32> = None;
     let mut include: Option<String> = None;
+    let mut exclude: Option<String> = None;
     let mut remaining_parts: Vec<String> = Vec::new();
 
     let mut i = 0;
@@ -726,6 +738,16 @@ pub fn parse_grep_args(input: &str) -> Option<GrepArgs> {
                 }
                 // If no value follows, flag is silently ignored
             }
+            "--exclude" => {
+                if let Some(glob) = tokens.get(i + 1) {
+                    exclude = Some(glob.clone());
+                    i += 1; // consume the glob pattern
+                }
+                // If no value follows, flag is silently ignored
+            }
+            "-c" | "--count" => {
+                count_only = true;
+            }
             _ => {
                 remaining_parts.push(token.clone());
             }
@@ -757,6 +779,8 @@ pub fn parse_grep_args(input: &str) -> Option<GrepArgs> {
         case_sensitive,
         context_lines,
         include,
+        exclude,
+        count_only,
     })
 }
 
@@ -787,6 +811,9 @@ pub fn run_grep(args: &GrepArgs) -> Result<Vec<GrepMatch>, String> {
         if !args.case_sensitive {
             cmd.arg("-i");
         }
+        if args.count_only {
+            cmd.arg("-c");
+        }
         cmd.arg("--");
         cmd.arg(&args.pattern);
         if args.path != "." {
@@ -795,6 +822,9 @@ pub fn run_grep(args: &GrepArgs) -> Result<Vec<GrepMatch>, String> {
         if let Some(ref glob) = args.include {
             cmd.arg(glob);
         }
+        if let Some(ref glob) = args.exclude {
+            cmd.arg(format!(":(exclude){glob}"));
+        }
         cmd.output()
     } else {
         let mut cmd = std::process::Command::new("grep");
@@ -802,8 +832,14 @@ pub fn run_grep(args: &GrepArgs) -> Result<Vec<GrepMatch>, String> {
         if !args.case_sensitive {
             cmd.arg("-i");
         }
+        if args.count_only {
+            cmd.arg("-c");
+        }
         if let Some(ref glob) = args.include {
             cmd.arg(format!("--include={glob}"));
+        }
+        if let Some(ref glob) = args.exclude {
+            cmd.arg(format!("--exclude={glob}"));
         }
         cmd.args([
             "--exclude-dir=.git",
@@ -844,6 +880,123 @@ pub fn run_grep(args: &GrepArgs) -> Result<Vec<GrepMatch>, String> {
     }
 }
 
+/// A single file's match count from `grep -c` output.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GrepCountEntry {
+    pub file: String,
+    pub count: u32,
+}
+
+/// Run grep in count mode (`-c`) and return per-file match counts.
+///
+/// Uses `git grep -c` or `grep -rc` depending on whether we're in a git repo.
+/// Filters out files with 0 matches (plain grep includes them, git grep doesn't).
+fn run_grep_count(args: &GrepArgs) -> Result<Vec<GrepCountEntry>, String> {
+    let in_git_repo = std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    let output = if in_git_repo {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["grep", "-c", "--color=never"]);
+        if !args.case_sensitive {
+            cmd.arg("-i");
+        }
+        cmd.arg("--");
+        cmd.arg(&args.pattern);
+        if args.path != "." {
+            cmd.arg(&args.path);
+        }
+        if let Some(ref glob) = args.include {
+            cmd.arg(glob);
+        }
+        if let Some(ref glob) = args.exclude {
+            cmd.arg(format!(":(exclude){glob}"));
+        }
+        cmd.output()
+    } else {
+        let mut cmd = std::process::Command::new("grep");
+        cmd.args(["-rc", "--color=never"]);
+        if !args.case_sensitive {
+            cmd.arg("-i");
+        }
+        if let Some(ref glob) = args.include {
+            cmd.arg(format!("--include={glob}"));
+        }
+        if let Some(ref glob) = args.exclude {
+            cmd.arg(format!("--exclude={glob}"));
+        }
+        cmd.args([
+            "--exclude-dir=.git",
+            "--exclude-dir=target",
+            "--exclude-dir=node_modules",
+            "--exclude-dir=__pycache__",
+            "--exclude-dir=.venv",
+        ]);
+        cmd.arg(&args.pattern);
+        cmd.arg(&args.path);
+        cmd.output()
+    };
+
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let entries: Vec<GrepCountEntry> = stdout
+                .lines()
+                .filter(|l| !l.is_empty())
+                .filter_map(|line| {
+                    // Format: file:count
+                    let colon = line.rfind(':')?;
+                    let file = line[..colon].to_string();
+                    let count = line[colon + 1..].trim().parse::<u32>().ok()?;
+                    if count == 0 {
+                        return None; // skip files with 0 matches
+                    }
+                    Some(GrepCountEntry { file, count })
+                })
+                .collect();
+            Ok(entries)
+        }
+        Err(e) => Err(format!("Failed to run grep: {e}")),
+    }
+}
+
+/// Format count-mode grep results.
+///
+/// Shows per-file match counts and a total summary line.
+pub fn format_grep_count_results(entries: &[GrepCountEntry]) -> String {
+    if entries.is_empty() {
+        return format!("{DIM}  No matches found.{RESET}\n");
+    }
+
+    let mut output = String::new();
+    let mut total: u32 = 0;
+
+    for entry in entries {
+        output.push_str(&format!(
+            "  {GREEN}{}{RESET}: {} match{}\n",
+            entry.file,
+            entry.count,
+            if entry.count == 1 { "" } else { "es" }
+        ));
+        total += entry.count;
+    }
+
+    output.push_str(&format!(
+        "\n{DIM}  Total: {} match{} in {} file{}{RESET}\n",
+        total,
+        if total == 1 { "" } else { "es" },
+        entries.len(),
+        if entries.len() == 1 { "" } else { "s" }
+    ));
+
+    output
+}
+
 /// Run grep with context lines and return the raw output string.
 ///
 /// When context lines are requested, the output includes match lines,
@@ -880,6 +1033,9 @@ fn run_grep_with_context(args: &GrepArgs) -> Result<String, String> {
         if let Some(ref glob) = args.include {
             cmd.arg(glob);
         }
+        if let Some(ref glob) = args.exclude {
+            cmd.arg(format!(":(exclude){glob}"));
+        }
         cmd.output()
     } else {
         let mut cmd = std::process::Command::new("grep");
@@ -895,6 +1051,9 @@ fn run_grep_with_context(args: &GrepArgs) -> Result<String, String> {
         }
         if let Some(ref glob) = args.include {
             cmd.arg(format!("--include={glob}"));
+        }
+        if let Some(ref glob) = args.exclude {
+            cmd.arg(format!("--exclude={glob}"));
         }
         cmd.args([
             "--exclude-dir=.git",
@@ -1172,7 +1331,7 @@ pub fn handle_grep(input: &str) {
     let args = match parse_grep_args(input) {
         Some(a) => a,
         None => {
-            println!("{DIM}  usage: /grep [-s|--case] [-C N] [-B N] [-A N] [--include <glob>] <pattern> [path]");
+            println!("{DIM}  usage: /grep [-s|--case] [-c|--count] [-C N] [-B N] [-A N] [--include <glob>] [--exclude <glob>] <pattern> [path]");
             println!("  Search file contents directly — no AI, no tokens, instant results.");
             println!("  Case-insensitive by default. Use -s or --case for case-sensitive.");
             println!();
@@ -1183,6 +1342,10 @@ pub fn handle_grep(input: &str) {
             println!();
             println!("  File filter:");
             println!("    --include <glob>    Only search files matching the glob (e.g. *.rs)");
+            println!("    --exclude <glob>    Skip files matching the glob (e.g. *.md)");
+            println!();
+            println!("  Count mode:");
+            println!("    -c / --count        Show match counts per file instead of lines");
             println!();
             println!("  Examples:");
             println!("    /grep TODO");
@@ -1191,12 +1354,25 @@ pub fn handle_grep(input: &str) {
             println!("    /grep -C 3 \"fn main\" src/");
             println!("    /grep -B 2 -A 1 TODO");
             println!("    /grep --include \"*.rs\" fn main");
+            println!("    /grep --exclude \"*.md\" TODO");
+            println!("    /grep -c fn src/");
             println!("    /grep -C 3 --include \"*.toml\" version{RESET}\n");
             return;
         }
     };
 
-    if args.context_lines.is_some() {
+    if args.count_only {
+        // Count mode: show per-file match counts
+        match run_grep_count(&args) {
+            Ok(entries) => {
+                let formatted = format_grep_count_results(&entries);
+                print!("{formatted}");
+            }
+            Err(e) => {
+                println!("{RED}  Error: {e}{RESET}\n");
+            }
+        }
+    } else if args.context_lines.is_some() {
         // Context mode: use raw output with context-aware formatting
         match run_grep_with_context(&args) {
             Ok(raw) => {
@@ -1749,6 +1925,8 @@ mod tests {
             case_sensitive: true,
             context_lines: None,
             include: None,
+            exclude: None,
+            count_only: false,
         };
         let matches = run_grep(&args).unwrap();
         assert!(
@@ -1870,6 +2048,8 @@ mod tests {
             case_sensitive: true,
             context_lines: None,
             include: Some("*.rs".to_string()),
+            exclude: None,
+            count_only: false,
         };
         let matches = run_grep(&args).unwrap();
         assert!(
@@ -1895,6 +2075,8 @@ mod tests {
             case_sensitive: false,
             context_lines: None,
             include: Some("*.toml".to_string()),
+            exclude: None,
+            count_only: false,
         };
         let matches = run_grep(&args).unwrap();
         // All results should be .toml files (no .rs, .md, etc.)
@@ -1965,6 +2147,8 @@ src/b.rs:20:match two";
             case_sensitive: true,
             context_lines: Some((1, 1)),
             include: None,
+            exclude: None,
+            count_only: false,
         };
         let result = run_grep_with_context(&args).unwrap();
         assert!(
@@ -1972,6 +2156,149 @@ src/b.rs:20:match two";
             "Should find 'fn main' with context in src/main.rs"
         );
         assert!(result.contains("fn main"));
+    }
+
+    #[test]
+    fn parse_grep_args_exclude_flag() {
+        let args = parse_grep_args(r#"/grep --exclude "*.md" TODO"#).unwrap();
+        assert_eq!(args.pattern, "TODO");
+        assert_eq!(args.exclude, Some("*.md".to_string()));
+    }
+
+    #[test]
+    fn parse_grep_args_count_short_flag() {
+        let args = parse_grep_args("/grep -c fn src/").unwrap();
+        assert_eq!(args.pattern, "fn");
+        assert_eq!(args.path, "src/");
+        assert!(args.count_only);
+    }
+
+    #[test]
+    fn parse_grep_args_count_long_flag() {
+        let args = parse_grep_args("/grep --count fn").unwrap();
+        assert_eq!(args.pattern, "fn");
+        assert!(args.count_only);
+    }
+
+    #[test]
+    fn parse_grep_args_include_and_exclude() {
+        let args = parse_grep_args(r#"/grep --include "*.rs" --exclude "test*" pub fn"#).unwrap();
+        assert_eq!(args.pattern, "pub");
+        assert_eq!(args.path, "fn");
+        assert_eq!(args.include, Some("*.rs".to_string()));
+        assert_eq!(args.exclude, Some("test*".to_string()));
+    }
+
+    #[test]
+    fn parse_grep_args_count_with_include() {
+        let args = parse_grep_args(r#"/grep -c --include "*.rs" pattern"#).unwrap();
+        assert_eq!(args.pattern, "pattern");
+        assert!(args.count_only);
+        assert_eq!(args.include, Some("*.rs".to_string()));
+    }
+
+    #[test]
+    fn parse_grep_args_no_exclude_by_default() {
+        let args = parse_grep_args("/grep TODO").unwrap();
+        assert_eq!(args.exclude, None);
+        assert!(!args.count_only);
+    }
+
+    #[test]
+    fn parse_grep_args_exclude_without_value_ignored() {
+        // --exclude at end with no value → no pattern left → returns None
+        assert!(parse_grep_args("/grep --exclude").is_none());
+    }
+
+    #[test]
+    fn format_grep_count_results_empty() {
+        let entries: Vec<GrepCountEntry> = vec![];
+        let formatted = format_grep_count_results(&entries);
+        assert!(formatted.contains("No matches found"));
+    }
+
+    #[test]
+    fn format_grep_count_results_single_file() {
+        let entries = vec![GrepCountEntry {
+            file: "src/main.rs".to_string(),
+            count: 5,
+        }];
+        let formatted = format_grep_count_results(&entries);
+        assert!(formatted.contains("src/main.rs"));
+        assert!(formatted.contains("5 matches"));
+        assert!(formatted.contains("Total: 5 matches in 1 file"));
+    }
+
+    #[test]
+    fn format_grep_count_results_multiple_files() {
+        let entries = vec![
+            GrepCountEntry {
+                file: "a.rs".to_string(),
+                count: 3,
+            },
+            GrepCountEntry {
+                file: "b.rs".to_string(),
+                count: 2,
+            },
+        ];
+        let formatted = format_grep_count_results(&entries);
+        assert!(formatted.contains("a.rs"));
+        assert!(formatted.contains("3 matches"));
+        assert!(formatted.contains("b.rs"));
+        assert!(formatted.contains("2 matches"));
+        assert!(formatted.contains("Total: 5 matches in 2 files"));
+    }
+
+    #[test]
+    fn format_grep_count_results_singular() {
+        let entries = vec![GrepCountEntry {
+            file: "single.rs".to_string(),
+            count: 1,
+        }];
+        let formatted = format_grep_count_results(&entries);
+        assert!(formatted.contains("1 match\n") || formatted.contains("1 match\x1b"));
+        assert!(formatted.contains("1 file"));
+    }
+
+    #[test]
+    fn run_grep_count_finds_matches() {
+        // Count mode on the real project — "fn main" should exist in src/
+        let args = GrepArgs {
+            pattern: "fn main".to_string(),
+            path: "src/".to_string(),
+            case_sensitive: true,
+            context_lines: None,
+            include: None,
+            exclude: None,
+            count_only: true,
+        };
+        let entries = run_grep_count(&args).unwrap();
+        assert!(!entries.is_empty(), "Should find 'fn main' counts in src/");
+        assert!(entries.iter().any(|e| e.file.contains("main.rs")));
+        assert!(entries.iter().all(|e| e.count > 0));
+    }
+
+    #[test]
+    fn run_grep_exclude_filters_files() {
+        // Search for "fn" in src/ but exclude *.rs — should find nothing
+        // (since src/ only has .rs files)
+        let args = GrepArgs {
+            pattern: "fn".to_string(),
+            path: "src/".to_string(),
+            case_sensitive: false,
+            context_lines: None,
+            include: None,
+            exclude: Some("*.rs".to_string()),
+            count_only: false,
+        };
+        let matches = run_grep(&args).unwrap();
+        for m in &matches {
+            assert!(
+                !m.file.ends_with(".rs"),
+                "Should not find .rs files when excluded, got: {}",
+                m.file
+            );
+        }
     }
 
     #[test]
