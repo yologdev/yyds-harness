@@ -2,6 +2,7 @@
 
 use crate::cli;
 use crate::commands_project::{detect_project_type, ProjectType};
+use crate::commands_run::get_last_failed_run;
 use crate::commands_session::auto_compact_if_needed;
 use crate::format::*;
 use crate::prompt::run_prompt;
@@ -614,7 +615,14 @@ pub async fn handle_fix(
     }
     let fail_count = failures.len();
     println!("\n{YELLOW}  Sending {fail_count} failure(s) to AI for fixing...{RESET}\n");
-    let fix_prompt = build_fix_prompt(&failures);
+    let mut fix_prompt = build_fix_prompt(&failures);
+    // Include last failed /run output if available (gives the agent more context)
+    if let Some(last_run) = get_last_failed_run() {
+        fix_prompt.push_str(&format!(
+            "\n\nAdditional context — the last `/run` command failed with exit code {}:\nstderr:\n```\n{}\n```\nstdout:\n```\n{}\n```",
+            last_run.exit_code, last_run.stderr, last_run.stdout
+        ));
+    }
     run_prompt(agent, &fix_prompt, session_total, model).await;
     auto_compact_if_needed(agent);
     Some(fix_prompt)

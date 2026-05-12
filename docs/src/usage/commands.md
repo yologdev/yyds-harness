@@ -170,7 +170,7 @@ Each category is capped at 10 items with a "+N more" suffix for large crates.
 | `/bg [subcmd]` | Manage background shell processes |
 | `/web <url>` | Fetch a web page and display clean readable text content |
 
-The `/run` command (or `!` shortcut) lets you execute shell commands without going through the AI model. Useful for quick checks (e.g., `!git log --oneline -5`) without burning API tokens.
+The `/run` command (or `!` shortcut) lets you execute shell commands without going through the AI model. Useful for quick checks (e.g., `!git log --oneline -5`) without burning API tokens. If the command fails, yoyo shows a brief error preview and suggests asking the AI to analyze the failure or using `/fix` to auto-fix.
 
 ```
 /run ls -la src/
