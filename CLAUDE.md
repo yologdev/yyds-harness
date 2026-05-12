@@ -75,7 +75,7 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `format/markdown.rs` — MarkdownRenderer for streaming markdown output
 - `format/tools.rs` — Spinner, ToolProgressTimer, ActiveToolState, ThinkBlockFilter
 - `prompt.rs` — prompt execution, agent interaction, streaming event handling, auto-retry logic
-- `repl.rs` — interactive REPL loop, tab-completion, multi-line input, auto-continue for incomplete responses (`looks_incomplete` heuristic, up to 3 follow-ups per user turn)
+- `repl.rs` — interactive REPL loop, tab-completion, multi-line input, auto-continue for incomplete responses (`looks_incomplete` heuristic, up to 5 follow-ups per user turn)
 - `watch.rs` — watch mode: set/get/clear watch command(s), run watch command with streaming output, multi-phase watch (lint → fix → test → fix), auto-fix loop after prompts with command-type-aware fix prompts (extracted from `prompt.rs`), `/watch` command handler and project-type detection for auto-watch
 - `prompt_budget.rs` — session wall-clock budget + audit log helpers (extracted from `prompt.rs`)
 - `prompt_retry.rs` — error diagnosis and retry logic: retry prompt construction, exponential backoff, error classification, API error diagnosis (extracted from `prompt.rs`)

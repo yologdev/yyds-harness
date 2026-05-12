@@ -982,7 +982,7 @@ pub async fn run_repl(
 }
 
 /// Maximum number of automatic follow-up prompts per user turn.
-const MAX_AUTO_CONTINUES: u32 = 3;
+const MAX_AUTO_CONTINUES: u32 = 5;
 
 /// Heuristic check: does the agent's response text suggest it stopped mid-work
 /// and intends to continue? Conservative — only triggers on clear signals.
@@ -1070,6 +1070,64 @@ pub(crate) fn looks_incomplete(text: &str) -> bool {
         return true;
     }
 
+    // ── Pattern 5: unclosed code blocks ──
+    // If the number of ``` fences in the full text is odd, the model was cut off mid-code.
+    {
+        let fence_count = text.matches("```").count();
+        if fence_count % 2 == 1 {
+            return true;
+        }
+    }
+
+    // ── Pattern 6: action intent phrases near the end ──
+    let action_phrases = [
+        "let me update",
+        "let me fix",
+        "let me modify",
+        "let me add",
+        "let me create",
+        "let me write",
+        "let me implement",
+        "let me handle",
+        "i'll update",
+        "i'll fix",
+        "i'll modify",
+        "i'll add",
+        "i'll create",
+        "i'll implement",
+        "i'll handle",
+    ];
+    for phrase in &action_phrases {
+        if tail_lower.contains(phrase) {
+            return true;
+        }
+    }
+
+    // ── Pattern 7: ordinal progression without completion ──
+    // "first" or "second" in the tail without "finally" or "lastly" suggests more steps coming.
+    if (tail_lower.contains("first,") || tail_lower.contains("first "))
+        && !tail_lower.contains("finally")
+        && !tail_lower.contains("lastly")
+        && !tail_lower.contains("last,")
+    {
+        // Only trigger if "second" is absent — if both "first" and "second" are present,
+        // check that "third" or "finally" is missing
+        if !tail_lower.contains("second") {
+            return true;
+        }
+        if !tail_lower.contains("third") && !tail_lower.contains("finally") {
+            return true;
+        }
+    }
+
+    // ── Pattern 8: explicit "step X of Y" where X < Y ──
+    // Matches "step 2 of 5", "Step 3/7", "step 1 of 4 done" etc.
+    if let Some(incomplete) = step_x_of_y_incomplete(&tail_lower) {
+        if incomplete {
+            return true;
+        }
+    }
+
     false
 }
 
@@ -1094,6 +1152,55 @@ fn extract_step_number(line: &str) -> Option<u32> {
         }
     }
     None
+}
+
+/// Check for "step X of Y" or "step X/Y" patterns where X < Y, indicating
+/// the model stopped before completing all steps.
+fn step_x_of_y_incomplete(text: &str) -> Option<bool> {
+    // Search for patterns like "step 2 of 5", "step 3/7", "step 1 of 4 complete"
+    let mut found = false;
+    let mut i = 0;
+    let bytes = text.as_bytes();
+    while i + 5 < bytes.len() {
+        // Look for "step "
+        if i + 5 <= bytes.len() && &text[i..i + 5] == "step " {
+            let after_step = &text[i + 5..];
+            // Parse X
+            let x_digits: String = after_step
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if !x_digits.is_empty() {
+                if let Ok(x) = x_digits.parse::<u32>() {
+                    let rest = &after_step[x_digits.len()..];
+                    // Look for " of " or "/"
+                    let y_str = if let Some(r) = rest.strip_prefix(" of ") {
+                        Some(r)
+                    } else {
+                        rest.strip_prefix('/')
+                    };
+                    if let Some(y_rest) = y_str {
+                        let y_digits: String =
+                            y_rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                        if !y_digits.is_empty() {
+                            if let Ok(y) = y_digits.parse::<u32>() {
+                                if x < y {
+                                    return Some(true);
+                                }
+                                found = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    if found {
+        Some(false) // Found step X of Y but X >= Y
+    } else {
+        None // No pattern found
+    }
 }
 
 #[cfg(test)]
@@ -1622,5 +1729,110 @@ mod tests {
         assert_eq!(extract_step_number("12) twelfth item"), Some(12));
         assert_eq!(extract_step_number("no step here"), None);
         assert_eq!(extract_step_number(""), None);
+    }
+
+    #[test]
+    fn test_looks_incomplete_unclosed_code_block() {
+        // Odd number of ``` fences = unclosed code block
+        assert!(looks_incomplete(
+            "Here's the fix:\n```rust\nfn main() {\n    println!(\"hello\");\n"
+        ));
+        // Even number = properly closed
+        assert!(!looks_incomplete(
+            "Here's the fix:\n```rust\nfn main() {}\n```\nAll done."
+        ));
+        // Multiple blocks, last one unclosed
+        assert!(looks_incomplete(
+            "First block:\n```\nfoo\n```\nSecond block:\n```\nbar\n"
+        ));
+    }
+
+    #[test]
+    fn test_looks_incomplete_action_phrases() {
+        assert!(looks_incomplete(
+            "I've reviewed the code. Let me update the configuration file now."
+        ));
+        assert!(looks_incomplete(
+            "Found the bug. Let me fix the parser to handle this edge case."
+        ));
+        assert!(looks_incomplete(
+            "Good, that worked. I'll implement the remaining handlers."
+        ));
+        assert!(looks_incomplete(
+            "Tests pass. Let me create the new module for this feature."
+        ));
+        assert!(looks_incomplete(
+            "That looks correct. Let me write the documentation for it."
+        ));
+        assert!(looks_incomplete(
+            "Alright, I'll add the missing error handling next."
+        ));
+        assert!(looks_incomplete(
+            "The structure looks right. Let me handle the edge case."
+        ));
+        assert!(looks_incomplete(
+            "I see the issue. I'll modify the return type to fix it."
+        ));
+    }
+
+    #[test]
+    fn test_looks_incomplete_ordinal_progression() {
+        // "first" without "finally" or "second" — more steps expected
+        assert!(looks_incomplete(
+            "First, I'll fix the parser. Then we need to update the tests and docs."
+        ));
+        // "first" and "second" without "third" or "finally" — still incomplete
+        assert!(looks_incomplete(
+            "First, I fixed the parser. Second, I updated the tests."
+        ));
+        // "first" with "finally" — complete
+        assert!(!looks_incomplete(
+            "First, I fixed the parser. Second, the tests. Finally, the docs are updated."
+        ));
+    }
+
+    #[test]
+    fn test_looks_incomplete_step_x_of_y() {
+        assert!(looks_incomplete(
+            "That's step 2 of 5 done. Moving to the next one."
+        ));
+        assert!(looks_incomplete(
+            "Completed step 1 of 4. The parser is now fixed."
+        ));
+        assert!(looks_incomplete(
+            "I've finished step 3/7 for this refactoring."
+        ));
+        // Step X of Y where X == Y — complete, should NOT trigger
+        assert!(!looks_incomplete(
+            "That's step 5 of 5 done. Everything is complete."
+        ));
+        // Step X of Y where X > Y — should NOT trigger
+        assert!(!looks_incomplete(
+            "We ended up doing step 6 of 5 as a bonus. All done!"
+        ));
+    }
+
+    #[test]
+    fn test_looks_incomplete_negative_cases_new_patterns() {
+        // Completed work — should NOT trigger any pattern
+        assert!(!looks_incomplete(
+            "I've updated all the files and the tests pass. Everything is working."
+        ));
+        assert!(!looks_incomplete(
+            "```rust\nfn main() {}\n```\nThe implementation is complete and all tests pass."
+        ));
+        assert!(!looks_incomplete(
+            "First, I fixed the parser. Second, the tests. Finally, the documentation. All done!"
+        ));
+    }
+
+    #[test]
+    fn test_step_x_of_y_incomplete() {
+        assert_eq!(step_x_of_y_incomplete("step 2 of 5"), Some(true));
+        assert_eq!(step_x_of_y_incomplete("step 3/7"), Some(true));
+        assert_eq!(step_x_of_y_incomplete("step 1 of 4 done"), Some(true));
+        assert_eq!(step_x_of_y_incomplete("step 5 of 5"), Some(false));
+        assert_eq!(step_x_of_y_incomplete("step 7 of 5"), Some(false));
+        assert_eq!(step_x_of_y_incomplete("no steps here"), None);
     }
 }
