@@ -868,4 +868,336 @@ mod tests {
             "retry prompt should include error summary: {prompt}"
         );
     }
+
+    // ---------------------------------------------------------------
+    // build_retry_prompt tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_build_retry_prompt_no_error() {
+        let result = build_retry_prompt("hello world", &None);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_build_retry_prompt_short_error() {
+        let err = Some("file not found".to_string());
+        let result = build_retry_prompt("fix the bug", &err);
+        assert!(
+            result.contains("[Previous attempt failed: file not found. Try a different approach.]"),
+            "should wrap error: {result}"
+        );
+        assert!(
+            result.contains("fix the bug"),
+            "should include original input: {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_retry_prompt_long_error_truncated() {
+        // Create an error longer than 200 chars
+        let long_err = "a".repeat(300);
+        let err = Some(long_err.clone());
+        let result = build_retry_prompt("try again", &err);
+        // Should contain the truncation marker
+        assert!(
+            result.contains('…'),
+            "long error should be truncated with ellipsis: {result}"
+        );
+        // Should NOT contain the full 300-char error
+        assert!(
+            !result.contains(&long_err),
+            "should not contain full long error"
+        );
+        // Should contain the original input
+        assert!(result.contains("try again"));
+        // Should contain the prefix
+        assert!(result.contains("[Previous attempt failed:"));
+    }
+
+    #[test]
+    fn test_build_retry_prompt_exactly_200_chars_not_truncated() {
+        let err_200 = "b".repeat(200);
+        let err = Some(err_200.clone());
+        let result = build_retry_prompt("input", &err);
+        // 200 chars is not > 200, so no truncation
+        assert!(
+            result.contains(&err_200),
+            "200-char error should appear in full: {result}"
+        );
+        assert!(
+            !result.contains('…'),
+            "200-char error should not have ellipsis"
+        );
+    }
+
+    #[test]
+    fn test_build_retry_prompt_201_chars_truncated() {
+        let err_201 = "c".repeat(201);
+        let err = Some(err_201);
+        let result = build_retry_prompt("input", &err);
+        assert!(
+            result.contains('…'),
+            "201-char error should be truncated: {result}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // infer_provider_from_model tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_infer_provider_claude_models() {
+        assert_eq!(
+            infer_provider_from_model("claude-sonnet-4-20250514"),
+            "anthropic"
+        );
+        assert_eq!(infer_provider_from_model("claude-opus-4-6"), "anthropic");
+        assert_eq!(infer_provider_from_model("claude-haiku-4-5"), "anthropic");
+    }
+
+    #[test]
+    fn test_infer_provider_opus_sonnet_haiku_keywords() {
+        // These keywords alone should map to anthropic
+        assert_eq!(infer_provider_from_model("my-opus-model"), "anthropic");
+        assert_eq!(infer_provider_from_model("custom-sonnet"), "anthropic");
+        assert_eq!(infer_provider_from_model("haiku-latest"), "anthropic");
+    }
+
+    #[test]
+    fn test_infer_provider_openai_models() {
+        assert_eq!(infer_provider_from_model("gpt-4o"), "openai");
+        assert_eq!(infer_provider_from_model("gpt-4o-mini"), "openai");
+        assert_eq!(infer_provider_from_model("o3"), "openai");
+        assert_eq!(infer_provider_from_model("o4-mini"), "openai");
+    }
+
+    #[test]
+    fn test_infer_provider_google() {
+        assert_eq!(infer_provider_from_model("gemini-2.5-pro"), "google");
+        assert_eq!(infer_provider_from_model("gemini-2.0-flash"), "google");
+    }
+
+    #[test]
+    fn test_infer_provider_xai() {
+        assert_eq!(infer_provider_from_model("grok-3"), "xai");
+        assert_eq!(infer_provider_from_model("grok-4"), "xai");
+    }
+
+    #[test]
+    fn test_infer_provider_deepseek() {
+        assert_eq!(infer_provider_from_model("deepseek-chat"), "deepseek");
+        assert_eq!(infer_provider_from_model("deepseek-reasoner"), "deepseek");
+    }
+
+    #[test]
+    fn test_infer_provider_mistral() {
+        assert_eq!(infer_provider_from_model("mistral-large"), "mistral");
+        assert_eq!(infer_provider_from_model("codestral-latest"), "mistral");
+    }
+
+    #[test]
+    fn test_infer_provider_groq_family() {
+        assert_eq!(infer_provider_from_model("llama-3.3-70b"), "groq");
+        assert_eq!(infer_provider_from_model("mixtral-8x7b"), "groq");
+        assert_eq!(infer_provider_from_model("gemma-7b"), "groq");
+    }
+
+    #[test]
+    fn test_infer_provider_zai() {
+        assert_eq!(infer_provider_from_model("glm-4-plus"), "zai");
+    }
+
+    #[test]
+    fn test_infer_provider_unknown_defaults_to_anthropic() {
+        assert_eq!(infer_provider_from_model("my-custom-model"), "anthropic");
+        assert_eq!(infer_provider_from_model("unknown-xyz"), "anthropic");
+    }
+
+    #[test]
+    fn test_infer_provider_case_insensitive() {
+        assert_eq!(infer_provider_from_model("Claude-Opus-4-6"), "anthropic");
+        assert_eq!(infer_provider_from_model("GPT-4o"), "openai");
+        assert_eq!(infer_provider_from_model("GEMINI-2.5-PRO"), "google");
+    }
+
+    // ---------------------------------------------------------------
+    // diagnose_api_error tests — auth branch
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_diagnose_auth_401() {
+        let diag = diagnose_api_error("401 Unauthorized", "claude-sonnet-4-20250514");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("Authentication failed"), "msg: {msg}");
+        assert!(msg.contains("anthropic"), "should mention provider: {msg}");
+        assert!(
+            msg.contains("ANTHROPIC_API_KEY"),
+            "should mention env var: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_diagnose_auth_invalid_api_key() {
+        let diag = diagnose_api_error("invalid api key provided", "gpt-4o");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("Authentication failed"));
+        assert!(msg.contains("openai"), "should mention openai: {msg}");
+        assert!(
+            msg.contains("OPENAI_API_KEY"),
+            "should mention env var: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_diagnose_auth_key_not_set() {
+        // Ensure the env var is not set for this test
+        let key = "DEEPSEEK_API_KEY";
+        let prev = std::env::var(key).ok();
+        std::env::remove_var(key);
+        let diag = diagnose_api_error("401 unauthorized", "deepseek-chat");
+        let msg = diag.unwrap();
+        assert!(
+            msg.contains("is not set"),
+            "should say key is not set: {msg}"
+        );
+        // Restore
+        if let Some(v) = prev {
+            std::env::set_var(key, v);
+        }
+    }
+
+    #[test]
+    fn test_diagnose_auth_key_is_set() {
+        let key = "XAI_API_KEY";
+        let prev = std::env::var(key).ok();
+        std::env::set_var(key, "fake-key");
+        let diag = diagnose_api_error("unauthorized", "grok-3");
+        let msg = diag.unwrap();
+        assert!(
+            msg.contains("is set but the API rejected it"),
+            "should say key is set but rejected: {msg}"
+        );
+        // Restore
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // diagnose_api_error tests — model not found branch
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_diagnose_model_not_found() {
+        let diag = diagnose_api_error("model not found: claude-99", "claude-99");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("not found"), "msg: {msg}");
+        assert!(msg.contains("claude-99"), "should mention the model: {msg}");
+        assert!(
+            msg.contains("Available models"),
+            "should list alternatives: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_diagnose_model_not_found_openai() {
+        let diag = diagnose_api_error("model_not_found", "gpt-99");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("gpt-99"));
+        assert!(msg.contains("openai"), "should mention openai: {msg}");
+        // Should list at least one known openai model
+        assert!(msg.contains("gpt-"), "should list gpt models: {msg}");
+    }
+
+    #[test]
+    fn test_diagnose_model_does_not_exist() {
+        let diag = diagnose_api_error("The model does not exist", "gemini-99");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("gemini-99"));
+        assert!(msg.contains("google"));
+    }
+
+    // ---------------------------------------------------------------
+    // diagnose_api_error tests — connection refused branch
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_diagnose_connection_refused_ollama() {
+        let diag = diagnose_api_error("connection refused", "llama-3.3-70b");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("Network error"), "msg: {msg}");
+        // llama maps to groq, not ollama — so it won't say "Is Ollama running?"
+        // but the network error message should still be there
+        assert!(msg.contains("/retry"), "should suggest retry: {msg}");
+    }
+
+    #[test]
+    fn test_diagnose_connection_refused_generic() {
+        let diag = diagnose_api_error("connection refused", "gpt-4o");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("Network error"));
+        assert!(msg.contains("openai"), "should mention provider: {msg}");
+    }
+
+    #[test]
+    fn test_diagnose_dns_resolution_failed() {
+        let diag = diagnose_api_error("dns resolution failed", "claude-sonnet-4-20250514");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("Network error"));
+    }
+
+    #[test]
+    fn test_diagnose_connection_reset() {
+        let diag = diagnose_api_error("connection reset by peer", "gemini-2.5-pro");
+        assert!(diag.is_some());
+        assert!(diag.unwrap().contains("Network error"));
+    }
+
+    // ---------------------------------------------------------------
+    // diagnose_api_error tests — 403 forbidden branch
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_diagnose_403_forbidden() {
+        let diag = diagnose_api_error("403 Forbidden", "claude-sonnet-4-20250514");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("Access forbidden"), "msg: {msg}");
+        assert!(msg.contains("anthropic"), "should mention provider: {msg}");
+        assert!(
+            msg.contains("claude-sonnet-4-20250514"),
+            "should mention model: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_diagnose_permission_denied() {
+        let diag = diagnose_api_error("permission denied for this model", "gpt-4o");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("Access forbidden"));
+    }
+
+    // ---------------------------------------------------------------
+    // diagnose_api_error tests — unrecognized error
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_diagnose_unrecognized_error_returns_none() {
+        assert!(
+            diagnose_api_error("something weird happened", "claude-sonnet-4-20250514").is_none()
+        );
+        assert!(diagnose_api_error("bad request body", "gpt-4o").is_none());
+        assert!(diagnose_api_error("", "claude-sonnet-4-20250514").is_none());
+    }
 }
