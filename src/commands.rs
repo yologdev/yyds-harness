@@ -514,9 +514,10 @@ pub use crate::commands_lint::{handle_lint, handle_lint_fix, handle_test};
 pub use crate::commands_run::{handle_loop, handle_run, handle_run_usage};
 
 pub use crate::commands_file::{
-    build_explain_prompt, expand_file_mentions, handle_add, handle_apply, handle_copy, handle_open,
-    handle_web, AddResult, COPY_SUBCOMMANDS,
+    build_explain_prompt, expand_file_mentions, handle_add, handle_apply, handle_open, AddResult,
 };
+
+pub use crate::commands_web::{handle_copy, handle_web, COPY_SUBCOMMANDS};
 
 // Session-related handlers
 pub use crate::commands_session::{

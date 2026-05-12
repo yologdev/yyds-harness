@@ -231,7 +231,7 @@ pub async fn handle_plan(
     auto_compact_if_needed(agent);
 
     // Capture the plan text from the last assistant message for later retrieval
-    if let Some(plan_text) = crate::commands_file::extract_last_assistant_text(agent.messages()) {
+    if let Some(plan_text) = crate::commands_web::extract_last_assistant_text(agent.messages()) {
         set_last_plan(plan_text);
     }
 

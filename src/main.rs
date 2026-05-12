@@ -66,6 +66,7 @@ mod commands_stash;
 mod commands_todo;
 mod commands_tree;
 mod commands_update;
+mod commands_web;
 mod config;
 mod context;
 mod conversations;
