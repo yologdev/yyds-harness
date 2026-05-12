@@ -959,4 +959,282 @@ mod tests {
             std::env::remove_var("AWS_SESSION_TOKEN");
         }
     }
+
+    // --- build_json_output tests ---
+
+    #[test]
+    fn test_build_json_output_empty_text() {
+        let response = PromptOutcome {
+            text: String::new(),
+            last_tool_error: None,
+            last_tool_name: None,
+            was_overflow: false,
+            last_api_error: None,
+        };
+        let usage = Usage {
+            input: 0,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 0,
+        };
+        let result = build_json_output(&response, "test-model", &usage, false);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&result).expect("empty text should produce valid JSON");
+        assert_eq!(parsed["response"], "");
+        assert_eq!(parsed["is_error"], false);
+    }
+
+    #[test]
+    fn test_build_json_output_special_characters() {
+        // Quotes, newlines, unicode — all must be properly escaped in JSON
+        let response = PromptOutcome {
+            text: "He said \"hello\"\nnew line\ttab\u{2713} checkmark".to_string(),
+            last_tool_error: None,
+            last_tool_name: None,
+            was_overflow: false,
+            last_api_error: None,
+        };
+        let usage = Usage {
+            input: 10,
+            output: 20,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 30,
+        };
+        let result = build_json_output(&response, "test-model", &usage, false);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&result).expect("special chars should produce valid JSON");
+        // The response field should contain the original text with special chars intact
+        assert!(parsed["response"].as_str().unwrap().contains("\"hello\""));
+        assert!(parsed["response"].as_str().unwrap().contains('\n'));
+        assert!(parsed["response"].as_str().unwrap().contains('\u{2713}'));
+    }
+
+    #[test]
+    fn test_build_json_output_structure_completeness() {
+        // Verify that all and only the expected top-level keys are present
+        let response = PromptOutcome {
+            text: "test".to_string(),
+            last_tool_error: None,
+            last_tool_name: None,
+            was_overflow: false,
+            last_api_error: None,
+        };
+        let usage = Usage {
+            input: 1,
+            output: 1,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 2,
+        };
+        let result = build_json_output(&response, "m", &usage, false);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let obj = parsed.as_object().unwrap();
+
+        // Exactly 5 top-level keys
+        assert_eq!(
+            obj.len(),
+            5,
+            "expected 5 top-level keys, got {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+        assert!(obj.contains_key("response"));
+        assert!(obj.contains_key("model"));
+        assert!(obj.contains_key("usage"));
+        assert!(obj.contains_key("cost_usd"));
+        assert!(obj.contains_key("is_error"));
+
+        // usage sub-object has exactly 2 keys
+        let usage_obj = parsed["usage"].as_object().unwrap();
+        assert_eq!(usage_obj.len(), 2);
+        assert!(usage_obj.contains_key("input_tokens"));
+        assert!(usage_obj.contains_key("output_tokens"));
+    }
+
+    #[test]
+    fn test_build_json_output_cost_is_non_negative() {
+        let response = PromptOutcome {
+            text: "x".to_string(),
+            last_tool_error: None,
+            last_tool_name: None,
+            was_overflow: false,
+            last_api_error: None,
+        };
+        let usage = Usage {
+            input: 1000,
+            output: 500,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 1500,
+        };
+        let result = build_json_output(&response, "claude-sonnet-4-20250514", &usage, false);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let cost = parsed["cost_usd"].as_f64().unwrap();
+        assert!(cost >= 0.0, "cost should be non-negative, got {}", cost);
+    }
+
+    #[test]
+    fn test_build_json_output_unknown_model_still_valid() {
+        // Even with an unknown model (where cost estimation may return 0), JSON is valid
+        let response = PromptOutcome {
+            text: "result".to_string(),
+            last_tool_error: None,
+            last_tool_name: None,
+            was_overflow: false,
+            last_api_error: None,
+        };
+        let usage = Usage {
+            input: 50,
+            output: 25,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 75,
+        };
+        let result = build_json_output(&response, "unknown-model-xyz", &usage, false);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&result).expect("unknown model should still produce valid JSON");
+        assert_eq!(parsed["model"], "unknown-model-xyz");
+    }
+
+    // --- looks_like_slash_command edge case tests ---
+
+    #[test]
+    fn looks_like_slash_command_slash_followed_by_numbers() {
+        // /123 is technically a slash command (starts with /)
+        assert!(looks_like_slash_command("/123"));
+        assert!(looks_like_slash_command("/42foo"));
+    }
+
+    #[test]
+    fn looks_like_slash_command_only_whitespace_before_slash() {
+        assert!(looks_like_slash_command("   /test"));
+        assert!(looks_like_slash_command("\t\t/test"));
+        assert!(looks_like_slash_command(" \n \t /test"));
+    }
+
+    #[test]
+    fn looks_like_slash_command_empty_and_whitespace() {
+        assert!(!looks_like_slash_command(""));
+        assert!(!looks_like_slash_command("   "));
+        assert!(!looks_like_slash_command("\n\t\n"));
+    }
+
+    #[test]
+    fn looks_like_slash_command_slash_only() {
+        // A single "/" should still be detected as a slash command
+        assert!(looks_like_slash_command("/"));
+        assert!(looks_like_slash_command("  /"));
+    }
+
+    #[test]
+    fn looks_like_slash_command_unicode_after_slash() {
+        assert!(looks_like_slash_command("/café"));
+        assert!(looks_like_slash_command("/日本語"));
+    }
+
+    // --- apply_config_flags tests ---
+
+    /// Helper to build a minimal Config for testing apply_config_flags.
+    fn test_config() -> Config {
+        Config {
+            model: String::new(),
+            api_key: String::new(),
+            provider: String::new(),
+            base_url: None,
+            skills: yoagent::skills::SkillSet::empty(),
+            system_prompt: String::new(),
+            thinking: ThinkingLevel::Off,
+            max_tokens: None,
+            temperature: None,
+            max_turns: None,
+            continue_session: false,
+            output_path: None,
+            prompt_arg: None,
+            image_path: None,
+            verbose: false,
+            mcp_servers: vec![],
+            mcp_server_configs: vec![],
+            openapi_specs: vec![],
+            auto_approve: false,
+            auto_commit: false,
+            permissions: cli::PermissionConfig::default(),
+            dir_restrictions: cli::DirectoryRestrictions::default(),
+            context_strategy: cli::ContextStrategy::default(),
+            context_window: None,
+            shell_hooks: vec![],
+            fallback_provider: None,
+            fallback_model: None,
+            no_update_check: false,
+            json_output: false,
+            output_format: cli::OutputFormat::Text,
+            audit: false,
+            print_system_prompt: false,
+            auto_watch: true,
+        }
+    }
+
+    #[test]
+    fn test_apply_config_flags_default_returns_true() {
+        // Default config (all false) should return true (continue execution)
+        let config = test_config();
+        assert!(apply_config_flags(&config));
+    }
+
+    #[test]
+    fn test_apply_config_flags_print_system_prompt_returns_false() {
+        // When print_system_prompt is true, function should return false (early exit)
+        // We can't easily capture stdout here, but we can verify the return value.
+        // This test will print to stdout as a side effect, which is acceptable.
+        let mut config = test_config();
+        config.print_system_prompt = true;
+        config.system_prompt = "test system prompt".to_string();
+        assert!(!apply_config_flags(&config));
+    }
+
+    // --- apply_cli_flags tests ---
+
+    #[test]
+    fn test_apply_cli_flags_unknown_flags_ignored() {
+        // Unknown flags should not panic or cause errors
+        let args = vec![
+            "yoyo".to_string(),
+            "--unknown-flag".to_string(),
+            "--another".to_string(),
+        ];
+        apply_cli_flags(&args); // should not panic
+    }
+
+    #[test]
+    fn test_apply_cli_flags_empty_args() {
+        // Empty args list should not panic
+        let args: Vec<String> = vec![];
+        apply_cli_flags(&args); // should not panic
+    }
+
+    #[test]
+    fn test_apply_cli_flags_mixed_known_and_unknown() {
+        // Mix of known and unknown flags should process known ones without error
+        let args = vec![
+            "yoyo".to_string(),
+            "--no-bell".to_string(),
+            "--unknown".to_string(),
+            "--no-notify".to_string(),
+        ];
+        apply_cli_flags(&args); // should not panic
+    }
+
+    #[test]
+    #[serial]
+    fn test_apply_cli_flags_no_rtk_via_env() {
+        // --no-rtk should also be settable via YOYO_NO_RTK=1 env var
+        unsafe {
+            std::env::set_var("YOYO_NO_RTK", "1");
+        }
+        let args = vec!["yoyo".to_string()];
+        apply_cli_flags(&args); // should trigger rtk disable via env
+        unsafe {
+            std::env::remove_var("YOYO_NO_RTK");
+        }
+    }
 }
