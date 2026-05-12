@@ -153,6 +153,30 @@ pub fn format_edit_diff(old_text: &str, new_text: &str) -> String {
     output.join("\n")
 }
 
+/// Truncate a pre-formatted diff preview to at most `max_lines` lines.
+///
+/// If the diff has more lines, the output is trimmed to `max_lines - 2`
+/// lines followed by a dimmed summary showing how many lines were omitted.
+/// Empty input is returned unchanged.
+pub fn truncate_diff_preview(diff: &str, max_lines: usize) -> String {
+    if diff.is_empty() {
+        return String::new();
+    }
+
+    let lines: Vec<&str> = diff.lines().collect();
+    if lines.len() <= max_lines {
+        return diff.to_string();
+    }
+
+    // Keep first (max_lines - 2) lines, then add a summary line
+    let keep = max_lines.saturating_sub(2);
+    let remaining = lines.len() - keep;
+    let mut result = lines[..keep].join("\n");
+    result.push('\n');
+    result.push_str(&format!("{DIM}  ... ({remaining} more lines){RESET}"));
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,5 +318,39 @@ mod tests {
     fn test_format_edit_diff_identical_texts() {
         let diff = format_edit_diff("same\ncontent\nhere", "same\ncontent\nhere");
         assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn test_truncate_diff_preview_empty() {
+        assert!(truncate_diff_preview("", 30).is_empty());
+    }
+
+    #[test]
+    fn test_truncate_diff_preview_short_passes_through() {
+        let diff = "line 1\nline 2\nline 3";
+        let result = truncate_diff_preview(diff, 30);
+        assert_eq!(result, diff);
+    }
+
+    #[test]
+    fn test_truncate_diff_preview_exact_limit() {
+        let lines: Vec<&str> = (0..5).map(|_| "line").collect();
+        let diff = lines.join("\n");
+        let result = truncate_diff_preview(&diff, 5);
+        assert_eq!(result, diff);
+    }
+
+    #[test]
+    fn test_truncate_diff_preview_truncates_long_diff() {
+        let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
+        let diff = lines.join("\n");
+        let result = truncate_diff_preview(&diff, 10);
+        // Should have 8 kept lines + 1 summary line = 9 lines
+        let result_lines: Vec<&str> = result.lines().collect();
+        assert_eq!(result_lines.len(), 9);
+        // First line preserved
+        assert!(result_lines[0].contains("line 0"));
+        // Last line is the summary
+        assert!(result_lines[8].contains("12 more lines"));
     }
 }

@@ -263,6 +263,20 @@ impl PromptEventState {
                 println!();
                 println!("{diff}");
             }
+        } else if tool_name == "write_file" {
+            // Show diff when overwriting an existing file
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let new_content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            if !path.is_empty() && std::path::Path::new(path).exists() {
+                if let Ok(old_content) = std::fs::read_to_string(path) {
+                    let diff = format_edit_diff(&old_content, new_content);
+                    if !diff.is_empty() {
+                        let diff = truncate_diff_preview(&diff, 30);
+                        println!();
+                        println!("{diff}");
+                    }
+                }
+            }
         }
         io::stdout().flush().ok();
 
