@@ -37,16 +37,18 @@ pub fn help_command_completions(partial_lower: &str) -> Vec<String> {
 pub fn command_help(cmd: &str) -> Option<&'static str> {
     match cmd {
         "add" => Some(
-            "/add <path> — Inject file contents into the conversation\n\n\
+            "/add <path|url> — Inject file or web contents into the conversation\n\n\
              Usage:\n\
              \x20 /add <path>              Add entire file\n\
              \x20 /add <path>:<start>-<end> Add specific line range\n\
              \x20 /add src/*.rs            Add files matching a glob pattern\n\
-             \x20 /add file1 file2         Add multiple files at once\n\n\
+             \x20 /add file1 file2         Add multiple files at once\n\
+             \x20 /add <url>               Fetch and add web page content\n\n\
              Examples:\n\
              \x20 /add src/main.rs\n\
              \x20 /add Cargo.toml:1-20\n\
-             \x20 /add src/*.rs tests/*.rs",
+             \x20 /add src/*.rs tests/*.rs\n\
+             \x20 /add https://docs.rs/some-crate",
         ),
         "architect" => Some(
             "/architect [on|off|<model>] — Toggle architect mode (dual-model plan+implement)\n\n\
@@ -1468,7 +1470,7 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(s, "  Project:");
     let _ = writeln!(
         s,
-        "    /add <path>        Add file contents to conversation"
+        "    /add <path|url>    Add file or URL contents to conversation"
     );
     let _ = writeln!(s, "    /explain <file>    Ask the agent to explain code");
     let _ = writeln!(s, "    /apply <file>      Apply a diff or patch file");
@@ -1746,11 +1748,12 @@ pub fn help_text() -> String {
     // ── Project ──
     out.push_str("  ── Project ──\n");
     out.push_str(
-        "  /add <path>        Add file contents to conversation (like @file in Claude Code)\n",
+        "  /add <path|url>    Add file or URL contents to conversation (like @file in Claude Code)\n",
     );
     out.push_str(
         "                     /add <path>:<start>-<end> for line ranges, /add src/*.rs for globs\n",
     );
+    out.push_str("                     /add https://... to fetch and inject web page content\n");
     out.push_str("  /explain <file>    Ask the agent to explain code from a file\n");
     out.push_str("                     /explain <path>:<start>-<end> for specific line ranges\n");
     out.push_str("  /apply <file>      Apply a diff or patch file (--check for dry-run)\n");
@@ -1897,7 +1900,7 @@ pub fn handle_help_command(input: &str) -> bool {
 /// Returns a short one-line description for a command (used for inline hints).
 pub fn command_short_description(cmd: &str) -> Option<&'static str> {
     match cmd {
-        "add" => Some("Add file contents to conversation"),
+        "add" => Some("Add file or URL contents to conversation"),
         "architect" => {
             Some("Toggle architect mode — plan with strong model, implement with cheap model")
         }

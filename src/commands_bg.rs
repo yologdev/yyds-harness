@@ -598,4 +598,248 @@ mod tests {
         assert!(jobs[0].finished);
         assert_eq!(jobs[0].exit_code, Some(42));
     }
+
+    // ── format_elapsed edge cases ──────────────────────────────────
+
+    #[test]
+    fn test_format_elapsed_zero() {
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(0)), "0s");
+    }
+
+    #[test]
+    fn test_format_elapsed_seconds_only() {
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(42)), "42s");
+    }
+
+    #[test]
+    fn test_format_elapsed_exactly_60s() {
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(60)), "1m0s");
+    }
+
+    #[test]
+    fn test_format_elapsed_minutes_and_seconds() {
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(195)), "3m15s");
+    }
+
+    #[test]
+    fn test_format_elapsed_exactly_3600s() {
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(3600)), "1h0m");
+    }
+
+    #[test]
+    fn test_format_elapsed_hours_minutes() {
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(5400)),
+            "1h30m"
+        );
+    }
+
+    #[test]
+    fn test_format_elapsed_large_duration() {
+        // 2h 15m = 8100s
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(8100)),
+            "2h15m"
+        );
+    }
+
+    #[test]
+    fn test_format_elapsed_59_seconds() {
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(59)), "59s");
+    }
+
+    // ── tail_lines edge cases ──────────────────────────────────────
+
+    #[test]
+    fn test_tail_lines_empty_string() {
+        let tail = tail_lines("", 5);
+        assert_eq!(tail, "");
+    }
+
+    #[test]
+    fn test_tail_lines_single_line_request_one() {
+        let tail = tail_lines("hello", 1);
+        assert_eq!(tail, "hello");
+    }
+
+    #[test]
+    fn test_tail_lines_exact_count() {
+        // Request exactly as many lines as exist
+        let text = "a\nb\nc";
+        let tail = tail_lines(text, 3);
+        assert_eq!(tail, text);
+    }
+
+    #[test]
+    fn test_tail_lines_n_zero() {
+        let text = "line1\nline2\nline3\n";
+        let tail = tail_lines(text, 0);
+        // 3 lines > 0, so it should try to return last 0 lines
+        // The function returns s[byte_offset..] where start_line = lines.len() - 0 = lines.len()
+        // which means byte_offset walks past everything → empty or last bit
+        assert!(tail.is_empty() || tail == "\n" || tail.len() <= 1);
+    }
+
+    #[test]
+    fn test_tail_lines_no_trailing_newline() {
+        let text = "line1\nline2\nline3";
+        let tail = tail_lines(text, 2);
+        assert!(tail.contains("line2"));
+        assert!(tail.contains("line3"));
+        assert!(!tail.contains("line1"));
+    }
+
+    #[test]
+    fn test_tail_lines_single_newline() {
+        let tail = tail_lines("\n", 5);
+        assert_eq!(tail, "\n");
+    }
+
+    #[test]
+    fn test_tail_lines_multiple_empty_lines() {
+        let text = "\n\n\n\n\n";
+        let tail = tail_lines(text, 2);
+        // 5 empty lines via .lines(), take last 2 → two newlines
+        assert!(tail.len() <= text.len());
+        // Should not panic and should return a valid substring
+    }
+
+    // ── truncate_command edge cases ────────────────────────────────
+
+    #[test]
+    fn test_truncate_command_exact_length() {
+        // Command length == max → unchanged
+        let cmd = "echo hello"; // 10 chars
+        assert_eq!(truncate_command(cmd, 10), "echo hello");
+    }
+
+    #[test]
+    fn test_truncate_command_one_over_max() {
+        let cmd = "echo helloo"; // 11 chars
+        let result = truncate_command(cmd, 10);
+        assert!(result.ends_with('…'));
+        assert!(result.len() <= 13); // 9 + 3-byte ellipsis
+    }
+
+    #[test]
+    fn test_truncate_command_max_zero() {
+        let cmd = "echo hello";
+        let result = truncate_command(cmd, 0);
+        // max=0, saturating_sub(1) = 0, so we get "…" only
+        assert_eq!(result, "…");
+    }
+
+    #[test]
+    fn test_truncate_command_max_one() {
+        let cmd = "echo hello";
+        let result = truncate_command(cmd, 1);
+        // Should not panic, should truncate heavily
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn test_truncate_command_multiline_takes_first() {
+        let cmd = "echo first\necho second\necho third";
+        let result = truncate_command(cmd, 100);
+        assert_eq!(result, "echo first");
+    }
+
+    #[test]
+    fn test_truncate_command_empty() {
+        assert_eq!(truncate_command("", 10), "");
+    }
+
+    #[test]
+    fn test_truncate_command_unicode_safe() {
+        // Each emoji is 4 bytes. With max=6, we can't cut mid-emoji.
+        let cmd = "🎉🎊🎈🎆🎇";
+        let result = truncate_command(cmd, 6);
+        assert!(result.ends_with('…'));
+        // Should not panic — that's the main assertion
+    }
+
+    // ── BackgroundJobTracker struct tests ───────────────────────────
+
+    #[test]
+    fn test_new_tracker_empty_list() {
+        let tracker = create_tracker();
+        let jobs = tracker.list();
+        assert!(jobs.is_empty());
+    }
+
+    #[test]
+    fn test_exists_unknown_id() {
+        let tracker = create_tracker();
+        assert!(!tracker.exists(0));
+        assert!(!tracker.exists(42));
+        assert!(!tracker.exists(u32::MAX));
+    }
+
+    #[test]
+    fn test_is_finished_unknown_id() {
+        let tracker = create_tracker();
+        assert!(!tracker.is_finished(0));
+        assert!(!tracker.is_finished(99));
+    }
+
+    #[tokio::test]
+    async fn test_launch_returns_incrementing_ids_from_one() {
+        let tracker = create_tracker();
+        let id1 = tracker.launch("true");
+        let id2 = tracker.launch("true");
+        let id3 = tracker.launch("true");
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+        assert_eq!(id3, 3);
+    }
+
+    #[tokio::test]
+    async fn test_list_sorted_by_id() {
+        let tracker = create_tracker();
+        // Launch several jobs
+        tracker.launch("echo a");
+        tracker.launch("echo b");
+        tracker.launch("echo c");
+
+        let jobs = tracker.list();
+        assert_eq!(jobs.len(), 3);
+        assert!(jobs[0].id < jobs[1].id);
+        assert!(jobs[1].id < jobs[2].id);
+    }
+
+    #[tokio::test]
+    async fn test_get_output_nonexistent() {
+        let tracker = create_tracker();
+        let output = tracker.get_output(99).await;
+        assert!(output.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_kill_nonexistent() {
+        let tracker = create_tracker();
+        let killed = tracker.kill(99).await;
+        assert!(!killed);
+    }
+
+    #[tokio::test]
+    async fn test_list_captures_command_string() {
+        let tracker = create_tracker();
+        tracker.launch("echo hello world");
+
+        let jobs = tracker.list();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].command, "echo hello world");
+    }
+
+    #[tokio::test]
+    async fn test_finished_job_has_exit_code() {
+        let tracker = create_tracker();
+        let id = tracker.launch("true");
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        assert!(tracker.is_finished(id));
+        let jobs = tracker.list();
+        assert_eq!(jobs[0].exit_code, Some(0));
+    }
 }

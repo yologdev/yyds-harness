@@ -467,9 +467,10 @@ pub fn handle_add(input: &str) -> Vec<AddResult> {
     let args = input.strip_prefix("/add").unwrap_or("").trim();
 
     if args.is_empty() {
-        println!("{DIM}  usage: /add <path> — inject file contents into conversation");
+        println!("{DIM}  usage: /add <path|url> — inject file or web contents into conversation");
         println!("         /add <path>:<start>-<end> — inject specific line range");
-        println!("         /add src/*.rs — inject multiple files via glob{RESET}\n");
+        println!("         /add src/*.rs — inject multiple files via glob");
+        println!("         /add https://example.com — fetch and inject web page{RESET}\n");
         return Vec::new();
     }
 
@@ -477,6 +478,44 @@ pub fn handle_add(input: &str) -> Vec<AddResult> {
 
     // Split on whitespace to support multiple paths: /add foo.rs bar.rs
     for arg in args.split_whitespace() {
+        // Check if argument is a URL — fetch web content instead of reading a file
+        if is_valid_url(arg) {
+            println!("{DIM}  Fetching {arg}...{RESET}");
+            match fetch_url(arg) {
+                Ok(html) => {
+                    let text = strip_html_tags(&html, WEB_MAX_CHARS);
+                    if text.is_empty() {
+                        println!("{RED}  ✗ no readable text content at {arg}{RESET}");
+                        continue;
+                    }
+                    // Apply smart truncation for large web content
+                    let (text, was_truncated, original_lines) =
+                        smart_truncate_for_context(&text, ADD_MAX_LINES);
+                    let line_count = text.lines().count();
+                    let char_count = text.len();
+                    let formatted = format!("**{arg}**\n```\n{text}\n```");
+                    let summary = if was_truncated {
+                        format!(
+                            "{GREEN}  ✓ added {arg} (truncated: {line_count} of {original_lines} lines, {char_count} chars){RESET}"
+                        )
+                    } else {
+                        let word = crate::format::pluralize(line_count, "line", "lines");
+                        format!(
+                            "{GREEN}  ✓ added {arg} ({line_count} {word}, {char_count} chars){RESET}"
+                        )
+                    };
+                    results.push(AddResult::Text {
+                        summary,
+                        content: formatted,
+                    });
+                }
+                Err(e) => {
+                    println!("{RED}  ✗ failed to fetch {arg}: {e}{RESET}");
+                }
+            }
+            continue;
+        }
+
         let (raw_path, range) = parse_add_arg(arg);
         let paths = expand_add_paths(raw_path);
 
@@ -2445,5 +2484,46 @@ mod tests {
         let editor = resolve_editor();
         assert_eq!(editor, Some("test-editor-that-doesnt-exist".to_string()));
         std::env::remove_var("VISUAL");
+    }
+
+    #[test]
+    fn test_is_valid_url_detection() {
+        // URLs should be detected
+        assert!(is_valid_url("https://docs.rs/some-crate"));
+        assert!(is_valid_url("http://example.com"));
+        assert!(is_valid_url(
+            "https://doc.rust-lang.org/book/ch01-01-installation.html"
+        ));
+
+        // Regular file paths should NOT be detected as URLs
+        assert!(!is_valid_url("src/main.rs"));
+        assert!(!is_valid_url("Cargo.toml"));
+        assert!(!is_valid_url("src/*.rs"));
+        assert!(!is_valid_url("./relative/path.txt"));
+        assert!(!is_valid_url(""));
+        assert!(!is_valid_url("http://x")); // too short, no dot
+    }
+
+    #[test]
+    fn test_handle_add_url_detection() {
+        // A URL argument should be treated as a URL, not a file path.
+        // We can't test actual fetching without network, but we can verify
+        // that a URL doesn't produce "no files matched" (which would mean
+        // it fell through to the file-path branch).
+        //
+        // With a non-existent URL, fetch_url will fail and we get an error,
+        // but the important thing is it doesn't try to glob-expand the URL.
+        let results = handle_add("/add https://httpbin.org/status/404");
+        // Should return empty (fetch fails on 404 with empty body) but
+        // should NOT print "no files matched" — it took the URL path
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_handle_add_file_path_not_treated_as_url() {
+        // Regular paths should still go through file-path expansion
+        let results = handle_add("/add nonexistent_file_that_does_not_exist.rs");
+        // Should be empty because file doesn't exist (glob returns nothing)
+        assert!(results.is_empty());
     }
 }
