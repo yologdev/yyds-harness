@@ -17,6 +17,21 @@ pub fn test_command_for_project(
         ProjectType::Node => Some(("npm test", vec!["npm", "test"])),
         ProjectType::Python => Some(("python -m pytest", vec!["python", "-m", "pytest"])),
         ProjectType::Go => Some(("go test ./...", vec!["go", "test", "./..."])),
+        ProjectType::Java => {
+            if std::path::Path::new("pom.xml").exists() {
+                Some(("mvn test", vec!["mvn", "test"]))
+            } else {
+                Some(("./gradlew test", vec!["./gradlew", "test"]))
+            }
+        }
+        ProjectType::Ruby => Some((
+            "bundle exec rake test",
+            vec!["bundle", "exec", "rake", "test"],
+        )),
+        ProjectType::Cpp => Some((
+            "ctest --test-dir build",
+            vec!["ctest", "--test-dir", "build"],
+        )),
         ProjectType::Make => Some(("make test", vec!["make", "test"])),
         ProjectType::Unknown => None,
     }
@@ -153,7 +168,11 @@ pub fn lint_command_for_project(
             "golangci-lint run".into(),
             vec!["golangci-lint".into(), "run".into()],
         )),
-        ProjectType::Make | ProjectType::Unknown => None,
+        ProjectType::Ruby => Some((
+            "bundle exec rubocop".into(),
+            vec!["bundle".into(), "exec".into(), "rubocop".into()],
+        )),
+        ProjectType::Java | ProjectType::Cpp | ProjectType::Make | ProjectType::Unknown => None,
     }
 }
 
@@ -661,6 +680,43 @@ mod tests {
     }
 
     #[test]
+    fn test_test_command_for_java_project() {
+        let cmd = test_command_for_project(&ProjectType::Java);
+        assert!(cmd.is_some(), "Java project should have a test command");
+        let (label, _) = cmd.unwrap();
+        // Should be either mvn or gradlew depending on pom.xml presence
+        assert!(
+            label.contains("mvn") || label.contains("gradlew"),
+            "Java test label should mention mvn or gradlew, got: {label}"
+        );
+    }
+
+    #[test]
+    fn test_test_command_for_ruby_project() {
+        let cmd = test_command_for_project(&ProjectType::Ruby);
+        assert!(cmd.is_some(), "Ruby project should have a test command");
+        let (label, args) = cmd.unwrap();
+        assert!(
+            label.contains("rake"),
+            "Ruby test label should mention rake"
+        );
+        assert_eq!(args[0], "bundle");
+        assert!(args.contains(&"test"));
+    }
+
+    #[test]
+    fn test_test_command_for_cpp_project() {
+        let cmd = test_command_for_project(&ProjectType::Cpp);
+        assert!(cmd.is_some(), "Cpp project should have a test command");
+        let (label, args) = cmd.unwrap();
+        assert!(
+            label.contains("ctest"),
+            "Cpp test label should mention ctest"
+        );
+        assert_eq!(args[0], "ctest");
+    }
+
+    #[test]
     fn test_test_command_for_unknown_project() {
         let cmd = test_command_for_project(&ProjectType::Unknown);
         assert!(
@@ -739,6 +795,37 @@ mod tests {
         assert!(
             cmd.is_none(),
             "Unknown project should not have a lint command"
+        );
+    }
+
+    #[test]
+    fn test_lint_command_for_ruby_project() {
+        let cmd = lint_command_for_project(&ProjectType::Ruby, LintStrictness::Default);
+        assert!(cmd.is_some(), "Ruby project should have a lint command");
+        let (label, args) = cmd.unwrap();
+        assert!(
+            label.contains("rubocop"),
+            "Ruby lint label should mention rubocop"
+        );
+        assert_eq!(args[0], "bundle");
+        assert!(args.iter().any(|a| a == "rubocop"));
+    }
+
+    #[test]
+    fn test_lint_command_for_java_project() {
+        let cmd = lint_command_for_project(&ProjectType::Java, LintStrictness::Default);
+        assert!(
+            cmd.is_none(),
+            "Java project should not have a lint command (too varied)"
+        );
+    }
+
+    #[test]
+    fn test_lint_command_for_cpp_project() {
+        let cmd = lint_command_for_project(&ProjectType::Cpp, LintStrictness::Default);
+        assert!(
+            cmd.is_none(),
+            "Cpp project should not have a lint command (too varied)"
         );
     }
 

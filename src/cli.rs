@@ -177,6 +177,9 @@ pub fn banner_project_line(
         ProjectType::Node => "Node.js",
         ProjectType::Python => "Python",
         ProjectType::Go => "Go",
+        ProjectType::Java => "Java",
+        ProjectType::Ruby => "Ruby",
+        ProjectType::Cpp => "C/C++",
         ProjectType::Make => "Make",
         ProjectType::Unknown => unreachable!(),
     };

@@ -367,6 +367,17 @@ pub fn scan_important_files(dir: &std::path::Path) -> Vec<String> {
         // Go
         "go.mod",
         "go.sum",
+        // Java
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        // Ruby
+        "Gemfile",
+        "Gemfile.lock",
+        "Rakefile",
+        ".rubocop.yml",
+        // C/C++
+        "CMakeLists.txt",
         // Build/CI
         "Makefile",
         "Dockerfile",
@@ -439,6 +450,15 @@ pub fn build_commands_for_project(project_type: &ProjectType) -> Vec<(&'static s
             ("Build", "go build ./..."),
             ("Test", "go test ./..."),
             ("Vet", "go vet ./..."),
+        ],
+        ProjectType::Java => vec![("Build", "mvn compile"), ("Test", "mvn test")],
+        ProjectType::Ruby => vec![
+            ("Test", "bundle exec rake test"),
+            ("Lint", "bundle exec rubocop"),
+        ],
+        ProjectType::Cpp => vec![
+            ("Build", "cmake --build build"),
+            ("Test", "ctest --test-dir build"),
         ],
         ProjectType::Make => vec![("Build", "make"), ("Test", "make test")],
         ProjectType::Unknown => vec![],
@@ -660,6 +680,9 @@ pub enum ProjectType {
     Node,
     Python,
     Go,
+    Java,
+    Ruby,
+    Cpp,
     Make,
     Unknown,
 }
@@ -671,6 +694,9 @@ impl std::fmt::Display for ProjectType {
             ProjectType::Node => write!(f, "Node.js (npm)"),
             ProjectType::Python => write!(f, "Python"),
             ProjectType::Go => write!(f, "Go"),
+            ProjectType::Java => write!(f, "Java"),
+            ProjectType::Ruby => write!(f, "Ruby"),
+            ProjectType::Cpp => write!(f, "C/C++ (CMake)"),
             ProjectType::Make => write!(f, "Makefile"),
             ProjectType::Unknown => write!(f, "Unknown"),
         }
@@ -683,6 +709,13 @@ pub fn detect_project_type(dir: &std::path::Path) -> ProjectType {
         ProjectType::Rust
     } else if dir.join("package.json").exists() {
         ProjectType::Node
+    } else if dir.join("pom.xml").exists()
+        || dir.join("build.gradle").exists()
+        || dir.join("build.gradle.kts").exists()
+    {
+        ProjectType::Java
+    } else if dir.join("Gemfile").exists() {
+        ProjectType::Ruby
     } else if dir.join("pyproject.toml").exists()
         || dir.join("setup.py").exists()
         || dir.join("setup.cfg").exists()
@@ -690,6 +723,8 @@ pub fn detect_project_type(dir: &std::path::Path) -> ProjectType {
         ProjectType::Python
     } else if dir.join("go.mod").exists() {
         ProjectType::Go
+    } else if dir.join("CMakeLists.txt").exists() {
+        ProjectType::Cpp
     } else if dir.join("Makefile").exists() || dir.join("makefile").exists() {
         ProjectType::Make
     } else {
@@ -778,6 +813,54 @@ mod tests {
         assert_eq!(detect_project_type(dir.path()), ProjectType::Rust);
     }
 
+    #[test]
+    fn detect_project_type_java_maven() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("pom.xml"), "<project/>").unwrap();
+        assert_eq!(detect_project_type(dir.path()), ProjectType::Java);
+    }
+
+    #[test]
+    fn detect_project_type_java_gradle() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("build.gradle"), "plugins {}").unwrap();
+        assert_eq!(detect_project_type(dir.path()), ProjectType::Java);
+    }
+
+    #[test]
+    fn detect_project_type_java_gradle_kts() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("build.gradle.kts"), "plugins {}").unwrap();
+        assert_eq!(detect_project_type(dir.path()), ProjectType::Java);
+    }
+
+    #[test]
+    fn detect_project_type_ruby() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("Gemfile"), "source 'https://rubygems.org'").unwrap();
+        assert_eq!(detect_project_type(dir.path()), ProjectType::Ruby);
+    }
+
+    #[test]
+    fn detect_project_type_cpp_cmake() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.10)",
+        )
+        .unwrap();
+        assert_eq!(detect_project_type(dir.path()), ProjectType::Cpp);
+    }
+
+    #[test]
+    fn detect_project_type_cmake_over_makefile() {
+        // CMakeLists.txt should detect as Cpp, not Make (even if Makefile exists too)
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("CMakeLists.txt"), "project(test)").unwrap();
+        fs::write(dir.path().join("Makefile"), "all:").unwrap();
+        assert_eq!(detect_project_type(dir.path()), ProjectType::Cpp);
+    }
+
     // ── ProjectType Display ──────────────────────────────────────────
 
     #[test]
@@ -786,6 +869,9 @@ mod tests {
         assert_eq!(format!("{}", ProjectType::Node), "Node.js (npm)");
         assert_eq!(format!("{}", ProjectType::Python), "Python");
         assert_eq!(format!("{}", ProjectType::Go), "Go");
+        assert_eq!(format!("{}", ProjectType::Java), "Java");
+        assert_eq!(format!("{}", ProjectType::Ruby), "Ruby");
+        assert_eq!(format!("{}", ProjectType::Cpp), "C/C++ (CMake)");
         assert_eq!(format!("{}", ProjectType::Make), "Makefile");
         assert_eq!(format!("{}", ProjectType::Unknown), "Unknown");
     }

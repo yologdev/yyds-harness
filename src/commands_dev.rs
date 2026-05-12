@@ -252,6 +252,89 @@ pub fn run_doctor_checks(provider: &str, model: &str) -> Vec<DoctorCheck> {
         }
     }
 
+    // 12. Project-type toolchain checks
+    let project_type = detect_project_type(&std::env::current_dir().unwrap_or_default());
+    let toolchain = toolchain_checks_for_project(&project_type);
+    checks.extend(toolchain);
+
+    checks
+}
+
+/// Return toolchain version checks for a given project type.
+///
+/// These check whether required development tools are installed
+/// (e.g., compiler, build tool, package manager) — not whether the
+/// project builds or tests pass (that's `health_checks_for_project`).
+pub fn toolchain_checks_for_project(project_type: &ProjectType) -> Vec<DoctorCheck> {
+    let mut checks = Vec::new();
+
+    /// Helper: run `cmd --version` (or custom args) and return a DoctorCheck.
+    fn check_tool(name: &str, cmd: &str, args: &[&str]) -> DoctorCheck {
+        match std::process::Command::new(cmd).args(args).output() {
+            Ok(output) if output.status.success() => {
+                let raw = String::from_utf8_lossy(&output.stdout);
+                let ver = raw.lines().next().unwrap_or("").trim().to_string();
+                DoctorCheck {
+                    name: name.to_string(),
+                    status: DoctorStatus::Pass,
+                    detail: if ver.is_empty() {
+                        "installed".to_string()
+                    } else {
+                        format!("installed ({ver})")
+                    },
+                }
+            }
+            _ => DoctorCheck {
+                name: name.to_string(),
+                status: DoctorStatus::Fail,
+                detail: "not found".to_string(),
+            },
+        }
+    }
+
+    match project_type {
+        ProjectType::Java => {
+            checks.push(check_tool("Java", "java", &["--version"]));
+            // Check JAVA_HOME env var
+            if std::env::var("JAVA_HOME").is_ok() {
+                checks.push(DoctorCheck {
+                    name: "JAVA_HOME".to_string(),
+                    status: DoctorStatus::Pass,
+                    detail: std::env::var("JAVA_HOME").unwrap_or_default(),
+                });
+            } else {
+                checks.push(DoctorCheck {
+                    name: "JAVA_HOME".to_string(),
+                    status: DoctorStatus::Warn,
+                    detail: "not set".to_string(),
+                });
+            }
+            // Check build tool — Maven or Gradle
+            if std::path::Path::new("pom.xml").exists() {
+                checks.push(check_tool("Maven", "mvn", &["--version"]));
+            } else {
+                checks.push(check_tool("Gradle", "gradle", &["--version"]));
+            }
+        }
+        ProjectType::Ruby => {
+            checks.push(check_tool("Ruby", "ruby", &["--version"]));
+            checks.push(check_tool("Bundler", "bundle", &["--version"]));
+            checks.push(check_tool("Gem", "gem", &["--version"]));
+        }
+        ProjectType::Cpp => {
+            checks.push(check_tool("CMake", "cmake", &["--version"]));
+            checks.push(check_tool("Make", "make", &["--version"]));
+            // Try cc first, fall back to g++
+            let cc = check_tool("C compiler", "cc", &["--version"]);
+            if cc.status == DoctorStatus::Fail {
+                checks.push(check_tool("C++ compiler", "g++", &["--version"]));
+            } else {
+                checks.push(cc);
+            }
+        }
+        _ => {} // Other project types don't need additional toolchain checks here
+    }
+
     checks
 }
 
@@ -337,6 +420,32 @@ pub fn health_checks_for_project(
             {
                 vec![]
             }
+        }
+        ProjectType::Java => {
+            let mut checks: Vec<(&str, Vec<&str>)> = vec![];
+            if std::path::Path::new("pom.xml").exists() {
+                checks.push(("build", vec!["mvn", "compile"]));
+                #[cfg(not(test))]
+                checks.push(("test", vec!["mvn", "test"]));
+            } else {
+                checks.push(("build", vec!["./gradlew", "build"]));
+                #[cfg(not(test))]
+                checks.push(("test", vec!["./gradlew", "test"]));
+            }
+            checks
+        }
+        ProjectType::Ruby => {
+            let mut checks: Vec<(&str, Vec<&str>)> = vec![];
+            #[cfg(not(test))]
+            checks.push(("test", vec!["bundle", "exec", "rake", "test"]));
+            checks.push(("lint", vec!["bundle", "exec", "rubocop"]));
+            checks
+        }
+        ProjectType::Cpp => {
+            let mut checks = vec![("build", vec!["cmake", "--build", "build"])];
+            #[cfg(not(test))]
+            checks.push(("test", vec!["ctest", "--test-dir", "build"]));
+            checks
         }
         ProjectType::Unknown => vec![],
     }
@@ -709,6 +818,228 @@ mod tests {
         assert!(
             prompt.is_empty() || prompt.contains("Fix"),
             "Empty failures should produce empty or minimal prompt"
+        );
+    }
+
+    // --- Java project health checks ---
+
+    #[test]
+    fn test_health_checks_for_java_project() {
+        let checks = health_checks_for_project(&ProjectType::Java);
+        let names: Vec<&str> = checks.iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"build"), "Java should have build check");
+        // test is excluded under cfg(test)
+        assert!(
+            !names.contains(&"test"),
+            "test should be excluded in cfg(test)"
+        );
+    }
+
+    // --- Ruby project health checks ---
+
+    #[test]
+    fn test_health_checks_for_ruby_project() {
+        let checks = health_checks_for_project(&ProjectType::Ruby);
+        let names: Vec<&str> = checks.iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"lint"), "Ruby should have lint check");
+        // test is excluded under cfg(test)
+        assert!(
+            !names.contains(&"test"),
+            "test should be excluded in cfg(test)"
+        );
+    }
+
+    // --- Cpp project health checks ---
+
+    #[test]
+    fn test_health_checks_for_cpp_project() {
+        let checks = health_checks_for_project(&ProjectType::Cpp);
+        let names: Vec<&str> = checks.iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"build"), "Cpp should have build check");
+        // test is excluded under cfg(test)
+        assert!(
+            !names.contains(&"test"),
+            "test should be excluded in cfg(test)"
+        );
+    }
+
+    // --- Make project health checks ---
+
+    #[test]
+    fn test_health_checks_for_make_project() {
+        let checks = health_checks_for_project(&ProjectType::Make);
+        // Under cfg(test), Make returns empty (test is the only check and it's gated)
+        assert!(
+            checks.is_empty(),
+            "Make project should have no checks in cfg(test)"
+        );
+    }
+
+    // --- DoctorCheck and DoctorStatus infrastructure ---
+
+    #[test]
+    fn test_doctor_status_equality() {
+        assert_eq!(DoctorStatus::Pass, DoctorStatus::Pass);
+        assert_eq!(DoctorStatus::Fail, DoctorStatus::Fail);
+        assert_eq!(DoctorStatus::Warn, DoctorStatus::Warn);
+        assert_ne!(DoctorStatus::Pass, DoctorStatus::Fail);
+        assert_ne!(DoctorStatus::Pass, DoctorStatus::Warn);
+        assert_ne!(DoctorStatus::Fail, DoctorStatus::Warn);
+    }
+
+    #[test]
+    fn test_doctor_check_construction() {
+        let check = DoctorCheck {
+            name: "Test tool".to_string(),
+            status: DoctorStatus::Pass,
+            detail: "v1.2.3".to_string(),
+        };
+        assert_eq!(check.name, "Test tool");
+        assert_eq!(check.status, DoctorStatus::Pass);
+        assert_eq!(check.detail, "v1.2.3");
+
+        let cloned = check.clone();
+        assert_eq!(cloned.name, check.name);
+        assert_eq!(cloned.status, check.status);
+        assert_eq!(cloned.detail, check.detail);
+    }
+
+    #[test]
+    fn test_run_doctor_checks_structure() {
+        let checks = run_doctor_checks("anthropic", "test-model");
+        // Should always have Version, Git, Git repo, Provider, API key, Model at minimum
+        let names: Vec<&str> = checks.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"Version"), "Should check version");
+        assert!(names.contains(&"Git"), "Should check git");
+        assert!(names.contains(&"Provider"), "Should check provider");
+        assert!(names.contains(&"Model"), "Should check model");
+        assert!(names.contains(&"RTK"), "Should check RTK");
+
+        // Provider should reflect what we passed in
+        let provider_check = checks.iter().find(|c| c.name == "Provider").unwrap();
+        assert_eq!(provider_check.detail, "anthropic");
+        assert_eq!(provider_check.status, DoctorStatus::Pass);
+
+        // Model should reflect what we passed in
+        let model_check = checks.iter().find(|c| c.name == "Model").unwrap();
+        assert_eq!(model_check.detail, "test-model");
+        assert_eq!(model_check.status, DoctorStatus::Pass);
+    }
+
+    #[test]
+    fn test_print_doctor_report_all_pass() {
+        // Just ensure it doesn't panic — output goes to stdout
+        let checks = vec![
+            DoctorCheck {
+                name: "A".to_string(),
+                status: DoctorStatus::Pass,
+                detail: "ok".to_string(),
+            },
+            DoctorCheck {
+                name: "B".to_string(),
+                status: DoctorStatus::Pass,
+                detail: "ok".to_string(),
+            },
+        ];
+        print_doctor_report(&checks); // should not panic
+    }
+
+    #[test]
+    fn test_print_doctor_report_mixed_statuses() {
+        let checks = vec![
+            DoctorCheck {
+                name: "Pass check".to_string(),
+                status: DoctorStatus::Pass,
+                detail: "all good".to_string(),
+            },
+            DoctorCheck {
+                name: "Warn check".to_string(),
+                status: DoctorStatus::Warn,
+                detail: "something to note".to_string(),
+            },
+            DoctorCheck {
+                name: "Fail check".to_string(),
+                status: DoctorStatus::Fail,
+                detail: "broken".to_string(),
+            },
+        ];
+        print_doctor_report(&checks); // should not panic
+    }
+
+    #[test]
+    fn test_print_doctor_report_empty() {
+        print_doctor_report(&[]); // should not panic, 0/0 checks passed
+    }
+
+    // --- Toolchain checks for project types ---
+
+    #[test]
+    fn test_toolchain_checks_java() {
+        let checks = toolchain_checks_for_project(&ProjectType::Java);
+        let names: Vec<&str> = checks.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"Java"), "Java toolchain should check java");
+        assert!(
+            names.contains(&"JAVA_HOME"),
+            "Java toolchain should check JAVA_HOME"
+        );
+        // Should have either Maven or Gradle
+        assert!(
+            names.contains(&"Maven") || names.contains(&"Gradle"),
+            "Java toolchain should check build tool"
+        );
+    }
+
+    #[test]
+    fn test_toolchain_checks_ruby() {
+        let checks = toolchain_checks_for_project(&ProjectType::Ruby);
+        let names: Vec<&str> = checks.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"Ruby"), "Ruby toolchain should check ruby");
+        assert!(
+            names.contains(&"Bundler"),
+            "Ruby toolchain should check bundler"
+        );
+        assert!(names.contains(&"Gem"), "Ruby toolchain should check gem");
+        assert_eq!(
+            checks.len(),
+            3,
+            "Ruby should have exactly 3 toolchain checks"
+        );
+    }
+
+    #[test]
+    fn test_toolchain_checks_cpp() {
+        let checks = toolchain_checks_for_project(&ProjectType::Cpp);
+        let names: Vec<&str> = checks.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"CMake"), "Cpp toolchain should check cmake");
+        assert!(names.contains(&"Make"), "Cpp toolchain should check make");
+        // Should have either C compiler or C++ compiler
+        assert!(
+            names.contains(&"C compiler") || names.contains(&"C++ compiler"),
+            "Cpp toolchain should check a compiler"
+        );
+        assert_eq!(
+            checks.len(),
+            3,
+            "Cpp should have exactly 3 toolchain checks"
+        );
+    }
+
+    #[test]
+    fn test_toolchain_checks_unknown_empty() {
+        let checks = toolchain_checks_for_project(&ProjectType::Unknown);
+        assert!(
+            checks.is_empty(),
+            "Unknown project should return no toolchain checks"
+        );
+    }
+
+    #[test]
+    fn test_toolchain_checks_rust_empty() {
+        // Rust toolchain checks happen via health_checks_for_project, not toolchain_checks
+        let checks = toolchain_checks_for_project(&ProjectType::Rust);
+        assert!(
+            checks.is_empty(),
+            "Rust doesn't need separate toolchain checks here"
         );
     }
 }
