@@ -82,6 +82,7 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `prompt_utils.rs` — message search, highlighting, summarization, output file writing, tool result preview (extracted from `prompt.rs`)
 - `session.rs` — session tracking types: SessionChanges, TurnSnapshot, TurnHistory, format_changes (extracted from `prompt.rs`)
 - `commands_rename.rs` — rename symbol across project files, word-boundary matching, preview and apply
+- `commands_revisit.rs` — `/revisit` command: scan closed/shelved GitHub issues, check feasibility, track revisit candidates in `.yoyo/revisit.json`
 - `commands_move.rs` — move methods between impl blocks, cross-file method relocation
 - `commands_stash.rs` — conversation stash subsystem: push/pop/list/drop conversation snapshots (extracted from `commands_session.rs`)
 - `sync_util.rs` — shared synchronisation helpers: `lock_or_recover` for poisoned `Mutex` recovery (deduplicated Day 58)

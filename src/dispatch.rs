@@ -108,6 +108,7 @@ pub(crate) enum CommandRoute {
     Goal,
     Spawn,
     Review,
+    Revisit,
     Update,
     Skill,
     Explain,
@@ -246,6 +247,7 @@ fn route_command_prefix(input: &str) -> CommandRoute {
             "goal" => CommandRoute::Goal,
             "spawn" => CommandRoute::Spawn,
             "review" => CommandRoute::Review,
+            "revisit" => CommandRoute::Revisit,
             "skill" => CommandRoute::Skill,
             "explain" => CommandRoute::Explain,
             "plan" => CommandRoute::Plan,
@@ -905,6 +907,11 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             {
                 *ctx.last_input = Some(review_prompt);
             }
+            CommandResult::Continue
+        }
+        CommandRoute::Revisit => {
+            let result = commands::handle_revisit(ctx.input);
+            println!("{result}\n");
             CommandResult::Continue
         }
         CommandRoute::Update => {

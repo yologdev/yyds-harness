@@ -57,6 +57,7 @@ mod commands_project;
 mod commands_refactor;
 mod commands_rename;
 mod commands_retry;
+mod commands_revisit;
 mod commands_run;
 mod commands_search;
 mod commands_session;

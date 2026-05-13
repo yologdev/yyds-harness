@@ -500,6 +500,29 @@ The review streams to stderr for visual feedback; the final review text goes to 
 
 This is one of the most common workflows for developers using coding agents — getting a second pair of eyes on your changes before committing.
 
+## Issue Revisiting
+
+| Command | Description |
+|---------|-------------|
+| `/revisit` | Scan recently closed issues for shelved candidates |
+| `/revisit scan` | Same as above (default subcommand) |
+| `/revisit check #N` | Inspect a specific closed issue and summarize why it was shelved |
+| `/revisit list` | Show issues tracked as revisit candidates |
+| `/revisit add #N <reason>` | Mark a closed issue for future review |
+| `/revisit remove #N` | Remove an issue from the revisit list |
+
+The `/revisit` command helps review closed or shelved GitHub issues that may now be feasible given new capabilities. Issues with labels like `wontfix`, `deferred`, or `too-complex` are highlighted as shelved candidates.
+
+Revisit candidates are stored in `.yoyo/revisit.json` and persist across sessions.
+
+```
+/revisit                    # scan recently closed issues
+/revisit check #42          # inspect why issue #42 was closed
+/revisit add #42 Now have better infrastructure
+/revisit list               # see all tracked candidates
+/revisit remove #42         # stop tracking issue #42
+```
+
 ## Refactoring
 
 | Command | Description |

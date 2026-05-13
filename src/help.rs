@@ -835,6 +835,22 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /review src/main.rs\n\
              \x20 /review HEAD~3..HEAD",
         ),
+        "revisit" => Some(
+            "/revisit [subcommand] — Review closed/shelved issues that may now be feasible\n\n\
+             Subcommands:\n\
+             \x20 /revisit              Scan recently closed issues (default)\n\
+             \x20 /revisit scan         Same as above\n\
+             \x20 /revisit check #N     Inspect a specific closed issue\n\
+             \x20 /revisit list         Show tracked revisit candidates\n\
+             \x20 /revisit add #N <reason>  Mark an issue for future review\n\
+             \x20 /revisit remove #N    Remove an issue from revisit list\n\n\
+             Candidates are stored in .yoyo/revisit.json.\n\n\
+             Examples:\n\
+             \x20 /revisit\n\
+             \x20 /revisit check #42\n\
+             \x20 /revisit add #100 Too complex before, now have better infra\n\
+             \x20 /revisit remove #100",
+        ),
         "mark" => Some(
             "/mark <name> — Bookmark current conversation state\n\n\
              Usage:\n\
@@ -1575,6 +1591,10 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "    /revisit [subcmd]  Review closed/shelved issues (scan/check/list/add/remove)"
+    );
+    let _ = writeln!(
+        s,
         "    /skill [subcmd]    List, inspect, install, and search for skills"
     );
     let _ = writeln!(s);
@@ -1815,6 +1835,9 @@ pub fn help_text() -> String {
         "  /ast <pattern>     Structural code search using ast-grep (--lang, --in flags)\n",
     );
     out.push_str(
+        "  /revisit [subcmd]  Review closed/shelved issues (scan/check/list/add/remove)\n",
+    );
+    out.push_str(
         "  /skill [subcmd]    List, inspect, install, and search for skills (list/show/path/install/search)\n",
     );
     out.push('\n');
@@ -1977,6 +2000,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "rename" => Some("Rename a symbol across the project"),
         "retry" => Some("Re-send the last input"),
         "review" => Some("AI code review"),
+        "revisit" => Some("Review closed/shelved issues that may now be feasible"),
         "run" => Some("Run a shell command"),
         "save" => Some("Save session to file"),
         "search" => Some("Search conversation history"),

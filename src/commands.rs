@@ -28,6 +28,9 @@ pub use crate::commands_info::{
 pub use crate::commands_retry::{format_exit_summary, handle_changes, handle_retry};
 pub(crate) use crate::commands_retry::{handle_changes_summary, wants_summary};
 
+// Re-export /revisit handler for shelved-issue review.
+pub use crate::commands_revisit::handle_revisit;
+
 // Re-export /remember, /memories, /forget handlers extracted to
 // commands_memory.rs (issue #260 slice). Same stability contract as above.
 pub use crate::commands_memory::{handle_forget, handle_memories, handle_remember};
@@ -103,6 +106,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "/spawn",
     "/update",
     "/review",
+    "/revisit",
     "/mark",
     "/jump",
     "/marks",
@@ -112,6 +116,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "/provider",
     "/changes",
     "/web",
+    "/quick",
     "/rename",
     "/extract",
     "/move",
@@ -224,6 +229,7 @@ pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
         "find" => Some("<filename-pattern>"),
         "blame" => Some("<file> [line-range]"),
         "review" => Some("[branch]"),
+        "revisit" => Some("scan | check #N | list | add #N <reason> | remove #N"),
         "web" => Some("<url>"),
         "run" => Some("<command>"),
         "test" => Some("[args...]"),
@@ -289,6 +295,9 @@ pub fn command_arg_completions(cmd: &str, partial_arg: &str) -> Vec<String> {
         "/skill" => filter_candidates(crate::commands_skill::SKILL_SUBCOMMANDS, &partial_lower),
         "/plan" => filter_candidates(crate::commands_plan::PLAN_SUBCOMMANDS, &partial_lower),
         "/history" => filter_candidates(HISTORY_SUBCOMMANDS, &partial_lower),
+        "/revisit" => {
+            filter_candidates(crate::commands_revisit::REVISIT_SUBCOMMANDS, &partial_lower)
+        }
         _ => Vec::new(),
     }
 }

@@ -1710,4 +1710,459 @@ mod tests {
             let _: serde_json::Value = serde_json::from_str(&json).unwrap();
         }
     }
+
+    // --- Day 74: New tests for PromptOutcome, StreamEvent, StreamUsage, PromptEventState ---
+
+    #[test]
+    fn test_prompt_outcome_default() {
+        let outcome = PromptOutcome::default();
+        assert!(outcome.text.is_empty());
+        assert!(outcome.last_tool_error.is_none());
+        assert!(outcome.last_tool_name.is_none());
+        assert!(!outcome.was_overflow);
+        assert!(outcome.last_api_error.is_none());
+    }
+
+    #[test]
+    fn test_prompt_outcome_clone() {
+        let outcome = PromptOutcome {
+            text: "hello world".to_string(),
+            last_tool_error: Some("error msg".to_string()),
+            last_tool_name: Some("bash".to_string()),
+            was_overflow: true,
+            last_api_error: Some("429 rate limit".to_string()),
+        };
+        let cloned = outcome.clone();
+        assert_eq!(cloned.text, "hello world");
+        assert_eq!(cloned.last_tool_error, Some("error msg".to_string()));
+        assert_eq!(cloned.last_tool_name, Some("bash".to_string()));
+        assert!(cloned.was_overflow);
+        assert_eq!(cloned.last_api_error, Some("429 rate limit".to_string()));
+    }
+
+    #[test]
+    fn test_prompt_outcome_debug_format() {
+        let outcome = PromptOutcome::default();
+        let debug = format!("{:?}", outcome);
+        assert!(debug.contains("PromptOutcome"));
+        assert!(debug.contains("text"));
+        assert!(debug.contains("was_overflow"));
+    }
+
+    #[test]
+    fn test_prompt_outcome_with_overflow() {
+        let outcome = PromptOutcome {
+            text: "compacted response".to_string(),
+            last_tool_error: None,
+            last_tool_name: None,
+            was_overflow: true,
+            last_api_error: None,
+        };
+        assert!(outcome.was_overflow);
+        assert_eq!(outcome.text, "compacted response");
+    }
+
+    #[test]
+    fn test_prompt_outcome_combined_tool_and_api_error() {
+        // Both tool error and API error can coexist — tool error from a tool execution,
+        // API error from a subsequent retry failure
+        let outcome = PromptOutcome {
+            text: String::new(),
+            last_tool_error: Some("file not found".to_string()),
+            last_tool_name: Some("read_file".to_string()),
+            was_overflow: false,
+            last_api_error: Some("500 internal server error".to_string()),
+        };
+        assert!(outcome.last_tool_error.is_some());
+        assert!(outcome.last_api_error.is_some());
+        assert_eq!(outcome.last_tool_name.as_deref(), Some("read_file"));
+    }
+
+    #[test]
+    fn test_stream_usage_construction() {
+        let usage = StreamUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+        };
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+    }
+
+    #[test]
+    fn test_stream_usage_large_values() {
+        let usage = StreamUsage {
+            input_tokens: u64::MAX,
+            output_tokens: u64::MAX,
+        };
+        assert_eq!(usage.input_tokens, u64::MAX);
+        assert_eq!(usage.output_tokens, u64::MAX);
+    }
+
+    #[test]
+    fn test_stream_usage_serialization() {
+        let usage = StreamUsage {
+            input_tokens: 1234,
+            output_tokens: 5678,
+        };
+        let json = serde_json::to_string(&usage).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["input_tokens"], 1234);
+        assert_eq!(parsed["output_tokens"], 5678);
+    }
+
+    #[test]
+    fn test_stream_usage_clone() {
+        let usage = StreamUsage {
+            input_tokens: 100,
+            output_tokens: 200,
+        };
+        let cloned = usage.clone();
+        assert_eq!(cloned.input_tokens, 100);
+        assert_eq!(cloned.output_tokens, 200);
+    }
+
+    #[test]
+    fn test_stream_event_content_delta_special_chars() {
+        // Verify special characters (unicode, newlines, quotes) serialize correctly
+        let event = StreamEvent::ContentDelta {
+            text: "Hello 🐙\n\"quoted\" <html>&amp;".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        // Should not contain raw newlines in the JSON string
+        assert!(!json.contains('\n'));
+        // Round-trip: deserialize and check
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["text"], "Hello 🐙\n\"quoted\" <html>&amp;");
+    }
+
+    #[test]
+    fn test_stream_event_content_delta_empty_text() {
+        let event = StreamEvent::ContentDelta {
+            text: String::new(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["text"], "");
+        assert_eq!(parsed["type"], "content_delta");
+    }
+
+    #[test]
+    fn test_stream_event_tool_use_complex_input() {
+        let event = StreamEvent::ToolUse {
+            name: "write_file".to_string(),
+            input: serde_json::json!({
+                "path": "/tmp/test.rs",
+                "content": "fn main() {\n    println!(\"hello\");\n}\n"
+            }),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(!json.contains('\n'));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["name"], "write_file");
+        assert_eq!(parsed["input"]["path"], "/tmp/test.rs");
+    }
+
+    #[test]
+    fn test_stream_event_tool_use_empty_input() {
+        let event = StreamEvent::ToolUse {
+            name: "list_files".to_string(),
+            input: serde_json::json!({}),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "tool_use");
+        assert_eq!(parsed["name"], "list_files");
+        assert!(parsed["input"].is_object());
+    }
+
+    #[test]
+    fn test_stream_event_tool_result_empty_output() {
+        let event = StreamEvent::ToolResult {
+            name: "bash".to_string(),
+            output: String::new(),
+            is_error: false,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["output"], "");
+        assert_eq!(parsed["is_error"], false);
+    }
+
+    #[test]
+    fn test_stream_event_message_end_with_zero_usage() {
+        let event = StreamEvent::MessageEnd {
+            usage: StreamUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+            cost_usd: Some(0.0),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["usage"]["input_tokens"], 0);
+        assert_eq!(parsed["usage"]["output_tokens"], 0);
+        assert_eq!(parsed["cost_usd"], 0.0);
+    }
+
+    #[test]
+    fn test_stream_event_clone() {
+        let event = StreamEvent::ContentDelta {
+            text: "test".to_string(),
+        };
+        let cloned = event.clone();
+        let json1 = serde_json::to_string(&event).unwrap();
+        let json2 = serde_json::to_string(&cloned).unwrap();
+        assert_eq!(json1, json2);
+    }
+
+    #[test]
+    fn test_stream_event_debug_format() {
+        let event = StreamEvent::MessageStart {
+            model: "test".to_string(),
+        };
+        let debug = format!("{:?}", event);
+        assert!(debug.contains("MessageStart"));
+        assert!(debug.contains("test"));
+    }
+
+    #[test]
+    fn test_prompt_event_state_into_result_done() {
+        let mut state = PromptEventState::new();
+        // Stop the spinner to avoid background thread interference in tests
+        if let Some(s) = state.spinner.take() {
+            s.stop();
+        }
+        state.collected_text = "response text".to_string();
+        state.last_tool_error = None;
+        state.last_tool_name = None;
+        let result = state.into_result();
+        match result {
+            PromptResult::Done {
+                collected_text,
+                last_tool_error,
+                last_tool_name,
+                ..
+            } => {
+                assert_eq!(collected_text, "response text");
+                assert!(last_tool_error.is_none());
+                assert!(last_tool_name.is_none());
+            }
+            _ => panic!("expected PromptResult::Done"),
+        }
+    }
+
+    #[test]
+    fn test_prompt_event_state_into_result_retriable_error() {
+        let mut state = PromptEventState::new();
+        if let Some(s) = state.spinner.take() {
+            s.stop();
+        }
+        state.retriable_error = Some("429 Too Many Requests".to_string());
+        let result = state.into_result();
+        match result {
+            PromptResult::RetriableError { error_msg, .. } => {
+                assert_eq!(error_msg, "429 Too Many Requests");
+            }
+            _ => panic!("expected PromptResult::RetriableError"),
+        }
+    }
+
+    #[test]
+    fn test_prompt_event_state_into_result_context_overflow() {
+        let mut state = PromptEventState::new();
+        if let Some(s) = state.spinner.take() {
+            s.stop();
+        }
+        state.overflow_error = Some("prompt is too long: 250000 tokens".to_string());
+        let result = state.into_result();
+        match result {
+            PromptResult::ContextOverflow { error_msg, .. } => {
+                assert!(error_msg.contains("prompt is too long"));
+            }
+            _ => panic!("expected PromptResult::ContextOverflow"),
+        }
+    }
+
+    #[test]
+    fn test_prompt_event_state_into_result_overflow_takes_priority() {
+        // When both overflow_error and retriable_error are set,
+        // overflow should take priority (checked first in into_result)
+        let mut state = PromptEventState::new();
+        if let Some(s) = state.spinner.take() {
+            s.stop();
+        }
+        state.overflow_error = Some("context too large".to_string());
+        state.retriable_error = Some("rate limited".to_string());
+        let result = state.into_result();
+        match result {
+            PromptResult::ContextOverflow { error_msg, .. } => {
+                assert_eq!(error_msg, "context too large");
+            }
+            _ => panic!("expected ContextOverflow to take priority over RetriableError"),
+        }
+    }
+
+    #[test]
+    fn test_prompt_event_state_into_result_preserves_tool_error() {
+        let mut state = PromptEventState::new();
+        if let Some(s) = state.spinner.take() {
+            s.stop();
+        }
+        state.collected_text = "partial".to_string();
+        state.last_tool_error = Some("permission denied".to_string());
+        state.last_tool_name = Some("bash".to_string());
+        let result = state.into_result();
+        match result {
+            PromptResult::Done {
+                last_tool_error,
+                last_tool_name,
+                ..
+            } => {
+                assert_eq!(last_tool_error, Some("permission denied".to_string()));
+                assert_eq!(last_tool_name, Some("bash".to_string()));
+            }
+            _ => panic!("expected PromptResult::Done"),
+        }
+    }
+
+    #[test]
+    fn test_prompt_event_state_new_defaults() {
+        let mut state = PromptEventState::new();
+        // Stop the spinner immediately to avoid test interference
+        if let Some(s) = state.spinner.take() {
+            s.stop();
+        }
+        assert!(state.collected_text.is_empty());
+        assert!(!state.in_text);
+        assert!(!state.in_thinking);
+        assert!(state.tool_timers.is_empty());
+        assert!(state.retriable_error.is_none());
+        assert!(state.overflow_error.is_none());
+        assert!(state.last_tool_error.is_none());
+        assert!(state.last_tool_name.is_none());
+        assert!(state.audit_inflight.is_empty());
+        assert!(state.tool_progress_timers.is_empty());
+        assert!(state.deferred_bash_timers.is_empty());
+        assert_eq!(state.batch_count, 0);
+        assert_eq!(state.batch_succeeded, 0);
+        assert_eq!(state.batch_failed, 0);
+        assert!(state.batch_start.is_none());
+        assert_eq!(state.turn_number, 0);
+        assert!(!state.had_text);
+    }
+
+    #[test]
+    fn test_prompt_event_state_batch_reset_on_print() {
+        let mut state = PromptEventState::new();
+        if let Some(s) = state.spinner.take() {
+            s.stop();
+        }
+        // Simulate a batch
+        state.batch_count = 5;
+        state.batch_succeeded = 3;
+        state.batch_failed = 2;
+        state.batch_start = Some(Instant::now());
+        // print_batch_summary resets batch tracking
+        state.print_batch_summary();
+        assert_eq!(state.batch_count, 0);
+        assert_eq!(state.batch_succeeded, 0);
+        assert_eq!(state.batch_failed, 0);
+        assert!(state.batch_start.is_none());
+    }
+
+    #[test]
+    fn test_prompt_event_state_into_result_preserves_usage() {
+        let mut state = PromptEventState::new();
+        if let Some(s) = state.spinner.take() {
+            s.stop();
+        }
+        state.usage = Usage {
+            input: 500,
+            output: 100,
+            cache_read: 50,
+            cache_write: 25,
+            ..Default::default()
+        };
+        let result = state.into_result();
+        match result {
+            PromptResult::Done { usage, .. } => {
+                assert_eq!(usage.input, 500);
+                assert_eq!(usage.output, 100);
+                assert_eq!(usage.cache_read, 50);
+                assert_eq!(usage.cache_write, 25);
+            }
+            _ => panic!("expected PromptResult::Done"),
+        }
+    }
+
+    #[test]
+    fn test_stream_event_message_start_empty_model() {
+        let event = StreamEvent::MessageStart {
+            model: String::new(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "message_start");
+        assert_eq!(parsed["model"], "");
+    }
+
+    #[test]
+    fn test_stream_event_tool_result_multiline_output() {
+        let event = StreamEvent::ToolResult {
+            name: "bash".to_string(),
+            output: "line1\nline2\nline3\n".to_string(),
+            is_error: false,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        // JSON escapes newlines, so the JSON line itself should not contain raw newlines
+        assert!(!json.contains('\n'));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // But the parsed value should have the newlines
+        assert!(parsed["output"].as_str().unwrap().contains('\n'));
+    }
+
+    #[test]
+    fn test_accumulate_usage_commutative() {
+        // Verify a + b == b + a (accumulation is commutative)
+        let a = Usage {
+            input: 10,
+            output: 20,
+            cache_read: 30,
+            cache_write: 40,
+            ..Default::default()
+        };
+        let b = Usage {
+            input: 5,
+            output: 15,
+            cache_read: 25,
+            cache_write: 35,
+            ..Default::default()
+        };
+
+        let mut total_ab = Usage::default();
+        accumulate_usage(&mut total_ab, &a);
+        accumulate_usage(&mut total_ab, &b);
+
+        let mut total_ba = Usage::default();
+        accumulate_usage(&mut total_ba, &b);
+        accumulate_usage(&mut total_ba, &a);
+
+        assert_eq!(total_ab.input, total_ba.input);
+        assert_eq!(total_ab.output, total_ba.output);
+        assert_eq!(total_ab.cache_read, total_ba.cache_read);
+        assert_eq!(total_ab.cache_write, total_ba.cache_write);
+    }
+
+    #[test]
+    fn test_prompt_outcome_text_with_unicode() {
+        let outcome = PromptOutcome {
+            text: "Hello 🐙 — yoyo speaking! ✓ 日本語".to_string(),
+            last_tool_error: None,
+            last_tool_name: None,
+            was_overflow: false,
+            last_api_error: None,
+        };
+        assert!(outcome.text.contains('🐙'));
+        assert!(outcome.text.contains("日本語"));
+    }
 }
