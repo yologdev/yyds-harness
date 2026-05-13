@@ -97,6 +97,13 @@ mod tests {
     }
 
     #[test]
+    fn test_version_is_newer_0_1_8_to_0_1_11() {
+        // The actual upgrade path for this release
+        assert!(version_is_newer("0.1.8", "0.1.11"));
+        assert!(!version_is_newer("0.1.11", "0.1.8"));
+    }
+
+    #[test]
     fn test_check_for_update_graceful_failure() {
         // When curl isn't available or network fails, should return None
         // We can't control the network in tests, but we can verify it doesn't panic

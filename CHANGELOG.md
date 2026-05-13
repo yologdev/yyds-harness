@@ -4,12 +4,17 @@ All notable changes to **yoyo-agent** (`cargo install yoyo-agent`) are documente
 
 This project is a self-evolving coding agent — every change was planned, implemented, and tested by yoyo itself during automated evolution sessions. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.11] — 2026-05-11
+## [0.1.11] — 2026-05-13
 
-14 sessions spanning Days 64–72. Prompt caching cuts repeated system prompt costs ~90%, native desktop notifications tell you when long completions finish, clipboard integration via `/copy`, and a deep consolidation arc that deduplicated 13-way token arithmetic, extracted 6+ modules, and cleaned every re-export middleman out of `prompt.rs`.
+20 sessions spanning Days 64–74. Prompt caching cuts repeated system prompt costs ~90%, native desktop notifications tell you when long completions finish, clipboard integration via `/copy`, smarter auto-continue for incomplete responses, error-aware `/run`, and a deep consolidation arc that deduplicated 13-way token arithmetic, extracted 6+ modules, and cleaned every re-export middleman out of `prompt.rs`.
 
 ### Added
 
+- **`/revisit` command** — scan closed/shelved GitHub issues, check feasibility, and track revisit candidates in `.yoyo/revisit.json` (Day 74)
+- **Error-aware `/run`** — when a command fails, shows a colored failure preview and offers to analyze the error with the agent (Day 73)
+- **`/doctor` for Java, Ruby, C/C++ projects** — expanded project health checks beyond Rust/Python/Node (Day 73)
+- **Output tokens/sec in usage line and `/profile`** — shows generation speed alongside token counts (Day 73)
+- **Colored diff preview for `write_file`** — when overwriting an existing file, shows a colored unified diff of the changes (Day 73)
 - **Prompt caching via yoagent's CacheConfig** — automatic `cache_control` on system prompt and long tool results, ~90% cost reduction on repeated system prompts; cache hit rate visible in `/cost` and `/tokens` (Day 71)
 - **Native desktop notifications** — OS-level notification + terminal bell when completions take >10s; configurable via `notify = false` in config (Day 71)
 - **`/copy` command** — clipboard integration detecting `pbcopy`/`xclip`/`wl-copy`/`clip.exe`; subcommands: `/copy last`, `/copy code`, `/copy all` (Day 71)
@@ -19,6 +24,7 @@ This project is a self-evolving coding agent — every change was planned, imple
 
 ### Improved
 
+- **Auto-continue heuristic strengthened** — detects unclosed code fences, numbered lists, and "let me" phrases as incomplete responses; max auto-continues bumped from 3 to 5 (Day 73)
 - **Tool recovery with concrete alternative suggestions** — retry prompts now suggest specific alternative tools when one fails (e.g. `edit_file` failing → suggests `write_file`), improving agent self-recovery (Day 70)
 - **Banner shows project context at startup** — `📁 Rust project (yoyo-evolve) on main` with auto-detected project type, name, and branch (Day 64)
 - **`/evolution` command** — shows CI run status, session stats, and recent evolution history (Day 68)
@@ -31,6 +37,7 @@ This project is a self-evolving coding agent — every change was planned, imple
 
 ### Changed (Internal / Architecture)
 
+- **Test coverage expansion** — new tests for `prompt.rs` (stream JSON, PromptOutcome), `prompt_retry.rs` (diagnose_api_error, build_retry_prompt), `tools.rs` (TodoTool, RenameSymbolTool, build_tools), `commands_bg.rs`, `main.rs` (build_json_output, apply_config_flags), and health check coverage (Days 73–74)
 - **Command routing extraction** — pure `route_command()` function extracted from `dispatch_command` with full test coverage, enabling deterministic testing of command routing (Day 72)
 - **`accumulate_usage` helper** — deduplicated 13-way token-accumulation arithmetic across `prompt.rs` into a single function (Day 66)
 - **`finish_prompt_epilogue` helper** — collapsed duplicated 15-line post-prompt epilogue (cost display, bell, context bar) into one call (Day 66)
@@ -511,6 +518,8 @@ The codebase evolved from a single 200-line `main.rs` to 12 focused modules (~17
 | 23 | `/watch` auto-test, `/refactor` umbrella, `rename_symbol` tool, terminal bell, `system_prompt`/`system_file` config, git-aware prompt, streaming flush improvements |
 | 24 | `/ast` structural search, piped-mode output fixes, v0.1.3 release |
 
+[0.1.11]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.11
+[0.1.10]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.10
 [0.1.9]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.9
 [0.1.8]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.8
 [0.1.7]: https://github.com/yologdev/yoyo-evolve/releases/tag/v0.1.7
