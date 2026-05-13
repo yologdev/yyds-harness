@@ -12,7 +12,7 @@ use crate::format::*;
 use crate::git::{colorize_diff, run_git};
 use crate::prompt::run_prompt;
 use crate::prompt_retry::build_retry_prompt;
-use crate::session::{format_changes, ChangeKind, SessionChanges};
+use crate::session::{format_changes, ChangeKind, FileChange, SessionChanges};
 use crate::AgentConfig;
 
 use std::time::Instant;
@@ -45,18 +45,15 @@ pub async fn handle_retry(
     }
 }
 
-/// Returns a compact multi-line session summary for display on REPL exit, or
+/// Returns a compact 2–3 line session summary for display on REPL exit, or
 /// `None` if neither files were modified nor tokens were used (i.e., no real
 /// interaction happened).
 ///
 /// Example output:
 /// ```text
-///   ─── Session Summary ───
-///   Duration: 4m 32s
-///   Tokens:   12,450 in / 3,200 out
-///   Cost:     ~$0.05
-///   Files:    3 changed (2 edited, 1 written)
-///   ────────────────────────
+///   ─── session summary ────────────────────────────────
+///   Duration: 4m 32s · Tokens: 12.5K in / 3.2K out · Cost: ~$0.05
+///   Files changed: 3 (src/main.rs, src/lib.rs +new, tests/test.rs)
 /// ```
 pub fn format_exit_summary(
     changes: &SessionChanges,
@@ -73,63 +70,67 @@ pub fn format_exit_summary(
     }
 
     let mut lines = Vec::new();
-    lines.push(format!("{DIM}  ─── Session Summary ───{RESET}"));
-
-    // Duration
-    let elapsed = session_start.elapsed();
     lines.push(format!(
-        "{DIM}  Duration:{RESET} {GREEN}{}{RESET}",
-        format_duration(elapsed)
+        "{DIM}  ─── session summary ────────────────────────────────{RESET}"
     ));
 
-    // Tokens
+    // Stats line: duration · tokens · cost (all on one line)
+    let elapsed = session_start.elapsed();
+    let mut stats = vec![format!("Duration: {}", format_duration(elapsed))];
+
     if has_tokens {
-        lines.push(format!(
-            "{DIM}  Tokens:{RESET}   {GREEN}{} in / {} out{RESET}",
+        stats.push(format!(
+            "Tokens: {} in / {} out",
             format_token_count(session_total.input),
             format_token_count(session_total.output),
         ));
     }
 
-    // Cost (only if model pricing is available)
     if let Some(cost) = estimate_cost(session_total, model) {
-        lines.push(format!(
-            "{DIM}  Cost:{RESET}     {GREEN}~{}{RESET}",
-            format_cost(cost)
-        ));
+        stats.push(format!("Cost: ~{}", format_cost(cost)));
     }
 
-    // Files
+    lines.push(format!("{DIM}  {}{RESET}", stats.join(" · ")));
+
+    // Files line with names
     if has_files {
-        let n = snapshot.len();
-        let edits = snapshot
-            .iter()
-            .filter(|c| c.kind == ChangeKind::Edit)
-            .count();
-        let writes = snapshot
-            .iter()
-            .filter(|c| c.kind == ChangeKind::Write)
-            .count();
-
-        let mut parts = Vec::new();
-        if writes > 0 {
-            parts.push(format!("{writes} written"));
-        }
-        if edits > 0 {
-            parts.push(format!("{edits} edited"));
-        }
-
         lines.push(format!(
-            "{DIM}  Files:{RESET}    {GREEN}{} {} changed ({}){RESET}",
-            n,
-            pluralize(n, "file", "files"),
-            parts.join(", "),
+            "{DIM}  Files changed: {} ({}){RESET}",
+            snapshot.len(),
+            format_file_list(&snapshot),
         ));
     }
-
-    lines.push(format!("{DIM}  ────────────────────────{RESET}"));
 
     Some(lines.join("\n"))
+}
+
+/// Format a list of changed files for the exit summary. Files that were
+/// newly written (not edited) get a `+new` suffix. If the combined list
+/// would exceed 60 chars, it is truncated with `…`.
+fn format_file_list(snapshot: &[FileChange]) -> String {
+    let mut names: Vec<String> = snapshot
+        .iter()
+        .map(|fc| {
+            let name = fc.path.as_str();
+            if fc.kind == ChangeKind::Write {
+                format!("{name} +new")
+            } else {
+                name.to_string()
+            }
+        })
+        .collect();
+    names.sort();
+    let joined = names.join(", ");
+    if joined.len() <= 60 {
+        joined
+    } else {
+        // Find a safe char boundary for truncation
+        let mut b = 57;
+        while b > 0 && !joined.is_char_boundary(b) {
+            b -= 1;
+        }
+        format!("{}…", &joined[..b])
+    }
 }
 
 /// Returns `true` if the raw `/changes` input contains the `--diff` flag.
@@ -363,11 +364,12 @@ mod tests {
         let usage = make_usage(1000, 200);
         let summary =
             format_exit_summary(&changes, &usage, "unknown-model", Instant::now()).unwrap();
-        assert!(summary.contains("1 file changed"));
-        assert!(summary.contains("1 written"));
-        assert!(summary.contains("Session Summary"));
-        assert!(summary.contains("Duration:"));
-        assert!(summary.contains("Tokens:"));
+        assert!(summary.contains("session summary"), "header missing");
+        assert!(summary.contains("Duration:"), "duration missing");
+        assert!(summary.contains("Tokens:"), "tokens missing");
+        // File name should appear with +new marker
+        assert!(summary.contains("Files changed: 1"), "file count missing");
+        assert!(summary.contains("src/main.rs +new"), "+new marker missing");
     }
 
     #[test]
@@ -377,8 +379,13 @@ mod tests {
         let usage = make_usage(500, 100);
         let summary =
             format_exit_summary(&changes, &usage, "unknown-model", Instant::now()).unwrap();
-        assert!(summary.contains("1 file changed"));
-        assert!(summary.contains("1 edited"));
+        assert!(summary.contains("Files changed: 1"), "file count missing");
+        // Edited files should appear without +new
+        assert!(summary.contains("src/cli.rs"), "file name missing");
+        assert!(
+            !summary.contains("src/cli.rs +new"),
+            "edit should not have +new"
+        );
     }
 
     #[test]
@@ -390,9 +397,17 @@ mod tests {
         let usage = make_usage(5000, 1500);
         let summary =
             format_exit_summary(&changes, &usage, "unknown-model", Instant::now()).unwrap();
-        assert!(summary.contains("3 files changed"));
-        assert!(summary.contains("1 written"));
-        assert!(summary.contains("2 edited"));
+        assert!(summary.contains("Files changed: 3"), "file count missing");
+        assert!(
+            summary.contains("src/main.rs +new"),
+            "written file missing +new"
+        );
+        assert!(summary.contains("src/cli.rs"), "edited file missing");
+        assert!(
+            !summary.contains("src/cli.rs +new"),
+            "edited file should not have +new"
+        );
+        assert!(summary.contains("src/tools.rs"), "edited file missing");
     }
 
     #[test]
@@ -403,8 +418,9 @@ mod tests {
         let usage = make_usage(100, 50);
         let summary =
             format_exit_summary(&changes, &usage, "unknown-model", Instant::now()).unwrap();
-        assert!(summary.contains("2 files changed"));
-        assert!(summary.contains("2 written"));
+        assert!(summary.contains("Files changed: 2"), "file count missing");
+        assert!(summary.contains("a.rs +new"), "first file missing +new");
+        assert!(summary.contains("b.rs +new"), "second file missing +new");
     }
 
     #[test]
@@ -416,13 +432,16 @@ mod tests {
         let summary =
             format_exit_summary(&changes, &usage, "claude-sonnet-4-20250514", Instant::now())
                 .unwrap();
-        assert!(summary.contains("Session Summary"));
-        assert!(summary.contains("Duration:"));
-        assert!(summary.contains("Tokens:"));
-        // Should NOT contain a Files: line
-        assert!(!summary.contains("Files:"));
-        // Known model should produce a cost line
-        assert!(summary.contains("Cost:"));
+        assert!(summary.contains("session summary"), "header missing");
+        assert!(summary.contains("Duration:"), "duration missing");
+        assert!(summary.contains("Tokens:"), "tokens missing");
+        // Should NOT contain a Files line
+        assert!(
+            !summary.contains("Files changed:"),
+            "should have no files line"
+        );
+        // Known model should produce a cost segment
+        assert!(summary.contains("Cost:"), "cost missing for known model");
     }
 
     #[test]
@@ -434,14 +453,13 @@ mod tests {
         let summary =
             format_exit_summary(&changes, &usage, "claude-sonnet-4-20250514", Instant::now())
                 .unwrap();
-        assert!(summary.contains("Session Summary"));
-        assert!(summary.contains("Duration:"));
-        assert!(summary.contains("Tokens:"));
-        assert!(summary.contains("Cost:"));
-        assert!(summary.contains("Files:"));
-        assert!(summary.contains("2 files changed"));
-        assert!(summary.contains("1 written"));
-        assert!(summary.contains("1 edited"));
+        assert!(summary.contains("session summary"), "header missing");
+        assert!(summary.contains("Duration:"), "duration missing");
+        assert!(summary.contains("Tokens:"), "tokens missing");
+        assert!(summary.contains("Cost:"), "cost missing");
+        assert!(summary.contains("Files changed: 2"), "file count missing");
+        assert!(summary.contains("src/main.rs +new"), "written file missing");
+        assert!(summary.contains("src/cli.rs"), "edited file missing");
     }
 
     #[test]
@@ -451,8 +469,82 @@ mod tests {
         let summary =
             format_exit_summary(&changes, &usage, "totally-unknown-model", Instant::now()).unwrap();
         assert!(summary.contains("Tokens:"));
-        // Unknown model has no pricing -- cost line should be absent
+        // Unknown model has no pricing -- cost should be absent
         assert!(!summary.contains("Cost:"));
+    }
+
+    #[test]
+    fn test_exit_summary_compact_format() {
+        // Verify the summary is compact: duration, tokens, and cost on one line
+        // separated by " · "
+        let changes = SessionChanges::new();
+        let usage = make_usage(1000, 200);
+        let summary =
+            format_exit_summary(&changes, &usage, "claude-sonnet-4-20250514", Instant::now())
+                .unwrap();
+        // Duration and Tokens should be on the same line, joined by " · "
+        let plain = strip_ansi(&summary);
+        let stats_line = plain.lines().find(|l| l.contains("Duration:")).unwrap();
+        assert!(
+            stats_line.contains("Tokens:"),
+            "Duration and Tokens should be on the same line, got: {stats_line}"
+        );
+    }
+
+    #[test]
+    fn test_format_file_list_sorted() {
+        // File list should be sorted alphabetically
+        let snapshot = vec![
+            FileChange {
+                path: "z.rs".to_string(),
+                kind: ChangeKind::Edit,
+            },
+            FileChange {
+                path: "a.rs".to_string(),
+                kind: ChangeKind::Write,
+            },
+            FileChange {
+                path: "m.rs".to_string(),
+                kind: ChangeKind::Edit,
+            },
+        ];
+        let list = format_file_list(&snapshot);
+        assert_eq!(list, "a.rs +new, m.rs, z.rs");
+    }
+
+    #[test]
+    fn test_format_file_list_truncation() {
+        // A very long file list should be truncated with an ellipsis
+        let snapshot: Vec<FileChange> = (0..20)
+            .map(|i| FileChange {
+                path: format!("src/very_long_module_name_{i}.rs"),
+                kind: ChangeKind::Edit,
+            })
+            .collect();
+        let list = format_file_list(&snapshot);
+        assert!(list.len() <= 61, "list too long: {} chars", list.len());
+        assert!(
+            list.contains('\u{2026}'),
+            "should contain ellipsis character"
+        );
+    }
+
+    /// Strip ANSI escape sequences for test assertions.
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut in_escape = false;
+        for ch in s.chars() {
+            if ch == '\x1b' {
+                in_escape = true;
+            } else if in_escape {
+                if ch == 'm' {
+                    in_escape = false;
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
     }
 
     #[test]

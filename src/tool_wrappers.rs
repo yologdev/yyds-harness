@@ -278,14 +278,56 @@ pub fn describe_file_operation(tool_name: &str, params: &serde_json::Value) -> S
     }
 }
 
-/// Prompt the user to confirm a file operation (write_file or edit_file).
-/// Returns true if the operation should proceed, false if denied.
-/// Shared with bash confirm via the same `always_approved` flag.
+/// Maximum combined lines (old_text + new_text) before the diff preview is truncated.
+const EDIT_DIFF_MAX_LINES: usize = 40;
+
+/// Generate a colored diff preview for an `edit_file` operation.
+///
+/// Extracts `old_text` and `new_text` from the tool params and returns a
+/// formatted diff string using the LCS-based diff renderer. Returns an empty
+/// string when both texts are identical or when the params are missing.
+///
+/// If the combined old+new text exceeds `EDIT_DIFF_MAX_LINES`, the diff is
+/// truncated with a `... (N more lines)` ellipsis.
+pub fn format_edit_diff_preview(params: &serde_json::Value) -> String {
+    let old_text = params
+        .get("old_text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let new_text = params
+        .get("new_text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if old_text.is_empty() && new_text.is_empty() {
+        return String::new();
+    }
+
+    let diff = crate::format::format_edit_diff(old_text, new_text);
+    if diff.is_empty() {
+        return diff;
+    }
+
+    // Apply additional truncation for very large diffs
+    let total_input_lines = old_text.lines().count() + new_text.lines().count();
+    if total_input_lines > EDIT_DIFF_MAX_LINES {
+        crate::format::truncate_diff_preview(&diff, 20)
+    } else {
+        diff
+    }
+}
+
+/// Prompt the user to confirm a file operation, optionally showing a diff preview.
+///
+/// When `diff_preview` is `Some(text)`, the colored diff is printed to stderr
+/// before the interactive confirmation prompt. The diff is NOT shown for
+/// auto-approved or permission-approved operations.
 pub fn confirm_file_operation(
     description: &str,
     path: &str,
     always_approved: &Arc<AtomicBool>,
     permissions: &cli::PermissionConfig,
+    diff_preview: Option<&str>,
 ) -> bool {
     // If user previously chose "always", skip the prompt
     if always_approved.load(Ordering::Relaxed) {
@@ -312,6 +354,12 @@ pub fn confirm_file_operation(
         }
     }
     use std::io::BufRead;
+    // Show the diff preview before the confirmation prompt (if available)
+    if let Some(diff) = diff_preview {
+        if !diff.is_empty() {
+            eprintln!("{}", diff);
+        }
+    }
     // Show the operation and ask for approval
     eprint!(
         "{YELLOW}  ⚠ Allow {RESET}{}{YELLOW} ? {RESET}({GREEN}y{RESET}/{RED}n{RESET}/{GREEN}a{RESET}lways) ",
@@ -364,7 +412,25 @@ impl AgentTool for ConfirmTool {
             .unwrap_or("<unknown>");
         let description = describe_file_operation(tool_name, &params);
 
-        if !confirm_file_operation(&description, path, &self.always_approved, &self.permissions) {
+        // Generate a diff preview for edit_file operations
+        let diff_preview = if tool_name == "edit_file" {
+            let preview = format_edit_diff_preview(&params);
+            if preview.is_empty() {
+                None
+            } else {
+                Some(preview)
+            }
+        } else {
+            None
+        };
+
+        if !confirm_file_operation(
+            &description,
+            path,
+            &self.always_approved,
+            &self.permissions,
+            diff_preview.as_deref(),
+        ) {
             return Err(yoagent::types::ToolError::Failed(format!(
                 "User denied {tool_name} on '{path}'"
             )));
@@ -587,6 +653,149 @@ mod tests {
         assert!(desc.contains("unknown_tool"));
     }
 
+    // === format_edit_diff_preview tests ===
+
+    #[test]
+    fn test_edit_diff_preview_basic_change() {
+        let params = serde_json::json!({
+            "path": "src/main.rs",
+            "old_text": "let x = 1;",
+            "new_text": "let x = 2;"
+        });
+        let preview = format_edit_diff_preview(&params);
+        assert!(!preview.is_empty(), "Should produce a diff preview");
+        assert!(
+            preview.contains("- let x = 1;"),
+            "Should show removed line: {preview}"
+        );
+        assert!(
+            preview.contains("+ let x = 2;"),
+            "Should show added line: {preview}"
+        );
+    }
+
+    #[test]
+    fn test_edit_diff_preview_multiline() {
+        let params = serde_json::json!({
+            "path": "src/lib.rs",
+            "old_text": "fn foo() {\n    println!(\"old\");\n}",
+            "new_text": "fn foo() {\n    println!(\"new\");\n    println!(\"extra\");\n}"
+        });
+        let preview = format_edit_diff_preview(&params);
+        assert!(preview.contains("- "), "Should have removed lines");
+        assert!(preview.contains("+ "), "Should have added lines");
+        assert!(preview.contains("new"), "Should show new content");
+        assert!(preview.contains("extra"), "Should show extra line");
+    }
+
+    #[test]
+    fn test_edit_diff_preview_identical_texts() {
+        let params = serde_json::json!({
+            "path": "src/main.rs",
+            "old_text": "same text",
+            "new_text": "same text"
+        });
+        let preview = format_edit_diff_preview(&params);
+        assert!(
+            preview.is_empty(),
+            "Identical texts should produce empty preview"
+        );
+    }
+
+    #[test]
+    fn test_edit_diff_preview_missing_params() {
+        let params = serde_json::json!({
+            "path": "src/main.rs"
+        });
+        let preview = format_edit_diff_preview(&params);
+        assert!(
+            preview.is_empty(),
+            "Missing old_text/new_text should produce empty preview"
+        );
+    }
+
+    #[test]
+    fn test_edit_diff_preview_empty_old_text() {
+        let params = serde_json::json!({
+            "path": "src/main.rs",
+            "old_text": "",
+            "new_text": "new line 1\nnew line 2"
+        });
+        let preview = format_edit_diff_preview(&params);
+        assert!(
+            !preview.is_empty(),
+            "Adding new content should produce preview"
+        );
+        assert!(
+            preview.contains("+ new line 1"),
+            "Should show additions: {preview}"
+        );
+        assert!(
+            !preview.contains("- "),
+            "Should have no removals for pure addition"
+        );
+    }
+
+    #[test]
+    fn test_edit_diff_preview_empty_new_text() {
+        let params = serde_json::json!({
+            "path": "src/main.rs",
+            "old_text": "old line 1\nold line 2",
+            "new_text": ""
+        });
+        let preview = format_edit_diff_preview(&params);
+        assert!(
+            !preview.is_empty(),
+            "Deleting content should produce preview"
+        );
+        assert!(
+            preview.contains("- old line 1"),
+            "Should show deletions: {preview}"
+        );
+        assert!(
+            !preview.contains("+ "),
+            "Should have no additions for pure deletion"
+        );
+    }
+
+    #[test]
+    fn test_edit_diff_preview_truncates_large_diff() {
+        // Generate old_text and new_text that together exceed EDIT_DIFF_MAX_LINES (40)
+        let old_lines: Vec<String> = (0..25).map(|i| format!("old line {i}")).collect();
+        let new_lines: Vec<String> = (0..25).map(|i| format!("new line {i}")).collect();
+        let params = serde_json::json!({
+            "path": "src/big.rs",
+            "old_text": old_lines.join("\n"),
+            "new_text": new_lines.join("\n")
+        });
+        let preview = format_edit_diff_preview(&params);
+        assert!(
+            !preview.is_empty(),
+            "Large diff should still produce preview"
+        );
+        // The preview should be truncated (the combined 50 lines exceeds the 40-line threshold)
+        assert!(
+            preview.contains("more lines"),
+            "Large diff should be truncated with ellipsis: {preview}"
+        );
+    }
+
+    #[test]
+    fn test_edit_diff_preview_small_diff_not_truncated() {
+        let params = serde_json::json!({
+            "path": "src/main.rs",
+            "old_text": "line 1\nline 2\nline 3",
+            "new_text": "line 1\nmodified\nline 3"
+        });
+        let preview = format_edit_diff_preview(&params);
+        // 6 total input lines — well under the 40-line threshold
+        assert!(!preview.is_empty());
+        assert!(
+            !preview.contains("more lines"),
+            "Small diff should not be truncated: {preview}"
+        );
+    }
+
     // === confirm_file_operation tests ===
 
     #[test]
@@ -594,7 +803,8 @@ mod tests {
         // When always_approved is true, confirm should return true immediately
         let flag = Arc::new(AtomicBool::new(true));
         let perms = cli::PermissionConfig::default();
-        let result = confirm_file_operation("write: test.rs (5 lines)", "test.rs", &flag, &perms);
+        let result =
+            confirm_file_operation("write: test.rs (5 lines)", "test.rs", &flag, &perms, None);
         assert!(
             result,
             "Should auto-approve when always_approved flag is set"
@@ -609,8 +819,13 @@ mod tests {
             allow: vec!["*.md".to_string()],
             deny: vec![],
         };
-        let result =
-            confirm_file_operation("write: README.md (10 lines)", "README.md", &flag, &perms);
+        let result = confirm_file_operation(
+            "write: README.md (10 lines)",
+            "README.md",
+            &flag,
+            &perms,
+            None,
+        );
         assert!(result, "Should auto-approve paths matching allow pattern");
     }
 
@@ -622,8 +837,13 @@ mod tests {
             allow: vec![],
             deny: vec!["*.key".to_string()],
         };
-        let result =
-            confirm_file_operation("write: secrets.key (1 line)", "secrets.key", &flag, &perms);
+        let result = confirm_file_operation(
+            "write: secrets.key (1 line)",
+            "secrets.key",
+            &flag,
+            &perms,
+            None,
+        );
         assert!(!result, "Should deny paths matching deny pattern");
     }
 
@@ -635,8 +855,13 @@ mod tests {
             allow: vec!["*".to_string()],
             deny: vec!["*.key".to_string()],
         };
-        let result =
-            confirm_file_operation("write: secrets.key (1 line)", "secrets.key", &flag, &perms);
+        let result = confirm_file_operation(
+            "write: secrets.key (1 line)",
+            "secrets.key",
+            &flag,
+            &perms,
+            None,
+        );
         assert!(!result, "Deny should override allow");
     }
 
@@ -653,6 +878,7 @@ mod tests {
             "src/main.rs",
             &flag,
             &perms,
+            None,
         );
         assert!(
             result,
