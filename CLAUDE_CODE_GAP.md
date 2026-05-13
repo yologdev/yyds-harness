@@ -1,7 +1,7 @@
 # Gap Analysis: yoyo vs Claude Code
 
-Last verified: Day 67 (2026-05-06)
-Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54, Day 59, Day 61, Day 63, Day 64, Day 67
+Last verified: Day 74 (2026-05-13)
+Last updated: Day 24 (2026-03-24) — major refresh on Day 38, stats refresh on Day 50, Day 54, Day 59, Day 61, Day 63, Day 64, Day 67, Day 74
 
 This document tracks the feature gap between yoyo and Claude Code, used to inform
 development priorities when there are no community issues to address. It is a
@@ -23,7 +23,8 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Tool execution | ✅ | ✅ | bash (with per-command timeout), read_file, write_file, edit_file, search, list_files, rename_symbol, ask_user, todo |
 | Multi-turn conversation | ✅ | ✅ | Both maintain conversation history |
 | Thinking/reasoning display | ✅ | ✅ | yoyo shows thinking dimmed; --thinking flag controls budget |
-| Error recovery / auto-retry | ✅ | ✅ | yoagent retries 3x with exponential backoff by default |
+| Error recovery / auto-retry | ✅ | ✅ | yoagent retries 3x with exponential backoff by default; tool-specific recovery hints escalate on repeated failures (Day 70) |
+| Auto-continue | ✅ | ✅ | Automatic follow-up on incomplete responses — `looks_incomplete` heuristic detects unclosed code blocks, numbered steps, continuation phrases; up to 5 auto-continues (configurable via `max_auto_continues` in `.yoyo.toml`) (Day 73) |
 | Subagent / task spawning | 🟡 | ✅ | `/spawn` runs tasks in separate context; yoagent's `SubAgentTool` exposes subagents as tools; `SharedState` key-value store for parent↔child data sharing (Day 58); no named-role persistent orchestration yet |
 | Tool output streaming | ✅ | ✅ | `ToolExecutionUpdate` events handled and rendered live (line counts, partial tail); real-time per-line subprocess streaming via `on_progress` (Day 62) — stdout lines print as they arrive, stderr lines prefixed with `stderr:` |
 | Background processes | ✅ | ✅ | `/bg` command (Day 45): launch, list, view output, kill background jobs with persistent tracker; Claude Code has similar with `/bashes` |
@@ -59,6 +60,10 @@ remaining gaps, but task selection still happens through the normal planning loo
 | File patch application | ✅ | ❌ | `/apply` applies unified diff patches to files (Day 23) |
 | AST structural search | ✅ | ❌ | `/ast` searches code by structure using tree-sitter patterns (Day 23) |
 | Auto-test watcher | ✅ | ❌ | `/watch` auto-runs tests on file changes (Day 23) |
+| Clipboard integration | ✅ | ✅ | `/copy` copies last response or code block to system clipboard — auto-detects pbcopy/xclip/wl-copy/clip.exe (Day 71) |
+| Desktop notifications | ✅ | ✅ | Notify on long completions (>10s); `--no-notify` / `YOYO_NO_NOTIFY` to disable (Day 71) |
+| Output speed display | ✅ | ✅ | Tokens/sec shown after each turn for real-time performance visibility (Day 73) |
+| Write file diff preview | ✅ | ✅ | `write_file` tool now shows colored red/green diff before overwriting — parity with `edit_file` diff display (Day 73) |
 | Refactoring umbrella | ✅ | ❌ | `/refactor` with subcommands: rename, extract, move (Day 23) |
 
 ## Context Management
@@ -68,7 +73,7 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Proactive context compaction | ✅ | ✅ | Proactive at 70% + auto-compact at 80% context (Day 23, upgraded from auto-only) |
 | Manual compaction | ✅ | ✅ | /compact command |
 | Token usage display | ✅ | ✅ | /tokens with visual bar; live context-window percentage in prompt |
-| Smart context injection | ✅ | ✅ | `/add` with intelligent truncation — files over 500 lines get head+tail with omission marker (Day 56) |
+| Smart context injection | ✅ | ✅ | `/add` with intelligent truncation — files over 500 lines get head+tail with omission marker (Day 56); URL support fetches web content inline (Day 72) |
 | Cost estimation | ✅ | ✅ | Per-request and session totals |
 | Context window awareness | ✅ | ✅ | Per-model context limit tracked (no longer hardcoded to 200k — #195 fix) |
 | Persistent cross-session memory | ✅ | ✅ | yoyo has `memory/` system with JSONL archives + synthesized active context (learnings, social); Codex Chronicle has similar persistent project memory. Different implementation, same capability (Day 67) |
@@ -88,7 +93,7 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Feature | yoyo | Claude Code | Notes |
 |---------|------|-------------|-------|
 | Project context files | ✅ | ✅ | yoyo reads YOYO.md, CLAUDE.md, and .yoyo/instructions.md (`src/context.rs`) |
-| Auto-detect project type | ✅ | ✅ | `detect_project_type` used by `/test`, `/lint`, `/health`, `/fix` (Rust, Node, Python, Go, Make) |
+| Auto-detect project type | ✅ | ✅ | `detect_project_type` used by `/test`, `/lint`, `/health`, `/fix` (Rust, Node, Python, Go, Make); `/doctor` extended for Java (Maven/Gradle), Ruby, C/C++ (CMake) (Day 73) |
 | Project scaffolding | ✅ | ✅ | `/init` scans project and generates a YOYO.md context file (Day 13) |
 | Git-aware file selection | ✅ | ✅ | `get_recently_changed_files` appended to project context (Day 12) |
 | Git-aware system prompt | ✅ | ✅ | Agent always sees current branch and dirty state in system prompt (Day 23) |
@@ -107,6 +112,7 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Multi-file refactoring | ✅ | ✅ | `/refactor` umbrella command (rename, extract, move); `rename_symbol` agent tool for cross-project renames (Day 23) |
 | Architect mode | ✅ | ✅ | `/architect` dual-model mode — cheap model plans, expensive model edits; inspired by Aider's architect mode (Day 59) |
 | Iterative prompt loop | ✅ | ❌ | `/loop <N|until-pass> <prompt>` runs a prompt repeatedly, useful for iterative refinement (Day 59) |
+| Plan workflow | ✅ | ❌ | `/plan` generates a structured plan, `/plan show` reviews it, `/plan apply` executes — full generate/review/execute workflow (Day 72) |
 | Auto-lint-test per edit | ✅ | ✅ | `AutoCheckTool` wrapper runs the first watch phase (typically lint/check) after each write_file/edit_file and appends errors inline; uses existing `/watch set` mechanism (Day 68) |
 | Automated PR review agent | 🟡 | ✅ | Cursor BugBot provides event-driven automated PR review; yoyo has `/review` but it's on-demand, not triggered automatically by PR events (Day 67) |
 
@@ -121,6 +127,7 @@ remaining gaps, but task selection still happens through the normal planning loo
 | Skills system | ✅ | ✅ | yoyo loads skills via `--skills <dir>` (yoagent's `SkillSet`); `/skill install`, `/skill search`, `/skill create`, `/skill list/show/enable/disable` (Days 60-61) |
 | OpenAPI tool support | ✅ | ❌ | `--openapi <spec>` loads OpenAPI specs and registers API tools (Day 9) |
 | Config system_prompt/system_file | ✅ | ✅ | `system_prompt` and `system_file` keys in .yoyo.toml for persistent custom prompts (Day 23) |
+| Prompt caching | ✅ | ✅ | Anthropic prompt caching enabled — system prompt and early conversation turns cached for ~90% cost reduction on repeated context; cache hit-rate visible in `/cost` (Day 71) |
 | Skill install & discovery | 🟡 | ✅ | `/skill install <dir>` (local) + `/skill install gh:user/repo` (remote) + `/skill search <query>` (GitHub discovery) shipped Days 60-61; still missing signed bundles, curation/ratings, formal marketplace with reviews |
 
 ## Error Handling
@@ -148,7 +155,7 @@ remaining gaps, but task selection still happens through the normal planning loo
 ## Priority Queue (real remaining gaps)
 
 After the Day 38 refresh, the gaps that are actually still gaps. Re-evaluated
-on Day 67 — three core gaps remain, plus deployment-model gaps and one
+on Day 74 — two core gaps remain, plus deployment-model gaps and one
 skills sub-gap.
 
 1. **Persistent named subagents with orchestration** (since Day ≤38) — yoyo now has
@@ -168,7 +175,7 @@ skills sub-gap.
    with reviews. A real but lower-priority gap — the install mechanics work,
    the trust/quality layer doesn't exist yet.
 
-### Competitive landscape shift (Day 67)
+### Competitive landscape shift (Day 74)
 
 The gap is no longer just yoyo vs Claude Code. The field has widened, and the
 nature of the gaps has shifted:
@@ -181,11 +188,12 @@ without fundamentally changing what it is. These are ❌ by design choice, not
 by oversight.
 
 **Feature parity is close.** MCP, hooks, skills, multi-provider support,
-sub-agent dispatch, persistent memory — these are now table-stakes across
+sub-agent dispatch, persistent memory, prompt caching, clipboard integration,
+plan workflows — these are now table-stakes across
 competitors. yoyo has all of them (✅), which means they're no longer
 differentiators but keep-pace requirements.
 
-**Competitor highlights (Day 67):**
+**Competitor highlights (Day 74):**
 - **Claude Code** has a formal plugin ecosystem with 12+ bundled plugins,
   a marketplace with discoverability and install commands, and exposes web
   search, web fetch, code execution, advisor, and memory tools as first-class
@@ -198,26 +206,29 @@ differentiators but keep-pace requirements.
   sandboxed Docker execution, and a desktop app — lowering the barrier to
   entry for non-terminal users.
 - **Aider** v0.85–0.86 added GPT-5 family, Grok-4, and o3-pro support,
-  plus per-edit auto-lint-test — yoyo now matches this with `AutoCheckTool`
-  (Day 68).
+  self-contribution metric (88% self-written), plus per-edit auto-lint-test —
+  yoyo now matches auto-lint with `AutoCheckTool` (Day 68) and has its own
+  self-written metric via `compute_self_written_pct` (Day 68).
 
 yoyo's differentiators remain and have grown: open-source self-evolution,
-multi-provider support (25 backends), the skills ecosystem (`/skill install`,
+multi-provider support (14 backends), the skills ecosystem (`/skill install`,
 `/skill search`, `/skill create`, 13 skills), `/architect` dual-model mode
-(Aider parity), `/loop` iterative refinement, `SharedState` for sub-agent
-data sharing, persistent memory system (`memory/` JSONL + active context),
-and the explore-codebase + x-research + synthesis skills for RLM-style
-sub-agent dispatch. The plugin gap has shifted from "no install/discovery
-at all" to "install works, curation doesn't exist yet."
+(Aider parity), `/loop` iterative refinement, `/plan` generate/review/execute
+workflow, `SharedState` for sub-agent data sharing, persistent memory system
+(`memory/` JSONL + active context), prompt caching, and the explore-codebase +
+x-research + synthesis skills for RLM-style sub-agent dispatch. The plugin gap
+has shifted from "no install/discovery at all" to "install works, curation
+doesn't exist yet."
 
-### Competitive Notes (Day 67)
+### Competitive Notes (Day 74)
 
-The competitive landscape has matured. The key insight: **the biggest gaps
-are now deployment-model (cloud agents, IDE integration, sandboxed execution)
-rather than feature-level.** Feature parity is close — yoyo has MCP, hooks,
-skills, memory, multi-provider, sub-agents, and most developer workflow
-commands that competitors offer. The remaining feature-level gaps (persistent
-named subagents) are tractable engineering work.
+The competitive landscape has matured. The key insight from Day 67 still holds:
+**the biggest gaps are now deployment-model (cloud agents, IDE integration,
+sandboxed execution) rather than feature-level.** Feature parity is close — yoyo
+has MCP, hooks, skills, memory, multi-provider, sub-agents, prompt caching,
+clipboard, plan workflows, and most developer workflow commands that competitors
+offer. The remaining feature-level gaps (persistent named subagents) are
+tractable engineering work.
 
 The deployment-model gaps (cloud worktrees, event-driven triggers, Docker
 isolation) represent a different class of challenge: they require
@@ -334,20 +345,52 @@ These were listed as gaps on Day 24 but have shipped since:
   `commands_rename.rs`, `commands_todo.rs`, `commands_git_review.rs`
   extractions (Days 62–64), flaky test fix for destructive_guard CWD
   race (Day 64).
+- ✅ Recently completed (Day 65–67): `.ok()` error-silencing audit and fixes
+  across pipe handling, retry saves, and session state (Day 68),
+  `compute_self_written_pct` self-authorship metric via `git blame` (Day 68),
+  `AutoCheckTool` wrapper for per-edit auto-lint-test (Day 68), re-export
+  chain cleanup in `prompt.rs` — seven files migrated to direct imports
+  (Day 67), competitive scorecard refresh (Day 67).
+- ✅ Recently completed (Day 68–74): prompt caching configuration for
+  Anthropic API — ~90% cost reduction on repeated context (Day 71), desktop
+  notifications on long completions with `--no-notify` toggle (Day 71),
+  cache hit-rate display in `/cost` (Day 71), `/copy` clipboard command —
+  auto-detects pbcopy/xclip/wl-copy/clip.exe (Day 71), `dispatch_command`
+  routing refactor — pure `route_command` function + `CommandRoute` enum
+  with 92 variants and 18 tests (Day 72), `commands_fork.rs` extraction
+  (881 lines, fork + checkpoint logic, Day 72), `commands_stash.rs`
+  extraction (Day 72), `commands_web.rs` extraction (803 lines, `/web` +
+  `/copy`, Day 72), `/plan` generate/show/apply workflow (Day 72),
+  `/map` expanded for C, C++, Ruby, Shell (Day 72), help completeness
+  test guard catching `/evolution` and `/copy` (Day 72), `/add` URL
+  support — fetch web content inline (Day 72), `write_file` colored diff
+  preview (Day 73), output tokens/sec display (Day 73), `/grep --include`
+  file-type filtering (Day 73), `/doctor` extended for Java
+  (Maven/Gradle), Ruby, C/C++ (CMake) (Day 73), 57 new tests for
+  `prompt_retry.rs` (Day 73), 31 new tests for `commands_bg.rs` (Day 72),
+  `looks_incomplete` heuristic improvements — unclosed code blocks,
+  numbered steps, continuation phrases (Day 73), auto-continue raised
+  to 5 follow-ups (configurable via `max_auto_continues`, Day 73),
+  `/run` error awareness — exit code preview with analysis offer (Day 73),
+  tool-specific recovery hints with escalating fallback paths (Day 70),
+  GPT-5/5.5/Grok-4/Gemini 2.5 Flash Lite pricing data (Day 70),
+  v0.1.11 release with CHANGELOG (Day 72).
 
-## Stats (Day 67)
+## Stats (Day 74)
 
-- yoyo: ~62,886 lines of Rust across 62 source files (incl. `src/format/`) + integration tests
-- 62 source files (was 59 on Day 64): commands split into 26 `commands_*.rs`
+- yoyo: ~71,675 lines of Rust across 66 source files (incl. `src/format/`) + integration tests
+- 66 source files (was 62 on Day 67): commands split into 30 `commands_*.rs`
   files (`commands.rs`, `commands_ast_grep.rs`, `commands_bg.rs`,
   `commands_config.rs`, `commands_dev.rs`, `commands_file.rs`,
-  `commands_git.rs`, `commands_git_review.rs`, `commands_goal.rs`,
-  `commands_info.rs`, `commands_lint.rs`, `commands_map.rs`,
-  `commands_memory.rs`, `commands_move.rs`, `commands_plan.rs`,
-  `commands_project.rs`, `commands_refactor.rs`, `commands_rename.rs`,
-  `commands_retry.rs`, `commands_run.rs`, `commands_search.rs`,
-  `commands_session.rs`, `commands_skill.rs`, `commands_spawn.rs`,
-  `commands_todo.rs`, `commands_tree.rs`, `commands_update.rs`),
+  `commands_fork.rs`, `commands_git.rs`, `commands_git_review.rs`,
+  `commands_goal.rs`, `commands_info.rs`, `commands_lint.rs`,
+  `commands_map.rs`, `commands_memory.rs`, `commands_move.rs`,
+  `commands_plan.rs`, `commands_project.rs`, `commands_refactor.rs`,
+  `commands_rename.rs`, `commands_retry.rs`, `commands_revisit.rs`,
+  `commands_run.rs`, `commands_search.rs`, `commands_session.rs`,
+  `commands_skill.rs`, `commands_spawn.rs`, `commands_stash.rs`,
+  `commands_todo.rs`, `commands_tree.rs`, `commands_update.rs`,
+  `commands_web.rs`),
   format split into `format/{mod,markdown,highlight,cost,tools,output,diff}.rs`,
   plus `agent_builder.rs`, `hooks.rs`, `memory.rs`, `setup.rs`, `docs.rs`,
   `repl.rs`, `git.rs`, `providers.rs`, `context.rs`, `config.rs`, `prompt.rs`,
@@ -355,16 +398,17 @@ These were listed as gaps on Day 24 but have shipped since:
   `sync_util.rs`, `dispatch.rs`, `dispatch_sub.rs`, `tools.rs`, `rtk.rs`,
   `safety.rs`, `help.rs`, `cli.rs`, `main.rs`, `watch.rs`,
   `tool_wrappers.rs`, `update.rs`, `conversations.rs`
-- 2,430 tests (2,342 unit + 88 integration)
+- 2,792 tests (2,704 unit + 88 integration)
 - 13 skills (7 core/creator, 6 yoyo-origin): self-assess, evolve, communicate,
   research, skill-evolve, skill-creator, analyze-trajectory (core);
   social, family, release, explore-codebase, x-research, synthesis (yoyo)
-- ~88 REPL commands, ~36 shell subcommands (help, version, setup, init, diff,
+- ~84 REPL commands, ~34 shell subcommands (help, version, setup, init, diff,
   commit, review, blame, grep, find, index, lint, test, doctor, map, tree,
-  run, watch, status, undo, docs, update, pr, config, health, skill, todo,
-  outline, changelog, evolution, memories, permissions)
-- 25 provider backends (including z.ai, cerebras, bedrock, minimax, custom)
-- **Published:** v0.1.9 on crates.io (`cargo install yoyo-agent`)
+  run, watch, status, undo, docs, update, config, health, skill, todo,
+  outline, changelog, evolution, memories, permissions, goal, extended)
+- 14 provider backends (anthropic, openai, google, openrouter, ollama, xai,
+  groq, deepseek, mistral, cerebras, zai, minimax, bedrock, custom)
+- **Published:** v0.1.11 on crates.io (`cargo install yoyo-agent`)
 - MCP server support (production)
 - User-configurable hooks (`[[hooks]]` config blocks)
 - OpenAPI tool loading
