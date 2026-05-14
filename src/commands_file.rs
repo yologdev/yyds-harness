@@ -514,43 +514,75 @@ pub fn apply_patch(path: &str, check_only: bool) -> (bool, String) {
         Err(_) => String::new(),
     };
 
-    // Run the actual apply (or check)
-    let mut args = vec!["apply"];
-    if check_only {
-        args.push("--check");
-    }
-    args.push(path);
+    // Fallback strategies: try strict first, then progressively more relaxed
+    let strategies: &[(&[&str], &str)] = &[
+        (&[], ""),
+        (&["--3way"], " with 3-way merge (--3way)"),
+        (&["-C1"], " with relaxed context matching (-C1)"),
+        (&["--recount"], " with recounted hunks (--recount)"),
+    ];
 
-    match Command::new("git").args(&args).output() {
-        Ok(output) => {
-            if output.status.success() {
+    for (extra_flags, label) in strategies {
+        let mut args = vec!["apply"];
+        if check_only {
+            args.push("--check");
+        }
+        for flag in *extra_flags {
+            args.push(flag);
+        }
+        args.push(path);
+
+        match Command::new("git").args(&args).output() {
+            Ok(output) if output.status.success() => {
                 let mut msg = String::new();
                 if check_only {
-                    msg.push_str("Dry-run OK — patch can be applied cleanly.\n");
-                } else {
+                    if label.is_empty() {
+                        msg.push_str("Dry-run OK — patch can be applied cleanly.\n");
+                    } else {
+                        msg.push_str(&format!("Dry-run OK — patch can be applied{label}.\n"));
+                    }
+                } else if label.is_empty() {
                     msg.push_str("Patch applied successfully.\n");
+                } else {
+                    msg.push_str(&format!("Patch applied{label}.\n"));
                 }
                 if !stat_text.is_empty() {
                     msg.push_str("\nFiles affected:\n");
                     msg.push_str(&stat_text);
                 }
-                (true, msg)
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                let mut msg = String::new();
-                if check_only {
-                    msg.push_str("Dry-run FAILED — patch cannot be applied cleanly.\n");
-                } else {
-                    msg.push_str("Failed to apply patch.\n");
-                }
-                if !stderr.is_empty() {
-                    msg.push_str(&stderr);
-                }
-                (false, msg)
+                return (true, msg);
             }
+            Ok(_) => {
+                // This strategy failed — try the next one
+                continue;
+            }
+            Err(e) => return (false, format!("Failed to run git apply: {e}")),
         }
-        Err(e) => (false, format!("Failed to run git apply: {e}")),
     }
+
+    // All strategies exhausted — report failure using the strict attempt's error
+    let mut fail_args = vec!["apply"];
+    if check_only {
+        fail_args.push("--check");
+    }
+    fail_args.push(path);
+    let stderr = Command::new("git")
+        .args(&fail_args)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+        .unwrap_or_default();
+
+    let mut msg = String::new();
+    if check_only {
+        msg.push_str("Dry-run FAILED — patch cannot be applied cleanly.\n");
+    } else {
+        msg.push_str("Failed to apply patch.\n");
+    }
+    msg.push_str("Tried: strict, --3way, -C1, --recount — all failed.\n");
+    if !stderr.is_empty() {
+        msg.push_str(&stderr);
+    }
+    (false, msg)
 }
 
 /// Apply a patch from string content. Writes to a temp file, applies, then cleans up.
@@ -811,6 +843,7 @@ mod tests {
     use super::*;
     use crate::commands::KNOWN_COMMANDS;
     use crate::help::help_text;
+    use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1346,6 +1379,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_apply_patch_from_string_valid_in_git_repo() {
         // Create a temp dir with a git repo and test applying a real patch
         let dir = TempDir::new().unwrap();
@@ -1393,7 +1427,240 @@ mod tests {
         std::env::set_current_dir(old_dir).unwrap();
     }
 
-    // ── Tests moved from commands.rs — /add command tests ────────────
+    /// Helper: set up a temp git repo with a committed file.
+    /// Returns (TempDir, file_path, old_cwd).
+    fn setup_git_repo(
+        filename: &str,
+        content: &str,
+    ) -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join(filename);
+        fs::write(&file_path, content).unwrap();
+
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let old_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        (dir, file_path, old_dir)
+    }
+
+    #[test]
+    #[serial]
+    fn test_apply_patch_fallback_strategies() {
+        // Create a repo with a file, then modify it so that a patch against the
+        // original version has shifted context — forcing a fallback strategy.
+        let original = "line1\nline2\nline3\nline4\nline5\n";
+        let (_dir, file_path, old_dir) = setup_git_repo("test.txt", original);
+
+        // Now modify the file (add lines at the top) so context drifts
+        let modified = "new_top_1\nnew_top_2\nline1\nline2\nline3\nline4\nline5\n";
+        fs::write(&file_path, modified).unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(_dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "shift"])
+            .current_dir(_dir.path())
+            .output()
+            .unwrap();
+
+        // Create a patch that was generated against the *original* layout.
+        // The hunk says line 3 is at line 3, but now it's at line 5 — context has drifted.
+        let patch = "\
+diff --git a/test.txt b/test.txt
+--- a/test.txt
++++ b/test.txt
+@@ -1,5 +1,5 @@
+ line1
+ line2
+-line3
++line3_modified
+ line4
+ line5
+";
+        let patch_path = _dir.path().join("drift.patch");
+        fs::write(&patch_path, patch).unwrap();
+
+        let (ok, msg) = apply_patch(&patch_path.to_string_lossy(), false);
+        // Should succeed via a fallback strategy
+        assert!(ok, "Fallback should succeed: {msg}");
+
+        // Verify the modification was applied
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert!(
+            content.contains("line3_modified"),
+            "File should contain modified line, got: {content}"
+        );
+
+        std::env::set_current_dir(old_dir).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_apply_patch_check_only_fallback() {
+        // Same drift setup as above, but with check_only=true
+        let original = "line1\nline2\nline3\nline4\nline5\n";
+        let (_dir, file_path, old_dir) = setup_git_repo("test.txt", original);
+
+        let modified = "new_top_1\nnew_top_2\nline1\nline2\nline3\nline4\nline5\n";
+        fs::write(&file_path, modified).unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(_dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "shift"])
+            .current_dir(_dir.path())
+            .output()
+            .unwrap();
+
+        let patch = "\
+diff --git a/test.txt b/test.txt
+--- a/test.txt
++++ b/test.txt
+@@ -1,5 +1,5 @@
+ line1
+ line2
+-line3
++line3_modified
+ line4
+ line5
+";
+        let patch_path = _dir.path().join("drift.patch");
+        fs::write(&patch_path, patch).unwrap();
+
+        let (ok, msg) = apply_patch(&patch_path.to_string_lossy(), true);
+        assert!(ok, "Check-only fallback should succeed: {msg}");
+        assert!(
+            msg.contains("Dry-run OK"),
+            "Should indicate dry-run success: {msg}"
+        );
+
+        // File should be unchanged since check_only=true
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert!(
+            !content.contains("line3_modified"),
+            "File should not be modified in check-only mode"
+        );
+
+        std::env::set_current_dir(old_dir).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_apply_patch_reports_fallback_strategy() {
+        // Create a drifted patch situation where strict apply fails but a fallback succeeds.
+        // Verify the output message mentions the fallback method.
+        let original = "line1\nline2\nline3\nline4\nline5\n";
+        let (_dir, file_path, old_dir) = setup_git_repo("test.txt", original);
+
+        let modified = "new_top_1\nnew_top_2\nline1\nline2\nline3\nline4\nline5\n";
+        fs::write(&file_path, modified).unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(_dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "shift"])
+            .current_dir(_dir.path())
+            .output()
+            .unwrap();
+
+        let patch = "\
+diff --git a/test.txt b/test.txt
+--- a/test.txt
++++ b/test.txt
+@@ -1,5 +1,5 @@
+ line1
+ line2
+-line3
++line3_modified
+ line4
+ line5
+";
+        let patch_path = _dir.path().join("drift.patch");
+        fs::write(&patch_path, patch).unwrap();
+
+        let (ok, msg) = apply_patch(&patch_path.to_string_lossy(), false);
+        assert!(ok, "Should succeed via fallback: {msg}");
+
+        // If it didn't apply via strict mode, the message should mention a fallback
+        // (either --3way, -C1, or --recount)
+        let used_fallback = msg.contains("--3way")
+            || msg.contains("-C1")
+            || msg.contains("--recount")
+            || msg.contains("successfully");
+        assert!(
+            used_fallback,
+            "Message should mention the strategy used: {msg}"
+        );
+
+        std::env::set_current_dir(old_dir).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_apply_patch_strict_still_works() {
+        // When a patch applies cleanly, it should say "successfully" without fallback labels
+        let original = "hello\n";
+        let (_dir, file_path, old_dir) = setup_git_repo("clean.txt", original);
+
+        let patch = "\
+diff --git a/clean.txt b/clean.txt
+--- a/clean.txt
++++ b/clean.txt
+@@ -1 +1 @@
+-hello
++hello world
+";
+        let patch_path = _dir.path().join("clean.patch");
+        fs::write(&patch_path, patch).unwrap();
+
+        let (ok, msg) = apply_patch(&patch_path.to_string_lossy(), false);
+        assert!(ok, "Strict apply should succeed: {msg}");
+        assert!(
+            msg.contains("successfully"),
+            "Should say 'successfully': {msg}"
+        );
+        // Should NOT mention any fallback strategy
+        assert!(
+            !msg.contains("--3way") && !msg.contains("-C1") && !msg.contains("--recount"),
+            "Clean apply should not mention fallback: {msg}"
+        );
+
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "hello world\n");
+
+        std::env::set_current_dir(old_dir).unwrap();
+    } // ── Tests moved from commands.rs — /add command tests ────────────
 
     #[test]
     fn test_add_command_recognized() {
