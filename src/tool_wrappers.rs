@@ -13,9 +13,10 @@
 use crate::cli;
 use crate::format::*;
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use yoagent::types::AgentTool;
 
@@ -550,6 +551,118 @@ impl AgentTool for AutoCheckTool {
 /// and appends any errors to the tool result for immediate feedback.
 pub(crate) fn with_auto_check(tool: Box<dyn AgentTool>) -> Box<dyn AgentTool> {
     Box::new(AutoCheckTool { inner: tool })
+}
+
+// ---------------------------------------------------------------------------
+// RecoveryHintTool — appends recovery hints to tool error messages
+// ---------------------------------------------------------------------------
+
+/// Tracks consecutive failures per tool name so recovery hints can escalate.
+///
+/// Shared across all tools in a session — when tool A fails 3 times,
+/// the hint it gets is more aggressive than on its first failure.
+/// When a tool succeeds, its counter resets.
+#[derive(Clone, Default)]
+pub(crate) struct ToolFailureTracker {
+    counts: Arc<Mutex<HashMap<String, u32>>>,
+}
+
+#[allow(dead_code)] // Public API — wired in a follow-up task
+impl ToolFailureTracker {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Increment the failure count for a tool and return the new count.
+    fn record_failure(&self, tool_name: &str) -> u32 {
+        let mut map = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        let count = map.entry(tool_name.to_string()).or_insert(0);
+        *count += 1;
+        *count
+    }
+
+    /// Reset the failure count for a tool (called on success).
+    fn record_success(&self, tool_name: &str) {
+        let mut map = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        map.remove(tool_name);
+    }
+
+    /// Get the current failure count for a tool (for testing).
+    #[cfg(test)]
+    fn get(&self, tool_name: &str) -> u32 {
+        let map = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(tool_name).copied().unwrap_or(0)
+    }
+}
+
+/// A wrapper tool that enriches error messages with recovery hints.
+///
+/// On success the failure counter resets. On failure the counter increments
+/// and a tool-specific recovery hint (from `prompt_retry::tool_recovery_hint`)
+/// is appended to the error message.
+#[allow(dead_code)] // Public API — wired in a follow-up task
+pub(crate) struct RecoveryHintTool {
+    inner: Box<dyn AgentTool>,
+    tracker: ToolFailureTracker,
+}
+
+#[async_trait::async_trait]
+impl AgentTool for RecoveryHintTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn label(&self) -> &str {
+        self.inner.label()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.inner.parameters_schema()
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: yoagent::types::ToolContext,
+    ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+        let tool_name = self.inner.name().to_string();
+        match self.inner.execute(params, ctx).await {
+            Ok(result) => {
+                self.tracker.record_success(&tool_name);
+                Ok(result)
+            }
+            Err(yoagent::types::ToolError::Failed(msg)) => {
+                let attempt = self.tracker.record_failure(&tool_name);
+                let hint = crate::prompt_retry::tool_recovery_hint(&tool_name, attempt);
+                Err(yoagent::types::ToolError::Failed(format!(
+                    "{msg}\n\n💡 Recovery hint: {hint}"
+                )))
+            }
+            Err(other) => {
+                // Non-Failed errors (NotFound, InvalidArgs, Cancelled) pass through
+                // but still count as failures for escalation purposes
+                self.tracker.record_failure(&tool_name);
+                Err(other)
+            }
+        }
+    }
+}
+
+/// Wrap a tool with recovery hints on failure. The `tracker` is shared across
+/// all tools so consecutive failures of the same tool escalate the advice.
+#[allow(dead_code)] // Public API — wired in a follow-up task
+pub(crate) fn with_recovery_hints(
+    tool: Box<dyn AgentTool>,
+    tracker: &ToolFailureTracker,
+) -> Box<dyn AgentTool> {
+    Box::new(RecoveryHintTool {
+        inner: tool,
+        tracker: tracker.clone(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1193,6 +1306,216 @@ mod tests {
         assert!(
             !text.contains("test phase"),
             "Should NOT run second phase: {text}"
+        );
+    }
+
+    // === RecoveryHintTool tests ===
+
+    /// A mock tool that can be configured to succeed or fail.
+    struct ConfigurableMockTool {
+        tool_name: &'static str,
+        /// When `Some(msg)`, execute returns `ToolError::Failed(msg)`.
+        /// When `None`, execute succeeds with "ok".
+        fail_msg: Option<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentTool for ConfigurableMockTool {
+        fn name(&self) -> &str {
+            self.tool_name
+        }
+        fn label(&self) -> &str {
+            self.tool_name
+        }
+        fn description(&self) -> &str {
+            "configurable mock"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        async fn execute(
+            &self,
+            _params: serde_json::Value,
+            _ctx: yoagent::types::ToolContext,
+        ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+            if let Some(ref msg) = self.fail_msg {
+                Err(yoagent::types::ToolError::Failed(msg.clone()))
+            } else {
+                Ok(yoagent::types::ToolResult {
+                    content: vec![yoagent::Content::Text {
+                        text: "ok".to_string(),
+                    }],
+                    details: serde_json::Value::Null,
+                })
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_recovery_hint_tool_success_resets_counter() {
+        let tracker = ToolFailureTracker::new();
+
+        // Manually seed a failure count
+        assert_eq!(tracker.record_failure("bash"), 1);
+        assert_eq!(tracker.record_failure("bash"), 2);
+        assert_eq!(tracker.get("bash"), 2);
+
+        // Wrap a succeeding tool
+        let tool = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "bash",
+                fail_msg: None,
+            }),
+            &tracker,
+        );
+
+        let result = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await;
+        assert!(result.is_ok(), "Should succeed");
+
+        // Counter should be reset after success
+        assert_eq!(tracker.get("bash"), 0);
+    }
+
+    #[tokio::test]
+    async fn test_recovery_hint_tool_appends_hint_on_failure() {
+        let tracker = ToolFailureTracker::new();
+
+        let tool = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "edit_file",
+                fail_msg: Some("old_text not found".to_string()),
+            }),
+            &tracker,
+        );
+
+        let result = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await;
+        assert!(result.is_err(), "Should fail");
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("old_text not found"),
+            "Should contain original error: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("💡 Recovery hint:"),
+            "Should contain recovery hint marker: {err_msg}"
+        );
+        // Attempt 1 for edit_file should suggest using read_file first
+        assert!(
+            err_msg.contains("read_file"),
+            "Attempt 1 hint for edit_file should mention read_file: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recovery_hint_tool_escalates_on_repeated_failure() {
+        let tracker = ToolFailureTracker::new();
+
+        // First failure
+        let tool1 = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "edit_file",
+                fail_msg: Some("mismatch".to_string()),
+            }),
+            &tracker,
+        );
+
+        let err1 = tool1
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap_err()
+            .to_string();
+
+        // Second failure — should escalate (attempt >= 2 suggests write_file)
+        let tool2 = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "edit_file",
+                fail_msg: Some("mismatch again".to_string()),
+            }),
+            &tracker,
+        );
+
+        let err2 = tool2
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap_err()
+            .to_string();
+
+        // Attempt 1 mentions read_file (diagnostic hint)
+        assert!(
+            err1.contains("read_file"),
+            "Attempt 1 should suggest read_file: {err1}"
+        );
+        // Attempt 2 should mention write_file (escalated alternative)
+        assert!(
+            err2.contains("write_file"),
+            "Attempt 2 should escalate to suggesting write_file: {err2}"
+        );
+        // The two hints should be different
+        assert_ne!(err1, err2, "Hints should escalate between attempts");
+    }
+
+    #[tokio::test]
+    async fn test_tool_failure_tracker_independent_per_tool() {
+        let tracker = ToolFailureTracker::new();
+
+        // Fail bash twice
+        let bash_tool = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "bash",
+                fail_msg: Some("command not found".to_string()),
+            }),
+            &tracker,
+        );
+        let _ = bash_tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await;
+        let _ = bash_tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await;
+
+        assert_eq!(tracker.get("bash"), 2, "bash should have 2 failures");
+
+        // Fail edit_file once
+        let edit_tool = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "edit_file",
+                fail_msg: Some("not found".to_string()),
+            }),
+            &tracker,
+        );
+        let _ = edit_tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await;
+
+        assert_eq!(
+            tracker.get("edit_file"),
+            1,
+            "edit_file should have 1 failure"
+        );
+        assert_eq!(tracker.get("bash"), 2, "bash should still have 2 failures");
+
+        // Succeed on bash — resets only bash
+        let bash_ok = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "bash",
+                fail_msg: None,
+            }),
+            &tracker,
+        );
+        let _ = bash_ok
+            .execute(serde_json::json!({}), test_tool_context())
+            .await;
+
+        assert_eq!(tracker.get("bash"), 0, "bash should be reset after success");
+        assert_eq!(
+            tracker.get("edit_file"),
+            1,
+            "edit_file should be unaffected"
         );
     }
 }
