@@ -37,6 +37,7 @@
 
 mod agent_builder;
 mod cli;
+mod cli_config;
 mod commands;
 mod commands_ast_grep;
 mod commands_bg;

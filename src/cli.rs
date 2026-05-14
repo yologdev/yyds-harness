@@ -7,34 +7,8 @@ use std::io::IsTerminal;
 use yoagent::skills::SkillSet;
 use yoagent::ThinkingLevel;
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const DEFAULT_CONTEXT_TOKENS: u64 = 200_000;
-pub const AUTO_COMPACT_THRESHOLD: f64 = 0.80;
-pub const PROACTIVE_COMPACT_THRESHOLD: f64 = 0.70;
-
-/// Effective context window (tokens) for the current session.
-/// Set once in configure_agent() based on model config + CLI override.
-/// Read by /tokens and /status commands to show accurate budget.
-static EFFECTIVE_CONTEXT_TOKENS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(DEFAULT_CONTEXT_TOKENS);
-
-/// Set the effective context window size. Called once during agent setup.
-pub fn set_effective_context_tokens(tokens: u64) {
-    EFFECTIVE_CONTEXT_TOKENS.store(tokens, std::sync::atomic::Ordering::SeqCst);
-}
-
-/// Get the effective context window size for display purposes.
-pub fn effective_context_tokens() -> u64 {
-    EFFECTIVE_CONTEXT_TOKENS.load(std::sync::atomic::Ordering::SeqCst)
-}
-pub const DEFAULT_SESSION_PATH: &str = "yoyo-session.json";
-pub const AUTO_SAVE_SESSION_PATH: &str = ".yoyo/last-session.json";
-
-pub const SYSTEM_PROMPT: &str = r#"You are a coding assistant working in the user's terminal.
-You have access to the filesystem and shell. Be direct and concise.
-When the user asks you to do something, do it — don't just explain how.
-Use tools proactively: read files to understand context, run commands to verify your work.
-After making changes, run tests or verify the result when appropriate."#;
+// Constants, Config struct, enums — extracted to cli_config.rs for readability.
+pub use crate::cli_config::*;
 
 /// Known provider names for the --provider flag.
 // Re-exported from providers module so existing `use crate::cli::` imports keep working.
@@ -42,70 +16,12 @@ pub use crate::providers::{
     default_model_for_provider, known_models_for_provider, provider_api_key_env, KNOWN_PROVIDERS,
 };
 
-/// Context management strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum ContextStrategy {
-    /// Default: auto-compact conversation when approaching context limit
-    #[default]
-    Compaction,
-    /// Write checkpoint file and exit with code 2 when approaching limit
-    Checkpoint,
-}
-
 // Re-exported from config module so existing `use crate::cli::` imports keep working.
 pub use crate::config::{
     history_file_path, home_config_path, load_config_file, parse_config_file,
     parse_directories_from_config, parse_mcp_servers_from_config, parse_permissions_from_config,
     parse_toml_array, user_config_path, DirectoryRestrictions, McpServerConfig, PermissionConfig,
 };
-
-/// Output format for non-interactive modes (--prompt, piped).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputFormat {
-    /// Default human-readable text output.
-    Text,
-    /// Single JSON blob at the end (--json / --output-format json).
-    Json,
-    /// Newline-delimited JSON events streamed in real-time (--output-format stream-json).
-    StreamJson,
-}
-
-/// Parsed CLI configuration.
-pub struct Config {
-    pub model: String,
-    pub api_key: String,
-    pub provider: String,
-    pub base_url: Option<String>,
-    pub skills: SkillSet,
-    pub system_prompt: String,
-    pub thinking: ThinkingLevel,
-    pub max_tokens: Option<u32>,
-    pub temperature: Option<f32>,
-    pub max_turns: Option<usize>,
-    pub continue_session: bool,
-    pub output_path: Option<String>,
-    pub prompt_arg: Option<String>,
-    pub image_path: Option<String>,
-    pub verbose: bool,
-    pub mcp_servers: Vec<String>,
-    pub mcp_server_configs: Vec<McpServerConfig>,
-    pub openapi_specs: Vec<String>,
-    pub auto_approve: bool,
-    pub auto_commit: bool,
-    pub permissions: PermissionConfig,
-    pub dir_restrictions: DirectoryRestrictions,
-    pub context_strategy: ContextStrategy,
-    pub context_window: Option<u32>,
-    pub shell_hooks: Vec<crate::hooks::ShellHook>,
-    pub fallback_provider: Option<String>,
-    pub fallback_model: Option<String>,
-    pub no_update_check: bool,
-    pub json_output: bool,
-    pub output_format: OutputFormat,
-    pub audit: bool,
-    pub print_system_prompt: bool,
-    pub auto_watch: bool,
-}
 
 /// Whether verbose output is enabled. Set once at startup.
 static VERBOSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
