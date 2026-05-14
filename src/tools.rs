@@ -18,7 +18,8 @@ use crate::format::*;
 use crate::hooks::{self, maybe_hook, AuditHook, HookRegistry};
 use crate::safety::analyze_bash_command;
 use crate::tool_wrappers::{
-    maybe_confirm, maybe_guard, maybe_guard_arc, with_auto_check, with_truncation,
+    maybe_confirm, maybe_guard, maybe_guard_arc, with_auto_check, with_recovery_hints,
+    with_truncation, ToolFailureTracker,
 };
 use crate::AgentConfig;
 
@@ -756,6 +757,10 @@ pub fn build_tools(
         maybe_confirm(Box::new(RenameSymbolTool), &always_approved, permissions)
     };
 
+    // Shared failure tracker for recovery hints — counts per-tool failures
+    // so hints escalate from diagnostic to alternative suggestions.
+    let failure_tracker = ToolFailureTracker::new();
+
     // Build hook registry — AuditHook when audit mode is on, plus user-configured shell hooks.
     let hooks = {
         let mut registry = HookRegistry::new();
@@ -769,37 +774,64 @@ pub fn build_tools(
     };
 
     let mut tools = vec![
-        maybe_hook(with_truncation(Box::new(bash), max_tool_output), &hooks),
         maybe_hook(
-            with_truncation(
-                maybe_guard(Box::new(ReadFileTool::default()), dir_restrictions),
-                max_tool_output,
+            with_recovery_hints(
+                with_truncation(Box::new(bash), max_tool_output),
+                &failure_tracker,
             ),
             &hooks,
         ),
         maybe_hook(
-            with_truncation(with_auto_check(write_tool), max_tool_output),
-            &hooks,
-        ),
-        maybe_hook(
-            with_truncation(with_auto_check(edit_tool), max_tool_output),
-            &hooks,
-        ),
-        maybe_hook(
-            with_truncation(
-                maybe_guard(Box::new(ListFilesTool::default()), dir_restrictions),
-                max_tool_output,
+            with_recovery_hints(
+                with_truncation(
+                    maybe_guard(Box::new(ReadFileTool::default()), dir_restrictions),
+                    max_tool_output,
+                ),
+                &failure_tracker,
             ),
             &hooks,
         ),
         maybe_hook(
-            with_truncation(
-                maybe_guard(Box::new(SearchTool::default()), dir_restrictions),
-                max_tool_output,
+            with_recovery_hints(
+                with_truncation(with_auto_check(write_tool), max_tool_output),
+                &failure_tracker,
             ),
             &hooks,
         ),
-        maybe_hook(with_truncation(rename_tool, max_tool_output), &hooks),
+        maybe_hook(
+            with_recovery_hints(
+                with_truncation(with_auto_check(edit_tool), max_tool_output),
+                &failure_tracker,
+            ),
+            &hooks,
+        ),
+        maybe_hook(
+            with_recovery_hints(
+                with_truncation(
+                    maybe_guard(Box::new(ListFilesTool::default()), dir_restrictions),
+                    max_tool_output,
+                ),
+                &failure_tracker,
+            ),
+            &hooks,
+        ),
+        maybe_hook(
+            with_recovery_hints(
+                with_truncation(
+                    maybe_guard(Box::new(SearchTool::default()), dir_restrictions),
+                    max_tool_output,
+                ),
+                &failure_tracker,
+            ),
+            &hooks,
+        ),
+        maybe_hook(
+            with_recovery_hints(
+                with_truncation(rename_tool, max_tool_output),
+                &failure_tracker,
+            ),
+            &hooks,
+        ),
     ];
 
     // Only add ask_user in interactive mode (stdin is a terminal).

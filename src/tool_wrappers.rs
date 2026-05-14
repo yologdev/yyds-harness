@@ -567,7 +567,7 @@ pub(crate) struct ToolFailureTracker {
     counts: Arc<Mutex<HashMap<String, u32>>>,
 }
 
-#[allow(dead_code)] // Public API — wired in a follow-up task
+#[allow(dead_code)] // record_failure / record_success called only via RecoveryHintTool
 impl ToolFailureTracker {
     pub(crate) fn new() -> Self {
         Self::default()
@@ -654,7 +654,6 @@ impl AgentTool for RecoveryHintTool {
 
 /// Wrap a tool with recovery hints on failure. The `tracker` is shared across
 /// all tools so consecutive failures of the same tool escalate the advice.
-#[allow(dead_code)] // Public API — wired in a follow-up task
 pub(crate) fn with_recovery_hints(
     tool: Box<dyn AgentTool>,
     tracker: &ToolFailureTracker,
