@@ -10,8 +10,15 @@ use std::time::Duration;
 /// Build a retry prompt that includes error context from a previous failed attempt.
 ///
 /// If `last_error` is `Some`, prepends an error context note to help the model
-/// avoid repeating the same mistake. If `None`, returns the input unchanged.
-pub fn build_retry_prompt(input: &str, last_error: &Option<String>) -> String {
+/// avoid repeating the same mistake. When `tool_name` is provided, a
+/// tool-specific recovery hint (from [`tool_recovery_hint`]) is appended so the
+/// agent can make a more informed retry decision instead of repeating the same
+/// failing approach. If `None`, returns the input unchanged.
+pub fn build_retry_prompt(
+    input: &str,
+    last_error: &Option<String>,
+    tool_name: Option<&str>,
+) -> String {
     match last_error {
         Some(err) => {
             // Truncate very long errors to keep the prompt focused
@@ -20,7 +27,19 @@ pub fn build_retry_prompt(input: &str, last_error: &Option<String>) -> String {
             } else {
                 err.clone()
             };
-            format!("[Previous attempt failed: {summary}. Try a different approach.]\n\n{input}")
+            match tool_name {
+                Some(name) => {
+                    let hint = tool_recovery_hint(name, 1);
+                    format!(
+                        "[Previous attempt failed — {name} error: {summary}. {hint}]\n\n{input}"
+                    )
+                }
+                None => {
+                    format!(
+                        "[Previous attempt failed: {summary}. Try a different approach.]\n\n{input}"
+                    )
+                }
+            }
         }
         None => input.to_string(),
     }
@@ -875,14 +894,14 @@ mod tests {
 
     #[test]
     fn test_build_retry_prompt_no_error() {
-        let result = build_retry_prompt("hello world", &None);
+        let result = build_retry_prompt("hello world", &None, None);
         assert_eq!(result, "hello world");
     }
 
     #[test]
     fn test_build_retry_prompt_short_error() {
         let err = Some("file not found".to_string());
-        let result = build_retry_prompt("fix the bug", &err);
+        let result = build_retry_prompt("fix the bug", &err, None);
         assert!(
             result.contains("[Previous attempt failed: file not found. Try a different approach.]"),
             "should wrap error: {result}"
@@ -898,7 +917,7 @@ mod tests {
         // Create an error longer than 200 chars
         let long_err = "a".repeat(300);
         let err = Some(long_err.clone());
-        let result = build_retry_prompt("try again", &err);
+        let result = build_retry_prompt("try again", &err, None);
         // Should contain the truncation marker
         assert!(
             result.contains('…'),
@@ -919,7 +938,7 @@ mod tests {
     fn test_build_retry_prompt_exactly_200_chars_not_truncated() {
         let err_200 = "b".repeat(200);
         let err = Some(err_200.clone());
-        let result = build_retry_prompt("input", &err);
+        let result = build_retry_prompt("input", &err, None);
         // 200 chars is not > 200, so no truncation
         assert!(
             result.contains(&err_200),
@@ -935,11 +954,56 @@ mod tests {
     fn test_build_retry_prompt_201_chars_truncated() {
         let err_201 = "c".repeat(201);
         let err = Some(err_201);
-        let result = build_retry_prompt("input", &err);
+        let result = build_retry_prompt("input", &err, None);
         assert!(
             result.contains('…'),
             "201-char error should be truncated: {result}"
         );
+    }
+
+    #[test]
+    fn test_build_retry_prompt_with_tool_name() {
+        let err = Some("old_text not found in file".to_string());
+        let result = build_retry_prompt("fix it", &err, Some("edit_file"));
+        assert!(
+            result.contains("edit_file error:"),
+            "should mention tool: {result}"
+        );
+        assert!(
+            result.contains("old_text not found"),
+            "should include error: {result}"
+        );
+        // Should include a recovery hint (edit_file hint mentions read_file)
+        assert!(
+            result.contains("read_file"),
+            "should include recovery hint: {result}"
+        );
+        assert!(
+            result.contains("fix it"),
+            "should include original input: {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_retry_prompt_with_bash_tool() {
+        let err = Some("command not found".to_string());
+        let result = build_retry_prompt("run tests", &err, Some("bash"));
+        assert!(
+            result.contains("bash error:"),
+            "should mention bash: {result}"
+        );
+        // bash hint should mention command/approach
+        assert!(
+            result.contains("command"),
+            "should include recovery hint about command: {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_retry_prompt_tool_name_no_error() {
+        // When there's no error, tool_name is irrelevant — should return input unchanged
+        let result = build_retry_prompt("hello", &None, Some("bash"));
+        assert_eq!(result, "hello");
     }
 
     // ---------------------------------------------------------------

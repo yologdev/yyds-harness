@@ -19,6 +19,59 @@ use std::time::Instant;
 use yoagent::agent::Agent;
 use yoagent::*;
 
+/// Known tool names that can appear in error messages from failed tool executions.
+/// Order matters: longer names first to avoid partial matches (e.g., "edit_file"
+/// before "list_files" doesn't matter here, but "read_file" before "write_file"
+/// avoids false positives if error text mentions both).
+const KNOWN_TOOL_NAMES: &[&str] = &[
+    "rename_symbol",
+    "shared_state",
+    "write_file",
+    "read_file",
+    "edit_file",
+    "list_files",
+    "sub_agent",
+    "ask_user",
+    "search",
+    "bash",
+    "todo",
+];
+
+/// Extract a tool name from an error message string.
+///
+/// Searches for known tool names that appear as whole words (bounded by
+/// non-alphanumeric/underscore characters or string edges). Returns the first
+/// match found. This is used by `/retry` to provide tool-specific recovery
+/// hints when the tool name wasn't preserved through the error propagation path.
+///
+/// Returns `None` if no recognizable tool name is found.
+pub fn extract_tool_name_from_error(error: &str) -> Option<&'static str> {
+    if error.is_empty() {
+        return None;
+    }
+    for &tool in KNOWN_TOOL_NAMES {
+        if let Some(pos) = error.find(tool) {
+            // Check word boundary before
+            let before_ok = pos == 0
+                || error
+                    .as_bytes()
+                    .get(pos - 1)
+                    .is_none_or(|&b| !b.is_ascii_alphanumeric() && b != b'_');
+            // Check word boundary after
+            let end = pos + tool.len();
+            let after_ok = end >= error.len()
+                || error
+                    .as_bytes()
+                    .get(end)
+                    .is_none_or(|&b| !b.is_ascii_alphanumeric() && b != b'_');
+            if before_ok && after_ok {
+                return Some(tool);
+            }
+        }
+    }
+    None
+}
+
 pub async fn handle_retry(
     agent: &mut Agent,
     last_input: &Option<String>,
@@ -28,9 +81,15 @@ pub async fn handle_retry(
 ) -> Option<String> {
     match last_input {
         Some(prev) => {
-            let retry_input = build_retry_prompt(prev, last_error);
+            // Try to extract the tool name from the error text for targeted recovery hints
+            let tool_name = last_error.as_deref().and_then(extract_tool_name_from_error);
+            let retry_input = build_retry_prompt(prev, last_error, tool_name);
             if last_error.is_some() {
-                println!("{DIM}  (retrying with error context){RESET}");
+                if let Some(name) = tool_name {
+                    println!("{DIM}  (retrying with {name} error context + recovery hint){RESET}");
+                } else {
+                    println!("{DIM}  (retrying with error context){RESET}");
+                }
             } else {
                 println!("{DIM}  (retrying last input){RESET}");
             }
@@ -564,5 +623,155 @@ mod tests {
         assert!(is_unknown_command("/changed"));
         // /changelog is now a valid command (Issue #226)
         assert!(!is_unknown_command("/changelog"));
+    }
+
+    // ---------------------------------------------------------------
+    // extract_tool_name_from_error tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_extract_tool_name_edit_file() {
+        assert_eq!(
+            extract_tool_name_from_error("edit_file: old_text not found in file"),
+            Some("edit_file")
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_name_bash() {
+        assert_eq!(
+            extract_tool_name_from_error("bash: command not found: foobar"),
+            Some("bash")
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_name_read_file() {
+        assert_eq!(
+            extract_tool_name_from_error("read_file failed: no such file or directory"),
+            Some("read_file")
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_name_write_file() {
+        assert_eq!(
+            extract_tool_name_from_error("write_file: permission denied"),
+            Some("write_file")
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_name_search() {
+        assert_eq!(
+            extract_tool_name_from_error("search returned no results"),
+            Some("search")
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_name_rename_symbol() {
+        assert_eq!(
+            extract_tool_name_from_error("rename_symbol: symbol not found"),
+            Some("rename_symbol")
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_name_in_quoted_context() {
+        // Tool name might appear in quotes like "Tool 'edit_file' failed"
+        assert_eq!(
+            extract_tool_name_from_error("Tool 'edit_file' failed with error"),
+            Some("edit_file")
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_name_none_for_unknown() {
+        assert_eq!(
+            extract_tool_name_from_error("something went wrong with the compilation"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_name_empty_input() {
+        assert_eq!(extract_tool_name_from_error(""), None);
+    }
+
+    #[test]
+    fn test_extract_tool_name_word_boundary() {
+        // "searching" contains "search" but shouldn't match (no word boundary after)
+        assert_eq!(
+            extract_tool_name_from_error("still searching for the answer"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_name_prefers_first_match() {
+        // If error mentions multiple tools, returns the first recognized one
+        // (by KNOWN_TOOL_NAMES order, which is longest-first)
+        let result = extract_tool_name_from_error("tried edit_file then bash, both failed");
+        assert!(
+            result == Some("edit_file") || result == Some("bash"),
+            "should match one of the mentioned tools: {result:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // build_retry_prompt with tool name tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_retry_prompt_with_tool_name() {
+        use crate::prompt_retry::build_retry_prompt;
+        let err = Some("old_text not found in file".to_string());
+        let result = build_retry_prompt("fix the bug", &err, Some("edit_file"));
+        assert!(
+            result.contains("edit_file error:"),
+            "should mention tool name: {result}"
+        );
+        assert!(
+            result.contains("old_text not found"),
+            "should include error: {result}"
+        );
+        // Should include a recovery hint from tool_recovery_hint
+        assert!(
+            result.contains("read_file"),
+            "edit_file hint should suggest read_file: {result}"
+        );
+        assert!(
+            result.contains("fix the bug"),
+            "should include original input: {result}"
+        );
+    }
+
+    #[test]
+    fn test_retry_prompt_with_unknown_tool_name() {
+        use crate::prompt_retry::build_retry_prompt;
+        let err = Some("something failed".to_string());
+        let result = build_retry_prompt("do stuff", &err, Some("unknown_tool"));
+        // Should still work with a generic hint
+        assert!(
+            result.contains("unknown_tool error:"),
+            "should mention tool name: {result}"
+        );
+        assert!(
+            result.contains("something failed"),
+            "should include error: {result}"
+        );
+        assert!(
+            result.contains("do stuff"),
+            "should include original input: {result}"
+        );
+    }
+
+    #[test]
+    fn test_retry_prompt_no_tool_no_error() {
+        use crate::prompt_retry::build_retry_prompt;
+        let result = build_retry_prompt("hello", &None, Some("bash"));
+        // No error means no enrichment, even if tool name provided
+        assert_eq!(result, "hello");
     }
 }
