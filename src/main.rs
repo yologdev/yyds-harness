@@ -127,6 +127,7 @@ fn build_json_output(
     model: &str,
     usage: &Usage,
     is_error: bool,
+    session_changes: &SessionChanges,
 ) -> String {
     let cost_usd = estimate_cost(usage, model);
     let json_obj = serde_json::json!({
@@ -138,6 +139,7 @@ fn build_json_output(
         },
         "cost_usd": cost_usd,
         "is_error": is_error,
+        "session": session_changes.to_json_summary(),
     });
     serde_json::to_string(&json_obj).unwrap_or_else(|_| "{}".to_string())
 }
@@ -146,6 +148,7 @@ fn build_json_output(
 /// image), print the result (or write to `--output`), and return. Calls
 /// `std::process::exit` on fatal errors (bad image, API failure with no
 /// fallback).
+#[allow(clippy::too_many_arguments)]
 async fn run_single_prompt(
     agent_config: &mut AgentConfig,
     agent: &mut Agent,
@@ -154,6 +157,7 @@ async fn run_single_prompt(
     output_path: &Option<String>,
     json_output: bool,
     output_format: cli::OutputFormat,
+    print_mode: bool,
 ) {
     // Stream-JSON mode: emit NDJSON events and return early
     if output_format == cli::OutputFormat::StreamJson {
@@ -195,16 +199,18 @@ async fn run_single_prompt(
         return;
     }
 
-    if agent_config.provider != "anthropic" {
-        eprintln!(
-            "{DIM}  yoyo (prompt mode) — provider: {}, model: {}{RESET}",
-            agent_config.provider, agent_config.model
-        );
-    } else {
-        eprintln!(
-            "{DIM}  yoyo (prompt mode) — model: {}{RESET}",
-            agent_config.model
-        );
+    if !print_mode {
+        if agent_config.provider != "anthropic" {
+            eprintln!(
+                "{DIM}  yoyo (prompt mode) — provider: {}, model: {}{RESET}",
+                agent_config.provider, agent_config.model
+            );
+        } else {
+            eprintln!(
+                "{DIM}  yoyo (prompt mode) — model: {}{RESET}",
+                agent_config.model
+            );
+        }
     }
 
     // Auto-enable watch mode if a project type is detected and config allows it
@@ -255,14 +261,17 @@ async fn run_single_prompt(
                 .await;
                 if should_exit_error {
                     format::maybe_ring_bell(prompt_start.elapsed());
-                    if json_output {
+                    if print_mode {
+                        print!("{}", final_response.text);
+                    } else if json_output {
                         println!(
                             "{}",
                             build_json_output(
                                 &final_response,
                                 &agent_config.model,
                                 &session_total,
-                                true
+                                true,
+                                &session_changes,
                             )
                         );
                     } else {
@@ -297,10 +306,18 @@ async fn run_single_prompt(
         .await;
         if should_exit_error {
             format::maybe_ring_bell(prompt_start.elapsed());
-            if json_output {
+            if print_mode {
+                print!("{}", final_response.text);
+            } else if json_output {
                 println!(
                     "{}",
-                    build_json_output(&final_response, &agent_config.model, &session_total, true)
+                    build_json_output(
+                        &final_response,
+                        &agent_config.model,
+                        &session_total,
+                        true,
+                        &session_changes
+                    )
                 );
             } else {
                 write_output_file(output_path, &final_response.text);
@@ -320,10 +337,18 @@ async fn run_single_prompt(
     .await;
 
     format::maybe_ring_bell(prompt_start.elapsed());
-    if json_output {
+    if print_mode {
+        print!("{}", response.text);
+    } else if json_output {
         println!(
             "{}",
-            build_json_output(&response, &agent_config.model, &session_total, false)
+            build_json_output(
+                &response,
+                &agent_config.model,
+                &session_total,
+                false,
+                &session_changes
+            )
         );
     } else {
         write_output_file(output_path, &response.text);
@@ -349,6 +374,7 @@ async fn run_piped_mode(
     output_path: &Option<String>,
     json_output: bool,
     output_format: cli::OutputFormat,
+    print_mode: bool,
 ) {
     let mut input = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut input) {
@@ -384,10 +410,12 @@ async fn run_piped_mode(
         return;
     }
 
-    eprintln!(
-        "{DIM}  yoyo (piped mode) — model: {}{RESET}",
-        agent_config.model
-    );
+    if !print_mode {
+        eprintln!(
+            "{DIM}  yoyo (piped mode) — model: {}{RESET}",
+            agent_config.model
+        );
+    }
 
     // Auto-enable watch mode if a project type is detected and config allows it
     if get_watch_command().is_none() && agent_config.auto_watch {
@@ -423,14 +451,17 @@ async fn run_piped_mode(
     }
 
     format::maybe_ring_bell(prompt_start.elapsed());
-    if json_output {
+    if print_mode {
+        print!("{}", response.text);
+    } else if json_output {
         println!(
             "{}",
             build_json_output(
                 &response,
                 &agent_config.model,
                 &session_total,
-                should_exit_error
+                should_exit_error,
+                &session_changes,
             )
         );
     } else {
@@ -575,6 +606,7 @@ async fn main() {
     let no_update_check = config.no_update_check;
     let json_output = config.json_output;
     let output_format = config.output_format;
+    let print_mode = config.print_mode;
     let is_interactive = io::stdin().is_terminal() && config.prompt_arg.is_none();
     let auto_approve = config.auto_approve || !is_interactive;
 
@@ -599,6 +631,7 @@ async fn main() {
         fallback_provider: config.fallback_provider,
         fallback_model: config.fallback_model,
         auto_watch: config.auto_watch,
+        disallowed_tools: config.disallowed_tools,
     };
 
     if !run_setup_wizard_if_needed(is_interactive, &mut agent_config) {
@@ -626,6 +659,10 @@ async fn main() {
 
     // --prompt / -p: single-shot mode
     if let Some(prompt_text) = config.prompt_arg {
+        // --print: suppress color on terminal stdout and disable color codes
+        if print_mode {
+            disable_color();
+        }
         run_single_prompt(
             &mut agent_config,
             &mut agent,
@@ -634,6 +671,7 @@ async fn main() {
             &output_path,
             json_output,
             output_format,
+            print_mode,
         )
         .await;
         return;
@@ -641,15 +679,24 @@ async fn main() {
 
     // Piped mode: read all of stdin as a single prompt, run once, exit
     if !io::stdin().is_terminal() {
+        if print_mode {
+            disable_color();
+        }
         run_piped_mode(
             &mut agent_config,
             &mut agent,
             &output_path,
             json_output,
             output_format,
+            print_mode,
         )
         .await;
         return;
+    }
+
+    // --print without -p or piped input: warn and ignore
+    if print_mode {
+        eprintln!("{YELLOW}warning:{RESET} --print requires -p/--prompt or piped input, ignoring");
     }
 
     // Interactive REPL mode
@@ -849,6 +896,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         }
     }
 
@@ -868,7 +916,13 @@ mod tests {
             cache_write: 0,
             total_tokens: 150,
         };
-        let result = build_json_output(&response, "claude-sonnet-4-20250514", &usage, false);
+        let result = build_json_output(
+            &response,
+            "claude-sonnet-4-20250514",
+            &usage,
+            false,
+            &SessionChanges::new(),
+        );
 
         // Must be valid JSON
         let parsed: serde_json::Value =
@@ -900,7 +954,13 @@ mod tests {
             cache_write: 0,
             total_tokens: 15,
         };
-        let result = build_json_output(&response, "claude-sonnet-4-20250514", &usage, true);
+        let result = build_json_output(
+            &response,
+            "claude-sonnet-4-20250514",
+            &usage,
+            true,
+            &SessionChanges::new(),
+        );
 
         let parsed: serde_json::Value = serde_json::from_str(&result)
             .expect("build_json_output should produce valid JSON even in error mode");
@@ -980,7 +1040,13 @@ mod tests {
             cache_write: 0,
             total_tokens: 0,
         };
-        let result = build_json_output(&response, "test-model", &usage, false);
+        let result = build_json_output(
+            &response,
+            "test-model",
+            &usage,
+            false,
+            &SessionChanges::new(),
+        );
         let parsed: serde_json::Value =
             serde_json::from_str(&result).expect("empty text should produce valid JSON");
         assert_eq!(parsed["response"], "");
@@ -1004,7 +1070,13 @@ mod tests {
             cache_write: 0,
             total_tokens: 30,
         };
-        let result = build_json_output(&response, "test-model", &usage, false);
+        let result = build_json_output(
+            &response,
+            "test-model",
+            &usage,
+            false,
+            &SessionChanges::new(),
+        );
         let parsed: serde_json::Value =
             serde_json::from_str(&result).expect("special chars should produce valid JSON");
         // The response field should contain the original text with special chars intact
@@ -1030,15 +1102,15 @@ mod tests {
             cache_write: 0,
             total_tokens: 2,
         };
-        let result = build_json_output(&response, "m", &usage, false);
+        let result = build_json_output(&response, "m", &usage, false, &SessionChanges::new());
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         let obj = parsed.as_object().unwrap();
 
-        // Exactly 5 top-level keys
+        // Exactly 6 top-level keys
         assert_eq!(
             obj.len(),
-            5,
-            "expected 5 top-level keys, got {:?}",
+            6,
+            "expected 6 top-level keys, got {:?}",
             obj.keys().collect::<Vec<_>>()
         );
         assert!(obj.contains_key("response"));
@@ -1046,6 +1118,7 @@ mod tests {
         assert!(obj.contains_key("usage"));
         assert!(obj.contains_key("cost_usd"));
         assert!(obj.contains_key("is_error"));
+        assert!(obj.contains_key("session"));
 
         // usage sub-object has exactly 2 keys
         let usage_obj = parsed["usage"].as_object().unwrap();
@@ -1070,7 +1143,13 @@ mod tests {
             cache_write: 0,
             total_tokens: 1500,
         };
-        let result = build_json_output(&response, "claude-sonnet-4-20250514", &usage, false);
+        let result = build_json_output(
+            &response,
+            "claude-sonnet-4-20250514",
+            &usage,
+            false,
+            &SessionChanges::new(),
+        );
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         let cost = parsed["cost_usd"].as_f64().unwrap();
         assert!(cost >= 0.0, "cost should be non-negative, got {}", cost);
@@ -1093,10 +1172,79 @@ mod tests {
             cache_write: 0,
             total_tokens: 75,
         };
-        let result = build_json_output(&response, "unknown-model-xyz", &usage, false);
+        let result = build_json_output(
+            &response,
+            "unknown-model-xyz",
+            &usage,
+            false,
+            &SessionChanges::new(),
+        );
         let parsed: serde_json::Value =
             serde_json::from_str(&result).expect("unknown model should still produce valid JSON");
         assert_eq!(parsed["model"], "unknown-model-xyz");
+    }
+
+    #[test]
+    fn test_build_json_output_includes_session_changes() {
+        let response = PromptOutcome {
+            text: "done".to_string(),
+            last_tool_error: None,
+            last_tool_name: None,
+            was_overflow: false,
+            last_api_error: None,
+        };
+        let usage = Usage {
+            input: 100,
+            output: 50,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 150,
+        };
+        let changes = SessionChanges::new();
+        changes.record("src/main.rs", session::ChangeKind::Write);
+        changes.record("src/cli.rs", session::ChangeKind::Edit);
+
+        let result = build_json_output(&response, "test-model", &usage, false, &changes);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        // session key must exist
+        assert!(
+            parsed["session"].is_object(),
+            "expected 'session' key in JSON output"
+        );
+        assert_eq!(parsed["session"]["files_changed"], 2);
+
+        let arr = parsed["session"]["changes"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["path"], "src/main.rs");
+        assert_eq!(arr[0]["kind"], "write");
+        assert_eq!(arr[1]["path"], "src/cli.rs");
+        assert_eq!(arr[1]["kind"], "edit");
+    }
+
+    #[test]
+    fn test_build_json_output_empty_session_changes() {
+        let response = PromptOutcome {
+            text: "nothing changed".to_string(),
+            last_tool_error: None,
+            last_tool_name: None,
+            was_overflow: false,
+            last_api_error: None,
+        };
+        let usage = Usage {
+            input: 10,
+            output: 5,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 15,
+        };
+        let changes = SessionChanges::new();
+
+        let result = build_json_output(&response, "test-model", &usage, false, &changes);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(parsed["session"]["files_changed"], 0);
+        assert!(parsed["session"]["changes"].as_array().unwrap().is_empty());
     }
 
     // --- looks_like_slash_command edge case tests ---
@@ -1172,7 +1320,9 @@ mod tests {
             output_format: cli::OutputFormat::Text,
             audit: false,
             print_system_prompt: false,
+            print_mode: false,
             auto_watch: true,
+            disallowed_tools: vec![],
         }
     }
 

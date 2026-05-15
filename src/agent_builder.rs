@@ -406,6 +406,7 @@ pub struct AgentConfig {
     pub fallback_provider: Option<String>,
     pub fallback_model: Option<String>,
     pub auto_watch: bool,
+    pub disallowed_tools: Vec<String>,
 }
 
 impl AgentConfig {
@@ -423,24 +424,35 @@ impl AgentConfig {
         // Store for display by /tokens and /status commands
         cli::set_effective_context_tokens(effective_window as u64);
 
+        let mut tools = build_tools(
+            self.auto_approve,
+            &self.permissions,
+            &self.dir_restrictions,
+            if std::io::stdin().is_terminal() {
+                TOOL_OUTPUT_MAX_CHARS
+            } else {
+                TOOL_OUTPUT_MAX_CHARS_PIPED
+            },
+            is_audit_enabled(),
+            self.shell_hooks.clone(),
+        );
+
+        // Filter out disallowed tools (--disallowed-tools flag)
+        if !self.disallowed_tools.is_empty() {
+            tools.retain(|t| !self.disallowed_tools.contains(&t.name().to_string()));
+            eprintln!(
+                "{DIM}  🔒 Disabled tools: {}{RESET}",
+                self.disallowed_tools.join(", ")
+            );
+        }
+
         agent = agent
             .with_system_prompt(&self.system_prompt)
             .with_model(&self.model)
             .with_api_key(&self.api_key)
             .with_thinking(self.thinking)
             .with_skills(self.skills.clone())
-            .with_tools(build_tools(
-                self.auto_approve,
-                &self.permissions,
-                &self.dir_restrictions,
-                if std::io::stdin().is_terminal() {
-                    TOOL_OUTPUT_MAX_CHARS
-                } else {
-                    TOOL_OUTPUT_MAX_CHARS_PIPED
-                },
-                is_audit_enabled(),
-                self.shell_hooks.clone(),
-            ));
+            .with_tools(tools);
 
         // Add sub-agent tool via the dedicated API (separate from build_tools count).
         // The SharedState handle is kept for future use (e.g. pre-populating context
@@ -650,6 +662,7 @@ impl AgentConfig {
             fallback_provider: self.fallback_provider.clone(),
             fallback_model: self.fallback_model.clone(),
             auto_watch: self.auto_watch,
+            disallowed_tools: vec![],
         };
         editor_config.build_agent()
     }
@@ -786,6 +799,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         }
     }
 
@@ -813,6 +827,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         assert_eq!(config.model, "claude-opus-4-6");
         assert_eq!(config.api_key, "test-key");
@@ -851,6 +866,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         let agent = config.build_agent();
         // Agent should have 6 tools (bash, read, write, edit, list, search)
@@ -883,6 +899,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         let agent = config.build_agent();
         // Agent created successfully — verify it has empty message history
@@ -915,6 +932,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         let agent = config.build_agent();
         // Agent created successfully — verify it has empty message history
@@ -946,6 +964,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         let agent = config.build_agent();
         // Agent created successfully — verify it has empty message history
@@ -977,6 +996,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         let agent1 = config.build_agent();
         let agent2 = config.build_agent();
@@ -1064,6 +1084,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         assert_eq!(config.model, "claude-opus-4-6");
         config.model = "claude-haiku-35".to_string();
@@ -1096,6 +1117,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         assert_eq!(config.thinking, ThinkingLevel::Off);
         config.thinking = ThinkingLevel::High;
@@ -1236,6 +1258,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         let agent = config.build_agent();
         assert_eq!(agent.messages().len(), 0);
@@ -1320,6 +1343,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         let agent = config.build_agent();
         assert_eq!(agent.messages().len(), 0);
@@ -1377,6 +1401,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         let agent = config.build_agent();
         // If this compiles and runs, BedrockProvider is correctly wired
@@ -1408,6 +1433,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         // Verify the anthropic ModelConfig would have headers set
         // (We test the helper directly since Agent doesn't expose model_config)
@@ -1502,6 +1528,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         // This should not panic — context config and execution limits are wired
         let agent =
@@ -1535,6 +1562,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         // Should not panic — limits are set with defaults
         let agent = config_no_turns
@@ -1563,6 +1591,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            disallowed_tools: vec![],
         };
         let agent = config_with_turns
             .configure_agent(Agent::new(yoagent::provider::AnthropicProvider), 200_000);

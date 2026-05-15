@@ -93,7 +93,9 @@ pub struct Config {
     pub output_format: OutputFormat,
     pub audit: bool,
     pub print_system_prompt: bool,
+    pub print_mode: bool,
     pub auto_watch: bool,
+    pub disallowed_tools: Vec<String>,
 }
 
 #[cfg(test)]

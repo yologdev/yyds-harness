@@ -69,6 +69,32 @@ impl SessionChanges {
     pub fn clear(&self) {
         lock_or_recover(&self.inner).clear();
     }
+
+    /// Return a JSON summary of file changes for `--json` output.
+    ///
+    /// Format:
+    /// ```json
+    /// { "files_changed": 2, "changes": [
+    ///     { "path": "src/main.rs", "kind": "write" },
+    ///     { "path": "src/cli.rs", "kind": "edit" }
+    /// ]}
+    /// ```
+    pub fn to_json_summary(&self) -> serde_json::Value {
+        let changes = lock_or_recover(&self.inner);
+        let entries: Vec<serde_json::Value> = changes
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "path": c.path,
+                    "kind": c.kind.to_string(),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "files_changed": entries.len(),
+            "changes": entries,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -611,5 +637,60 @@ mod tests {
 
         hist.clear();
         assert!(hist.is_empty());
+    }
+
+    #[test]
+    fn test_to_json_summary_empty() {
+        let changes = SessionChanges::new();
+        let summary = changes.to_json_summary();
+        assert_eq!(summary["files_changed"], 0);
+        assert!(summary["changes"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_to_json_summary_mixed_changes() {
+        let changes = SessionChanges::new();
+        changes.record("src/main.rs", ChangeKind::Write);
+        changes.record("src/cli.rs", ChangeKind::Edit);
+        changes.record("src/new.rs", ChangeKind::Write);
+
+        let summary = changes.to_json_summary();
+        assert_eq!(summary["files_changed"], 3);
+
+        let arr = summary["changes"].as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+
+        assert_eq!(arr[0]["path"], "src/main.rs");
+        assert_eq!(arr[0]["kind"], "write");
+
+        assert_eq!(arr[1]["path"], "src/cli.rs");
+        assert_eq!(arr[1]["kind"], "edit");
+
+        assert_eq!(arr[2]["path"], "src/new.rs");
+        assert_eq!(arr[2]["kind"], "write");
+    }
+
+    #[test]
+    fn test_to_json_summary_is_valid_json() {
+        let changes = SessionChanges::new();
+        changes.record("a.rs", ChangeKind::Write);
+        let summary = changes.to_json_summary();
+        // Round-trip through serde to verify it's valid JSON
+        let serialized = serde_json::to_string(&summary).unwrap();
+        let _: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+    }
+
+    #[test]
+    fn test_to_json_summary_deduplicates_paths() {
+        let changes = SessionChanges::new();
+        changes.record("src/main.rs", ChangeKind::Write);
+        changes.record("src/main.rs", ChangeKind::Edit); // overwrites
+
+        let summary = changes.to_json_summary();
+        assert_eq!(summary["files_changed"], 1);
+
+        let arr = summary["changes"].as_array().unwrap();
+        assert_eq!(arr[0]["path"], "src/main.rs");
+        assert_eq!(arr[0]["kind"], "edit"); // latest kind wins
     }
 }

@@ -509,7 +509,8 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 --allow <pattern>     Auto-approve matching bash commands\n\
              \x20 --deny <pattern>      Block matching bash commands\n\
              \x20 --allow-dir <path>    Restrict file access to these directories\n\
-             \x20 --deny-dir <path>     Block file access to these directories\n\n\
+             \x20 --deny-dir <path>     Block file access to these directories\n\
+             \x20 --disallowed-tools <names>  Comma-separated tool names to disable\n\n\
              Or in .yoyo.toml:\n\
              \x20 allow = [\"cargo *\", \"git *\"]\n\
              \x20 deny = [\"rm -rf *\"]\n\
@@ -1216,6 +1217,14 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "  --print           Output only the response text (no UI chrome, for -p and piped modes)"
+    );
+    let _ = writeln!(
+        s,
+        "                    Implies --yes; suppresses spinners, tool output, and color"
+    );
+    let _ = writeln!(
+        s,
         "  --output-format <fmt>  Output format: text, json, stream-json (NDJSON events)"
     );
     let _ = writeln!(
@@ -1261,6 +1270,10 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(
         s,
         "  --deny-dir <d>    Block file access to this directory (repeatable)"
+    );
+    let _ = writeln!(
+        s,
+        "  --disallowed-tools <names>  Comma-separated tool names to disable (e.g., bash,write_file)"
     );
     let _ = writeln!(
         s,

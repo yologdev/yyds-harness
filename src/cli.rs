@@ -191,8 +191,10 @@ const KNOWN_FLAGS: &[&str] = &[
     "--audit",
     "--auto-commit",
     "--print-system-prompt",
+    "--print",
     "--quiet",
     "-q",
+    "--disallowed-tools",
     "--help",
     "-h",
     "--version",
@@ -495,6 +497,7 @@ struct OutputFlags {
     output_format: OutputFormat,
     audit: bool,
     print_system_prompt: bool,
+    print_mode: bool,
 }
 
 /// Parse simple boolean output flags from CLI args and config.
@@ -502,6 +505,11 @@ fn parse_output_flags(args: &[String], file_config: &HashMap<String, String>) ->
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
 
     let auto_approve = args.iter().any(|a| a == "--yes" || a == "-y");
+
+    let print_mode = args.iter().any(|a| a == "--print");
+
+    // --print implies --yes (auto-approve all tool use)
+    let auto_approve = auto_approve || print_mode;
 
     let auto_commit = args.iter().any(|a| a == "--auto-commit");
 
@@ -552,6 +560,7 @@ fn parse_output_flags(args: &[String], file_config: &HashMap<String, String>) ->
         output_format,
         audit,
         print_system_prompt,
+        print_mode,
     }
 }
 
@@ -643,7 +652,9 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
 
     // Enable quiet mode early so config/context loading can check it.
     // Also auto-enable when both stdin and stdout are non-terminal (fully piped).
+    // --print implies quiet mode (suppress all chrome).
     if args.iter().any(|a| a == "--quiet" || a == "-q")
+        || args.iter().any(|a| a == "--print")
         || std::env::var("YOYO_QUIET")
             .map(|v| v == "1")
             .unwrap_or(false)
@@ -683,6 +694,7 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         "--context-strategy",
         "--context-window",
         "--fallback",
+        "--disallowed-tools",
     ];
     for flag in &flags_needing_values {
         if let Some(pos) = args.iter().position(|a| a == flag) {
@@ -887,7 +899,14 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         output_format: of.output_format,
         audit: of.audit,
         print_system_prompt: of.print_system_prompt,
+        print_mode: of.print_mode,
         auto_watch: crate::config::parse_auto_watch_from_config(&file_config),
+        disallowed_tools: collect_repeatable_flag(args, "--disallowed-tools")
+            .iter()
+            .flat_map(|v| v.split(','))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
     })
 }
 
@@ -2781,5 +2800,98 @@ command = "server-two"
         let args = vec!["yoyo".to_string()];
         let config = parse_args(&args).expect("should parse");
         assert_eq!(config.output_format, OutputFormat::Text);
+    }
+
+    #[test]
+    fn test_print_flag_recognized_as_known_flag() {
+        assert!(
+            KNOWN_FLAGS.contains(&"--print"),
+            "--print should be in KNOWN_FLAGS"
+        );
+    }
+
+    #[test]
+    fn test_print_flag_sets_print_mode() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec!["yoyo".to_string(), "--print".to_string()];
+        let config = parse_args(&args).expect("should parse");
+        assert!(config.print_mode, "--print should set print_mode to true");
+    }
+
+    #[test]
+    fn test_print_flag_implies_auto_approve() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec!["yoyo".to_string(), "--print".to_string()];
+        let config = parse_args(&args).expect("should parse");
+        assert!(
+            config.auto_approve,
+            "--print should imply --yes (auto_approve)"
+        );
+    }
+
+    #[test]
+    fn test_print_flag_without_prompt_warns() {
+        // When --print is used without -p, print_mode is still set in Config
+        // (the warning is emitted at runtime in main.rs, not during parsing).
+        // Verify the flag is parsed correctly even without -p.
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec!["yoyo".to_string(), "--print".to_string()];
+        let config = parse_args(&args).expect("should parse");
+        assert!(config.print_mode);
+        // prompt_arg should be None since -p was not provided
+        assert!(
+            config.prompt_arg.is_none(),
+            "--print without -p should have no prompt"
+        );
+    }
+
+    #[test]
+    fn test_disallowed_tools_single() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--disallowed-tools".to_string(),
+            "bash".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert_eq!(config.disallowed_tools, vec!["bash".to_string()]);
+    }
+
+    #[test]
+    fn test_disallowed_tools_comma_separated() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--disallowed-tools".to_string(),
+            "bash,write_file,edit_file".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert_eq!(
+            config.disallowed_tools,
+            vec![
+                "bash".to_string(),
+                "write_file".to_string(),
+                "edit_file".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_disallowed_tools_in_known_flags() {
+        assert!(
+            KNOWN_FLAGS.contains(&"--disallowed-tools"),
+            "--disallowed-tools should be in KNOWN_FLAGS"
+        );
+    }
+
+    #[test]
+    fn test_disallowed_tools_empty_when_not_provided() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec!["yoyo".to_string()];
+        let config = parse_args(&args).expect("should parse");
+        assert!(
+            config.disallowed_tools.is_empty(),
+            "disallowed_tools should be empty when flag is not provided"
+        );
     }
 }

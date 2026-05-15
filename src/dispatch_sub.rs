@@ -480,6 +480,7 @@ fn run_review_subcommand(args: &[String], review_arg: &str) -> i32 {
         fallback_provider: None,
         fallback_model: None,
         auto_watch: false,
+        disallowed_tools: vec![],
     };
 
     // We're inside a tokio runtime (called from parse_args in async main),
