@@ -195,6 +195,7 @@ const KNOWN_FLAGS: &[&str] = &[
     "--quiet",
     "-q",
     "--disallowed-tools",
+    "--no-tools",
     "--help",
     "-h",
     "--version",
@@ -901,12 +902,26 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         print_system_prompt: of.print_system_prompt,
         print_mode: of.print_mode,
         auto_watch: crate::config::parse_auto_watch_from_config(&file_config),
-        disallowed_tools: collect_repeatable_flag(args, "--disallowed-tools")
-            .iter()
-            .flat_map(|v| v.split(','))
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect(),
+        disallowed_tools: {
+            let no_tools = args.iter().any(|a| a == "--no-tools");
+            let mut tools: Vec<String> = collect_repeatable_flag(args, "--disallowed-tools")
+                .iter()
+                .flat_map(|v| v.split(','))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if no_tools {
+                // Add all builtin tool names
+                for name in crate::agent_builder::BUILTIN_TOOL_NAMES {
+                    let s = (*name).to_string();
+                    if !tools.contains(&s) {
+                        tools.push(s);
+                    }
+                }
+            }
+            tools
+        },
+        no_tools: args.iter().any(|a| a == "--no-tools"),
     })
 }
 
@@ -2892,6 +2907,77 @@ command = "server-two"
         assert!(
             config.disallowed_tools.is_empty(),
             "disallowed_tools should be empty when flag is not provided"
+        );
+    }
+
+    #[test]
+    fn test_no_tools_flag() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--no-tools".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert!(config.no_tools);
+        assert!(!config.disallowed_tools.is_empty());
+        // Should contain all builtin tool names
+        assert!(config.disallowed_tools.contains(&"bash".to_string()));
+        assert!(config.disallowed_tools.contains(&"read_file".to_string()));
+        assert!(config.disallowed_tools.contains(&"write_file".to_string()));
+        assert!(config.disallowed_tools.contains(&"edit_file".to_string()));
+        assert!(config.disallowed_tools.contains(&"search".to_string()));
+        assert!(config.disallowed_tools.contains(&"list_files".to_string()));
+        assert!(config
+            .disallowed_tools
+            .contains(&"rename_symbol".to_string()));
+        assert!(config.disallowed_tools.contains(&"sub_agent".to_string()));
+        assert!(config.disallowed_tools.contains(&"todo".to_string()));
+        assert!(config
+            .disallowed_tools
+            .contains(&"shared_state".to_string()));
+    }
+
+    #[test]
+    fn test_no_tools_in_known_flags() {
+        assert!(
+            KNOWN_FLAGS.contains(&"--no-tools"),
+            "--no-tools should be in KNOWN_FLAGS"
+        );
+    }
+
+    #[test]
+    fn test_no_tools_default_false() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec!["yoyo".to_string()];
+        let config = parse_args(&args).expect("should parse");
+        assert!(!config.no_tools);
+    }
+
+    #[test]
+    fn test_no_tools_combined_with_disallowed_tools() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--disallowed-tools".to_string(),
+            "bash".to_string(),
+            "--no-tools".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert!(config.no_tools);
+        // Should have all builtin tools, not just bash
+        assert!(config.disallowed_tools.contains(&"read_file".to_string()));
+        assert!(config.disallowed_tools.contains(&"bash".to_string()));
+        // No duplicates of bash
+        assert_eq!(
+            config
+                .disallowed_tools
+                .iter()
+                .filter(|t| *t == "bash")
+                .count(),
+            1,
+            "bash should appear exactly once even when specified both ways"
         );
     }
 }

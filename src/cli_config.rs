@@ -96,6 +96,7 @@ pub struct Config {
     pub print_mode: bool,
     pub auto_watch: bool,
     pub disallowed_tools: Vec<String>,
+    pub no_tools: bool,
 }
 
 #[cfg(test)]

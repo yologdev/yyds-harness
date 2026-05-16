@@ -515,7 +515,8 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 --deny <pattern>      Block matching bash commands\n\
              \x20 --allow-dir <path>    Restrict file access to these directories\n\
              \x20 --deny-dir <path>     Block file access to these directories\n\
-             \x20 --disallowed-tools <names>  Comma-separated tool names to disable\n\n\
+             \x20 --disallowed-tools <names>  Comma-separated tool names to disable\n\
+             \x20 --no-tools                  Disable all tools (chat-only mode)\n\n\
              Or in .yoyo.toml:\n\
              \x20 allow = [\"cargo *\", \"git *\"]\n\
              \x20 deny = [\"rm -rf *\"]\n\
@@ -1290,6 +1291,10 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(
         s,
         "  --disallowed-tools <names>  Comma-separated tool names to disable (e.g., bash,write_file)"
+    );
+    let _ = writeln!(
+        s,
+        "  --no-tools        Disable all tools (chat-only mode, no file access or commands)"
     );
     let _ = writeln!(
         s,
@@ -2563,6 +2568,7 @@ mod tests {
             "--system-file",
             "--skills",
             "--disallowed-tools",
+            "--no-tools",
             "--max-tokens",
             "--max-turns",
             "--temperature",

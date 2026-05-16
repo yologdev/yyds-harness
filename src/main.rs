@@ -601,6 +601,14 @@ async fn main() {
         return;
     }
 
+    if config.no_tools {
+        eprintln!(
+            "{}note:{} All tools disabled (--no-tools). Running in chat-only mode.",
+            crate::format::YELLOW,
+            crate::format::RESET,
+        );
+    }
+
     let continue_session = config.continue_session;
     let output_path = config.output_path;
     let mcp_servers = config.mcp_servers;
@@ -1327,6 +1335,7 @@ mod tests {
             print_mode: false,
             auto_watch: true,
             disallowed_tools: vec![],
+            no_tools: false,
         }
     }
 
