@@ -225,6 +225,165 @@ pub struct FileSymbols {
     pub symbols: Vec<Symbol>,
 }
 
+// ── Table-driven symbol extraction ──────────────────────────────────────────
+
+/// How to determine visibility (is_public) for a matched symbol.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum VisibilityRule {
+    /// Always public (e.g., shell functions).
+    AlwaysPublic,
+    /// Public if the name starts with an uppercase letter (Go convention).
+    UppercaseIsPublic,
+    /// Public unless the name starts with `_` (Ruby/Python convention).
+    UnderscoreIsPrivate,
+}
+
+/// A single pattern rule mapping a regex to a symbol kind.
+struct PatternRule {
+    regex: &'static LazyLock<Regex>,
+    kind: SymbolKind,
+    /// Which capture group holds the symbol name (1-indexed).
+    name_group: usize,
+    visibility: VisibilityRule,
+}
+
+/// A set of pattern rules for a language that uses simple line-by-line extraction.
+struct LanguagePatterns {
+    rules: &'static [PatternRule],
+    /// Whether to trim leading whitespace before matching (e.g., Go trims, Ruby/Shell don't).
+    trim_leading: bool,
+}
+
+/// Generic table-driven symbol extractor. Iterates lines and applies rules in order,
+/// using the first matching rule per line.
+fn extract_symbols_from_patterns(code: &str, patterns: &LanguagePatterns) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+
+    for (line_num, line) in code.lines().enumerate() {
+        let target = if patterns.trim_leading {
+            line.trim_start()
+        } else {
+            line
+        };
+        for rule in patterns.rules {
+            if let Some(caps) = rule.regex.captures(target) {
+                let name = caps
+                    .get(rule.name_group)
+                    .map_or("", |m| m.as_str())
+                    .to_string();
+                let is_public = match rule.visibility {
+                    VisibilityRule::AlwaysPublic => true,
+                    VisibilityRule::UppercaseIsPublic => {
+                        name.starts_with(|c: char| c.is_uppercase())
+                    }
+                    VisibilityRule::UnderscoreIsPrivate => !name.starts_with('_'),
+                };
+                symbols.push(Symbol {
+                    name,
+                    kind: rule.kind.clone(),
+                    is_public,
+                    line: line_num + 1,
+                });
+                break; // first match wins
+            }
+        }
+    }
+
+    symbols
+}
+
+// ── Pattern tables for Go, Ruby, Shell ──────────────────────────────────────
+
+static GO_PATTERN_RULES: &[PatternRule] = &[
+    PatternRule {
+        regex: &RE_GO_METHOD,
+        kind: SymbolKind::Function,
+        name_group: 1,
+        visibility: VisibilityRule::UppercaseIsPublic,
+    },
+    PatternRule {
+        regex: &RE_GO_FUNC,
+        kind: SymbolKind::Function,
+        name_group: 1,
+        visibility: VisibilityRule::UppercaseIsPublic,
+    },
+    PatternRule {
+        regex: &RE_GO_STRUCT,
+        kind: SymbolKind::Struct,
+        name_group: 1,
+        visibility: VisibilityRule::UppercaseIsPublic,
+    },
+    PatternRule {
+        regex: &RE_GO_INTERFACE,
+        kind: SymbolKind::Interface,
+        name_group: 1,
+        visibility: VisibilityRule::UppercaseIsPublic,
+    },
+    PatternRule {
+        regex: &RE_GO_CONST,
+        kind: SymbolKind::Const,
+        name_group: 1,
+        visibility: VisibilityRule::UppercaseIsPublic,
+    },
+];
+
+static RUBY_PATTERN_RULES: &[PatternRule] = &[
+    PatternRule {
+        regex: &RE_RUBY_CLASS,
+        kind: SymbolKind::Class,
+        name_group: 1,
+        visibility: VisibilityRule::AlwaysPublic,
+    },
+    PatternRule {
+        regex: &RE_RUBY_MODULE,
+        kind: SymbolKind::Module,
+        name_group: 1,
+        visibility: VisibilityRule::AlwaysPublic,
+    },
+    PatternRule {
+        regex: &RE_RUBY_DEF,
+        kind: SymbolKind::Function,
+        name_group: 1,
+        visibility: VisibilityRule::UnderscoreIsPrivate,
+    },
+    PatternRule {
+        regex: &RE_RUBY_CONST,
+        kind: SymbolKind::Const,
+        name_group: 1,
+        visibility: VisibilityRule::AlwaysPublic,
+    },
+];
+
+static SHELL_PATTERN_RULES: &[PatternRule] = &[
+    PatternRule {
+        regex: &RE_SHELL_FUNC_KEYWORD,
+        kind: SymbolKind::Function,
+        name_group: 1,
+        visibility: VisibilityRule::AlwaysPublic,
+    },
+    PatternRule {
+        regex: &RE_SHELL_FUNC_PARENS,
+        kind: SymbolKind::Function,
+        name_group: 1,
+        visibility: VisibilityRule::AlwaysPublic,
+    },
+];
+
+static GO_PATTERNS: LanguagePatterns = LanguagePatterns {
+    rules: GO_PATTERN_RULES,
+    trim_leading: true,
+};
+static RUBY_PATTERNS: LanguagePatterns = LanguagePatterns {
+    rules: RUBY_PATTERN_RULES,
+    trim_leading: false,
+};
+static SHELL_PATTERNS: LanguagePatterns = LanguagePatterns {
+    rules: SHELL_PATTERN_RULES,
+    trim_leading: false,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// Detect programming language from file extension.
 pub fn detect_language(path: &str) -> Option<&'static str> {
     match Path::new(path).extension()?.to_str()? {
@@ -257,12 +416,12 @@ pub fn extract_symbols(code: &str, language: &str) -> Vec<Symbol> {
         "python" => extract_python_symbols(code),
         "javascript" => extract_js_symbols(code),
         "typescript" => extract_ts_symbols(code),
-        "go" => extract_go_symbols(code),
+        "go" => extract_symbols_from_patterns(code, &GO_PATTERNS),
         "java" => extract_java_symbols(code),
         "c" => extract_c_symbols(code),
         "cpp" => extract_cpp_symbols(code),
-        "ruby" => extract_ruby_symbols(code),
-        "shell" => extract_shell_symbols(code),
+        "ruby" => extract_symbols_from_patterns(code, &RUBY_PATTERNS),
+        "shell" => extract_symbols_from_patterns(code, &SHELL_PATTERNS),
         "csharp" => extract_csharp_symbols(code),
         "php" => extract_php_symbols(code),
         "kotlin" => extract_kotlin_symbols(code),
@@ -535,70 +694,6 @@ fn extract_ts_symbols(code: &str) -> Vec<Symbol> {
     symbols
 }
 
-/// Extract symbols from Go source code.
-fn extract_go_symbols(code: &str) -> Vec<Symbol> {
-    let mut symbols = Vec::new();
-
-    let re_func = &*RE_GO_FUNC;
-    let re_method = &*RE_GO_METHOD;
-    let re_type_struct = &*RE_GO_STRUCT;
-    let re_type_interface = &*RE_GO_INTERFACE;
-    let re_const = &*RE_GO_CONST;
-
-    for (line_num, line) in code.lines().enumerate() {
-        let trimmed = line.trim_start();
-
-        if let Some(caps) = re_method.captures(trimmed) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            let is_public = name.starts_with(|c: char| c.is_uppercase());
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Function,
-                is_public,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_func.captures(trimmed) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            let is_public = name.starts_with(|c: char| c.is_uppercase());
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Function,
-                is_public,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_type_struct.captures(trimmed) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            let is_public = name.starts_with(|c: char| c.is_uppercase());
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Struct,
-                is_public,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_type_interface.captures(trimmed) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            let is_public = name.starts_with(|c: char| c.is_uppercase());
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Interface,
-                is_public,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_const.captures(trimmed) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            let is_public = name.starts_with(|c: char| c.is_uppercase());
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Const,
-                is_public,
-                line: line_num + 1,
-            });
-        }
-    }
-
-    symbols
-}
-
 /// Extract symbols from Java source code.
 fn extract_java_symbols(code: &str) -> Vec<Symbol> {
     let mut symbols = Vec::new();
@@ -827,85 +922,6 @@ fn extract_cpp_symbols(code: &str) -> Vec<Symbol> {
                     });
                 }
             }
-        }
-    }
-
-    symbols
-}
-
-/// Extract symbols from Ruby source code.
-fn extract_ruby_symbols(code: &str) -> Vec<Symbol> {
-    let mut symbols = Vec::new();
-
-    let re_def = &*RE_RUBY_DEF;
-    let re_class = &*RE_RUBY_CLASS;
-    let re_module = &*RE_RUBY_MODULE;
-    let re_const = &*RE_RUBY_CONST;
-
-    for (line_num, line) in code.lines().enumerate() {
-        if let Some(caps) = re_class.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Class,
-                is_public: true,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_module.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Module,
-                is_public: true,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_def.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            let is_public = !name.starts_with('_');
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Function,
-                is_public,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_const.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Const,
-                is_public: true,
-                line: line_num + 1,
-            });
-        }
-    }
-
-    symbols
-}
-
-/// Extract symbols from Shell scripts (bash/sh/zsh).
-fn extract_shell_symbols(code: &str) -> Vec<Symbol> {
-    let mut symbols = Vec::new();
-
-    let re_parens = &*RE_SHELL_FUNC_PARENS;
-    let re_keyword = &*RE_SHELL_FUNC_KEYWORD;
-
-    for (line_num, line) in code.lines().enumerate() {
-        if let Some(caps) = re_keyword.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Function,
-                is_public: true,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_parens.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Function,
-                is_public: true,
-                line: line_num + 1,
-            });
         }
     }
 
@@ -2811,6 +2827,81 @@ main "$@"
                 .any(|s| s.name == "inner_func" && s.kind == SymbolKind::Function),
             "should find indented function inner_func"
         );
+    }
+
+    // ── Table-driven extraction verification tests ──
+
+    #[test]
+    fn table_driven_go_visibility() {
+        let code =
+            "func main() {}\nfunc Serve() {}\ntype handler struct{}\ntype Handler struct{}\n";
+        let symbols = extract_symbols(code, "go");
+        let main_sym = symbols.iter().find(|s| s.name == "main").unwrap();
+        assert!(!main_sym.is_public, "lowercase Go func should be private");
+        let serve_sym = symbols.iter().find(|s| s.name == "Serve").unwrap();
+        assert!(serve_sym.is_public, "uppercase Go func should be public");
+        let handler_lower = symbols.iter().find(|s| s.name == "handler").unwrap();
+        assert!(
+            !handler_lower.is_public,
+            "lowercase Go struct should be private"
+        );
+        let handler_upper = symbols.iter().find(|s| s.name == "Handler").unwrap();
+        assert!(
+            handler_upper.is_public,
+            "uppercase Go struct should be public"
+        );
+    }
+
+    #[test]
+    fn table_driven_go_const_and_var() {
+        let code = "const MaxRetries = 3\nvar defaultTimeout = 30\n";
+        let symbols = extract_symbols(code, "go");
+        let max_sym = symbols.iter().find(|s| s.name == "MaxRetries").unwrap();
+        assert_eq!(max_sym.kind, SymbolKind::Const);
+        assert!(max_sym.is_public);
+        let def_sym = symbols.iter().find(|s| s.name == "defaultTimeout").unwrap();
+        assert_eq!(def_sym.kind, SymbolKind::Const);
+        assert!(!def_sym.is_public);
+    }
+
+    #[test]
+    fn table_driven_ruby_underscore_visibility() {
+        let code = "def public_method\nend\ndef _private_method\nend\n";
+        let symbols = extract_symbols(code, "ruby");
+        let pub_sym = symbols.iter().find(|s| s.name == "public_method").unwrap();
+        assert!(pub_sym.is_public, "Ruby method without _ should be public");
+        let priv_sym = symbols
+            .iter()
+            .find(|s| s.name == "_private_method")
+            .unwrap();
+        assert!(
+            !priv_sym.is_public,
+            "Ruby method with _ prefix should be private"
+        );
+    }
+
+    #[test]
+    fn table_driven_shell_all_public() {
+        let code = "setup() {\n  echo hi\n}\nfunction _internal {\n  true\n}\n";
+        let symbols = extract_symbols(code, "shell");
+        assert!(
+            symbols.iter().all(|s| s.is_public),
+            "All shell functions should be public"
+        );
+        assert_eq!(symbols.len(), 2);
+        assert!(symbols.iter().any(|s| s.name == "setup"));
+        assert!(symbols.iter().any(|s| s.name == "_internal"));
+    }
+
+    #[test]
+    fn table_driven_go_first_match_wins() {
+        // A Go method (func (r *Router) Handle) should match as Function via RE_GO_METHOD
+        // and NOT also match RE_GO_FUNC (which would fail because of the receiver syntax)
+        let code = "func (r *Router) Handle(w http.ResponseWriter) {}\n";
+        let symbols = extract_symbols(code, "go");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "Handle");
+        assert_eq!(symbols[0].kind, SymbolKind::Function);
     }
 
     // ── Language detection tests for new languages ──
