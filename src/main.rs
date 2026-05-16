@@ -217,7 +217,9 @@ async fn run_single_prompt(
     if get_watch_command().is_none() && agent_config.auto_watch {
         if let Some(cmd) = watch::auto_detect_watch_command() {
             set_watch_command(&cmd);
-            eprintln!("{DIM}  👀 Auto-watch: `{cmd}` (disable with auto_watch = false){RESET}");
+            if !print_mode {
+                eprintln!("{DIM}  👀 Auto-watch: `{cmd}` (disable with auto_watch = false){RESET}");
+            }
         }
     }
 
@@ -421,7 +423,9 @@ async fn run_piped_mode(
     if get_watch_command().is_none() && agent_config.auto_watch {
         if let Some(cmd) = watch::auto_detect_watch_command() {
             set_watch_command(&cmd);
-            eprintln!("{DIM}  👀 Auto-watch: `{cmd}` (disable with auto_watch = false){RESET}");
+            if !print_mode {
+                eprintln!("{DIM}  👀 Auto-watch: `{cmd}` (disable with auto_watch = false){RESET}");
+            }
         }
     }
 
