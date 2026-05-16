@@ -1517,4 +1517,172 @@ mod tests {
             "edit_file should be unaffected"
         );
     }
+
+    // === ToolFailureTracker unit tests (pure logic, no async) ===
+
+    #[test]
+    fn test_tracker_new_is_empty() {
+        let tracker = ToolFailureTracker::new();
+        assert_eq!(tracker.get("bash"), 0);
+        assert_eq!(tracker.get("edit_file"), 0);
+        assert_eq!(tracker.get("nonexistent"), 0);
+    }
+
+    #[test]
+    fn test_tracker_record_failure_increments() {
+        let tracker = ToolFailureTracker::new();
+        assert_eq!(tracker.record_failure("bash"), 1);
+        assert_eq!(tracker.record_failure("bash"), 2);
+        assert_eq!(tracker.record_failure("bash"), 3);
+        assert_eq!(tracker.get("bash"), 3);
+    }
+
+    #[test]
+    fn test_tracker_record_success_resets() {
+        let tracker = ToolFailureTracker::new();
+        tracker.record_failure("bash");
+        tracker.record_failure("bash");
+        tracker.record_failure("bash");
+        assert_eq!(tracker.get("bash"), 3);
+
+        tracker.record_success("bash");
+        assert_eq!(tracker.get("bash"), 0);
+    }
+
+    #[test]
+    fn test_tracker_independent_tools() {
+        let tracker = ToolFailureTracker::new();
+        tracker.record_failure("bash");
+        tracker.record_failure("bash");
+        tracker.record_failure("edit_file");
+
+        assert_eq!(tracker.get("bash"), 2);
+        assert_eq!(tracker.get("edit_file"), 1);
+
+        // Resetting one doesn't affect the other
+        tracker.record_success("bash");
+        assert_eq!(tracker.get("bash"), 0);
+        assert_eq!(tracker.get("edit_file"), 1);
+    }
+
+    #[test]
+    fn test_tracker_clone_shares_state() {
+        let tracker = ToolFailureTracker::new();
+        let cloned = tracker.clone();
+
+        tracker.record_failure("bash");
+        assert_eq!(cloned.get("bash"), 1, "Clone should share the same state");
+
+        cloned.record_failure("bash");
+        assert_eq!(
+            tracker.get("bash"),
+            2,
+            "Original should see clone's mutation"
+        );
+    }
+
+    // === truncate_result tests ===
+
+    #[test]
+    fn test_truncate_result_short_text_unchanged() {
+        let result = yoagent::types::ToolResult {
+            content: vec![yoagent::Content::Text {
+                text: "short output".to_string(),
+            }],
+            details: serde_json::Value::Null,
+        };
+        let truncated = truncate_result(result, 1000);
+        match &truncated.content[0] {
+            yoagent::Content::Text { text } => {
+                assert_eq!(text, "short output");
+            }
+            _ => panic!("Expected Text content"),
+        }
+    }
+
+    #[test]
+    fn test_truncate_result_long_text_truncated() {
+        // Generate 200 distinct lines that compression won't collapse.
+        // Each line is unique enough to avoid the "similar line" collapsing.
+        let lines: Vec<String> = (0..200)
+            .map(|i| format!("unique_{i:04}_data: val={} extra={}", i * 7, i * 13))
+            .collect();
+        let long_text = lines.join("\n");
+        let original_len = long_text.len();
+
+        let result = yoagent::types::ToolResult {
+            content: vec![yoagent::Content::Text { text: long_text }],
+            details: serde_json::Value::Null,
+        };
+        // Use max_chars smaller than text to force truncation
+        let truncated = truncate_result(result, 2000);
+        match &truncated.content[0] {
+            yoagent::Content::Text { text } => {
+                assert!(
+                    text.len() < original_len,
+                    "Truncated text ({}) should be shorter than original ({})",
+                    text.len(),
+                    original_len
+                );
+                assert!(
+                    text.contains("truncated"),
+                    "Should contain truncation marker: {}",
+                    &text[..text.len().min(200)]
+                );
+            }
+            _ => panic!("Expected Text content"),
+        }
+    }
+
+    #[test]
+    fn test_truncate_result_non_text_content_unchanged() {
+        let result = yoagent::types::ToolResult {
+            content: vec![yoagent::Content::Image {
+                data: "base64data".to_string(),
+                mime_type: "image/png".to_string(),
+            }],
+            details: serde_json::Value::Null,
+        };
+        let truncated = truncate_result(result, 10); // Very small limit
+        match &truncated.content[0] {
+            yoagent::Content::Image { data, mime_type } => {
+                assert_eq!(data, "base64data");
+                assert_eq!(mime_type, "image/png");
+            }
+            _ => panic!("Expected Image content"),
+        }
+    }
+
+    #[test]
+    fn test_truncate_result_empty_content() {
+        let result = yoagent::types::ToolResult {
+            content: vec![],
+            details: serde_json::Value::Null,
+        };
+        let truncated = truncate_result(result, 100);
+        assert!(truncated.content.is_empty());
+    }
+
+    // === describe_file_operation edge cases ===
+
+    #[test]
+    fn test_describe_read_file_operation() {
+        let params = serde_json::json!({
+            "path": "src/main.rs"
+        });
+        let desc = describe_file_operation("read_file", &params);
+        assert!(
+            desc.contains("read_file"),
+            "Should contain tool name: {desc}"
+        );
+    }
+
+    #[test]
+    fn test_describe_bash_operation() {
+        let params = serde_json::json!({
+            "command": "cargo test"
+        });
+        let desc = describe_file_operation("bash", &params);
+        assert!(desc.contains("bash"), "Should contain tool name: {desc}");
+    }
 }
