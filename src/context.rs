@@ -436,7 +436,8 @@ mod tests {
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
         let ctx = load_project_context();
-        std::env::set_current_dir(&original_dir).unwrap();
+        // Restore original dir; ignore errors from concurrent test interference
+        let _ = std::env::set_current_dir(&original_dir);
 
         let ctx = ctx.unwrap();
         assert!(
@@ -474,7 +475,8 @@ mod tests {
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
         let ctx = load_project_context();
-        std::env::set_current_dir(&original_dir).unwrap();
+        // Restore original dir; ignore errors from concurrent test interference
+        let _ = std::env::set_current_dir(&original_dir);
 
         let ctx = ctx.unwrap();
         assert!(
