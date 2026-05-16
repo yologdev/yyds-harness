@@ -998,6 +998,7 @@ pub fn handle_mcp(
 mod tests {
     use super::*;
     use crate::commands::{is_unknown_command, KNOWN_COMMANDS};
+    use serial_test::serial;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -1122,6 +1123,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_teach_mode_default_off() {
         // Reset to known state (tests may run in any order)
         set_teach_mode(false);
@@ -1129,6 +1131,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_teach_mode_toggle() {
         set_teach_mode(false);
         assert!(!is_teach_mode());
@@ -1459,6 +1462,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_architect_toggle_on_off() {
         // Start from a known state
         set_architect_mode(false, None);
@@ -1474,6 +1478,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_architect_parse_sets_model() {
         // Reset state
         set_architect_mode(false, None);
