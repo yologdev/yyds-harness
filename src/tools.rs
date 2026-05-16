@@ -1984,4 +1984,423 @@ mod tests {
             "Should still have todo after audit wrap"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // StreamingBashTool — default values and construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_streaming_bash_default_cwd_is_none() {
+        let tool = StreamingBashTool::default();
+        assert!(tool.cwd.is_none(), "Default cwd should be None");
+    }
+
+    #[test]
+    fn test_streaming_bash_default_timeout_is_120s() {
+        let tool = StreamingBashTool::default();
+        assert_eq!(tool.timeout, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_streaming_bash_default_max_output_bytes() {
+        let tool = StreamingBashTool::default();
+        assert_eq!(
+            tool.max_output_bytes,
+            256 * 1024,
+            "Default max output should be 256KB"
+        );
+    }
+
+    #[test]
+    fn test_streaming_bash_default_deny_patterns_count() {
+        let tool = StreamingBashTool::default();
+        assert!(
+            tool.deny_patterns.len() >= 5,
+            "Should have at least 5 deny patterns, got: {}",
+            tool.deny_patterns.len()
+        );
+    }
+
+    #[test]
+    fn test_streaming_bash_deny_patterns_include_critical() {
+        let tool = StreamingBashTool::default();
+        assert!(tool.deny_patterns.contains(&"rm -rf /".to_string()));
+        assert!(tool.deny_patterns.contains(&"mkfs".to_string()));
+        assert!(tool.deny_patterns.contains(&"dd if=".to_string()));
+    }
+
+    #[test]
+    fn test_streaming_bash_default_confirm_fn_is_none() {
+        let tool = StreamingBashTool::default();
+        assert!(
+            tool.confirm_fn.is_none(),
+            "Default confirm_fn should be None"
+        );
+    }
+
+    #[test]
+    fn test_streaming_bash_with_confirm_sets_fn() {
+        let tool = StreamingBashTool::default().with_confirm(|_cmd| true);
+        assert!(
+            tool.confirm_fn.is_some(),
+            "with_confirm should set the confirm_fn"
+        );
+    }
+
+    #[test]
+    fn test_streaming_bash_cwd_can_be_set() {
+        let tool = StreamingBashTool {
+            cwd: Some("/tmp".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(tool.cwd.as_deref(), Some("/tmp"));
+    }
+
+    #[tokio::test]
+    async fn test_streaming_bash_cwd_is_applied() {
+        let tmp = std::env::temp_dir();
+        let tool = StreamingBashTool {
+            cwd: Some(tmp.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+        let ctx = test_tool_context(None);
+        let result = tool
+            .execute(serde_json::json!({"command": "pwd"}), ctx)
+            .await
+            .unwrap();
+        let text = match &result.content[0] {
+            yoagent::types::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+        // pwd output should contain the temp dir path
+        let canonical_tmp = std::fs::canonicalize(&tmp)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert!(
+            text.contains(&canonical_tmp),
+            "Expected pwd output to contain '{}', got: {}",
+            canonical_tmp,
+            text
+        );
+    }
+
+    #[test]
+    fn test_streaming_bash_default_update_interval() {
+        let tool = StreamingBashTool::default();
+        assert_eq!(tool.update_interval, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_streaming_bash_default_lines_per_update() {
+        let tool = StreamingBashTool::default();
+        assert_eq!(tool.lines_per_update, 20);
+    }
+
+    #[test]
+    fn test_streaming_bash_name_and_description() {
+        let tool = StreamingBashTool::default();
+        assert_eq!(tool.name(), "bash");
+        assert_eq!(tool.label(), "Execute Command");
+        let desc = tool.description();
+        assert!(desc.contains("Execute a bash command"));
+        assert!(desc.contains("timeout"));
+    }
+
+    #[test]
+    fn test_streaming_bash_schema_properties() {
+        let tool = StreamingBashTool::default();
+        let schema = tool.parameters_schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(
+            props.contains_key("command"),
+            "Schema should have 'command'"
+        );
+        assert!(
+            props.contains_key("timeout"),
+            "Schema should have 'timeout'"
+        );
+        // command is required, timeout is not
+        let required = schema["required"].as_array().unwrap();
+        let req_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(req_strs.contains(&"command"));
+        assert!(
+            !req_strs.contains(&"timeout"),
+            "timeout should not be required"
+        );
+    }
+
+    #[test]
+    fn test_streaming_bash_progress_requires_tty_default() {
+        let tool = StreamingBashTool::default();
+        assert!(
+            tool.progress_requires_tty,
+            "Default should require TTY for progress"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RenameSymbolTool — description and schema details
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_rename_symbol_tool_description_content() {
+        let tool = RenameSymbolTool;
+        let desc = tool.description();
+        assert!(
+            desc.contains("word-boundary"),
+            "Description should mention word-boundary matching"
+        );
+        assert!(
+            desc.contains("git-tracked"),
+            "Description should mention git-tracked files"
+        );
+    }
+
+    #[test]
+    fn test_rename_symbol_tool_schema_path_is_optional() {
+        let tool = RenameSymbolTool;
+        let schema = tool.parameters_schema();
+        let required = schema["required"].as_array().unwrap();
+        let req_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(req_strs.len(), 2, "Only old_name and new_name are required");
+        assert!(!req_strs.contains(&"path"), "path must NOT be required");
+    }
+
+    #[test]
+    fn test_rename_symbol_tool_schema_property_types() {
+        let tool = RenameSymbolTool;
+        let schema = tool.parameters_schema();
+        let props = schema["properties"].as_object().unwrap();
+        // All three properties should be string type
+        assert_eq!(props["old_name"]["type"], "string");
+        assert_eq!(props["new_name"]["type"], "string");
+        assert_eq!(props["path"]["type"], "string");
+    }
+
+    // -----------------------------------------------------------------------
+    // AskUserTool — description and schema details
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ask_user_tool_description_content() {
+        let tool = AskUserTool;
+        let desc = tool.description();
+        assert!(desc.contains("user"), "Description should mention user");
+        assert!(
+            desc.contains("question"),
+            "Description should mention question"
+        );
+        assert!(
+            desc.contains("clarification"),
+            "Description should mention clarification"
+        );
+    }
+
+    #[test]
+    fn test_ask_user_tool_schema_question_is_string() {
+        let tool = AskUserTool;
+        let schema = tool.parameters_schema();
+        assert_eq!(
+            schema["properties"]["question"]["type"], "string",
+            "question parameter should be string type"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // TodoTool — edge cases
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_todo_tool_missing_action_entirely() {
+        let tool = TodoTool;
+        let ctx = test_tool_context(None);
+        // Pass empty object — no "action" key at all
+        let result = tool.execute(serde_json::json!({}), ctx).await;
+        assert!(result.is_err(), "Missing action should produce an error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("action"),
+            "Error should mention missing 'action', got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_todo_tool_done_nonexistent_id() {
+        commands_todo::todo_clear();
+        let tool = TodoTool;
+        let ctx = test_tool_context(None);
+        // Try to mark done an ID that doesn't exist
+        let result = tool
+            .execute(serde_json::json!({"action": "done", "id": 999}), ctx)
+            .await;
+        // This should either error or return a message about the task not existing
+        // The implementation uses todo_done which panics or returns error on bad id
+        assert!(result.is_err(), "done with non-existent id should fail");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_todo_tool_remove_nonexistent_id() {
+        commands_todo::todo_clear();
+        let tool = TodoTool;
+        let ctx = test_tool_context(None);
+        let result = tool
+            .execute(serde_json::json!({"action": "remove", "id": 999}), ctx)
+            .await;
+        assert!(result.is_err(), "remove with non-existent id should fail");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_todo_tool_add_multiple_tasks() {
+        commands_todo::todo_clear();
+        let tool = TodoTool;
+
+        // Add three tasks
+        for desc in &["First", "Second", "Third"] {
+            let ctx = test_tool_context(None);
+            tool.execute(
+                serde_json::json!({"action": "add", "description": desc}),
+                ctx,
+            )
+            .await
+            .unwrap();
+        }
+
+        // List should show all three
+        let ctx = test_tool_context(None);
+        let result = tool
+            .execute(serde_json::json!({"action": "list"}), ctx)
+            .await
+            .unwrap();
+        let text = match &result.content[0] {
+            yoagent::types::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+        assert!(text.contains("First"), "Should contain 'First'");
+        assert!(text.contains("Second"), "Should contain 'Second'");
+        assert!(text.contains("Third"), "Should contain 'Third'");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_tools — canonical tool names
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_tools_canonical_names() {
+        let perms = cli::PermissionConfig::default();
+        let dirs = cli::DirectoryRestrictions::default();
+        let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        // In non-terminal mode (test env), there should be exactly these 8 tools
+        let expected = [
+            "bash",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "list_files",
+            "search",
+            "rename_symbol",
+            "todo",
+        ];
+        for name in &expected {
+            assert!(
+                names.contains(name),
+                "Expected tool '{name}' not found in: {names:?}"
+            );
+        }
+        assert_eq!(
+            names.len(),
+            expected.len(),
+            "Tool count mismatch: got {names:?}"
+        );
+    }
+
+    #[test]
+    fn test_build_tools_no_ask_user_in_tests() {
+        // In test (non-terminal) environment, ask_user should be excluded
+        let perms = cli::PermissionConfig::default();
+        let dirs = cli::DirectoryRestrictions::default();
+        let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(
+            !names.contains(&"ask_user"),
+            "ask_user should NOT appear in non-terminal test env"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_sub_agent_tool — deeper property checks
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_sub_agent_tool_description_mentions_subtask() {
+        let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
+        let (tool, _) = build_sub_agent_tool(&config);
+        let desc = tool.description();
+        assert!(
+            desc.contains("subtask") || desc.contains("sub-agent"),
+            "Sub-agent description should mention subtask/sub-agent, got: {desc}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_sub_agent_tool_shared_state_is_independent() {
+        let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
+        let (_, state1) = build_sub_agent_tool(&config);
+        let (_, state2) = build_sub_agent_tool(&config);
+
+        // Set a value in state1, it should NOT appear in state2
+        state1
+            .set("test_key", "test_value".to_string())
+            .await
+            .unwrap();
+        assert_eq!(state1.get("test_key").await, Some("test_value".to_string()));
+        assert_eq!(
+            state2.get("test_key").await,
+            None,
+            "Each build_sub_agent_tool call should produce independent shared state"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_sub_agent_tool_shared_state_set_get() {
+        let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
+        let (_, state) = build_sub_agent_tool(&config);
+
+        // Initially empty
+        assert_eq!(state.get("nonexistent").await, None);
+
+        // Set and get
+        state.set("key1", "value1".to_string()).await.unwrap();
+        assert_eq!(state.get("key1").await, Some("value1".to_string()));
+
+        // Overwrite
+        state.set("key1", "value2".to_string()).await.unwrap();
+        assert_eq!(state.get("key1").await, Some("value2".to_string()));
+    }
+
+    #[test]
+    fn test_build_sub_agent_tool_schema_has_task_description() {
+        let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
+        let (tool, _) = build_sub_agent_tool(&config);
+        let schema = tool.parameters_schema();
+        // The task parameter should have a description
+        let task_prop = &schema["properties"]["task"];
+        assert!(task_prop.is_object(), "task should be an object in schema");
+        assert!(
+            task_prop.get("description").is_some() || task_prop.get("type").is_some(),
+            "task property should have type or description"
+        );
+    }
+
+    #[test]
+    fn test_build_sub_agent_tool_openai_compatible_provider() {
+        // "openai-compat", "custom", etc. should all use OpenAiCompatProvider path
+        let config = test_agent_config("deepseek", "deepseek-chat");
+        let (tool, _) = build_sub_agent_tool(&config);
+        assert_eq!(tool.name(), "sub_agent");
+    }
 }
