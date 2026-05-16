@@ -520,6 +520,9 @@ pub fn print_usage(
     model: &str,
     elapsed: std::time::Duration,
 ) {
+    if is_quiet() {
+        return;
+    }
     if let Some(line) = format_usage_line(usage, total, model, elapsed, crate::cli::is_verbose()) {
         println!("\n{DIM}  {line}{RESET}");
     }
@@ -555,6 +558,9 @@ pub fn context_usage_label(used_tokens: u64, max_tokens: u64) -> String {
 /// Print a context window usage indicator line.
 /// Shows percentage of context consumed, color-coded by fullness.
 pub fn print_context_usage(used_tokens: u64, max_tokens: u64) {
+    if is_quiet() {
+        return;
+    }
     if max_tokens == 0 {
         return;
     }
@@ -1638,5 +1644,36 @@ mod tests {
         // We verify the function is safe to call regardless of platform.
         send_desktop_notification(Duration::from_secs(20));
         // If we got here, the platform-specific branch didn't panic.
+    }
+
+    #[test]
+    fn test_print_usage_quiet_suppressed() {
+        // When quiet mode is active, print_usage should return early
+        // without panicking. Since we can't easily capture stdout in
+        // parallel tests, we verify the guard logic: is_quiet() gates
+        // the function. enable_quiet() + print_usage() must not panic.
+        enable_quiet();
+        let usage = yoagent::Usage {
+            input: 100,
+            output: 50,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 150,
+        };
+        // This should be a no-op (early return) when quiet.
+        print_usage(
+            &usage,
+            &usage,
+            "test-model",
+            std::time::Duration::from_secs(2),
+        );
+    }
+
+    #[test]
+    fn test_print_context_usage_quiet_suppressed() {
+        // When quiet mode is active, print_context_usage should return early.
+        enable_quiet();
+        // This should be a no-op (early return) when quiet.
+        print_context_usage(5000, 200_000);
     }
 }

@@ -148,7 +148,6 @@ pub(crate) fn route_command(input: &str) -> CommandRoute {
         "/config" => CommandRoute::Config,
         "/hooks" => CommandRoute::Hooks,
         "/permissions" => CommandRoute::Permissions,
-        "/compact" => CommandRoute::Compact,
         "/init" => CommandRoute::Init,
         "/index" => CommandRoute::Index,
         "/retry" => CommandRoute::Retry,
@@ -238,6 +237,7 @@ fn route_command_prefix(input: &str) -> CommandRoute {
             "teach" => CommandRoute::Teach,
             "architect" => CommandRoute::Architect,
             "mcp" => CommandRoute::Mcp,
+            "compact" => CommandRoute::Compact,
             "ast" => CommandRoute::Ast,
             "apply" => CommandRoute::Apply,
             "bg" => CommandRoute::Bg,
@@ -674,7 +674,7 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             CommandResult::Continue
         }
         CommandRoute::Compact => {
-            commands::handle_compact(ctx.agent);
+            commands::handle_compact(ctx.agent, ctx.input);
             CommandResult::Continue
         }
         CommandRoute::Commit => {
@@ -1217,6 +1217,8 @@ mod tests {
         assert_eq!(route_command("/doctor"), CommandRoute::Doctor);
         assert_eq!(route_command("/health"), CommandRoute::Health);
         assert_eq!(route_command("/compact"), CommandRoute::Compact);
+        assert_eq!(route_command("/compact 5"), CommandRoute::Compact);
+        assert_eq!(route_command("/compact all"), CommandRoute::Compact);
         assert_eq!(route_command("/retry"), CommandRoute::Retry);
         assert_eq!(route_command("/explain"), CommandRoute::Explain);
         assert_eq!(route_command("/explain function"), CommandRoute::Explain);

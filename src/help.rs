@@ -124,10 +124,15 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              Always clears immediately regardless of message count.",
         ),
         "compact" => Some(
-            "/compact — Compact conversation to save context space\n\n\
-             Asks the AI to summarize the conversation so far into a shorter\n\
-             representation, freeing up context window space. Useful when\n\
-             approaching token limits on long sessions.",
+            "/compact [N|all] — Compact conversation to save context space\n\n\
+             Summarizes older turns to free context window space.\n\n\
+             Usage:\n\
+             \x20 /compact              Default — keep last 10 messages at full fidelity\n\
+             \x20 /compact 4            Keep last 4 messages, summarize everything before\n\
+             \x20 /compact all          Summarize everything except the last 2 messages\n\n\
+             The number controls how many recent messages survive compaction at\n\
+             full detail. Lower numbers free more space but lose more context.\n\
+             Minimum value is 2 (always keeps at least the last exchange).",
         ),
         "commit" => Some(
             "/commit [message] — Commit staged changes\n\n\
@@ -1430,7 +1435,7 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(s, "    /clear!            Force-clear without confirmation");
     let _ = writeln!(
         s,
-        "    /compact           Compact conversation to save context"
+        "    /compact [N|all]   Compact conversation to save context"
     );
     let _ = writeln!(s, "    /save [path]       Save session to file");
     let _ = writeln!(s, "    /load [path]       Load session from file");

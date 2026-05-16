@@ -38,13 +38,66 @@ pub fn is_compact_thrashing() -> bool {
 
 // ── compact ──────────────────────────────────────────────────────────────
 
+/// Result of parsing a `/compact` argument.
+#[derive(Debug, PartialEq)]
+pub enum CompactArg {
+    /// No argument — use default keep_recent (10).
+    Default,
+    /// Explicit number of recent messages to keep.
+    KeepRecent(usize),
+    /// Invalid input — contains the original string for error reporting.
+    Invalid(String),
+}
+
+/// Parse the argument to `/compact`.
+///
+/// - `""` → `Default`
+/// - `"5"` → `KeepRecent(5)`
+/// - `"all"` → `KeepRecent(2)` (minimum safe value)
+/// - `"0"` or `"1"` → clamped to `KeepRecent(2)`
+/// - anything else → `Invalid`
+pub fn parse_compact_arg(arg: &str) -> CompactArg {
+    let arg = arg.trim();
+    if arg.is_empty() {
+        return CompactArg::Default;
+    }
+    if arg.eq_ignore_ascii_case("all") {
+        return CompactArg::KeepRecent(2);
+    }
+    match arg.parse::<usize>() {
+        Ok(n) => CompactArg::KeepRecent(n.max(2)),
+        Err(_) => CompactArg::Invalid(arg.to_string()),
+    }
+}
+
 /// Compact the agent's conversation and return (before_count, before_tokens, after_count, after_tokens).
 /// Returns None if nothing changed. Updates the thrash counter based on reduction quality.
 pub fn compact_agent(agent: &mut Agent) -> Option<(usize, u64, usize, u64)> {
+    compact_agent_with_keep(agent, None)
+}
+
+/// Compact the agent's conversation with an explicit `keep_recent` value.
+///
+/// If `keep_recent` is `None`, uses the default (10). When a value is provided,
+/// `max_context_tokens` is set to 0 to force compaction regardless of current usage,
+/// and `keep_recent` controls how many recent messages survive at full fidelity.
+pub fn compact_agent_with_keep(
+    agent: &mut Agent,
+    keep_recent: Option<usize>,
+) -> Option<(usize, u64, usize, u64)> {
     let messages = agent.messages().to_vec();
     let before_tokens = total_tokens(&messages) as u64;
     let before_count = messages.len();
-    let config = ContextConfig::default();
+    let config = match keep_recent {
+        Some(kr) => ContextConfig {
+            // Force compaction by setting budget to 0 — all tiers will trigger.
+            max_context_tokens: 0,
+            system_prompt_tokens: 0,
+            keep_recent: kr,
+            ..ContextConfig::default()
+        },
+        None => ContextConfig::default(),
+    };
     let compacted = compact_messages(messages, &config);
     let after_tokens = total_tokens(&compacted) as u64;
     let after_count = compacted.len();
@@ -122,15 +175,33 @@ pub fn proactive_compact_if_needed(agent: &mut Agent) -> bool {
     false
 }
 
-pub fn handle_compact(agent: &mut Agent) {
+pub fn handle_compact(agent: &mut Agent, input: &str) {
+    let arg_str = input.strip_prefix("/compact").unwrap_or("").trim();
+    let parsed = parse_compact_arg(arg_str);
+
+    let keep_recent = match parsed {
+        CompactArg::Default => None,
+        CompactArg::KeepRecent(n) => Some(n),
+        CompactArg::Invalid(s) => {
+            println!(
+                "{DIM}  invalid argument: \"{s}\" — use a number or \"all\"\n  usage: /compact [N|all]{RESET}\n"
+            );
+            return;
+        }
+    };
+
     let messages = agent.messages();
     let before_count = messages.len();
     let before_tokens = total_tokens(messages) as u64;
-    match compact_agent(agent) {
+    match compact_agent_with_keep(agent, keep_recent) {
         Some((_, _, after_count, after_tokens)) => {
             reset_context_budget_warning();
+            let keep_label = match keep_recent {
+                Some(n) => format!(" (kept last {n})"),
+                None => String::new(),
+            };
             println!(
-                "{DIM}  compacted: {before_count} → {after_count} messages, ~{} → ~{} tokens{RESET}\n",
+                "{DIM}  compacted{keep_label}: {before_count} → {after_count} messages, ~{} → ~{} tokens{RESET}\n",
                 format_token_count(before_tokens),
                 format_token_count(after_tokens)
             );
@@ -685,6 +756,50 @@ mod tests {
         assert!(is_compact_thrashing());
 
         reset_compact_thrash(); // cleanup
+    }
+
+    #[test]
+    fn test_parse_compact_arg_default() {
+        assert_eq!(parse_compact_arg(""), CompactArg::Default);
+        assert_eq!(parse_compact_arg("  "), CompactArg::Default);
+    }
+
+    #[test]
+    fn test_parse_compact_arg_number() {
+        assert_eq!(parse_compact_arg("5"), CompactArg::KeepRecent(5));
+        assert_eq!(parse_compact_arg("  10  "), CompactArg::KeepRecent(10));
+        assert_eq!(parse_compact_arg("2"), CompactArg::KeepRecent(2));
+        assert_eq!(parse_compact_arg("100"), CompactArg::KeepRecent(100));
+    }
+
+    #[test]
+    fn test_parse_compact_arg_clamps_low_values() {
+        // 0 and 1 are clamped to 2 (minimum safe)
+        assert_eq!(parse_compact_arg("0"), CompactArg::KeepRecent(2));
+        assert_eq!(parse_compact_arg("1"), CompactArg::KeepRecent(2));
+    }
+
+    #[test]
+    fn test_parse_compact_arg_all() {
+        assert_eq!(parse_compact_arg("all"), CompactArg::KeepRecent(2));
+        assert_eq!(parse_compact_arg("ALL"), CompactArg::KeepRecent(2));
+        assert_eq!(parse_compact_arg("  All  "), CompactArg::KeepRecent(2));
+    }
+
+    #[test]
+    fn test_parse_compact_arg_invalid() {
+        assert_eq!(
+            parse_compact_arg("abc"),
+            CompactArg::Invalid("abc".to_string())
+        );
+        assert_eq!(
+            parse_compact_arg("-5"),
+            CompactArg::Invalid("-5".to_string())
+        );
+        assert_eq!(
+            parse_compact_arg("3.5"),
+            CompactArg::Invalid("3.5".to_string())
+        );
     }
 
     #[test]
