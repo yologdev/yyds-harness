@@ -103,6 +103,92 @@ static RE_SHELL_FUNC_PARENS: LazyLock<Regex> =
 static RE_SHELL_FUNC_KEYWORD: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*function\s+(\w+)").unwrap());
 
+// ── C# regexes ──
+static RE_CSHARP_CLASS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:public|private|protected|internal)?\s*(?:static\s+)?(?:abstract\s+)?(?:sealed\s+)?(?:partial\s+)?class\s+(\w+)").unwrap()
+});
+static RE_CSHARP_INTERFACE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:public|private|protected|internal)?\s*(?:partial\s+)?interface\s+(\w+)")
+        .unwrap()
+});
+static RE_CSHARP_STRUCT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:public|private|protected|internal)?\s*(?:readonly\s+)?(?:partial\s+)?struct\s+(\w+)").unwrap()
+});
+static RE_CSHARP_ENUM: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:public|private|protected|internal)?\s*enum\s+(\w+)").unwrap()
+});
+static RE_CSHARP_NAMESPACE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*namespace\s+([\w.]+)").unwrap());
+static RE_CSHARP_RECORD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^\s*(?:public|private|protected|internal)?\s*(?:sealed\s+)?record\s+(?:struct\s+)?(\w+)",
+    )
+    .unwrap()
+});
+static RE_CSHARP_METHOD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:public|private|protected|internal)\s+(?:static\s+)?(?:virtual\s+)?(?:override\s+)?(?:async\s+)?(?:[\w<>\[\],\?\s]+)\s+(\w+)\s*\(").unwrap()
+});
+
+// ── PHP regexes ──
+static RE_PHP_CLASS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(?:abstract\s+)?(?:final\s+)?class\s+(\w+)").unwrap());
+static RE_PHP_INTERFACE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*interface\s+(\w+)").unwrap());
+static RE_PHP_TRAIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*trait\s+(\w+)").unwrap());
+static RE_PHP_FUNCTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:public|private|protected)?\s*(?:static\s+)?function\s+(\w+)").unwrap()
+});
+static RE_PHP_ENUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*enum\s+(\w+)").unwrap());
+
+// ── Kotlin regexes ──
+static RE_KOTLIN_CLASS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:(?:public|private|protected|internal|open|abstract|sealed|data|inner|enum)\s+)*class\s+(\w+)").unwrap()
+});
+static RE_KOTLIN_INTERFACE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:(?:public|private|protected|internal|sealed)\s+)*interface\s+(\w+)")
+        .unwrap()
+});
+static RE_KOTLIN_OBJECT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:(?:public|private|protected|internal)\s+)*(?:companion\s+)?object\s+(\w+)")
+        .unwrap()
+});
+static RE_KOTLIN_FUN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:(?:public|private|protected|internal|open|override|suspend|inline)\s+)*fun\s+(?:<[^>]*>\s*)?(\w+)").unwrap()
+});
+
+// ── Swift regexes ──
+static RE_SWIFT_CLASS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:(?:public|private|internal|fileprivate|open|final)\s+)*class\s+(\w+)")
+        .unwrap()
+});
+static RE_SWIFT_STRUCT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:(?:public|private|internal|fileprivate)\s+)*struct\s+(\w+)").unwrap()
+});
+static RE_SWIFT_PROTOCOL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:(?:public|private|internal|fileprivate)\s+)*protocol\s+(\w+)").unwrap()
+});
+static RE_SWIFT_ENUM: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:(?:public|private|internal|fileprivate)\s+)*enum\s+(\w+)").unwrap()
+});
+static RE_SWIFT_FUNC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:(?:public|private|internal|fileprivate|open|override|static|class|mutating)\s+)*func\s+(\w+)").unwrap()
+});
+static RE_SWIFT_EXTENSION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*extension\s+(\w+)").unwrap());
+
+// ── Scala regexes ──
+static RE_SCALA_CLASS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:(?:abstract|sealed|final|implicit|lazy)\s+)*(?:case\s+)?class\s+(\w+)")
+        .unwrap()
+});
+static RE_SCALA_TRAIT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(?:sealed\s+)?trait\s+(\w+)").unwrap());
+static RE_SCALA_OBJECT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(?:case\s+)?object\s+(\w+)").unwrap());
+static RE_SCALA_DEF: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:(?:private|protected|override|implicit|lazy)\s+)*def\s+(\w+)").unwrap()
+});
+
 // ── /map — structural codebase understanding ────────────────────────────
 
 /// Kind of structural symbol extracted from source code.
@@ -152,6 +238,11 @@ pub fn detect_language(path: &str) -> Option<&'static str> {
         "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "hh" => Some("cpp"),
         "rb" => Some("ruby"),
         "sh" | "bash" | "zsh" => Some("shell"),
+        "cs" => Some("csharp"),
+        "php" => Some("php"),
+        "kt" | "kts" => Some("kotlin"),
+        "swift" => Some("swift"),
+        "scala" | "sc" => Some("scala"),
         _ => None,
     }
 }
@@ -172,6 +263,11 @@ pub fn extract_symbols(code: &str, language: &str) -> Vec<Symbol> {
         "cpp" => extract_cpp_symbols(code),
         "ruby" => extract_ruby_symbols(code),
         "shell" => extract_shell_symbols(code),
+        "csharp" => extract_csharp_symbols(code),
+        "php" => extract_php_symbols(code),
+        "kotlin" => extract_kotlin_symbols(code),
+        "swift" => extract_swift_symbols(code),
+        "scala" => extract_scala_symbols(code),
         _ => Vec::new(),
     }
 }
@@ -808,6 +904,364 @@ fn extract_shell_symbols(code: &str) -> Vec<Symbol> {
                 name,
                 kind: SymbolKind::Function,
                 is_public: true,
+                line: line_num + 1,
+            });
+        }
+    }
+
+    symbols
+}
+
+/// C# keywords that match the method regex but aren't method definitions.
+const CSHARP_NON_METHOD_KEYWORDS: &[&str] = &[
+    "if",
+    "for",
+    "while",
+    "switch",
+    "catch",
+    "return",
+    "new",
+    "class",
+    "interface",
+    "struct",
+    "enum",
+    "namespace",
+    "using",
+    "throw",
+    "lock",
+    "foreach",
+    "typeof",
+    "sizeof",
+    "nameof",
+    "record",
+];
+
+/// Extract symbols from C# source code.
+fn extract_csharp_symbols(code: &str) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+
+    let re_class = &*RE_CSHARP_CLASS;
+    let re_interface = &*RE_CSHARP_INTERFACE;
+    let re_struct = &*RE_CSHARP_STRUCT;
+    let re_enum = &*RE_CSHARP_ENUM;
+    let re_namespace = &*RE_CSHARP_NAMESPACE;
+    let re_record = &*RE_CSHARP_RECORD;
+    let re_method = &*RE_CSHARP_METHOD;
+
+    for (line_num, line) in code.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let is_pub = trimmed.starts_with("public");
+
+        if let Some(caps) = re_namespace.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Namespace,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_record.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Struct,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_class.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Class,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_interface.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Interface,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_struct.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Struct,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_enum.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Enum,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_method.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            if !CSHARP_NON_METHOD_KEYWORDS.contains(&name.as_str()) {
+                symbols.push(Symbol {
+                    name,
+                    kind: SymbolKind::Function,
+                    is_public: is_pub,
+                    line: line_num + 1,
+                });
+            }
+        }
+    }
+
+    symbols
+}
+
+/// Extract symbols from PHP source code.
+fn extract_php_symbols(code: &str) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+
+    let re_class = &*RE_PHP_CLASS;
+    let re_interface = &*RE_PHP_INTERFACE;
+    let re_trait = &*RE_PHP_TRAIT;
+    let re_function = &*RE_PHP_FUNCTION;
+    let re_enum = &*RE_PHP_ENUM;
+
+    for (line_num, line) in code.lines().enumerate() {
+        let is_pub = line.trim_start().starts_with("public")
+            || !line.trim_start().starts_with("private")
+                && !line.trim_start().starts_with("protected");
+
+        if let Some(caps) = re_class.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Class,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_interface.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Interface,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_trait.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Trait,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_enum.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Enum,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_function.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Function,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        }
+    }
+
+    symbols
+}
+
+/// Kotlin keywords that match the fun regex but aren't function definitions.
+const KOTLIN_NON_FUN_KEYWORDS: &[&str] = &[
+    "if",
+    "for",
+    "while",
+    "when",
+    "return",
+    "throw",
+    "class",
+    "interface",
+    "object",
+];
+
+/// Extract symbols from Kotlin source code.
+fn extract_kotlin_symbols(code: &str) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+
+    let re_class = &*RE_KOTLIN_CLASS;
+    let re_interface = &*RE_KOTLIN_INTERFACE;
+    let re_object = &*RE_KOTLIN_OBJECT;
+    let re_fun = &*RE_KOTLIN_FUN;
+
+    for (line_num, line) in code.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let is_pub = !trimmed.starts_with("private") && !trimmed.starts_with("protected");
+
+        // Check interface before class since "sealed interface" would also match class regex
+        if let Some(caps) = re_interface.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Interface,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_object.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Module,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_class.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            // Distinguish data class, sealed class, enum class — all stored as Class
+            let kind = if trimmed.starts_with("enum") || trimmed.contains("enum class") {
+                SymbolKind::Enum
+            } else {
+                SymbolKind::Class
+            };
+            symbols.push(Symbol {
+                name,
+                kind,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_fun.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            if !KOTLIN_NON_FUN_KEYWORDS.contains(&name.as_str()) {
+                symbols.push(Symbol {
+                    name,
+                    kind: SymbolKind::Function,
+                    is_public: is_pub,
+                    line: line_num + 1,
+                });
+            }
+        }
+    }
+
+    symbols
+}
+
+/// Extract symbols from Swift source code.
+fn extract_swift_symbols(code: &str) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+
+    let re_class = &*RE_SWIFT_CLASS;
+    let re_struct = &*RE_SWIFT_STRUCT;
+    let re_protocol = &*RE_SWIFT_PROTOCOL;
+    let re_enum = &*RE_SWIFT_ENUM;
+    let re_func = &*RE_SWIFT_FUNC;
+    let re_extension = &*RE_SWIFT_EXTENSION;
+
+    for (line_num, line) in code.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let is_pub = trimmed.starts_with("public") || trimmed.starts_with("open");
+
+        if let Some(caps) = re_protocol.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Trait,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_class.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Class,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_struct.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Struct,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_enum.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Enum,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_extension.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Impl,
+                is_public: true,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_func.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Function,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        }
+    }
+
+    symbols
+}
+
+/// Extract symbols from Scala source code.
+fn extract_scala_symbols(code: &str) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+
+    let re_class = &*RE_SCALA_CLASS;
+    let re_trait = &*RE_SCALA_TRAIT;
+    let re_object = &*RE_SCALA_OBJECT;
+    let re_def = &*RE_SCALA_DEF;
+
+    for (line_num, line) in code.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let is_pub = !trimmed.starts_with("private") && !trimmed.starts_with("protected");
+
+        if let Some(caps) = re_trait.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Trait,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_object.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Module,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_class.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Class,
+                is_public: is_pub,
+                line: line_num + 1,
+            });
+        } else if let Some(caps) = re_def.captures(line) {
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            symbols.push(Symbol {
+                name,
+                kind: SymbolKind::Function,
+                is_public: is_pub,
                 line: line_num + 1,
             });
         }
@@ -2387,5 +2841,451 @@ main "$@"
         assert_eq!(detect_language("script.sh"), Some("shell"));
         assert_eq!(detect_language("build.bash"), Some("shell"));
         assert_eq!(detect_language("init.zsh"), Some("shell"));
+    }
+
+    // ── C# language detection and extraction tests ──
+
+    #[test]
+    fn detect_language_csharp_extensions() {
+        assert_eq!(detect_language("Program.cs"), Some("csharp"));
+    }
+
+    #[test]
+    fn extract_csharp_symbols_basic() {
+        let code = r#"
+namespace MyApp.Models
+{
+    public interface IRepository
+    {
+        void Save();
+    }
+
+    public class UserService
+    {
+        public async Task<User> GetUser(int id)
+        {
+            return await db.Find(id);
+        }
+
+        private void ValidateInput(string input)
+        {
+        }
+    }
+
+    public struct Point
+    {
+        public int X;
+        public int Y;
+    }
+
+    public enum Status
+    {
+        Active,
+        Inactive
+    }
+
+    public record UserDto(string Name, int Age);
+}
+"#;
+        let symbols = extract_symbols(code, "csharp");
+
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "MyApp.Models" && s.kind == SymbolKind::Namespace),
+            "should find namespace"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "IRepository" && s.kind == SymbolKind::Interface),
+            "should find interface"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "UserService" && s.kind == SymbolKind::Class),
+            "should find class"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "GetUser" && s.kind == SymbolKind::Function),
+            "should find public method"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Point" && s.kind == SymbolKind::Struct),
+            "should find struct"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Status" && s.kind == SymbolKind::Enum),
+            "should find enum"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "UserDto" && s.kind == SymbolKind::Struct),
+            "should find record as struct"
+        );
+    }
+
+    // ── PHP language detection and extraction tests ──
+
+    #[test]
+    fn detect_language_php_extensions() {
+        assert_eq!(detect_language("index.php"), Some("php"));
+    }
+
+    #[test]
+    fn extract_php_symbols_basic() {
+        let code = r#"<?php
+
+class UserController
+{
+    public function index()
+    {
+        return view('users.index');
+    }
+
+    private function validate($data)
+    {
+    }
+}
+
+interface Cacheable
+{
+    public function cacheKey(): string;
+}
+
+trait HasTimestamps
+{
+    public function createdAt(): DateTime
+    {
+    }
+}
+
+enum Color
+{
+    case Red;
+    case Green;
+    case Blue;
+}
+
+function helper_function($x)
+{
+    return $x * 2;
+}
+"#;
+        let symbols = extract_symbols(code, "php");
+
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "UserController" && s.kind == SymbolKind::Class),
+            "should find class"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "index" && s.kind == SymbolKind::Function),
+            "should find public method"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Cacheable" && s.kind == SymbolKind::Interface),
+            "should find interface"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "HasTimestamps" && s.kind == SymbolKind::Trait),
+            "should find trait"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Color" && s.kind == SymbolKind::Enum),
+            "should find enum"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "helper_function" && s.kind == SymbolKind::Function),
+            "should find standalone function"
+        );
+    }
+
+    // ── Kotlin language detection and extraction tests ──
+
+    #[test]
+    fn detect_language_kotlin_extensions() {
+        assert_eq!(detect_language("Main.kt"), Some("kotlin"));
+        assert_eq!(detect_language("build.gradle.kts"), Some("kotlin"));
+    }
+
+    #[test]
+    fn extract_kotlin_symbols_basic() {
+        let code = r#"
+data class User(val name: String, val age: Int)
+
+sealed class Result {
+    data class Success(val data: Any) : Result()
+    data class Error(val message: String) : Result()
+}
+
+interface Repository {
+    fun findAll(): List<User>
+}
+
+enum class Direction {
+    NORTH, SOUTH, EAST, WEST
+}
+
+object Singleton {
+    fun getInstance(): Singleton = this
+}
+
+fun <T> process(item: T): T {
+    return item
+}
+
+suspend fun fetchData(): String {
+    return "data"
+}
+
+private fun helperFunction() {
+}
+"#;
+        let symbols = extract_symbols(code, "kotlin");
+
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "User" && s.kind == SymbolKind::Class),
+            "should find data class"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Result" && s.kind == SymbolKind::Class),
+            "should find sealed class"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Repository" && s.kind == SymbolKind::Interface),
+            "should find interface"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Direction" && s.kind == SymbolKind::Enum),
+            "should find enum class"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Singleton" && s.kind == SymbolKind::Module),
+            "should find object"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "process" && s.kind == SymbolKind::Function),
+            "should find generic function"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "fetchData" && s.kind == SymbolKind::Function),
+            "should find suspend function"
+        );
+    }
+
+    // ── Swift language detection and extraction tests ──
+
+    #[test]
+    fn detect_language_swift_extensions() {
+        assert_eq!(detect_language("App.swift"), Some("swift"));
+    }
+
+    #[test]
+    fn extract_swift_symbols_basic() {
+        let code = r#"
+public class ViewController: UIViewController {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+    }
+}
+
+struct Point {
+    var x: Double
+    var y: Double
+}
+
+protocol Drawable {
+    func draw()
+}
+
+enum Direction {
+    case north
+    case south
+}
+
+extension String {
+    func reversed() -> String {
+        return String(self.reversed())
+    }
+}
+
+public func globalHelper() -> Int {
+    return 42
+}
+
+private func internalHelper() {
+}
+
+static func classMethod() {
+}
+"#;
+        let symbols = extract_symbols(code, "swift");
+
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "ViewController" && s.kind == SymbolKind::Class),
+            "should find class"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "viewDidLoad" && s.kind == SymbolKind::Function),
+            "should find override func"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Point" && s.kind == SymbolKind::Struct),
+            "should find struct"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Drawable" && s.kind == SymbolKind::Trait),
+            "should find protocol as trait"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Direction" && s.kind == SymbolKind::Enum),
+            "should find enum"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "String" && s.kind == SymbolKind::Impl),
+            "should find extension as impl"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "globalHelper" && s.kind == SymbolKind::Function),
+            "should find global func"
+        );
+    }
+
+    // ── Scala language detection and extraction tests ──
+
+    #[test]
+    fn detect_language_scala_extensions() {
+        assert_eq!(detect_language("Main.scala"), Some("scala"));
+        assert_eq!(detect_language("build.sc"), Some("scala"));
+    }
+
+    #[test]
+    fn extract_scala_symbols_basic() {
+        let code = r#"
+case class User(name: String, age: Int)
+
+sealed trait Result
+class Success(val data: Any) extends Result
+class Failure(val message: String) extends Result
+
+trait Repository {
+  def findAll(): List[User]
+  def findById(id: Int): Option[User]
+}
+
+object UserService {
+  def create(name: String): User = {
+    User(name, 0)
+  }
+
+  private def validate(name: String): Boolean = {
+    name.nonEmpty
+  }
+}
+
+case object Sentinel
+
+abstract class Base {
+  def process(): Unit
+}
+"#;
+        let symbols = extract_symbols(code, "scala");
+
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "User" && s.kind == SymbolKind::Class),
+            "should find case class"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Result" && s.kind == SymbolKind::Trait),
+            "should find sealed trait"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Repository" && s.kind == SymbolKind::Trait),
+            "should find trait"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "UserService" && s.kind == SymbolKind::Module),
+            "should find object as module"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "create" && s.kind == SymbolKind::Function),
+            "should find def"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Sentinel" && s.kind == SymbolKind::Module),
+            "should find case object"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "findAll" && s.kind == SymbolKind::Function),
+            "should find trait method def"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Base" && s.kind == SymbolKind::Class),
+            "should find abstract class"
+        );
     }
 }
