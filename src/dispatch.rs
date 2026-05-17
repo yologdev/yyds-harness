@@ -1293,4 +1293,393 @@ mod tests {
         assert_eq!(route_command("/review"), CommandRoute::Review);
         assert_eq!(route_command("/review main"), CommandRoute::Review);
     }
+
+    // --- New tests: edge cases and expanded coverage ---
+
+    #[test]
+    fn test_route_case_sensitive() {
+        // Commands are case-sensitive — uppercase variants should not match
+        assert_eq!(route_command("/HELP"), CommandRoute::UnknownSlash);
+        assert_eq!(route_command("/Help"), CommandRoute::UnknownSlash);
+        assert_eq!(route_command("/QUIT"), CommandRoute::UnknownSlash);
+        assert_eq!(route_command("/Quit"), CommandRoute::UnknownSlash);
+        assert_eq!(route_command("/VERSION"), CommandRoute::UnknownSlash);
+        assert_eq!(route_command("/Model"), CommandRoute::UnknownSlash);
+        assert_eq!(route_command("/DIFF"), CommandRoute::UnknownSlash);
+    }
+
+    #[test]
+    fn test_route_empty_and_whitespace_inputs() {
+        // Empty string is not a command
+        assert_eq!(route_command(""), CommandRoute::NotACommand);
+        // Whitespace-only is not a command
+        assert_eq!(route_command("   "), CommandRoute::NotACommand);
+        assert_eq!(route_command("\t"), CommandRoute::NotACommand);
+        // Bare slash routes through prefix path — no command after /
+        assert_eq!(route_command("/"), CommandRoute::UnknownSlash);
+    }
+
+    #[test]
+    fn test_route_trailing_whitespace_exact_match() {
+        // Exact matches require exact strings — trailing space means no exact match.
+        // Commands only in the exact-match arm (not in prefix table) become UnknownSlash.
+        assert_eq!(route_command("/quit "), CommandRoute::UnknownSlash);
+        assert_eq!(route_command("/version "), CommandRoute::UnknownSlash);
+        assert_eq!(route_command("/cost "), CommandRoute::UnknownSlash);
+        // But commands that ARE in the prefix table still route correctly with trailing space
+        assert_eq!(route_command("/diff "), CommandRoute::Diff);
+        assert_eq!(route_command("/model "), CommandRoute::Model);
+        assert_eq!(route_command("/grep "), CommandRoute::Grep);
+    }
+
+    #[test]
+    fn test_route_leading_whitespace_not_command() {
+        // Leading whitespace means it doesn't start with '/' or '!'
+        assert_eq!(route_command(" /help"), CommandRoute::NotACommand);
+        assert_eq!(route_command("  /quit"), CommandRoute::NotACommand);
+        assert_eq!(route_command(" !ls"), CommandRoute::NotACommand);
+    }
+
+    #[test]
+    fn test_route_map_vs_mark_vs_marks_no_collision() {
+        // /map, /mark, /marks are distinct commands — ensure no prefix collision
+        assert_eq!(route_command("/map"), CommandRoute::Map);
+        assert_eq!(route_command("/map src/"), CommandRoute::Map);
+        assert_eq!(route_command("/mark"), CommandRoute::Mark);
+        assert_eq!(route_command("/mark checkpoint1"), CommandRoute::Mark);
+        assert_eq!(route_command("/marks"), CommandRoute::Marks);
+    }
+
+    #[test]
+    fn test_route_find_vs_fix_vs_fork_no_collision() {
+        // /find, /fix, /fork are distinct first-words — no prefix confusion
+        assert_eq!(route_command("/find"), CommandRoute::Find);
+        assert_eq!(route_command("/find file.rs"), CommandRoute::Find);
+        assert_eq!(route_command("/fix"), CommandRoute::Fix);
+        assert_eq!(route_command("/fork"), CommandRoute::Fork);
+        assert_eq!(route_command("/fork create mybranch"), CommandRoute::Fork);
+    }
+
+    #[test]
+    fn test_route_bang_prefix_variations() {
+        // `!cmd` routes to Run
+        assert_eq!(route_command("!ls"), CommandRoute::Run);
+        assert_eq!(route_command("!echo hello world"), CommandRoute::Run);
+        assert_eq!(route_command("!cat /etc/hosts"), CommandRoute::Run);
+        // Bare `!` is NOT a command (len == 1)
+        assert_eq!(route_command("!"), CommandRoute::NotACommand);
+        // `!!` is a valid bang command (len > 1)
+        assert_eq!(route_command("!!"), CommandRoute::Run);
+    }
+
+    #[test]
+    fn test_route_lint_fix_exact_vs_prefix() {
+        // "/lint fix" is an exact match in route_command's first arm
+        assert_eq!(route_command("/lint fix"), CommandRoute::LintFix);
+        // "/lint" alone falls to prefix routing -> Lint
+        assert_eq!(route_command("/lint"), CommandRoute::Lint);
+        // "/lint strict" falls to prefix routing -> Lint (not LintFix)
+        assert_eq!(route_command("/lint strict"), CommandRoute::Lint);
+        // "/lint fixme" — first word is "lint", not exact "lint fix"
+        assert_eq!(route_command("/lint fixme"), CommandRoute::Lint);
+        // "/lint fix --all" — starts with "lint fix" in prefix check
+        // This goes through prefix routing since no exact match for "/lint fix --all"
+        assert_eq!(route_command("/lint fix --all"), CommandRoute::Lint);
+    }
+
+    #[test]
+    fn test_route_config_subcommand_priority() {
+        // Config subcommand routing has specific ordering:
+        // /config show must match before /config set
+        assert_eq!(route_command("/config show"), CommandRoute::ConfigShow);
+        assert_eq!(route_command("/config show all"), CommandRoute::ConfigShow);
+        assert_eq!(route_command("/config set"), CommandRoute::ConfigSet);
+        assert_eq!(
+            route_command("/config set key val"),
+            CommandRoute::ConfigSet
+        );
+        assert_eq!(route_command("/config edit"), CommandRoute::ConfigEdit);
+        assert_eq!(
+            route_command("/config edit global"),
+            CommandRoute::ConfigEdit
+        );
+        assert_eq!(route_command("/config get"), CommandRoute::ConfigGet);
+        assert_eq!(route_command("/config get key"), CommandRoute::ConfigGet);
+        // /config alone (no subcommand) is an exact match -> Config
+        assert_eq!(route_command("/config"), CommandRoute::Config);
+        // /config with unknown subcommand: "config" is not in prefix table,
+        // so it falls through to UnknownSlash
+        assert_eq!(route_command("/config unknown"), CommandRoute::UnknownSlash);
+    }
+
+    #[test]
+    fn test_route_unknown_slash_various() {
+        // Various unknown slash commands
+        assert_eq!(route_command("/banana"), CommandRoute::UnknownSlash);
+        assert_eq!(route_command("/testing123"), CommandRoute::UnknownSlash);
+        assert_eq!(route_command("/hello world"), CommandRoute::UnknownSlash);
+        assert_eq!(route_command("/x"), CommandRoute::UnknownSlash);
+        assert_eq!(
+            route_command("/superlongcommandthatdoesnotexist"),
+            CommandRoute::UnknownSlash
+        );
+    }
+
+    #[test]
+    fn test_route_not_a_command_various() {
+        // Regular text is not a command
+        assert_eq!(route_command("help"), CommandRoute::NotACommand);
+        assert_eq!(route_command("quit"), CommandRoute::NotACommand);
+        assert_eq!(
+            route_command("please run my tests"),
+            CommandRoute::NotACommand
+        );
+        // Numbers, symbols (non-/ non-!) are not commands
+        assert_eq!(route_command("42"), CommandRoute::NotACommand);
+        assert_eq!(route_command("#comment"), CommandRoute::NotACommand);
+        assert_eq!(route_command("@mention"), CommandRoute::NotACommand);
+    }
+
+    #[test]
+    fn test_route_revisit_and_skill() {
+        assert_eq!(route_command("/revisit"), CommandRoute::Revisit);
+        assert_eq!(route_command("/revisit scan"), CommandRoute::Revisit);
+        assert_eq!(route_command("/skill"), CommandRoute::Skill);
+        assert_eq!(route_command("/skill list"), CommandRoute::Skill);
+        assert_eq!(route_command("/skill show myskill"), CommandRoute::Skill);
+    }
+
+    #[test]
+    fn test_route_goal_and_plan() {
+        assert_eq!(route_command("/goal"), CommandRoute::Goal);
+        assert_eq!(
+            route_command("/goal set build better tests"),
+            CommandRoute::Goal
+        );
+        assert_eq!(route_command("/goal clear"), CommandRoute::Goal);
+        assert_eq!(route_command("/plan"), CommandRoute::Plan);
+        assert_eq!(route_command("/plan create"), CommandRoute::Plan);
+        assert_eq!(route_command("/plan show"), CommandRoute::Plan);
+    }
+
+    #[test]
+    fn test_route_spawn_and_bg() {
+        assert_eq!(route_command("/spawn"), CommandRoute::Spawn);
+        assert_eq!(
+            route_command("/spawn run all the tests"),
+            CommandRoute::Spawn
+        );
+        assert_eq!(route_command("/bg"), CommandRoute::Bg);
+        assert_eq!(route_command("/bg list"), CommandRoute::Bg);
+        assert_eq!(route_command("/bg kill 1"), CommandRoute::Bg);
+    }
+
+    #[test]
+    fn test_route_slash_only() {
+        // A bare "/" has no command after it — splits to empty, falls to UnknownSlash
+        assert_eq!(route_command("/"), CommandRoute::UnknownSlash);
+    }
+
+    #[test]
+    fn test_route_exact_match_trumps_prefix_for_single_word() {
+        // These commands have exact matches in the first match arm AND prefix
+        // matches in route_command_prefix. The exact match should win for bare forms.
+        assert_eq!(route_command("/quit"), CommandRoute::Quit);
+        assert_eq!(route_command("/version"), CommandRoute::Version);
+        assert_eq!(route_command("/status"), CommandRoute::Status);
+        assert_eq!(route_command("/tokens"), CommandRoute::Tokens);
+        assert_eq!(route_command("/cost"), CommandRoute::Cost);
+        assert_eq!(route_command("/profile"), CommandRoute::Profile);
+        assert_eq!(route_command("/clear"), CommandRoute::Clear);
+        assert_eq!(route_command("/clear!"), CommandRoute::ClearForce);
+        assert_eq!(route_command("/health"), CommandRoute::Health);
+        assert_eq!(route_command("/doctor"), CommandRoute::Doctor);
+        assert_eq!(route_command("/test"), CommandRoute::Test);
+        assert_eq!(route_command("/fix"), CommandRoute::Fix);
+        assert_eq!(route_command("/marks"), CommandRoute::Marks);
+        assert_eq!(route_command("/hooks"), CommandRoute::Hooks);
+        assert_eq!(route_command("/permissions"), CommandRoute::Permissions);
+        assert_eq!(route_command("/init"), CommandRoute::Init);
+        assert_eq!(route_command("/index"), CommandRoute::Index);
+        assert_eq!(route_command("/retry"), CommandRoute::Retry);
+        assert_eq!(route_command("/run"), CommandRoute::Run);
+        assert_eq!(route_command("/update"), CommandRoute::Update);
+        assert_eq!(route_command("/docs"), CommandRoute::Docs);
+        assert_eq!(route_command("/find"), CommandRoute::Find);
+        assert_eq!(route_command("/grep"), CommandRoute::Grep);
+        assert_eq!(route_command("/search"), CommandRoute::Search);
+    }
+
+    #[test]
+    fn test_route_all_prefix_commands_with_args() {
+        // Verify every prefix-routed command correctly routes when given arguments
+        let cases: Vec<(&str, CommandRoute)> = vec![
+            ("/changelog 10", CommandRoute::Changelog),
+            ("/evolution latest", CommandRoute::Evolution),
+            ("/model switch opus", CommandRoute::Model),
+            ("/provider anthropic", CommandRoute::Provider),
+            ("/think medium", CommandRoute::Think),
+            ("/save my_session.json", CommandRoute::Save),
+            ("/load prev.json", CommandRoute::Load),
+            ("/stash pop", CommandRoute::Stash),
+            ("/fork delete old", CommandRoute::Fork),
+            ("/checkpoint restore cp1", CommandRoute::Checkpoint),
+            ("/diff HEAD~3", CommandRoute::Diff),
+            ("/blame src/dispatch.rs", CommandRoute::Blame),
+            ("/undo src/main.rs", CommandRoute::Undo),
+            ("/history detail 5", CommandRoute::History),
+            ("/search pattern here", CommandRoute::Search),
+            ("/changes json", CommandRoute::Changes),
+            ("/export report.md", CommandRoute::Export),
+            ("/mark milestone-1", CommandRoute::Mark),
+            ("/jump milestone-1", CommandRoute::Jump),
+            ("/commit initial commit", CommandRoute::Commit),
+            ("/context files", CommandRoute::Context),
+            ("/add src/lib.rs", CommandRoute::Add),
+            ("/docs api", CommandRoute::Docs),
+            ("/find *.toml", CommandRoute::Find),
+            ("/grep TODO", CommandRoute::Grep),
+            ("/rename old_fn new_fn", CommandRoute::Rename),
+            ("/extract fn my_helper", CommandRoute::Extract),
+            ("/move method to_impl", CommandRoute::Move),
+            ("/refactor inline var", CommandRoute::Refactor),
+            ("/remember this is important", CommandRoute::Remember),
+            ("/memories list", CommandRoute::Memories),
+            ("/forget 3", CommandRoute::Forget),
+            ("/map src/tools.rs", CommandRoute::Map),
+            ("/outline src/main.rs", CommandRoute::Outline),
+            ("/tree docs/", CommandRoute::Tree),
+            ("/web https://example.com", CommandRoute::Web),
+            ("/open src/main.rs", CommandRoute::Open),
+            ("/copy code", CommandRoute::Copy),
+            ("/watch set cargo test", CommandRoute::Watch),
+            ("/loop 3 do something", CommandRoute::Loop),
+            ("/todo add fix tests", CommandRoute::Todo),
+            ("/teach on", CommandRoute::Teach),
+            ("/architect on", CommandRoute::Architect),
+            ("/mcp status", CommandRoute::Mcp),
+            ("/compact 10", CommandRoute::Compact),
+            ("/ast pattern here", CommandRoute::Ast),
+            ("/apply patch.diff", CommandRoute::Apply),
+            ("/bg status 1", CommandRoute::Bg),
+            ("/run echo hi", CommandRoute::Run),
+            ("/pr create", CommandRoute::Pr),
+            ("/git status", CommandRoute::Git),
+            ("/goal set ship v1", CommandRoute::Goal),
+            ("/spawn do task", CommandRoute::Spawn),
+            ("/review main", CommandRoute::Review),
+            ("/revisit scan", CommandRoute::Revisit),
+            ("/skill show core", CommandRoute::Skill),
+            ("/explain this function", CommandRoute::Explain),
+            ("/plan next steps", CommandRoute::Plan),
+            ("/extended long prompt", CommandRoute::Extended),
+            ("/side quick question", CommandRoute::Side),
+            ("/quick check this", CommandRoute::Quick),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                route_command(input),
+                expected,
+                "Failed for input: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_route_commands_with_multiple_spaces() {
+        // Commands with extra spaces between command and args
+        // split_whitespace handles multiple spaces gracefully
+        assert_eq!(route_command("/add   file.rs"), CommandRoute::Add);
+        assert_eq!(route_command("/grep   pattern"), CommandRoute::Grep);
+        assert_eq!(route_command("/model   sonnet"), CommandRoute::Model);
+    }
+
+    #[test]
+    fn test_route_help_with_various_args() {
+        // /help routes through prefix matching (starts_with("help"))
+        assert_eq!(route_command("/help"), CommandRoute::Help);
+        assert_eq!(route_command("/help commands"), CommandRoute::Help);
+        assert_eq!(route_command("/help model"), CommandRoute::Help);
+        assert_eq!(route_command("/help config"), CommandRoute::Help);
+        assert_eq!(route_command("/help nonexistent"), CommandRoute::Help);
+    }
+
+    #[test]
+    fn test_route_debug_format() {
+        // CommandRoute derives Debug — verify it's usable (compile-time + runtime)
+        let route = route_command("/help");
+        let debug_str = format!("{:?}", route);
+        assert_eq!(debug_str, "Help");
+
+        let route = route_command("/nonexistent");
+        let debug_str = format!("{:?}", route);
+        assert_eq!(debug_str, "UnknownSlash");
+
+        let route = route_command("plain text");
+        let debug_str = format!("{:?}", route);
+        assert_eq!(debug_str, "NotACommand");
+    }
+
+    #[test]
+    fn test_command_result_debug_format() {
+        // CommandResult derives Debug — verify variants are formattable
+        let cr = CommandResult::Continue;
+        assert!(format!("{:?}", cr).contains("Continue"));
+
+        let cr = CommandResult::Quit;
+        assert!(format!("{:?}", cr).contains("Quit"));
+
+        let cr = CommandResult::SendToAgent("test prompt".to_string());
+        let debug = format!("{:?}", cr);
+        assert!(debug.contains("SendToAgent"));
+        assert!(debug.contains("test prompt"));
+
+        let cr = CommandResult::NotACommand;
+        assert!(format!("{:?}", cr).contains("NotACommand"));
+    }
+
+    #[test]
+    fn test_route_exhaustive_exact_matches() {
+        // Verify every exact-match branch in route_command's first match arm
+        // maps to the correct variant (completeness check)
+        let exact_matches: Vec<(&str, CommandRoute)> = vec![
+            ("/quit", CommandRoute::Quit),
+            ("/exit", CommandRoute::Quit),
+            ("/version", CommandRoute::Version),
+            ("/status", CommandRoute::Status),
+            ("/tokens", CommandRoute::Tokens),
+            ("/cost", CommandRoute::Cost),
+            ("/profile", CommandRoute::Profile),
+            ("/clear", CommandRoute::Clear),
+            ("/clear!", CommandRoute::ClearForce),
+            ("/model", CommandRoute::Model),
+            ("/provider", CommandRoute::Provider),
+            ("/think", CommandRoute::Think),
+            ("/health", CommandRoute::Health),
+            ("/doctor", CommandRoute::Doctor),
+            ("/test", CommandRoute::Test),
+            ("/lint fix", CommandRoute::LintFix),
+            ("/fix", CommandRoute::Fix),
+            ("/marks", CommandRoute::Marks),
+            ("/config", CommandRoute::Config),
+            ("/hooks", CommandRoute::Hooks),
+            ("/permissions", CommandRoute::Permissions),
+            ("/init", CommandRoute::Init),
+            ("/index", CommandRoute::Index),
+            ("/retry", CommandRoute::Retry),
+            ("/run", CommandRoute::Run),
+            ("/update", CommandRoute::Update),
+            ("/docs", CommandRoute::Docs),
+            ("/find", CommandRoute::Find),
+            ("/grep", CommandRoute::Grep),
+            ("/search", CommandRoute::Search),
+        ];
+        for (input, expected) in exact_matches {
+            assert_eq!(
+                route_command(input),
+                expected,
+                "Exact match failed for: {input:?}"
+            );
+        }
+    }
 }

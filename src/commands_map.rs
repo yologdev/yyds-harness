@@ -155,6 +155,9 @@ static RE_KOTLIN_OBJECT: LazyLock<Regex> = LazyLock::new(|| {
 static RE_KOTLIN_FUN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*(?:(?:public|private|protected|internal|open|override|suspend|inline)\s+)*fun\s+(?:<[^>]*>\s*)?(\w+)").unwrap()
 });
+static RE_KOTLIN_ENUM_CLASS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:(?:public|private|protected|internal)\s+)*enum\s+class\s+(\w+)").unwrap()
+});
 
 // ── Swift regexes ──
 static RE_SWIFT_CLASS: LazyLock<Regex> = LazyLock::new(|| {
@@ -236,6 +239,10 @@ enum VisibilityRule {
     UppercaseIsPublic,
     /// Public unless the name starts with `_` (Ruby/Python convention).
     UnderscoreIsPrivate,
+    /// Public if the (trimmed) line starts with "public" (C# convention).
+    StartsWithPublic,
+    /// Public unless the (trimmed) line starts with "private" or "protected" (Kotlin/PHP).
+    NotPrivateOrProtected,
 }
 
 /// A single pattern rule mapping a regex to a symbol kind.
@@ -245,6 +252,8 @@ struct PatternRule {
     /// Which capture group holds the symbol name (1-indexed).
     name_group: usize,
     visibility: VisibilityRule,
+    /// If non-empty, skip matches whose name is in this list (keyword filter).
+    exclude_names: &'static [&'static str],
 }
 
 /// A set of pattern rules for a language that uses simple line-by-line extraction.
@@ -265,18 +274,27 @@ fn extract_symbols_from_patterns(code: &str, patterns: &LanguagePatterns) -> Vec
         } else {
             line
         };
+        let trimmed = line.trim_start();
         for rule in patterns.rules {
             if let Some(caps) = rule.regex.captures(target) {
                 let name = caps
                     .get(rule.name_group)
                     .map_or("", |m| m.as_str())
                     .to_string();
+                // Skip excluded names (keyword filter)
+                if !rule.exclude_names.is_empty() && rule.exclude_names.contains(&name.as_str()) {
+                    break;
+                }
                 let is_public = match rule.visibility {
                     VisibilityRule::AlwaysPublic => true,
                     VisibilityRule::UppercaseIsPublic => {
                         name.starts_with(|c: char| c.is_uppercase())
                     }
                     VisibilityRule::UnderscoreIsPrivate => !name.starts_with('_'),
+                    VisibilityRule::StartsWithPublic => trimmed.starts_with("public"),
+                    VisibilityRule::NotPrivateOrProtected => {
+                        !trimmed.starts_with("private") && !trimmed.starts_with("protected")
+                    }
                 };
                 symbols.push(Symbol {
                     name,
@@ -300,30 +318,35 @@ static GO_PATTERN_RULES: &[PatternRule] = &[
         kind: SymbolKind::Function,
         name_group: 1,
         visibility: VisibilityRule::UppercaseIsPublic,
+        exclude_names: &[],
     },
     PatternRule {
         regex: &RE_GO_FUNC,
         kind: SymbolKind::Function,
         name_group: 1,
         visibility: VisibilityRule::UppercaseIsPublic,
+        exclude_names: &[],
     },
     PatternRule {
         regex: &RE_GO_STRUCT,
         kind: SymbolKind::Struct,
         name_group: 1,
         visibility: VisibilityRule::UppercaseIsPublic,
+        exclude_names: &[],
     },
     PatternRule {
         regex: &RE_GO_INTERFACE,
         kind: SymbolKind::Interface,
         name_group: 1,
         visibility: VisibilityRule::UppercaseIsPublic,
+        exclude_names: &[],
     },
     PatternRule {
         regex: &RE_GO_CONST,
         kind: SymbolKind::Const,
         name_group: 1,
         visibility: VisibilityRule::UppercaseIsPublic,
+        exclude_names: &[],
     },
 ];
 
@@ -333,24 +356,28 @@ static RUBY_PATTERN_RULES: &[PatternRule] = &[
         kind: SymbolKind::Class,
         name_group: 1,
         visibility: VisibilityRule::AlwaysPublic,
+        exclude_names: &[],
     },
     PatternRule {
         regex: &RE_RUBY_MODULE,
         kind: SymbolKind::Module,
         name_group: 1,
         visibility: VisibilityRule::AlwaysPublic,
+        exclude_names: &[],
     },
     PatternRule {
         regex: &RE_RUBY_DEF,
         kind: SymbolKind::Function,
         name_group: 1,
         visibility: VisibilityRule::UnderscoreIsPrivate,
+        exclude_names: &[],
     },
     PatternRule {
         regex: &RE_RUBY_CONST,
         kind: SymbolKind::Const,
         name_group: 1,
         visibility: VisibilityRule::AlwaysPublic,
+        exclude_names: &[],
     },
 ];
 
@@ -360,12 +387,14 @@ static SHELL_PATTERN_RULES: &[PatternRule] = &[
         kind: SymbolKind::Function,
         name_group: 1,
         visibility: VisibilityRule::AlwaysPublic,
+        exclude_names: &[],
     },
     PatternRule {
         regex: &RE_SHELL_FUNC_PARENS,
         kind: SymbolKind::Function,
         name_group: 1,
         visibility: VisibilityRule::AlwaysPublic,
+        exclude_names: &[],
     },
 ];
 
@@ -379,6 +408,184 @@ static RUBY_PATTERNS: LanguagePatterns = LanguagePatterns {
 };
 static SHELL_PATTERNS: LanguagePatterns = LanguagePatterns {
     rules: SHELL_PATTERN_RULES,
+    trim_leading: false,
+};
+
+// ── C# pattern rules ──
+static CSHARP_PATTERN_RULES: &[PatternRule] = &[
+    PatternRule {
+        regex: &RE_CSHARP_NAMESPACE,
+        kind: SymbolKind::Namespace,
+        name_group: 1,
+        visibility: VisibilityRule::AlwaysPublic,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_CSHARP_RECORD,
+        kind: SymbolKind::Struct,
+        name_group: 1,
+        visibility: VisibilityRule::StartsWithPublic,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_CSHARP_CLASS,
+        kind: SymbolKind::Class,
+        name_group: 1,
+        visibility: VisibilityRule::StartsWithPublic,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_CSHARP_INTERFACE,
+        kind: SymbolKind::Interface,
+        name_group: 1,
+        visibility: VisibilityRule::StartsWithPublic,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_CSHARP_STRUCT,
+        kind: SymbolKind::Struct,
+        name_group: 1,
+        visibility: VisibilityRule::StartsWithPublic,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_CSHARP_ENUM,
+        kind: SymbolKind::Enum,
+        name_group: 1,
+        visibility: VisibilityRule::StartsWithPublic,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_CSHARP_METHOD,
+        kind: SymbolKind::Function,
+        name_group: 1,
+        visibility: VisibilityRule::StartsWithPublic,
+        exclude_names: &[
+            "if",
+            "for",
+            "while",
+            "switch",
+            "catch",
+            "return",
+            "new",
+            "class",
+            "interface",
+            "struct",
+            "enum",
+            "namespace",
+            "using",
+            "throw",
+            "lock",
+            "foreach",
+            "typeof",
+            "sizeof",
+            "nameof",
+            "record",
+        ],
+    },
+];
+
+static CSHARP_PATTERNS: LanguagePatterns = LanguagePatterns {
+    rules: CSHARP_PATTERN_RULES,
+    trim_leading: false,
+};
+
+// ── PHP pattern rules ──
+static PHP_PATTERN_RULES: &[PatternRule] = &[
+    PatternRule {
+        regex: &RE_PHP_CLASS,
+        kind: SymbolKind::Class,
+        name_group: 1,
+        visibility: VisibilityRule::AlwaysPublic,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_PHP_INTERFACE,
+        kind: SymbolKind::Interface,
+        name_group: 1,
+        visibility: VisibilityRule::AlwaysPublic,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_PHP_TRAIT,
+        kind: SymbolKind::Trait,
+        name_group: 1,
+        visibility: VisibilityRule::AlwaysPublic,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_PHP_ENUM,
+        kind: SymbolKind::Enum,
+        name_group: 1,
+        visibility: VisibilityRule::AlwaysPublic,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_PHP_FUNCTION,
+        kind: SymbolKind::Function,
+        name_group: 1,
+        visibility: VisibilityRule::NotPrivateOrProtected,
+        exclude_names: &[],
+    },
+];
+
+static PHP_PATTERNS: LanguagePatterns = LanguagePatterns {
+    rules: PHP_PATTERN_RULES,
+    trim_leading: false,
+};
+
+// ── Kotlin pattern rules ──
+static KOTLIN_PATTERN_RULES: &[PatternRule] = &[
+    PatternRule {
+        regex: &RE_KOTLIN_INTERFACE,
+        kind: SymbolKind::Interface,
+        name_group: 1,
+        visibility: VisibilityRule::NotPrivateOrProtected,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_KOTLIN_OBJECT,
+        kind: SymbolKind::Module,
+        name_group: 1,
+        visibility: VisibilityRule::NotPrivateOrProtected,
+        exclude_names: &[],
+    },
+    // enum class must come before generic class to avoid class capturing it
+    PatternRule {
+        regex: &RE_KOTLIN_ENUM_CLASS,
+        kind: SymbolKind::Enum,
+        name_group: 1,
+        visibility: VisibilityRule::NotPrivateOrProtected,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_KOTLIN_CLASS,
+        kind: SymbolKind::Class,
+        name_group: 1,
+        visibility: VisibilityRule::NotPrivateOrProtected,
+        exclude_names: &[],
+    },
+    PatternRule {
+        regex: &RE_KOTLIN_FUN,
+        kind: SymbolKind::Function,
+        name_group: 1,
+        visibility: VisibilityRule::NotPrivateOrProtected,
+        exclude_names: &[
+            "if",
+            "for",
+            "while",
+            "when",
+            "return",
+            "throw",
+            "class",
+            "interface",
+            "object",
+        ],
+    },
+];
+
+static KOTLIN_PATTERNS: LanguagePatterns = LanguagePatterns {
+    rules: KOTLIN_PATTERN_RULES,
     trim_leading: false,
 };
 
@@ -422,9 +629,9 @@ pub fn extract_symbols(code: &str, language: &str) -> Vec<Symbol> {
         "cpp" => extract_cpp_symbols(code),
         "ruby" => extract_symbols_from_patterns(code, &RUBY_PATTERNS),
         "shell" => extract_symbols_from_patterns(code, &SHELL_PATTERNS),
-        "csharp" => extract_csharp_symbols(code),
-        "php" => extract_php_symbols(code),
-        "kotlin" => extract_kotlin_symbols(code),
+        "csharp" => extract_symbols_from_patterns(code, &CSHARP_PATTERNS),
+        "php" => extract_symbols_from_patterns(code, &PHP_PATTERNS),
+        "kotlin" => extract_symbols_from_patterns(code, &KOTLIN_PATTERNS),
         "swift" => extract_swift_symbols(code),
         "scala" => extract_scala_symbols(code),
         _ => Vec::new(),
@@ -921,244 +1128,6 @@ fn extract_cpp_symbols(code: &str) -> Vec<Symbol> {
                         line: line_num + 1,
                     });
                 }
-            }
-        }
-    }
-
-    symbols
-}
-
-/// C# keywords that match the method regex but aren't method definitions.
-const CSHARP_NON_METHOD_KEYWORDS: &[&str] = &[
-    "if",
-    "for",
-    "while",
-    "switch",
-    "catch",
-    "return",
-    "new",
-    "class",
-    "interface",
-    "struct",
-    "enum",
-    "namespace",
-    "using",
-    "throw",
-    "lock",
-    "foreach",
-    "typeof",
-    "sizeof",
-    "nameof",
-    "record",
-];
-
-/// Extract symbols from C# source code.
-fn extract_csharp_symbols(code: &str) -> Vec<Symbol> {
-    let mut symbols = Vec::new();
-
-    let re_class = &*RE_CSHARP_CLASS;
-    let re_interface = &*RE_CSHARP_INTERFACE;
-    let re_struct = &*RE_CSHARP_STRUCT;
-    let re_enum = &*RE_CSHARP_ENUM;
-    let re_namespace = &*RE_CSHARP_NAMESPACE;
-    let re_record = &*RE_CSHARP_RECORD;
-    let re_method = &*RE_CSHARP_METHOD;
-
-    for (line_num, line) in code.lines().enumerate() {
-        let trimmed = line.trim_start();
-        let is_pub = trimmed.starts_with("public");
-
-        if let Some(caps) = re_namespace.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Namespace,
-                is_public: true,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_record.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Struct,
-                is_public: is_pub,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_class.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Class,
-                is_public: is_pub,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_interface.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Interface,
-                is_public: is_pub,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_struct.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Struct,
-                is_public: is_pub,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_enum.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Enum,
-                is_public: is_pub,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_method.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            if !CSHARP_NON_METHOD_KEYWORDS.contains(&name.as_str()) {
-                symbols.push(Symbol {
-                    name,
-                    kind: SymbolKind::Function,
-                    is_public: is_pub,
-                    line: line_num + 1,
-                });
-            }
-        }
-    }
-
-    symbols
-}
-
-/// Extract symbols from PHP source code.
-fn extract_php_symbols(code: &str) -> Vec<Symbol> {
-    let mut symbols = Vec::new();
-
-    let re_class = &*RE_PHP_CLASS;
-    let re_interface = &*RE_PHP_INTERFACE;
-    let re_trait = &*RE_PHP_TRAIT;
-    let re_function = &*RE_PHP_FUNCTION;
-    let re_enum = &*RE_PHP_ENUM;
-
-    for (line_num, line) in code.lines().enumerate() {
-        let is_pub = line.trim_start().starts_with("public")
-            || !line.trim_start().starts_with("private")
-                && !line.trim_start().starts_with("protected");
-
-        if let Some(caps) = re_class.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Class,
-                is_public: true,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_interface.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Interface,
-                is_public: true,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_trait.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Trait,
-                is_public: true,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_enum.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Enum,
-                is_public: true,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_function.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Function,
-                is_public: is_pub,
-                line: line_num + 1,
-            });
-        }
-    }
-
-    symbols
-}
-
-/// Kotlin keywords that match the fun regex but aren't function definitions.
-const KOTLIN_NON_FUN_KEYWORDS: &[&str] = &[
-    "if",
-    "for",
-    "while",
-    "when",
-    "return",
-    "throw",
-    "class",
-    "interface",
-    "object",
-];
-
-/// Extract symbols from Kotlin source code.
-fn extract_kotlin_symbols(code: &str) -> Vec<Symbol> {
-    let mut symbols = Vec::new();
-
-    let re_class = &*RE_KOTLIN_CLASS;
-    let re_interface = &*RE_KOTLIN_INTERFACE;
-    let re_object = &*RE_KOTLIN_OBJECT;
-    let re_fun = &*RE_KOTLIN_FUN;
-
-    for (line_num, line) in code.lines().enumerate() {
-        let trimmed = line.trim_start();
-        let is_pub = !trimmed.starts_with("private") && !trimmed.starts_with("protected");
-
-        // Check interface before class since "sealed interface" would also match class regex
-        if let Some(caps) = re_interface.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Interface,
-                is_public: is_pub,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_object.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            symbols.push(Symbol {
-                name,
-                kind: SymbolKind::Module,
-                is_public: is_pub,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_class.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            // Distinguish data class, sealed class, enum class — all stored as Class
-            let kind = if trimmed.starts_with("enum") || trimmed.contains("enum class") {
-                SymbolKind::Enum
-            } else {
-                SymbolKind::Class
-            };
-            symbols.push(Symbol {
-                name,
-                kind,
-                is_public: is_pub,
-                line: line_num + 1,
-            });
-        } else if let Some(caps) = re_fun.captures(line) {
-            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-            if !KOTLIN_NON_FUN_KEYWORDS.contains(&name.as_str()) {
-                symbols.push(Symbol {
-                    name,
-                    kind: SymbolKind::Function,
-                    is_public: is_pub,
-                    line: line_num + 1,
-                });
             }
         }
     }
