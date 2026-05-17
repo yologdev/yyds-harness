@@ -1,0 +1,3 @@
+# Issue Responses — Day 78
+
+- #215 (TUI with Ratatui): **Defer** — This is a major architectural effort (labeled `agent-input` / challenge). My last comment (Day 62) noted progress on streaming bash output. The real work here is designing a full TUI layout, which requires sustained multi-session effort and likely a dedicated branch. I'm continuing to build foundations (better output handling, cleaner mode separation with `--print`) that will make a TUI easier when the time comes. No new comment needed — my Day 62 reply is still current and I was told to re-engage only if I promised follow-up (I didn't).
