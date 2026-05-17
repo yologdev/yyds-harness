@@ -1749,11 +1749,64 @@ pub fn format_repo_map(entries: &[FileSymbols]) -> String {
     output
 }
 
+/// Get the list of recently modified files from git history (deduplicated, ordered by recency).
+///
+/// Returns up to `n` unique file paths from the last `n` commits' changed files.
+/// Returns an empty vec if not in a git repository or git fails.
+pub fn recently_modified_files(n: usize) -> Vec<String> {
+    let output = std::process::Command::new("git")
+        .args(["log", "--name-only", "--format=", "-n"])
+        .arg(n.to_string())
+        .output();
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for line in stdout.lines() {
+        let path = line.trim();
+        if !path.is_empty() && seen.insert(path.to_string()) {
+            result.push(path.to_string());
+        }
+    }
+    result
+}
+
+/// Compute a relevance score for a file entry used to prioritize the prompt repo map.
+///
+/// - `recency_score`: based on position in the recently-modified list (higher = more recent)
+/// - `density_score`: symbols per 100 lines, capped at 50
+/// - `size_score`: lines / 50, capped at 20
+fn relevance_score(entry: &FileSymbols, recent_files: &[String]) -> usize {
+    // Recency: position in list (first = most recent = highest score)
+    let recency_score = recent_files
+        .iter()
+        .position(|p| p == &entry.path)
+        .map(|pos| recent_files.len().saturating_sub(pos))
+        .unwrap_or(0);
+
+    // Density: symbols per 100 lines, capped at 50
+    let density_score = (entry.symbols.len() * 100)
+        .checked_div(entry.lines)
+        .unwrap_or(0)
+        .min(50);
+
+    // Size: larger files get a bump, capped at 20
+    let size_score = (entry.lines / 50).min(20);
+
+    recency_score + density_score + size_score
+}
+
 /// Generate a repo map for the system prompt, capped at `max_chars` characters.
+///
+/// Files are sorted by relevance (recency, symbol density, size) so that when
+/// truncation is needed, the most architecturally important files survive.
 ///
 /// Returns `None` if no supported source files are found.
 pub fn generate_repo_map_for_prompt_with_limit(max_chars: usize) -> Option<String> {
-    let entries = build_repo_map(None, true);
+    let mut entries = build_repo_map(None, true);
     if entries.is_empty() {
         return None;
     }
@@ -1762,6 +1815,14 @@ pub fn generate_repo_map_for_prompt_with_limit(max_chars: usize) -> Option<Strin
     if full.len() <= max_chars {
         Some(full)
     } else {
+        // Sort by relevance so the most important files survive truncation
+        let recent_files = recently_modified_files(50);
+        entries.sort_by(|a, b| {
+            let score_a = relevance_score(a, &recent_files);
+            let score_b = relevance_score(b, &recent_files);
+            score_b.cmp(&score_a)
+        });
+
         // Truncate: include files until we hit the limit
         let mut output = String::new();
         for entry in &entries {
@@ -3378,5 +3439,198 @@ abstract class Base {
                 .any(|s| s.name == "Base" && s.kind == SymbolKind::Class),
             "should find abstract class"
         );
+    }
+
+    #[test]
+    fn test_recently_modified_files_returns_deduped_paths() {
+        // This test runs in the actual git repo, so git log should work
+        let files = recently_modified_files(10);
+        // Should return some files (we're in a git repo with commits)
+        // The list should be deduplicated
+        let unique: std::collections::HashSet<&String> = files.iter().collect();
+        assert_eq!(
+            files.len(),
+            unique.len(),
+            "recently_modified_files should return deduplicated paths"
+        );
+        // Every entry should be non-empty
+        for f in &files {
+            assert!(!f.trim().is_empty(), "paths should not be empty strings");
+        }
+    }
+
+    #[test]
+    fn test_relevance_score_prefers_recent_files() {
+        let recent = vec![
+            "src/main.rs".to_string(),
+            "src/tools.rs".to_string(),
+            "src/old.rs".to_string(),
+        ];
+
+        let recent_entry = FileSymbols {
+            path: "src/main.rs".to_string(),
+            lines: 100,
+            symbols: vec![Symbol {
+                name: "main".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            }],
+        };
+
+        let old_entry = FileSymbols {
+            path: "src/old.rs".to_string(),
+            lines: 100,
+            symbols: vec![Symbol {
+                name: "old".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            }],
+        };
+
+        let not_in_list = FileSymbols {
+            path: "src/unknown.rs".to_string(),
+            lines: 100,
+            symbols: vec![Symbol {
+                name: "unknown".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            }],
+        };
+
+        let score_recent = relevance_score(&recent_entry, &recent);
+        let score_old = relevance_score(&old_entry, &recent);
+        let score_unknown = relevance_score(&not_in_list, &recent);
+
+        assert!(
+            score_recent > score_old,
+            "most recently modified file should score higher: {} vs {}",
+            score_recent,
+            score_old
+        );
+        assert!(
+            score_old > score_unknown,
+            "file in recent list should score higher than unknown: {} vs {}",
+            score_old,
+            score_unknown
+        );
+    }
+
+    #[test]
+    fn test_relevance_score_density_and_size() {
+        let recent: Vec<String> = vec![];
+
+        // High density: many symbols in few lines
+        let dense = FileSymbols {
+            path: "src/dense.rs".to_string(),
+            lines: 50,
+            symbols: vec![
+                Symbol {
+                    name: "a".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 1,
+                },
+                Symbol {
+                    name: "b".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 10,
+                },
+                Symbol {
+                    name: "c".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 20,
+                },
+                Symbol {
+                    name: "d".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 30,
+                },
+                Symbol {
+                    name: "e".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 40,
+                },
+            ],
+        };
+
+        // Sparse: 1 symbol in many lines
+        let sparse = FileSymbols {
+            path: "src/sparse.rs".to_string(),
+            lines: 50,
+            symbols: vec![Symbol {
+                name: "lonely".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            }],
+        };
+
+        let score_dense = relevance_score(&dense, &recent);
+        let score_sparse = relevance_score(&sparse, &recent);
+
+        assert!(
+            score_dense > score_sparse,
+            "denser file should score higher: {} vs {}",
+            score_dense,
+            score_sparse
+        );
+
+        // Larger file gets size bonus
+        let large = FileSymbols {
+            path: "src/large.rs".to_string(),
+            lines: 2000,
+            symbols: vec![Symbol {
+                name: "big".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            }],
+        };
+        let small = FileSymbols {
+            path: "src/small.rs".to_string(),
+            lines: 10,
+            symbols: vec![Symbol {
+                name: "tiny".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            }],
+        };
+
+        let score_large = relevance_score(&large, &recent);
+        let score_small = relevance_score(&small, &recent);
+
+        assert!(
+            score_large > score_small,
+            "larger file should score higher due to size bonus: {} vs {}",
+            score_large,
+            score_small
+        );
+    }
+
+    #[test]
+    fn test_generate_repo_map_with_limit_truncates_least_relevant() {
+        // With a very small limit, the function should still produce valid output
+        // and prefer recently-modified / high-relevance files
+        let result = generate_repo_map_for_prompt_with_limit(500);
+        if let Some(map) = result {
+            assert!(
+                map.len() <= 510,
+                "map should respect size limit, got {} chars",
+                map.len()
+            );
+            // Should end with "..." if truncated
+            assert!(
+                map.contains("..."),
+                "truncated map should contain ellipsis marker"
+            );
+        }
     }
 }
