@@ -4,6 +4,39 @@ All notable changes to **yoyo-agent** (`cargo install yoyo-agent`) are documente
 
 This project is a self-evolving coding agent — every change was planned, implemented, and tested by yoyo itself during automated evolution sessions. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] — 2026-05-17
+
+8 sessions spanning Days 75–78. A new `--print` mode strips all chrome for scripting and pipelines, `--no-tools` enables pure conversation without any tool access, and `--disallowed-tools` lets you selectively block specific tools. Session restore now shows where you left off, `/compact` accepts arguments for precise control, and the repo map ranks files by relevance instead of alphabet. Five new languages in `/map`, project-type hints for strangers, and a steady arc of test coverage across tool wrappers, dispatch, and tools.
+
+### Added
+
+- **`--print` mode** — raw output only, no banner/cost/chrome, for scripting and pipeline use (Days 76–77)
+- **`--no-tools` flag** — suppress all tools including sub_agent, shared_state, and MCP connections for pure conversation mode (Day 78)
+- **`--disallowed-tools` flag** — selectively block specific tools by name (Day 76)
+- **Session resume summary** — shows last user/assistant messages when restoring with `--continue`, so you know where you left off (Day 78)
+- **`/compact` arguments** — `/compact 5` to keep last N exchanges, `/compact all` to compress everything, instead of the old one-size-fits-all default (Day 77)
+- **Project-type context hints** — auto-injects development conventions (test commands, lint tools) for detected project types when no instruction file exists (Day 76)
+- **`/spawn --bg` flag** — launch sub-agents in background and keep working (Day 76)
+- **`/tokens` breakdown** — shows where context tokens went (system prompt, conversation, tool output) (Day 76)
+- **5 new languages in `/map`** — C#, PHP, Kotlin, Swift, Scala symbol extraction (Day 77)
+
+### Improved
+
+- **Relevance-ranked repo map** — files ranked by recency and symbol density before truncation, instead of alphabetical cutoff (Day 78)
+- **Recovery hints wired to all tools** — `RecoveryHintTool` now wraps all tools, not just during retry; failures immediately suggest concrete alternatives (Day 75)
+- **`/retry` carries failure context** — retry includes what went wrong and a suggested recovery path, instead of retrying with fresh hope (Day 75)
+
+### Fixed
+
+- **Auto-watch message leak in `--print` mode** — suppressed chrome output that was bypassing quiet mode (Day 77)
+- **`print_usage` and `print_context_usage` leak in `--print`/quiet mode** — properly suppressed with early returns (Day 77)
+- **Architect mode test flakiness** — added `#[serial]` to global-state-mutating tests that were racing each other (Day 77)
+
+### Changed (Internal / Architecture)
+
+- **Test coverage expansion** — new tests for `dispatch.rs` (command routing), `tools.rs` (StreamingBashTool, RenameSymbolTool, build_tools), `tool_wrappers.rs` (ToolFailureTracker, truncate_result, AutoCheckTool, TruncatingTool, RecoveryHintTool), `commands_update.rs` (platform detection, version comparison) (Days 75–78)
+- **`cli_config.rs` extraction** — constants (VERSION, thresholds) and Config struct separated from `cli.rs` for cleaner imports (Day 75)
+
 ## [0.1.11] — 2026-05-13
 
 20 sessions spanning Days 64–74. Prompt caching cuts repeated system prompt costs ~90%, native desktop notifications tell you when long completions finish, clipboard integration via `/copy`, smarter auto-continue for incomplete responses, error-aware `/run`, and a deep consolidation arc that deduplicated 13-way token arithmetic, extracted 6+ modules, and cleaned every re-export middleman out of `prompt.rs`.
