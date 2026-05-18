@@ -90,6 +90,347 @@ pub struct WatchResult {
     pub last_tool_error: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Structured Rust compiler error parsing
+// ---------------------------------------------------------------------------
+
+/// Category of a Rust compiler/clippy/test error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorCategory {
+    Borrow,
+    Type,
+    Lifetime,
+    Import,
+    Unused,
+    Syntax,
+    TestAssertion,
+    Other,
+}
+
+impl ErrorCategory {
+    /// Short label for display in summaries.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Borrow => "borrow",
+            Self::Type => "type",
+            Self::Lifetime => "lifetime",
+            Self::Import => "import",
+            Self::Unused => "unused",
+            Self::Syntax => "syntax",
+            Self::TestAssertion => "test_assertion",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// A single structured compiler error extracted from Rust toolchain output.
+#[derive(Debug, Clone)]
+pub struct CompilerError {
+    /// The error code, e.g. `"E0382"`. `None` for unstructured errors.
+    pub code: Option<String>,
+    /// The primary error/warning message.
+    pub message: String,
+    /// Source file path, if found.
+    pub file: Option<String>,
+    /// Line number in the source file, if found.
+    pub line: Option<u32>,
+    /// Classified category for targeted hints.
+    pub category: ErrorCategory,
+}
+
+/// Classify an error code (e.g. `"E0382"`) into an [`ErrorCategory`].
+fn categorize_error_code(code: &str) -> ErrorCategory {
+    match code {
+        // Borrow checker errors
+        "E0382" | "E0505" | "E0502" | "E0499" | "E0507" | "E0515" | "E0716" => {
+            ErrorCategory::Borrow
+        }
+        // Type errors
+        "E0308" | "E0277" | "E0271" | "E0369" | "E0609" | "E0614" | "E0618" => ErrorCategory::Type,
+        // Lifetime errors
+        "E0106" | "E0621" | "E0495" | "E0623" | "E0759" | "E0700" => ErrorCategory::Lifetime,
+        // Import / path resolution
+        "E0433" | "E0432" | "E0412" | "E0425" | "E0531" => ErrorCategory::Import,
+        // Syntax errors
+        "E0063" | "E0064" | "E0065" => ErrorCategory::Syntax,
+        _ => ErrorCategory::Other,
+    }
+}
+
+/// Classify an error/warning message into an [`ErrorCategory`] using text heuristics.
+fn categorize_message(msg: &str) -> ErrorCategory {
+    let lower = msg.to_lowercase();
+    // Borrow checker
+    if lower.contains("borrow")
+        || lower.contains("moved value")
+        || lower.contains("move out of")
+        || lower.contains("cannot move")
+        || lower.contains("does not live long enough")
+    {
+        return ErrorCategory::Borrow;
+    }
+    // Lifetime
+    if lower.contains("lifetime")
+        || lower.contains("missing lifetime")
+        || lower.contains("outlives")
+    {
+        return ErrorCategory::Lifetime;
+    }
+    // Type
+    if lower.contains("mismatched types")
+        || lower.contains("type mismatch")
+        || lower.contains("expected type")
+        || lower.contains("the trait bound")
+        || lower.contains("doesn't implement")
+        || lower.contains("no method named")
+        || lower.contains("no field")
+    {
+        return ErrorCategory::Type;
+    }
+    // Import / path
+    if lower.contains("cannot find")
+        || lower.contains("unresolved import")
+        || lower.contains("not found in")
+        || lower.contains("no external crate")
+    {
+        return ErrorCategory::Import;
+    }
+    // Unused
+    if lower.contains("unused") {
+        return ErrorCategory::Unused;
+    }
+    // Test assertion (panic)
+    if lower.contains("panicked at")
+        || lower.contains("assertion")
+        || lower.contains("thread '") && (lower.contains("failed") || lower.contains("panicked"))
+    {
+        return ErrorCategory::TestAssertion;
+    }
+    // Syntax
+    if lower.contains("expected")
+        && (lower.contains("found `")
+            || lower.contains("found `")
+            || lower.contains("unexpected token"))
+    {
+        return ErrorCategory::Syntax;
+    }
+    ErrorCategory::Other
+}
+
+/// Parse Rust compiler/clippy/test output into structured [`CompilerError`]s.
+///
+/// Recognises patterns like:
+/// - `error[E0382]: borrow of moved value: \`x\``
+/// - `error: cannot find value \`foo\``
+/// - `warning: unused import: \`std::io\``
+/// - `thread 'test_name' panicked at 'assertion failed: ...'`
+///
+/// File locations are extracted from the ` --> path:line:col` lines that
+/// follow each diagnostic.
+pub fn parse_rust_errors(output: &str) -> Vec<CompilerError> {
+    let mut errors: Vec<CompilerError> = Vec::new();
+    let lines: Vec<&str> = output.lines().collect();
+
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+
+        // Pattern 1: `error[EXXXX]: message` or `warning[...]: message`
+        if let Some(rest) = line
+            .strip_prefix("error[")
+            .or_else(|| line.strip_prefix("warning["))
+        {
+            if let Some(bracket_end) = rest.find(']') {
+                let code = &rest[..bracket_end];
+                let msg = rest[bracket_end + 1..].trim_start_matches(':').trim();
+                let is_warning = line.starts_with("warning");
+
+                let category = if is_warning && msg.to_lowercase().contains("unused") {
+                    ErrorCategory::Unused
+                } else {
+                    let cat = categorize_error_code(code);
+                    if cat == ErrorCategory::Other {
+                        categorize_message(msg)
+                    } else {
+                        cat
+                    }
+                };
+
+                let (file, file_line) = extract_location(&lines, i);
+
+                errors.push(CompilerError {
+                    code: Some(code.to_string()),
+                    message: msg.to_string(),
+                    file,
+                    line: file_line,
+                    category,
+                });
+            }
+        }
+        // Pattern 2: `error: message` (no code) or `warning: message` (no code)
+        else if let Some(msg) = line
+            .strip_prefix("error: ")
+            .or_else(|| line.strip_prefix("warning: "))
+        {
+            // Skip aborting lines and cargo summary lines
+            let lower = msg.to_lowercase();
+            if !lower.starts_with("aborting")
+                && !lower.starts_with("could not compile")
+                && !lower.contains("generated")
+                && !lower.starts_with("build failed")
+            {
+                let is_warning = line.starts_with("warning");
+                let category = if is_warning && lower.contains("unused") {
+                    ErrorCategory::Unused
+                } else {
+                    categorize_message(msg)
+                };
+
+                let (file, file_line) = extract_location(&lines, i);
+
+                errors.push(CompilerError {
+                    code: None,
+                    message: msg.to_string(),
+                    file,
+                    line: file_line,
+                    category,
+                });
+            }
+        }
+        // Pattern 3: `thread 'test_name' panicked at ...`
+        else if line.contains("thread '") && line.contains("panicked at") {
+            errors.push(CompilerError {
+                code: None,
+                message: line.trim().to_string(),
+                file: None,
+                line: None,
+                category: ErrorCategory::TestAssertion,
+            });
+        }
+
+        i += 1;
+    }
+
+    errors
+}
+
+/// Look ahead from line `start` for a `  --> path:line:col` location line.
+/// Returns (file, line) if found within the next 5 lines.
+fn extract_location(lines: &[&str], start: usize) -> (Option<String>, Option<u32>) {
+    let end = std::cmp::min(start + 6, lines.len());
+    for line in &lines[start + 1..end] {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("--> ") {
+            // Format: path:line:col
+            let parts: Vec<&str> = rest.rsplitn(3, ':').collect();
+            if parts.len() >= 3 {
+                let file = parts[2].to_string();
+                let line_num = parts[1].parse::<u32>().ok();
+                return (Some(file), line_num);
+            } else if parts.len() == 2 {
+                let file = parts[1].to_string();
+                let line_num = parts[0].parse::<u32>().ok();
+                return (Some(file), line_num);
+            }
+        }
+    }
+    (None, None)
+}
+
+/// Return a targeted fix hint for a given error category.
+pub fn error_category_hint(category: &ErrorCategory) -> &'static str {
+    match category {
+        ErrorCategory::Borrow => {
+            "This is a borrow checker error. Consider cloning the value, \
+             restructuring ownership, or using references."
+        }
+        ErrorCategory::Type => {
+            "This is a type mismatch. Check the expected vs actual types, \
+             consider conversions or generics."
+        }
+        ErrorCategory::Lifetime => {
+            "This is a lifetime error. Consider adding explicit lifetime \
+             annotations or restructuring borrows."
+        }
+        ErrorCategory::Import => {
+            "Missing import or unresolved name. Add the missing `use` statement \
+             or check the module path."
+        }
+        ErrorCategory::Unused => {
+            "Unused code warnings. Remove the unused items or prefix with \
+             underscore if intentionally unused."
+        }
+        ErrorCategory::TestAssertion => {
+            "Test assertion failed. Read the expected vs actual values, fix the \
+             implementation or update the test."
+        }
+        ErrorCategory::Syntax => {
+            "Syntax error. Check for missing brackets, semicolons, or incorrect token usage."
+        }
+        ErrorCategory::Other => "Read the error messages carefully and apply targeted fixes.",
+    }
+}
+
+/// Build a structured error summary for Rust compiler output.
+///
+/// Returns `None` if no Rust errors were parsed (non-Rust output falls through).
+fn build_error_summary(errors: &[CompilerError]) -> Option<String> {
+    if errors.is_empty() {
+        return None;
+    }
+
+    // Count by category
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for e in errors {
+        *counts.entry(e.category.label()).or_insert(0) += 1;
+    }
+
+    // Build summary line
+    let total = errors.len();
+    let mut parts: Vec<String> = Vec::new();
+    // Sort by count descending for readability
+    let mut sorted: Vec<(&&str, &usize)> = counts.iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(a.1));
+    for (cat, count) in &sorted {
+        parts.push(format!("{count} {cat}"));
+    }
+    let summary_line = format!("**Parsed {total} Rust error(s):** {}", parts.join(", "));
+
+    // Find dominant category (highest count)
+    let dominant = sorted.first().map(|(cat, _)| **cat).unwrap_or("other");
+    let dominant_category = errors
+        .iter()
+        .find(|e| e.category.label() == dominant)
+        .map(|e| &e.category)
+        .unwrap_or(&ErrorCategory::Other);
+
+    let hint = error_category_hint(dominant_category);
+
+    // Show up to 5 specific errors with file locations
+    let mut detail_lines: Vec<String> = Vec::new();
+    for (idx, e) in errors.iter().take(5).enumerate() {
+        let code_str = e
+            .code
+            .as_ref()
+            .map(|c| format!("[{c}] "))
+            .unwrap_or_default();
+        let loc = match (&e.file, e.line) {
+            (Some(f), Some(l)) => format!(" at {f}:{l}"),
+            (Some(f), None) => format!(" in {f}"),
+            _ => String::new(),
+        };
+        detail_lines.push(format!("  {}. {code_str}{}{loc}", idx + 1, e.message));
+    }
+    if errors.len() > 5 {
+        detail_lines.push(format!("  ... and {} more", errors.len() - 5));
+    }
+
+    Some(format!(
+        "{summary_line}\n{}\n\n**Hint:** {hint}",
+        detail_lines.join("\n")
+    ))
+}
+
 /// Classify a watch command as "lint", "test", or "command" for fix prompt hints.
 fn classify_watch_command(cmd: &str) -> &'static str {
     let lower = cmd.to_lowercase();
@@ -129,6 +470,11 @@ pub fn build_watch_fix_prompt(watch_cmd: &str, output: &str) -> String {
         output.to_string()
     };
     let cmd_type = classify_watch_command(watch_cmd);
+
+    // Try structured Rust error parsing for richer hints
+    let errors = parse_rust_errors(output);
+    let structured_section = build_error_summary(&errors);
+
     let hint = match cmd_type {
         "lint" => "\n\nThis is a **lint** failure — fixes are usually mechanical (unused imports, \
                    missing derives, formatting issues). Apply targeted fixes without changing logic.",
@@ -137,11 +483,20 @@ pub fn build_watch_fix_prompt(watch_cmd: &str, output: &str) -> String {
                    or fix the test if the new behavior is correct.",
         _ => "",
     };
-    format!(
-        "Your changes caused {cmd_type} failures. Here's the output from `{watch_cmd}`:\n\
-         ```\n{truncated}\n```\n\
-         Please fix the issues.{hint}"
-    )
+
+    if let Some(summary) = structured_section {
+        format!(
+            "Your changes caused {cmd_type} failures. Here's the output from `{watch_cmd}`:\n\
+             ```\n{truncated}\n```\n\n\
+             {summary}{hint}"
+        )
+    } else {
+        format!(
+            "Your changes caused {cmd_type} failures. Here's the output from `{watch_cmd}`:\n\
+             ```\n{truncated}\n```\n\
+             Please fix the issues.{hint}"
+        )
+    }
 }
 
 /// Run a watch command and return (success, output).
@@ -502,7 +857,11 @@ mod tests {
             prompt.contains("error[E0308]: mismatched types"),
             "prompt should include the output"
         );
-        assert!(prompt.contains("Please fix"), "prompt should ask for a fix");
+        // With structured parsing, we get a detailed summary instead of "Please fix"
+        assert!(
+            prompt.contains("Parsed 1 Rust error"),
+            "prompt should include structured error summary: {prompt}"
+        );
         assert!(
             prompt.contains("```"),
             "prompt should wrap output in code fence"
@@ -1028,5 +1387,247 @@ mod tests {
         );
         assert_eq!(phases[0], "make check");
         clear_watch_command();
+    }
+
+    // -----------------------------------------------------------------------
+    // Structured Rust compiler error parsing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_rust_errors_borrow_checker() {
+        let output = r#"error[E0382]: borrow of moved value: `x`
+  --> src/main.rs:10:5
+   |
+10 |     println!("{}", x);
+   |                    ^ value borrowed here after move
+"#;
+        let errors = parse_rust_errors(output);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code.as_deref(), Some("E0382"));
+        assert_eq!(errors[0].category, ErrorCategory::Borrow);
+        assert_eq!(errors[0].file.as_deref(), Some("src/main.rs"));
+        assert_eq!(errors[0].line, Some(10));
+    }
+
+    #[test]
+    fn parse_rust_errors_type_mismatch() {
+        let output = r#"error[E0308]: mismatched types
+  --> src/lib.rs:42:5
+   |
+42 |     let x: u32 = "hello";
+   |                  ^^^^^^^ expected `u32`, found `&str`
+"#;
+        let errors = parse_rust_errors(output);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code.as_deref(), Some("E0308"));
+        assert_eq!(errors[0].category, ErrorCategory::Type);
+        assert_eq!(errors[0].file.as_deref(), Some("src/lib.rs"));
+        assert_eq!(errors[0].line, Some(42));
+    }
+
+    #[test]
+    fn parse_rust_errors_lifetime() {
+        let output = "error[E0106]: missing lifetime specifier\n  --> src/foo.rs:7:20\n";
+        let errors = parse_rust_errors(output);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].category, ErrorCategory::Lifetime);
+        assert_eq!(errors[0].file.as_deref(), Some("src/foo.rs"));
+        assert_eq!(errors[0].line, Some(7));
+    }
+
+    #[test]
+    fn parse_rust_errors_import() {
+        let output = "error[E0433]: failed to resolve: use of undeclared crate or module `foo`\n  --> src/bar.rs:1:5\n";
+        let errors = parse_rust_errors(output);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].category, ErrorCategory::Import);
+    }
+
+    #[test]
+    fn parse_rust_errors_unused_warning() {
+        let output = "warning: unused import: `std::io`\n  --> src/main.rs:3:5\n";
+        let errors = parse_rust_errors(output);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].category, ErrorCategory::Unused);
+        assert!(errors[0].code.is_none());
+    }
+
+    #[test]
+    fn parse_rust_errors_unused_with_code() {
+        let output = "warning[unused_imports]: unused import: `std::io`\n  --> src/main.rs:3:5\n";
+        let errors = parse_rust_errors(output);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].category, ErrorCategory::Unused);
+    }
+
+    #[test]
+    fn parse_rust_errors_test_panic() {
+        let output = "thread 'tests::my_test' panicked at 'assertion failed: `(left == right)`\n  left: `1`,\n right: `2`', src/lib.rs:99:9\n";
+        let errors = parse_rust_errors(output);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].category, ErrorCategory::TestAssertion);
+    }
+
+    #[test]
+    fn parse_rust_errors_unresolved_name_no_code() {
+        let output = "error: cannot find value `foo` in this scope\n  --> src/main.rs:5:10\n";
+        let errors = parse_rust_errors(output);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].category, ErrorCategory::Import);
+        assert!(errors[0].code.is_none());
+    }
+
+    #[test]
+    fn parse_rust_errors_empty_output() {
+        let errors = parse_rust_errors("");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn parse_rust_errors_non_rust_output() {
+        let output = "npm ERR! code E404\nnpm ERR! 404 Not Found\nSome random build output\n";
+        let errors = parse_rust_errors(output);
+        assert!(
+            errors.is_empty(),
+            "non-Rust output should not parse: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn parse_rust_errors_skips_aborting() {
+        let output = "error[E0308]: mismatched types\n  --> src/lib.rs:1:1\nerror: aborting due to previous error\n";
+        let errors = parse_rust_errors(output);
+        assert_eq!(errors.len(), 1, "should skip 'aborting' lines");
+        assert_eq!(errors[0].code.as_deref(), Some("E0308"));
+    }
+
+    #[test]
+    fn parse_rust_errors_mixed_errors() {
+        let output = r#"error[E0382]: borrow of moved value: `x`
+  --> src/main.rs:10:5
+error[E0308]: mismatched types
+  --> src/lib.rs:20:10
+warning: unused import: `std::io`
+  --> src/foo.rs:1:5
+thread 'tests::broken' panicked at 'assertion failed'
+error: aborting due to 2 previous errors
+"#;
+        let errors = parse_rust_errors(output);
+        assert_eq!(errors.len(), 4, "should find 4 errors: {errors:?}");
+        assert_eq!(errors[0].category, ErrorCategory::Borrow);
+        assert_eq!(errors[1].category, ErrorCategory::Type);
+        assert_eq!(errors[2].category, ErrorCategory::Unused);
+        assert_eq!(errors[3].category, ErrorCategory::TestAssertion);
+    }
+
+    #[test]
+    fn error_category_hint_returns_nonempty() {
+        let categories = [
+            ErrorCategory::Borrow,
+            ErrorCategory::Type,
+            ErrorCategory::Lifetime,
+            ErrorCategory::Import,
+            ErrorCategory::Unused,
+            ErrorCategory::TestAssertion,
+            ErrorCategory::Syntax,
+            ErrorCategory::Other,
+        ];
+        for cat in &categories {
+            let hint = error_category_hint(cat);
+            assert!(!hint.is_empty(), "hint for {:?} should not be empty", cat);
+        }
+    }
+
+    #[test]
+    fn error_category_label_is_consistent() {
+        assert_eq!(ErrorCategory::Borrow.label(), "borrow");
+        assert_eq!(ErrorCategory::Type.label(), "type");
+        assert_eq!(ErrorCategory::Lifetime.label(), "lifetime");
+        assert_eq!(ErrorCategory::Import.label(), "import");
+        assert_eq!(ErrorCategory::Unused.label(), "unused");
+        assert_eq!(ErrorCategory::TestAssertion.label(), "test_assertion");
+        assert_eq!(ErrorCategory::Syntax.label(), "syntax");
+        assert_eq!(ErrorCategory::Other.label(), "other");
+    }
+
+    #[test]
+    fn build_watch_fix_prompt_includes_structured_summary() {
+        let output = "error[E0382]: borrow of moved value: `x`\n  --> src/main.rs:10:5\n\
+                      error[E0308]: mismatched types\n  --> src/lib.rs:20:10\n";
+        let prompt = build_watch_fix_prompt("cargo build", output);
+        assert!(
+            prompt.contains("Parsed 2 Rust error"),
+            "should include structured summary: {prompt}"
+        );
+        assert!(
+            prompt.contains("borrow") && prompt.contains("type"),
+            "should include category counts: {prompt}"
+        );
+        assert!(
+            prompt.contains("Hint:"),
+            "should include targeted hint: {prompt}"
+        );
+    }
+
+    #[test]
+    fn build_watch_fix_prompt_non_rust_falls_through() {
+        let output = "Some random output that isn't Rust compiler output\nBuild failed!\n";
+        let prompt = build_watch_fix_prompt("make build", output);
+        assert!(
+            prompt.contains("Please fix"),
+            "non-Rust output should use generic prompt: {prompt}"
+        );
+        assert!(
+            !prompt.contains("Parsed"),
+            "non-Rust output should not have structured section: {prompt}"
+        );
+    }
+
+    #[test]
+    fn build_error_summary_empty_returns_none() {
+        assert!(build_error_summary(&[]).is_none());
+    }
+
+    #[test]
+    fn build_error_summary_shows_file_locations() {
+        let errors = vec![CompilerError {
+            code: Some("E0382".to_string()),
+            message: "borrow of moved value".to_string(),
+            file: Some("src/main.rs".to_string()),
+            line: Some(42),
+            category: ErrorCategory::Borrow,
+        }];
+        let summary = build_error_summary(&errors).expect("should return summary");
+        assert!(
+            summary.contains("src/main.rs:42"),
+            "should include file:line: {summary}"
+        );
+    }
+
+    #[test]
+    fn build_error_summary_limits_detail_lines() {
+        let errors: Vec<CompilerError> = (0..8)
+            .map(|i| CompilerError {
+                code: Some("E0308".to_string()),
+                message: format!("error {i}"),
+                file: Some(format!("src/file{i}.rs")),
+                line: Some(i as u32 + 1),
+                category: ErrorCategory::Type,
+            })
+            .collect();
+        let summary = build_error_summary(&errors).expect("should return summary");
+        assert!(
+            summary.contains("and 3 more"),
+            "should indicate truncated errors: {summary}"
+        );
+    }
+
+    #[test]
+    fn parse_rust_errors_clippy_warning() {
+        let output = "warning: this expression creates a reference which is immediately dereferenced by the compiler\n  --> src/watch.rs:100:22\n";
+        let errors = parse_rust_errors(output);
+        assert_eq!(errors.len(), 1);
+        // This is a general clippy warning, not specifically unused
+        assert!(errors[0].code.is_none());
     }
 }
