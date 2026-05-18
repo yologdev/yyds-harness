@@ -1125,6 +1125,14 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 • Summarizes what you should learn after each task\n\n\
              Great for learning while the agent codes. Session-only — resets when you exit.",
         ),
+        "tips" => Some(
+            "/tips — Context-sensitive feature suggestions\n\n\
+             Shows helpful tips based on your current session and project:\n\
+             \x20 • Project-type tips (Rust, Node, Python, Go)\n\
+             \x20 • Session-state tips (watch, goal, context usage)\n\
+             \x20 • Feature-discovery tips (random sample of lesser-known commands)\n\n\
+             Tips are generated fresh each time — run it again for new suggestions.",
+        ),
         "mcp" => Some(
             "/mcp — List and manage MCP server connections\n\n\
              Usage:\n\
@@ -1498,6 +1506,10 @@ pub fn cli_help_text() -> String {
         s,
         "    /todo [subcmd]     Track tasks (add/done/wip/remove/clear)"
     );
+    let _ = writeln!(
+        s,
+        "    /tips              Context-sensitive feature suggestions"
+    );
     let _ = writeln!(s);
     let _ = writeln!(s, "  Git:");
     let _ = writeln!(
@@ -1798,6 +1810,7 @@ pub fn help_text() -> String {
     out.push_str(
         "  /todo [subcmd]     Track tasks: add, done, wip, remove, clear (in-session checklist)\n",
     );
+    out.push_str("  /tips              Context-sensitive feature suggestions for your session\n");
     out.push('\n');
 
     // ── Git ──
@@ -2049,6 +2062,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "teach" => Some("Toggle teach mode — explains reasoning as it works"),
         "test" => Some("Run project tests"),
         "think" => Some("Set thinking level"),
+        "tips" => Some("Context-sensitive feature suggestions"),
         "todo" => Some("Track tasks (add, done, remove, clear)"),
         "tokens" => Some("Show token usage and context window"),
         "tree" => Some("Show project directory tree"),

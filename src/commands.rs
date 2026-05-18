@@ -20,7 +20,7 @@ pub use crate::commands_bg::{handle_bg, BackgroundJobTracker};
 pub use crate::commands_info::{
     handle_changelog, handle_cost, handle_evolution, handle_model_info, handle_model_list,
     handle_model_show, handle_profile, handle_provider_show, handle_status, handle_think_show,
-    handle_tokens, handle_version,
+    handle_tips, handle_tokens, handle_version,
 };
 
 // Re-export /retry and /changes handlers extracted to commands_retry.rs
@@ -130,6 +130,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "/outline",
     "/stash",
     "/teach",
+    "/tips",
     "/todo",
     "/mcp",
     "/permissions",

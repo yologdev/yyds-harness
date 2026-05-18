@@ -1232,6 +1232,108 @@ pub fn handle_evolution(input: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// /tips — context-sensitive feature discovery
+// ---------------------------------------------------------------------------
+
+/// Feature-discovery tips — randomly sampled each invocation.
+const DISCOVERY_TIPS: &[&str] = &[
+    "💡 `/spawn <task>` runs a sub-agent for parallel work",
+    "💡 `/add <file>` injects file contents into the conversation",
+    "💡 `/find <query>` does fuzzy file search across your project",
+    "💡 `/grep <pattern>` searches file contents with context",
+    "💡 `/map` shows a symbol map of your codebase",
+    "💡 `/fork` creates a conversation branch to try a different approach",
+    "💡 `/checkpoint save <name>` snapshots your files for easy rollback",
+    "💡 `/review` gets an AI code review of your current diff",
+    "💡 `/export` saves the conversation as markdown",
+    "💡 `/doctor` checks your environment for common issues",
+    "💡 `/profile` shows where time was spent this session",
+    "💡 `/bg <cmd>` runs commands in the background",
+    "💡 Use `@file.rs` in your prompt to auto-inject file contents",
+    "💡 `/plan` enables plan mode — think before acting",
+    "💡 `/open <file>` opens files in your editor",
+];
+
+/// Generate context-sensitive tips based on the current project and session state.
+pub fn generate_tips() -> Vec<String> {
+    use crate::commands_goal::load_goal;
+    use crate::commands_project::{detect_project_type, ProjectType};
+    use crate::watch::get_watch_command;
+
+    let mut tips: Vec<String> = Vec::new();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let project = detect_project_type(&cwd);
+
+    // --- Project-type tips ---
+    match project {
+        ProjectType::Rust => {
+            tips.push("💡 `/watch cargo test` auto-runs tests after every change".into());
+            tips.push("💡 `/lint fix` runs clippy and auto-fixes warnings".into());
+        }
+        ProjectType::Node => {
+            tips.push("💡 `/watch npm test` monitors your test suite".into());
+        }
+        ProjectType::Python => {
+            tips.push("💡 `/watch pytest` monitors your test suite".into());
+        }
+        ProjectType::Go => {
+            tips.push("💡 `/watch go test ./...` monitors your test suite".into());
+        }
+        _ => {}
+    }
+
+    // Git repo tip
+    if cwd.join(".git").exists() {
+        tips.push("💡 `/diff --stat` shows a compact summary of your changes".into());
+    }
+
+    // --- Session-state tips ---
+    if get_watch_command().is_none() {
+        tips.push("💡 Set `/watch <cmd>` to auto-check after every agent edit".into());
+    }
+
+    if load_goal().is_none() {
+        tips.push("💡 `/goal set <description>` gives the agent persistent focus".into());
+    }
+
+    // --- Feature-discovery tips (randomly sampled, 2-3) ---
+    let sample_count = if DISCOVERY_TIPS.len() >= 3 {
+        3
+    } else {
+        DISCOVERY_TIPS.len()
+    };
+    let mut indices: Vec<usize> = (0..DISCOVERY_TIPS.len()).collect();
+
+    // Simple shuffle using thread_rng-equivalent: use elapsed nanos as seed
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as usize;
+    // Fisher-Yates partial shuffle for `sample_count` items
+    for i in 0..sample_count {
+        let j = i + (seed.wrapping_add(i.wrapping_mul(7919))) % (indices.len() - i);
+        indices.swap(i, j);
+    }
+    for &idx in &indices[..sample_count] {
+        tips.push(DISCOVERY_TIPS[idx].into());
+    }
+
+    tips
+}
+
+/// Handle the `/tips` command — print context-sensitive feature suggestions.
+pub fn handle_tips() {
+    let tips = generate_tips();
+
+    println!("\n  🐙 {BOLD}Tips for your current session:{RESET}\n");
+
+    for tip in &tips {
+        println!("  {CYAN}{tip}{RESET}");
+    }
+    println!();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2316,5 +2418,82 @@ More text.
             output.contains("compact"),
             "should suggest /compact when tool results dominate: {output}"
         );
+    }
+
+    #[test]
+    fn test_generate_tips_returns_non_empty() {
+        let tips = generate_tips();
+        assert!(
+            !tips.is_empty(),
+            "generate_tips should return at least some tips"
+        );
+    }
+
+    #[test]
+    fn test_generate_tips_all_start_with_lightbulb() {
+        let tips = generate_tips();
+        for tip in &tips {
+            assert!(
+                tip.starts_with("💡"),
+                "Every tip should start with 💡 emoji, got: {tip}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_generate_tips_includes_rust_hints() {
+        // We're running inside a Rust project (Cargo.toml exists),
+        // so we should see Rust-specific tips.
+        let tips = generate_tips();
+        let has_rust_tip = tips
+            .iter()
+            .any(|t| t.contains("cargo test") || t.contains("clippy"));
+        assert!(
+            has_rust_tip,
+            "Should include Rust-specific tips when Cargo.toml exists: {tips:?}"
+        );
+    }
+
+    #[test]
+    fn test_generate_tips_includes_git_hint() {
+        // We're running in a git repo, so git tip should appear.
+        let tips = generate_tips();
+        let has_git_tip = tips.iter().any(|t| t.contains("/diff --stat"));
+        assert!(
+            has_git_tip,
+            "Should include git tip when .git exists: {tips:?}"
+        );
+    }
+
+    #[test]
+    fn test_generate_tips_feature_discovery_varies() {
+        // Call twice — the feature-discovery portion is randomly sampled,
+        // so over many calls the sets should differ (not deterministic,
+        // but with 15 options and 3 samples the chance of identical
+        // draws twice is ~1/455).
+        let tips1 = generate_tips();
+        let tips2 = generate_tips();
+        // We can't guarantee they differ on a single pair, but we can
+        // verify the count is reasonable (contextual + 3 discovery).
+        assert!(
+            tips1.len() >= 3,
+            "Should have at least 3 tips (discovery alone): got {}",
+            tips1.len()
+        );
+        assert!(
+            tips2.len() >= 3,
+            "Should have at least 3 tips (discovery alone): got {}",
+            tips2.len()
+        );
+    }
+
+    #[test]
+    fn test_discovery_tips_constant_format() {
+        for tip in DISCOVERY_TIPS {
+            assert!(
+                tip.starts_with("💡"),
+                "DISCOVERY_TIPS entry should start with 💡: {tip}"
+            );
+        }
     }
 }

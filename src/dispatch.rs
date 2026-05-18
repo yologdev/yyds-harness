@@ -116,6 +116,7 @@ pub(crate) enum CommandRoute {
     Extended,
     Side,
     Quick,
+    Tips,
     /// Input starts with `/` but doesn't match any known command.
     UnknownSlash,
     /// Input is not a slash command at all.
@@ -157,6 +158,7 @@ pub(crate) fn route_command(input: &str) -> CommandRoute {
         "/find" => CommandRoute::Find,
         "/grep" => CommandRoute::Grep,
         "/search" => CommandRoute::Search,
+        "/tips" => CommandRoute::Tips,
         _ => route_command_prefix(input),
     }
 }
@@ -364,6 +366,10 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
         }
         CommandRoute::Evolution => {
             commands::handle_evolution(ctx.input);
+            CommandResult::Continue
+        }
+        CommandRoute::Tips => {
+            commands::handle_tips();
             CommandResult::Continue
         }
         CommandRoute::Clear => {
@@ -1575,6 +1581,7 @@ mod tests {
             ("/extended long prompt", CommandRoute::Extended),
             ("/side quick question", CommandRoute::Side),
             ("/quick check this", CommandRoute::Quick),
+            ("/tips", CommandRoute::Tips),
         ];
         for (input, expected) in cases {
             assert_eq!(
@@ -1673,6 +1680,7 @@ mod tests {
             ("/find", CommandRoute::Find),
             ("/grep", CommandRoute::Grep),
             ("/search", CommandRoute::Search),
+            ("/tips", CommandRoute::Tips),
         ];
         for (input, expected) in exact_matches {
             assert_eq!(
