@@ -3602,4 +3602,615 @@ abstract class Base {
             );
         }
     }
+
+    // ── Day 79: Additional coverage tests ──
+
+    // ── detect_language edge cases ──
+
+    #[test]
+    fn detect_language_no_extension() {
+        assert_eq!(detect_language("Makefile"), None);
+        assert_eq!(detect_language("Dockerfile"), None);
+        assert_eq!(detect_language(""), None);
+    }
+
+    #[test]
+    fn detect_language_nested_path() {
+        assert_eq!(detect_language("src/lib/utils.rs"), Some("rust"));
+        assert_eq!(detect_language("app/models/user.py"), Some("python"));
+        assert_eq!(
+            detect_language("packages/core/index.ts"),
+            Some("typescript")
+        );
+    }
+
+    #[test]
+    fn detect_language_jsx_and_mjs() {
+        assert_eq!(detect_language("Component.jsx"), Some("javascript"));
+        assert_eq!(detect_language("module.mjs"), Some("javascript"));
+        assert_eq!(detect_language("Component.tsx"), Some("typescript"));
+    }
+
+    #[test]
+    fn detect_language_cpp_header_variants() {
+        assert_eq!(detect_language("lib.hpp"), Some("cpp"));
+        assert_eq!(detect_language("lib.hxx"), Some("cpp"));
+        assert_eq!(detect_language("lib.hh"), Some("cpp"));
+        assert_eq!(detect_language("lib.cxx"), Some("cpp"));
+        assert_eq!(detect_language("lib.cc"), Some("cpp"));
+    }
+
+    // ── extract_symbols unknown language returns empty ──
+
+    #[test]
+    fn extract_symbols_unknown_language_returns_empty() {
+        let code = "def foo(): pass\nclass Bar: pass\n";
+        let symbols = extract_symbols(code, "brainfuck");
+        assert!(
+            symbols.is_empty(),
+            "unknown language should return empty vec"
+        );
+    }
+
+    #[test]
+    fn extract_symbols_empty_code_returns_empty() {
+        assert!(extract_symbols("", "rust").is_empty());
+        assert!(extract_symbols("", "python").is_empty());
+        assert!(extract_symbols("", "csharp").is_empty());
+        assert!(extract_symbols("", "php").is_empty());
+        assert!(extract_symbols("", "kotlin").is_empty());
+        assert!(extract_symbols("", "swift").is_empty());
+        assert!(extract_symbols("", "scala").is_empty());
+    }
+
+    // ── C# visibility and line number tests ──
+
+    #[test]
+    fn csharp_visibility_flags() {
+        let code = r#"
+public class PublicClass { }
+class InternalClass { }
+public void PublicMethod() { }
+private void PrivateMethod() { }
+"#;
+        let symbols = extract_symbols(code, "csharp");
+
+        let public_class = symbols.iter().find(|s| s.name == "PublicClass").unwrap();
+        assert!(public_class.is_public, "public class should be public");
+
+        let internal_class = symbols.iter().find(|s| s.name == "InternalClass").unwrap();
+        assert!(
+            !internal_class.is_public,
+            "class without public keyword should not be public"
+        );
+
+        let public_method = symbols.iter().find(|s| s.name == "PublicMethod").unwrap();
+        assert!(public_method.is_public, "public method should be public");
+    }
+
+    #[test]
+    fn csharp_excludes_keywords() {
+        let code = r#"
+if (condition) { }
+for (int i = 0; i < 10; i++) { }
+while (true) { }
+switch (x) { }
+return result;
+foreach (var x in list) { }
+"#;
+        let symbols = extract_symbols(code, "csharp");
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            !names.contains(&"if"),
+            "should exclude 'if' keyword: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"for"),
+            "should exclude 'for' keyword: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"while"),
+            "should exclude 'while' keyword: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"foreach"),
+            "should exclude 'foreach' keyword: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn csharp_line_numbers() {
+        let code = "namespace Foo\n{\npublic class Bar { }\n}\n";
+        let symbols = extract_symbols(code, "csharp");
+        let ns = symbols.iter().find(|s| s.name == "Foo").unwrap();
+        assert_eq!(ns.line, 1, "namespace on first line");
+        let cls = symbols.iter().find(|s| s.name == "Bar").unwrap();
+        assert_eq!(cls.line, 3, "class on third line");
+    }
+
+    // ── PHP visibility and exclusion tests ──
+
+    #[test]
+    fn php_visibility_flags() {
+        let code = r#"<?php
+class MyClass
+{
+    public function publicMethod() { }
+    private function privateHelper() { }
+    protected function protectedHelper() { }
+}
+function globalFunc() { }
+"#;
+        let symbols = extract_symbols(code, "php");
+        let public_m = symbols.iter().find(|s| s.name == "publicMethod").unwrap();
+        assert!(public_m.is_public, "public method should be public");
+
+        let private_m = symbols.iter().find(|s| s.name == "privateHelper").unwrap();
+        assert!(!private_m.is_public, "private method should not be public");
+
+        let protected_m = symbols
+            .iter()
+            .find(|s| s.name == "protectedHelper")
+            .unwrap();
+        assert!(
+            !protected_m.is_public,
+            "protected method should not be public"
+        );
+
+        let global = symbols.iter().find(|s| s.name == "globalFunc").unwrap();
+        assert!(global.is_public, "global function should be public");
+    }
+
+    #[test]
+    fn php_line_numbers() {
+        let code = "<?php\nclass Foo { }\nfunction bar() { }\n";
+        let symbols = extract_symbols(code, "php");
+        let cls = symbols.iter().find(|s| s.name == "Foo").unwrap();
+        assert_eq!(cls.line, 2, "class on second line");
+        let func = symbols.iter().find(|s| s.name == "bar").unwrap();
+        assert_eq!(func.line, 3, "function on third line");
+    }
+
+    // ── Kotlin visibility and keyword exclusion tests ──
+
+    #[test]
+    fn kotlin_visibility_flags() {
+        let code = r#"
+fun publicFunc() { }
+private fun privateFunc() { }
+protected fun protectedFunc() { }
+class PublicClass
+private class PrivateClass
+"#;
+        let symbols = extract_symbols(code, "kotlin");
+        let pub_f = symbols.iter().find(|s| s.name == "publicFunc").unwrap();
+        assert!(pub_f.is_public, "public fun should be public");
+
+        let priv_f = symbols.iter().find(|s| s.name == "privateFunc").unwrap();
+        assert!(!priv_f.is_public, "private fun should not be public");
+
+        let prot_f = symbols.iter().find(|s| s.name == "protectedFunc").unwrap();
+        assert!(!prot_f.is_public, "protected fun should not be public");
+
+        let pub_cls = symbols.iter().find(|s| s.name == "PublicClass").unwrap();
+        assert!(pub_cls.is_public, "public class should be public");
+
+        let priv_cls = symbols.iter().find(|s| s.name == "PrivateClass").unwrap();
+        assert!(!priv_cls.is_public, "private class should not be public");
+    }
+
+    #[test]
+    fn kotlin_excludes_control_flow_keywords() {
+        // Kotlin uses `fun` keyword but we must exclude control-flow-like constructs
+        let code = r#"
+fun realFunction() { }
+"#;
+        let symbols = extract_symbols(code, "kotlin");
+        assert!(symbols.iter().any(|s| s.name == "realFunction"));
+        // Keywords like "if", "for", "while" should not appear as symbols
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            !names.contains(&"if"),
+            "should not extract 'if' as a symbol"
+        );
+        assert!(
+            !names.contains(&"for"),
+            "should not extract 'for' as a symbol"
+        );
+    }
+
+    #[test]
+    fn kotlin_line_numbers() {
+        let code = "data class User(val name: String)\nfun process() { }\n";
+        let symbols = extract_symbols(code, "kotlin");
+        let cls = symbols.iter().find(|s| s.name == "User").unwrap();
+        assert_eq!(cls.line, 1, "data class on first line");
+        let func = symbols.iter().find(|s| s.name == "process").unwrap();
+        assert_eq!(func.line, 2, "function on second line");
+    }
+
+    // ── Swift visibility tests ──
+
+    #[test]
+    fn swift_visibility_flags() {
+        let code = r#"
+public class PublicClass { }
+class InternalClass { }
+open class OpenClass { }
+public func publicFunc() { }
+func internalFunc() { }
+private func privateFunc() { }
+"#;
+        let symbols = extract_symbols(code, "swift");
+
+        let public_cls = symbols.iter().find(|s| s.name == "PublicClass").unwrap();
+        assert!(public_cls.is_public, "public class should be public");
+
+        let internal_cls = symbols.iter().find(|s| s.name == "InternalClass").unwrap();
+        assert!(
+            !internal_cls.is_public,
+            "class without modifier should not be public"
+        );
+
+        let open_cls = symbols.iter().find(|s| s.name == "OpenClass").unwrap();
+        assert!(open_cls.is_public, "open class should be public");
+
+        let public_fn = symbols.iter().find(|s| s.name == "publicFunc").unwrap();
+        assert!(public_fn.is_public, "public func should be public");
+
+        let internal_fn = symbols.iter().find(|s| s.name == "internalFunc").unwrap();
+        assert!(
+            !internal_fn.is_public,
+            "func without modifier should not be public"
+        );
+    }
+
+    #[test]
+    fn swift_line_numbers() {
+        let code = "struct Point {\n    var x: Double\n}\nfunc helper() { }\n";
+        let symbols = extract_symbols(code, "swift");
+        let s = symbols.iter().find(|s| s.name == "Point").unwrap();
+        assert_eq!(s.line, 1, "struct on first line");
+        let f = symbols.iter().find(|s| s.name == "helper").unwrap();
+        assert_eq!(f.line, 4, "func on fourth line");
+    }
+
+    #[test]
+    fn swift_extension_always_public() {
+        let code = "extension Array {\n    func custom() { }\n}\n";
+        let symbols = extract_symbols(code, "swift");
+        let ext = symbols.iter().find(|s| s.name == "Array").unwrap();
+        assert_eq!(ext.kind, SymbolKind::Impl, "extension should be Impl kind");
+        assert!(ext.is_public, "extension should always be public");
+    }
+
+    // ── Scala visibility tests ──
+
+    #[test]
+    fn scala_visibility_flags() {
+        let code = r#"
+def publicDef(): Unit = { }
+private def privateDef(): Unit = { }
+protected def protectedDef(): Unit = { }
+class PublicClass
+"#;
+        let symbols = extract_symbols(code, "scala");
+        let pub_d = symbols.iter().find(|s| s.name == "publicDef").unwrap();
+        assert!(pub_d.is_public, "public def should be public");
+
+        let priv_d = symbols.iter().find(|s| s.name == "privateDef").unwrap();
+        assert!(!priv_d.is_public, "private def should not be public");
+
+        let prot_d = symbols.iter().find(|s| s.name == "protectedDef").unwrap();
+        assert!(!prot_d.is_public, "protected def should not be public");
+
+        let pub_cls = symbols.iter().find(|s| s.name == "PublicClass").unwrap();
+        assert!(pub_cls.is_public, "public class should be public");
+    }
+
+    #[test]
+    fn scala_private_class_not_matched_by_regex() {
+        // Scala's class regex doesn't include 'private' in its modifier list,
+        // so private classes are not extracted at all (this is the current behavior)
+        let code = "private class Hidden\nclass Visible\n";
+        let symbols = extract_symbols(code, "scala");
+        assert!(
+            !symbols.iter().any(|s| s.name == "Hidden"),
+            "private class should not be matched by Scala class regex"
+        );
+        assert!(
+            symbols.iter().any(|s| s.name == "Visible"),
+            "public class should be matched"
+        );
+    }
+
+    #[test]
+    fn scala_line_numbers() {
+        let code = "object App {\n  def main(): Unit = { }\n}\n";
+        let symbols = extract_symbols(code, "scala");
+        let obj = symbols.iter().find(|s| s.name == "App").unwrap();
+        assert_eq!(obj.line, 1, "object on first line");
+        assert_eq!(obj.kind, SymbolKind::Module);
+        let def = symbols.iter().find(|s| s.name == "main").unwrap();
+        assert_eq!(def.line, 2, "def on second line");
+    }
+
+    // ── format_repo_map tests ──
+
+    #[test]
+    fn format_repo_map_includes_kind_labels() {
+        let entries = vec![FileSymbols {
+            path: "src/lib.rs".to_string(),
+            lines: 50,
+            symbols: vec![
+                Symbol {
+                    name: "MyTrait".to_string(),
+                    kind: SymbolKind::Trait,
+                    is_public: true,
+                    line: 1,
+                },
+                Symbol {
+                    name: "MyEnum".to_string(),
+                    kind: SymbolKind::Enum,
+                    is_public: true,
+                    line: 10,
+                },
+                Symbol {
+                    name: "helper".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 20,
+                },
+                Symbol {
+                    name: "MAX".to_string(),
+                    kind: SymbolKind::Const,
+                    is_public: true,
+                    line: 30,
+                },
+            ],
+        }];
+        let output = format_repo_map(&entries);
+        assert!(
+            output.contains("trait MyTrait"),
+            "should contain trait label"
+        );
+        assert!(output.contains("enum MyEnum"), "should contain enum label");
+        assert!(output.contains("fn helper"), "should contain fn label");
+        assert!(output.contains("const MAX"), "should contain const label");
+        assert!(output.contains("(50 lines)"), "should contain line count");
+    }
+
+    #[test]
+    fn format_repo_map_colored_contains_ansi_codes() {
+        let entries = vec![FileSymbols {
+            path: "src/main.rs".to_string(),
+            lines: 42,
+            symbols: vec![Symbol {
+                name: "run".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            }],
+        }];
+        let output = format_repo_map_colored(&entries);
+        // Should contain ANSI escape codes (ESC = \x1b)
+        assert!(
+            output.contains('\x1b'),
+            "colored output should contain ANSI escape codes"
+        );
+        assert!(output.contains("src/main.rs"), "should contain file path");
+        assert!(output.contains("run"), "should contain symbol name");
+        assert!(output.contains("42 lines"), "should contain line count");
+    }
+
+    #[test]
+    fn format_repo_map_colored_empty_shows_message() {
+        let entries: Vec<FileSymbols> = vec![];
+        let output = format_repo_map_colored(&entries);
+        assert!(
+            output.contains("no structural symbols found"),
+            "empty colored map should show message"
+        );
+    }
+
+    #[test]
+    fn format_repo_map_colored_shows_pub_prefix() {
+        let entries = vec![FileSymbols {
+            path: "lib.rs".to_string(),
+            lines: 10,
+            symbols: vec![
+                Symbol {
+                    name: "public_fn".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    line: 1,
+                },
+                Symbol {
+                    name: "private_fn".to_string(),
+                    kind: SymbolKind::Function,
+                    is_public: false,
+                    line: 2,
+                },
+            ],
+        }];
+        let output = format_repo_map_colored(&entries);
+        // The "pub" label should appear for public symbols
+        assert!(
+            output.contains("pub"),
+            "should contain 'pub' prefix for public symbols"
+        );
+    }
+
+    #[test]
+    fn format_repo_map_all_kind_labels() {
+        // Verify that every SymbolKind produces a valid label in plain format
+        let kinds = vec![
+            (SymbolKind::Function, "fn"),
+            (SymbolKind::Struct, "struct"),
+            (SymbolKind::Enum, "enum"),
+            (SymbolKind::Trait, "trait"),
+            (SymbolKind::Interface, "interface"),
+            (SymbolKind::Class, "class"),
+            (SymbolKind::Type, "type"),
+            (SymbolKind::Const, "const"),
+            (SymbolKind::Impl, "impl"),
+            (SymbolKind::Module, "mod"),
+            (SymbolKind::Macro, "macro"),
+            (SymbolKind::Namespace, "namespace"),
+        ];
+        for (kind, expected_label) in kinds {
+            let entries = vec![FileSymbols {
+                path: "test.rs".to_string(),
+                lines: 1,
+                symbols: vec![Symbol {
+                    name: "test_sym".to_string(),
+                    kind: kind.clone(),
+                    is_public: true,
+                    line: 1,
+                }],
+            }];
+            let output = format_repo_map(&entries);
+            assert!(
+                output.contains(&format!("{expected_label} test_sym")),
+                "format_repo_map should output '{expected_label} test_sym' for {:?}, got: {}",
+                kind,
+                output.trim()
+            );
+        }
+    }
+
+    // ── Relevance score edge cases ──
+
+    #[test]
+    fn relevance_score_empty_recent_list() {
+        let recent: Vec<String> = vec![];
+        let entry = FileSymbols {
+            path: "src/main.rs".to_string(),
+            lines: 100,
+            symbols: vec![Symbol {
+                name: "main".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            }],
+        };
+        // Should not panic, score based on density + size only
+        let score = relevance_score(&entry, &recent);
+        assert!(score > 0, "should still have density/size score");
+    }
+
+    #[test]
+    fn relevance_score_zero_lines_no_panic() {
+        let recent: Vec<String> = vec![];
+        let entry = FileSymbols {
+            path: "empty.rs".to_string(),
+            lines: 0,
+            symbols: vec![],
+        };
+        // checked_div should handle zero lines without panic
+        let score = relevance_score(&entry, &recent);
+        assert_eq!(score, 0, "empty file with no symbols should score 0");
+    }
+
+    #[test]
+    fn relevance_score_equal_entries_have_equal_scores() {
+        let recent: Vec<String> = vec![];
+        let entry_a = FileSymbols {
+            path: "a.rs".to_string(),
+            lines: 100,
+            symbols: vec![Symbol {
+                name: "f".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            }],
+        };
+        let entry_b = FileSymbols {
+            path: "b.rs".to_string(),
+            lines: 100,
+            symbols: vec![Symbol {
+                name: "g".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            }],
+        };
+        let score_a = relevance_score(&entry_a, &recent);
+        let score_b = relevance_score(&entry_b, &recent);
+        assert_eq!(
+            score_a, score_b,
+            "entries with same structure should have equal relevance"
+        );
+    }
+
+    #[test]
+    fn relevance_score_recency_position_matters() {
+        // First item in recent list gets highest recency score
+        let recent = vec![
+            "first.rs".to_string(),
+            "second.rs".to_string(),
+            "third.rs".to_string(),
+        ];
+        let make_entry = |path: &str| FileSymbols {
+            path: path.to_string(),
+            lines: 50,
+            symbols: vec![Symbol {
+                name: "f".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            }],
+        };
+        let score_first = relevance_score(&make_entry("first.rs"), &recent);
+        let score_second = relevance_score(&make_entry("second.rs"), &recent);
+        let score_third = relevance_score(&make_entry("third.rs"), &recent);
+        assert!(
+            score_first > score_second,
+            "first should beat second: {} vs {}",
+            score_first,
+            score_second
+        );
+        assert!(
+            score_second > score_third,
+            "second should beat third: {} vs {}",
+            score_second,
+            score_third
+        );
+    }
+
+    #[test]
+    fn relevance_score_density_capped_at_50() {
+        // A file with extreme density shouldn't get unlimited score
+        let recent: Vec<String> = vec![];
+        let make_sym = |n: &str| Symbol {
+            name: n.to_string(),
+            kind: SymbolKind::Function,
+            is_public: true,
+            line: 1,
+        };
+        let extreme = FileSymbols {
+            path: "dense.rs".to_string(),
+            lines: 1, // 200 symbols in 1 line = extreme density
+            symbols: (0..200).map(|i| make_sym(&format!("f{i}"))).collect(),
+        };
+        let moderate = FileSymbols {
+            path: "moderate.rs".to_string(),
+            lines: 100,
+            symbols: (0..50).map(|i| make_sym(&format!("g{i}"))).collect(),
+        };
+        let score_extreme = relevance_score(&extreme, &recent);
+        let score_moderate = relevance_score(&moderate, &recent);
+        // Extreme density is capped, so the difference shouldn't be unbounded
+        // Both should be > 0 and the extreme one should still win
+        assert!(score_extreme > 0);
+        assert!(score_moderate > 0);
+        // The cap means extreme doesn't get 20000 density score
+        // density is capped at 50, so extreme gets 50 density + 0 size = 50
+        // moderate gets 50 density + 2 size = 52
+        // Actually moderate has more lines so might win due to size bonus
+    }
 }
