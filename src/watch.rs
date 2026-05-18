@@ -485,6 +485,12 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    // Tests that read/write the global WATCH_COMMANDS state must be annotated with
+    // #[serial] to prevent flaky failures from parallel test execution. The
+    // `serial_test` crate ensures these tests run one at a time. Any test calling
+    // set_watch_command, set_watch_commands, get_watch_command, get_watch_commands,
+    // clear_watch_command, or handle_watch must use #[serial].
+
     #[test]
     fn test_build_watch_fix_prompt() {
         let prompt = build_watch_fix_prompt("cargo test", "error[E0308]: mismatched types");
@@ -887,6 +893,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn handle_watch_all_sets_combined_command() {
         // Clear any previous watch command
@@ -932,6 +939,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn handle_watch_lint_sets_lint_only_command() {
         // Clear any previous watch command
@@ -956,6 +964,7 @@ mod tests {
         clear_watch_command();
     }
 
+    #[serial]
     #[test]
     fn handle_watch_bare_sets_lint_and_test() {
         // Clear any previous watch command
@@ -1006,6 +1015,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn handle_watch_custom_command_single_phase() {
         clear_watch_command();
