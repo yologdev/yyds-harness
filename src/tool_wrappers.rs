@@ -209,6 +209,93 @@ pub(crate) fn with_truncation(tool: Box<dyn AgentTool>, max_chars: usize) -> Box
 }
 
 // ---------------------------------------------------------------------------
+// Permission persistence for file operations
+// ---------------------------------------------------------------------------
+
+use std::collections::HashSet as PersistHashSet;
+
+/// Generate a directory-based allow pattern from a file path.
+///
+/// For files in a subdirectory: extracts the directory and appends `/*`.
+/// For root files: uses `*.ext` based on the file extension.
+/// Examples:
+///   `src/main.rs`        → `src/*`
+///   `src/format/mod.rs`  → `src/format/*`
+///   `README.md`          → `*.md`
+///   `Cargo.toml`         → `*.toml`
+///   `script`             → `script`  (no extension, no directory — use exact name)
+pub fn file_path_to_allow_pattern(path: &str) -> String {
+    let path = path.trim();
+    if path.is_empty() {
+        return "*".to_string();
+    }
+
+    // Normalise separators and strip leading ./
+    let clean = path.replace('\\', "/");
+    let clean = clean.strip_prefix("./").unwrap_or(&clean);
+
+    if let Some(idx) = clean.rfind('/') {
+        // Has a directory component — use `dir/*`
+        let dir = &clean[..idx];
+        format!("{dir}/*")
+    } else {
+        // Root-level file — try `*.ext`
+        if let Some(dot) = clean.rfind('.') {
+            let ext = &clean[dot..]; // e.g. ".rs"
+            format!("*{ext}")
+        } else {
+            // No extension, no directory — use exact name
+            clean.to_string()
+        }
+    }
+}
+
+/// Track which file patterns we've already offered to persist this session.
+fn already_offered_file_persistence(pattern: &str) -> bool {
+    static OFFERED: std::sync::LazyLock<Mutex<PersistHashSet<String>>> =
+        std::sync::LazyLock::new(|| Mutex::new(PersistHashSet::new()));
+    let mut set = OFFERED.lock().unwrap_or_else(|e| e.into_inner());
+    !set.insert(pattern.to_string())
+}
+
+/// After the user says "always" on a file operation, offer to persist a
+/// directory-based allow pattern to `.yoyo.toml`.
+///
+/// Returns without action if the pattern was already offered this session.
+/// This is the file-operation parallel to `tools::offer_persist_pattern` for bash.
+pub fn offer_persist_file_pattern(path: &str) {
+    let pattern = file_path_to_allow_pattern(path);
+
+    // Don't re-ask if we already offered this directory pattern this session
+    if already_offered_file_persistence(&pattern) {
+        return;
+    }
+
+    eprint!(
+        "{DIM}  Save '{pattern}' to .yoyo.toml allow list? ({GREEN}y{RESET}{DIM}/{RED}n{RESET}{DIM}) {RESET}"
+    );
+    io::stderr().flush().ok();
+
+    let mut response = String::new();
+    let stdin = io::stdin();
+    use std::io::BufRead;
+    if stdin.lock().read_line(&mut response).is_err() {
+        return;
+    }
+    let response = response.trim().to_lowercase();
+    if matches!(response.as_str(), "y" | "yes") {
+        match crate::config::append_allow_pattern(&pattern) {
+            Ok(path) => {
+                eprintln!("{GREEN}  ✓ Saved to {}{RESET}", path.display());
+            }
+            Err(e) => {
+                eprintln!("{RED}  ✗ Could not save: {e}{RESET}");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ConfirmTool — user confirmation wrapper for file operations
 // ---------------------------------------------------------------------------
 
@@ -379,6 +466,8 @@ pub fn confirm_file_operation(
         eprintln!(
             "{GREEN}  ✓ All subsequent operations will be auto-approved this session.{RESET}"
         );
+        // Offer to persist a directory-based allow pattern to .yoyo.toml
+        offer_persist_file_pattern(path);
     }
     approved
 }
@@ -2322,6 +2411,89 @@ mod tests {
         assert!(
             result.is_ok(),
             "ArcGuardedTool should allow non-denied path"
+        );
+    }
+
+    // === file_path_to_allow_pattern tests ===
+
+    #[test]
+    fn test_file_pattern_subdirectory() {
+        assert_eq!(file_path_to_allow_pattern("src/main.rs"), "src/*");
+        assert_eq!(
+            file_path_to_allow_pattern("src/format/mod.rs"),
+            "src/format/*"
+        );
+        assert_eq!(
+            file_path_to_allow_pattern("tests/integration.rs"),
+            "tests/*"
+        );
+    }
+
+    #[test]
+    fn test_file_pattern_root_files() {
+        assert_eq!(file_path_to_allow_pattern("README.md"), "*.md");
+        assert_eq!(file_path_to_allow_pattern("Cargo.toml"), "*.toml");
+        assert_eq!(file_path_to_allow_pattern("build.rs"), "*.rs");
+    }
+
+    #[test]
+    fn test_file_pattern_no_extension() {
+        // Root file without extension — use exact name
+        assert_eq!(file_path_to_allow_pattern("Makefile"), "Makefile");
+        assert_eq!(file_path_to_allow_pattern("Dockerfile"), "Dockerfile");
+    }
+
+    #[test]
+    fn test_file_pattern_leading_dot_slash() {
+        // ./src/main.rs should be treated same as src/main.rs
+        assert_eq!(file_path_to_allow_pattern("./src/main.rs"), "src/*");
+        assert_eq!(file_path_to_allow_pattern("./README.md"), "*.md");
+    }
+
+    #[test]
+    fn test_file_pattern_empty() {
+        assert_eq!(file_path_to_allow_pattern(""), "*");
+        assert_eq!(file_path_to_allow_pattern("  "), "*");
+    }
+
+    #[test]
+    fn test_file_pattern_deeply_nested() {
+        assert_eq!(
+            file_path_to_allow_pattern("src/format/highlight.rs"),
+            "src/format/*"
+        );
+        assert_eq!(file_path_to_allow_pattern("a/b/c/d/file.txt"), "a/b/c/d/*");
+    }
+
+    #[test]
+    fn test_file_pattern_backslash_normalisation() {
+        // Windows-style paths should be normalised
+        assert_eq!(file_path_to_allow_pattern("src\\main.rs"), "src/*");
+        assert_eq!(
+            file_path_to_allow_pattern("src\\format\\mod.rs"),
+            "src/format/*"
+        );
+    }
+
+    // === already_offered_file_persistence dedup test ===
+    //
+    // Note: already_offered_file_persistence uses a global static, so we test
+    // the dedup logic indirectly via the pattern — each test uses unique patterns
+    // to avoid cross-test pollution.
+
+    #[test]
+    fn test_file_persistence_dedup() {
+        // Use a unique pattern that won't collide with other tests
+        let unique = "__test_dedup_unique_1__/*";
+        // First call: returns false (not already offered → was freshly inserted)
+        assert!(
+            !already_offered_file_persistence(unique),
+            "First call for a new pattern should return false (not a duplicate)"
+        );
+        // Second call: returns true (already offered)
+        assert!(
+            already_offered_file_persistence(unique),
+            "Second call for same pattern should return true (duplicate)"
         );
     }
 }

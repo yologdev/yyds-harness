@@ -123,6 +123,15 @@ Config file search order (first found wins):
 2. `~/.yoyo.toml` in your home directory
 3. `~/.config/yoyo/config.toml`
 
+## Persisting "Always" Approvals
+
+When you answer "a" (always) to a confirmation prompt during a session, yoyo sets a session-wide auto-approve flag. It also offers to save the pattern to `.yoyo.toml` so the approval persists across sessions:
+
+- **Bash commands**: yoyo simplifies the command into a glob (e.g., `cargo test*`) and asks if you'd like to save it.
+- **File operations**: yoyo generates a directory-based pattern (e.g., `src/*` for files under `src/`, or `*.rs` for root-level Rust files) and offers to save it.
+
+The save prompt only appears once per pattern per session — you won't be asked repeatedly for the same directory.
+
 ## Practical Examples
 
 ### Rust development — approve common tools
@@ -193,5 +202,6 @@ Safe commands like `ls`, `cargo test`, `git status`, and `grep` pass through wit
 | `--deny-dir <dir>` | File tools | Block paths under these dirs |
 | `[permissions]` in config | Bash commands | Same as `--allow`/`--deny` |
 | `[directories]` in config | File tools | Same as `--allow-dir`/`--deny-dir` |
+| "Always" persistence | Bash + file tools | Offers to save patterns to `.yoyo.toml` on "always" |
 
 > **Tip:** Use `/permissions` during a session to see the full security posture — auto-approve status, command patterns, and directory restrictions all in one view.
