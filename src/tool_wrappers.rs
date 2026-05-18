@@ -1685,4 +1685,643 @@ mod tests {
         let desc = describe_file_operation("bash", &params);
         assert!(desc.contains("bash"), "Should contain tool name: {desc}");
     }
+
+    // =========================================================================
+    // TruncatingTool / truncate_result — additional coverage
+    // =========================================================================
+
+    #[test]
+    fn test_truncate_result_exact_limit_unchanged() {
+        // Text exactly at limit should pass through unchanged
+        let text = "abcdefghij"; // 10 chars
+        let result = yoagent::types::ToolResult {
+            content: vec![yoagent::Content::Text {
+                text: text.to_string(),
+            }],
+            details: serde_json::Value::Null,
+        };
+        let truncated = truncate_result(result, 10);
+        match &truncated.content[0] {
+            yoagent::Content::Text { text: t } => {
+                assert_eq!(t, text, "Text at exact limit should pass through unchanged");
+            }
+            _ => panic!("Expected Text content"),
+        }
+    }
+
+    #[test]
+    fn test_truncate_result_multibyte_utf8_no_panic() {
+        // Multi-byte UTF-8 characters near the boundary must not panic.
+        // ✓ is 3 bytes, 日本語 is 3 bytes each char.
+        let text = "✓日本語✓日本語✓日本語✓日本語✓日本語".repeat(50);
+        let result = yoagent::types::ToolResult {
+            content: vec![yoagent::Content::Text { text }],
+            details: serde_json::Value::Null,
+        };
+        // This should not panic even with a limit that falls mid-character
+        let truncated = truncate_result(result, 100);
+        match &truncated.content[0] {
+            yoagent::Content::Text { text: t } => {
+                // Should be valid UTF-8 (Rust strings guarantee this)
+                assert!(!t.is_empty(), "Should produce some output");
+            }
+            _ => panic!("Expected Text content"),
+        }
+    }
+
+    #[test]
+    fn test_truncate_result_emoji_boundary() {
+        // Emoji are 4 bytes each. Truncation must respect char boundaries.
+        let text = "🦑🐙🐠🐟🦈🐳🐋🦭🐡".repeat(30);
+        let result = yoagent::types::ToolResult {
+            content: vec![yoagent::Content::Text { text }],
+            details: serde_json::Value::Null,
+        };
+        let truncated = truncate_result(result, 50);
+        match &truncated.content[0] {
+            yoagent::Content::Text { text: t } => {
+                assert!(t.is_char_boundary(t.len()), "Output must be valid UTF-8");
+            }
+            _ => panic!("Expected Text content"),
+        }
+    }
+
+    #[test]
+    fn test_truncate_result_empty_text() {
+        let result = yoagent::types::ToolResult {
+            content: vec![yoagent::Content::Text {
+                text: String::new(),
+            }],
+            details: serde_json::Value::Null,
+        };
+        let truncated = truncate_result(result, 100);
+        match &truncated.content[0] {
+            yoagent::Content::Text { text } => {
+                assert_eq!(text, "", "Empty text should remain empty");
+            }
+            _ => panic!("Expected Text content"),
+        }
+    }
+
+    #[test]
+    fn test_truncate_result_multiple_content_blocks() {
+        // Multiple text blocks should each be independently truncated
+        let short = "short".to_string();
+        let long: String = (0..200)
+            .map(|i| format!("line_{i:04}_unique_content"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = yoagent::types::ToolResult {
+            content: vec![
+                yoagent::Content::Text {
+                    text: short.clone(),
+                },
+                yoagent::Content::Text { text: long },
+            ],
+            details: serde_json::Value::Null,
+        };
+        let truncated = truncate_result(result, 500);
+        // First block should be unchanged
+        match &truncated.content[0] {
+            yoagent::Content::Text { text } => {
+                assert_eq!(text, &short, "Short block should be unchanged");
+            }
+            _ => panic!("Expected Text content"),
+        }
+        // Second block should be truncated
+        match &truncated.content[1] {
+            yoagent::Content::Text { text } => {
+                assert!(
+                    text.contains("truncated") || text.len() < 5000,
+                    "Long block should be truncated or compressed"
+                );
+            }
+            _ => panic!("Expected Text content"),
+        }
+    }
+
+    #[test]
+    fn test_truncate_result_preserves_details() {
+        let details = serde_json::json!({"key": "value", "count": 42});
+        let result = yoagent::types::ToolResult {
+            content: vec![yoagent::Content::Text {
+                text: "hello".to_string(),
+            }],
+            details: details.clone(),
+        };
+        let truncated = truncate_result(result, 1000);
+        assert_eq!(
+            truncated.details, details,
+            "Details field should be preserved through truncation"
+        );
+    }
+
+    // =========================================================================
+    // with_truncation — wrapping preserves identity
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_with_truncation_preserves_name_description() {
+        let tool = with_truncation(
+            Box::new(MockTool {
+                tool_name: "my_tool",
+                result_text: "result".to_string(),
+            }),
+            1000,
+        );
+        assert_eq!(tool.name(), "my_tool", "Wrapped tool should preserve name");
+        assert_eq!(
+            tool.description(),
+            "mock tool",
+            "Wrapped tool should preserve description"
+        );
+        assert_eq!(
+            tool.label(),
+            "my_tool",
+            "Wrapped tool should preserve label"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_with_truncation_truncates_large_output() {
+        let long_text = (0..500)
+            .map(|i| format!("uniq_{i:05}_row"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tool = with_truncation(
+            Box::new(MockTool {
+                tool_name: "bash",
+                result_text: long_text,
+            }),
+            200,
+        );
+        let result = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap();
+        let text = match &result.content[0] {
+            yoagent::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+        assert!(
+            text.contains("truncated"),
+            "Output exceeding limit should be truncated: {}...",
+            &text[..text.len().min(100)]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_with_truncation_passes_small_output() {
+        let tool = with_truncation(
+            Box::new(MockTool {
+                tool_name: "bash",
+                result_text: "small output".to_string(),
+            }),
+            10000,
+        );
+        let result = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap();
+        let text = match &result.content[0] {
+            yoagent::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+        assert_eq!(
+            text, "small output",
+            "Small output should pass through unchanged"
+        );
+    }
+
+    // =========================================================================
+    // AutoCheckTool — wrapping preserves identity
+    // =========================================================================
+
+    #[test]
+    fn test_with_auto_check_preserves_name_description() {
+        let tool = with_auto_check(Box::new(MockTool {
+            tool_name: "write_file",
+            result_text: "ok".to_string(),
+        }));
+        assert_eq!(tool.name(), "write_file");
+        assert_eq!(tool.description(), "mock tool");
+        assert_eq!(tool.label(), "write_file");
+    }
+
+    #[test]
+    fn test_with_auto_check_preserves_schema() {
+        let tool = with_auto_check(Box::new(MockTool {
+            tool_name: "edit_file",
+            result_text: "ok".to_string(),
+        }));
+        let schema = tool.parameters_schema();
+        assert_eq!(
+            schema,
+            serde_json::json!({}),
+            "Schema should pass through from inner tool"
+        );
+    }
+
+    // =========================================================================
+    // RecoveryHintTool — additional scenarios
+    // =========================================================================
+
+    #[test]
+    fn test_with_recovery_hints_preserves_name_description() {
+        let tracker = ToolFailureTracker::new();
+        let tool = with_recovery_hints(
+            Box::new(MockTool {
+                tool_name: "search",
+                result_text: "ok".to_string(),
+            }),
+            &tracker,
+        );
+        assert_eq!(tool.name(), "search");
+        assert_eq!(tool.description(), "mock tool");
+        assert_eq!(tool.label(), "search");
+    }
+
+    #[tokio::test]
+    async fn test_recovery_hint_non_failed_error_still_tracks() {
+        // Non-Failed errors (e.g., NotFound) should still increment the counter
+        // but pass through without recovery hint decoration
+        struct NotFoundTool;
+
+        #[async_trait::async_trait]
+        impl AgentTool for NotFoundTool {
+            fn name(&self) -> &str {
+                "test_tool"
+            }
+            fn label(&self) -> &str {
+                "test_tool"
+            }
+            fn description(&self) -> &str {
+                "test"
+            }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            async fn execute(
+                &self,
+                _params: serde_json::Value,
+                _ctx: yoagent::types::ToolContext,
+            ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+                Err(yoagent::types::ToolError::NotFound("missing".to_string()))
+            }
+        }
+
+        let tracker = ToolFailureTracker::new();
+        let tool = with_recovery_hints(Box::new(NotFoundTool), &tracker);
+
+        let result = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await;
+        assert!(result.is_err());
+
+        // Counter should still increment even for NotFound errors
+        assert_eq!(
+            tracker.get("test_tool"),
+            1,
+            "NotFound errors should still be tracked"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recovery_hint_success_after_failures_resets() {
+        let tracker = ToolFailureTracker::new();
+
+        // Fail three times
+        for _ in 0..3 {
+            let tool = with_recovery_hints(
+                Box::new(ConfigurableMockTool {
+                    tool_name: "bash",
+                    fail_msg: Some("error".to_string()),
+                }),
+                &tracker,
+            );
+            let _ = tool
+                .execute(serde_json::json!({}), test_tool_context())
+                .await;
+        }
+        assert_eq!(tracker.get("bash"), 3);
+
+        // Succeed once — should reset to 0
+        let tool = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "bash",
+                fail_msg: None,
+            }),
+            &tracker,
+        );
+        let result = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(
+            tracker.get("bash"),
+            0,
+            "Success should reset counter from any value"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recovery_hint_different_tools_different_hints() {
+        // Different tool names should produce different recovery hints
+        let tracker = ToolFailureTracker::new();
+
+        let bash_tool = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "bash",
+                fail_msg: Some("command not found".to_string()),
+            }),
+            &tracker,
+        );
+        let bash_err = bash_tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap_err()
+            .to_string();
+
+        let search_tool = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "search",
+                fail_msg: Some("pattern error".to_string()),
+            }),
+            &tracker,
+        );
+        let search_err = search_tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap_err()
+            .to_string();
+
+        // Both should have hints
+        assert!(bash_err.contains("💡 Recovery hint:"));
+        assert!(search_err.contains("💡 Recovery hint:"));
+
+        // The hints should be different since the tools are different
+        let bash_hint = bash_err.split("💡 Recovery hint:").nth(1).unwrap();
+        let search_hint = search_err.split("💡 Recovery hint:").nth(1).unwrap();
+        assert_ne!(
+            bash_hint, search_hint,
+            "Different tools should get different recovery hints"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recovery_hint_unknown_tool_gets_generic_hint() {
+        let tracker = ToolFailureTracker::new();
+        let tool = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "some_random_tool",
+                fail_msg: Some("broken".to_string()),
+            }),
+            &tracker,
+        );
+        let err = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("💡 Recovery hint:"),
+            "Unknown tools should still get a hint: {err}"
+        );
+        assert!(
+            err.contains("different approach"),
+            "Unknown tool hint should suggest a different approach: {err}"
+        );
+    }
+
+    // =========================================================================
+    // ToolFailureTracker — additional unit tests
+    // =========================================================================
+
+    #[test]
+    fn test_tracker_record_success_on_nonexistent_tool_is_noop() {
+        let tracker = ToolFailureTracker::new();
+        // Recording success for a tool that was never recorded should not panic
+        tracker.record_success("never_used");
+        assert_eq!(tracker.get("never_used"), 0);
+    }
+
+    #[test]
+    fn test_tracker_many_tools() {
+        let tracker = ToolFailureTracker::new();
+        let tool_names = [
+            "bash",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "search",
+            "list_files",
+            "rename_symbol",
+        ];
+        for (i, name) in tool_names.iter().enumerate() {
+            for _ in 0..=i {
+                tracker.record_failure(name);
+            }
+        }
+        for (i, name) in tool_names.iter().enumerate() {
+            assert_eq!(
+                tracker.get(name),
+                (i + 1) as u32,
+                "{name} should have {} failures",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn test_tracker_thread_safety() {
+        // ToolFailureTracker uses Arc<Mutex<...>>, so it should be safely
+        // shareable across threads.
+        let tracker = ToolFailureTracker::new();
+        let tracker_clone = tracker.clone();
+
+        let handle = std::thread::spawn(move || {
+            for _ in 0..100 {
+                tracker_clone.record_failure("bash");
+            }
+        });
+
+        for _ in 0..100 {
+            tracker.record_failure("bash");
+        }
+
+        handle.join().unwrap();
+        assert_eq!(
+            tracker.get("bash"),
+            200,
+            "Concurrent failures should all be recorded"
+        );
+    }
+
+    // =========================================================================
+    // GuardedTool / maybe_guard — restriction logic
+    // =========================================================================
+
+    #[test]
+    fn test_maybe_guard_empty_restrictions_no_wrap() {
+        let restrictions = cli::DirectoryRestrictions {
+            allow: vec![],
+            deny: vec![],
+        };
+        let tool: Box<dyn AgentTool> = Box::new(MockTool {
+            tool_name: "read_file",
+            result_text: "ok".to_string(),
+        });
+        let wrapped = maybe_guard(tool, &restrictions);
+        // With empty restrictions, the tool should not be wrapped —
+        // it should still have the same name and behavior.
+        assert_eq!(wrapped.name(), "read_file");
+    }
+
+    #[test]
+    fn test_maybe_guard_with_deny_wraps_tool() {
+        let restrictions = cli::DirectoryRestrictions {
+            allow: vec![],
+            deny: vec!["/etc".to_string()],
+        };
+        let tool: Box<dyn AgentTool> = Box::new(MockTool {
+            tool_name: "write_file",
+            result_text: "ok".to_string(),
+        });
+        let wrapped = maybe_guard(tool, &restrictions);
+        // Should still preserve the name
+        assert_eq!(wrapped.name(), "write_file");
+        assert_eq!(wrapped.description(), "mock tool");
+    }
+
+    #[tokio::test]
+    async fn test_guarded_tool_blocks_denied_path() {
+        let restrictions = cli::DirectoryRestrictions {
+            allow: vec![],
+            deny: vec!["/tmp/secret".to_string()],
+        };
+        let tool = maybe_guard(
+            Box::new(MockTool {
+                tool_name: "read_file",
+                result_text: "should not see this".to_string(),
+            }),
+            &restrictions,
+        );
+        let params = serde_json::json!({ "path": "/tmp/secret/data.txt" });
+        let result = tool.execute(params, test_tool_context()).await;
+        assert!(result.is_err(), "Should block access to denied path");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("denied") || err.contains("restricted"),
+            "Error should mention access denial: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_guarded_tool_allows_non_denied_path() {
+        let restrictions = cli::DirectoryRestrictions {
+            allow: vec![],
+            deny: vec!["/tmp/secret".to_string()],
+        };
+        let tool = maybe_guard(
+            Box::new(MockTool {
+                tool_name: "read_file",
+                result_text: "file contents".to_string(),
+            }),
+            &restrictions,
+        );
+        // A path that is NOT under the denied directory
+        let params = serde_json::json!({ "path": "/tmp/public/data.txt" });
+        let result = tool.execute(params, test_tool_context()).await;
+        assert!(result.is_ok(), "Should allow access to non-denied path");
+    }
+
+    #[tokio::test]
+    async fn test_guarded_tool_no_path_param_passes_through() {
+        // If the tool params don't include "path", the guard should not block
+        let restrictions = cli::DirectoryRestrictions {
+            allow: vec![],
+            deny: vec!["/forbidden".to_string()],
+        };
+        let tool = maybe_guard(
+            Box::new(MockTool {
+                tool_name: "bash",
+                result_text: "command output".to_string(),
+            }),
+            &restrictions,
+        );
+        let params = serde_json::json!({ "command": "echo hello" });
+        let result = tool.execute(params, test_tool_context()).await;
+        assert!(
+            result.is_ok(),
+            "Tool without path param should pass through guard"
+        );
+    }
+
+    // =========================================================================
+    // ArcGuardedTool / maybe_guard_arc — restriction logic
+    // =========================================================================
+
+    #[test]
+    fn test_maybe_guard_arc_empty_restrictions_no_wrap() {
+        let restrictions = cli::DirectoryRestrictions {
+            allow: vec![],
+            deny: vec![],
+        };
+        let tool: Arc<dyn AgentTool> = Arc::new(MockTool {
+            tool_name: "search",
+            result_text: "ok".to_string(),
+        });
+        let wrapped = maybe_guard_arc(tool, &restrictions);
+        assert_eq!(wrapped.name(), "search");
+    }
+
+    #[test]
+    fn test_maybe_guard_arc_with_restrictions_wraps() {
+        let restrictions = cli::DirectoryRestrictions {
+            allow: vec!["src/".to_string()],
+            deny: vec![],
+        };
+        let tool: Arc<dyn AgentTool> = Arc::new(MockTool {
+            tool_name: "read_file",
+            result_text: "ok".to_string(),
+        });
+        let wrapped = maybe_guard_arc(tool, &restrictions);
+        assert_eq!(wrapped.name(), "read_file");
+        assert_eq!(wrapped.description(), "mock tool");
+    }
+
+    #[tokio::test]
+    async fn test_arc_guarded_tool_blocks_denied_path() {
+        let restrictions = cli::DirectoryRestrictions {
+            allow: vec![],
+            deny: vec!["/root".to_string()],
+        };
+        let tool: Arc<dyn AgentTool> = Arc::new(MockTool {
+            tool_name: "write_file",
+            result_text: "should not see this".to_string(),
+        });
+        let wrapped = maybe_guard_arc(tool, &restrictions);
+        let params = serde_json::json!({ "path": "/root/.bashrc" });
+        let result = wrapped.execute(params, test_tool_context()).await;
+        assert!(result.is_err(), "ArcGuardedTool should block denied path");
+    }
+
+    #[tokio::test]
+    async fn test_arc_guarded_tool_allows_valid_path() {
+        let restrictions = cli::DirectoryRestrictions {
+            allow: vec![],
+            deny: vec!["/root".to_string()],
+        };
+        let tool: Arc<dyn AgentTool> = Arc::new(MockTool {
+            tool_name: "read_file",
+            result_text: "contents".to_string(),
+        });
+        let wrapped = maybe_guard_arc(tool, &restrictions);
+        let params = serde_json::json!({ "path": "/home/user/file.txt" });
+        let result = wrapped.execute(params, test_tool_context()).await;
+        assert!(
+            result.is_ok(),
+            "ArcGuardedTool should allow non-denied path"
+        );
+    }
 }

@@ -625,6 +625,120 @@ pub fn write_config_value_to(
     Ok(path.to_path_buf())
 }
 
+/// Append a pattern to the `[permissions]` allow list in the project-local `.yoyo.toml`.
+///
+/// If the file doesn't exist it is created. If the `[permissions]` section or `allow`
+/// key doesn't exist they are created. If the pattern is already present, the file is
+/// left unchanged (no duplicates).
+///
+/// Returns the path written to on success.
+pub fn append_allow_pattern(pattern: &str) -> Result<std::path::PathBuf, String> {
+    let path = std::path::PathBuf::from(".yoyo.toml");
+    append_allow_pattern_to(pattern, &path)
+}
+
+/// Testable version of [`append_allow_pattern`] that takes an explicit path.
+pub fn append_allow_pattern_to(
+    pattern: &str,
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create directory {}: {e}", parent.display()))?;
+        }
+    }
+
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+
+    // Parse existing permissions to check for duplicates
+    let current = parse_permissions_from_config(&existing);
+    if current.allow.iter().any(|p| p == pattern) {
+        // Already present — nothing to do
+        return Ok(path.to_path_buf());
+    }
+
+    // Build the new allow array
+    let mut new_allow = current.allow.clone();
+    new_allow.push(pattern.to_string());
+    let new_content = set_permissions_allow(&existing, &new_allow);
+
+    std::fs::write(path, &new_content)
+        .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+
+    Ok(path.to_path_buf())
+}
+
+/// Pure function: set the `[permissions]` `allow` array in TOML content.
+///
+/// If a `[permissions]` section with an `allow = [...]` line exists, it is
+/// replaced. If `[permissions]` exists but has no `allow`, the key is inserted
+/// right after the section header. If no `[permissions]` section exists, one
+/// is appended.
+fn set_permissions_allow(content: &str, patterns: &[String]) -> String {
+    let formatted: Vec<String> = patterns.iter().map(|p| format!("\"{}\"", p)).collect();
+    let allow_line = format!("allow = [{}]", formatted.join(", "));
+
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    let mut in_permissions = false;
+    let mut found_allow = false;
+    let mut permissions_section_exists = false;
+
+    for (i, line) in lines.iter_mut().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if trimmed == "[permissions]" {
+                permissions_section_exists = true;
+                in_permissions = true;
+            } else {
+                // If we were in [permissions] but never found allow, insert before this section
+                if in_permissions && !found_allow {
+                    // We'll handle insertion below
+                }
+                in_permissions = false;
+            }
+            continue;
+        }
+        if in_permissions && !found_allow {
+            if let Some((key, _)) = trimmed.split_once('=') {
+                if key.trim() == "allow" {
+                    *line = allow_line.clone();
+                    found_allow = true;
+                    let _ = i; // suppress unused warning
+                }
+            }
+        }
+    }
+
+    if permissions_section_exists && !found_allow {
+        // Insert allow line right after [permissions] header
+        let mut result = Vec::new();
+        for line in &lines {
+            result.push(line.clone());
+            if line.trim() == "[permissions]" {
+                result.push(allow_line.clone());
+            }
+        }
+        lines = result;
+    }
+
+    if !permissions_section_exists {
+        // Append a new [permissions] section
+        if !lines.is_empty() && !lines.last().unwrap().is_empty() {
+            lines.push(String::new());
+        }
+        lines.push("[permissions]".to_string());
+        lines.push(allow_line);
+    }
+
+    let mut result = lines.join("\n");
+    if !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
 /// Pure function: insert or replace `key = "value"` in a flat TOML string.
 /// Preserves comments, blank lines, and other keys. If the key already
 /// exists (matched by `^key\s*=`), replaces that line. Otherwise appends.
@@ -1459,5 +1573,113 @@ mcp = ["npx open-websearch@latest", "npx @mcp/server-filesystem /tmp"]
             let dir = data_dir_hint();
             assert!(dir.is_some(), "Should return a data dir path");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // append_allow_pattern / set_permissions_allow
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_permissions_allow_creates_section() {
+        let content = "model = \"claude-sonnet-4-6\"\n";
+        let result = set_permissions_allow(content, &["cargo test*".to_string()]);
+        assert!(result.contains("[permissions]"));
+        assert!(result.contains("allow = [\"cargo test*\"]"));
+        // Original content preserved
+        assert!(result.contains("model = \"claude-sonnet-4-6\""));
+    }
+
+    #[test]
+    fn test_set_permissions_allow_updates_existing() {
+        let content = "[permissions]\nallow = [\"cargo build*\"]\ndeny = [\"rm*\"]\n";
+        let result = set_permissions_allow(
+            content,
+            &["cargo build*".to_string(), "cargo test*".to_string()],
+        );
+        assert!(result.contains("allow = [\"cargo build*\", \"cargo test*\"]"));
+        // Deny is preserved
+        assert!(result.contains("deny = [\"rm*\"]"));
+    }
+
+    #[test]
+    fn test_set_permissions_allow_inserts_if_section_exists_without_allow() {
+        let content = "[permissions]\ndeny = [\"rm*\"]\n";
+        let result = set_permissions_allow(content, &["cargo test*".to_string()]);
+        assert!(result.contains("allow = [\"cargo test*\"]"));
+        assert!(result.contains("deny = [\"rm*\"]"));
+    }
+
+    #[test]
+    fn test_append_allow_pattern_to_creates_file() {
+        let dir = std::env::temp_dir().join("yoyo_test_append_allow_create");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".yoyo.toml");
+
+        let result = append_allow_pattern_to("cargo test*", &path).unwrap();
+        assert_eq!(result, path);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[permissions]"));
+        assert!(content.contains("allow = [\"cargo test*\"]"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_append_allow_pattern_to_appends_to_existing() {
+        let dir = std::env::temp_dir().join("yoyo_test_append_allow_existing");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".yoyo.toml");
+
+        // Write initial config
+        std::fs::write(&path, "[permissions]\nallow = [\"cargo build*\"]\n").unwrap();
+
+        append_allow_pattern_to("cargo test*", &path).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\"cargo build*\""));
+        assert!(content.contains("\"cargo test*\""));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_append_allow_pattern_to_no_duplicates() {
+        let dir = std::env::temp_dir().join("yoyo_test_append_allow_nodup");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".yoyo.toml");
+
+        std::fs::write(&path, "[permissions]\nallow = [\"cargo test*\"]\n").unwrap();
+
+        // Try to add the same pattern again
+        append_allow_pattern_to("cargo test*", &path).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        // Should still only have one entry
+        assert_eq!(content.matches("cargo test*").count(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_append_allow_pattern_to_pattern_matches_via_check() {
+        let dir = std::env::temp_dir().join("yoyo_test_append_allow_check");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".yoyo.toml");
+
+        append_allow_pattern_to("cargo test*", &path).unwrap();
+
+        // Parse back and verify it actually matches
+        let content = std::fs::read_to_string(&path).unwrap();
+        let perms = parse_permissions_from_config(&content);
+        assert_eq!(perms.check("cargo test"), Some(true));
+        assert_eq!(perms.check("cargo test --release"), Some(true));
+        assert_eq!(perms.check("npm run test"), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

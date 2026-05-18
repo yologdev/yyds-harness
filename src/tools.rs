@@ -656,6 +656,70 @@ impl AgentTool for TodoTool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Permission persistence — offer to save "always" approvals to .yoyo.toml
+// ---------------------------------------------------------------------------
+
+use std::collections::HashSet;
+use std::sync::Mutex;
+
+/// Simplify a bash command into a glob pattern suitable for the allow list.
+///
+/// Heuristic: keep the first 2 tokens (base command + subcommand), append `*`.
+/// This produces patterns like `cargo test*`, `npm run*`, `git commit*`.
+pub fn simplify_command_pattern(cmd: &str) -> String {
+    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    let base = match tokens.len() {
+        0 => return "*".to_string(),
+        1 => tokens[0].to_string(),
+        _ => format!("{} {}", tokens[0], tokens[1]),
+    };
+    format!("{base}*")
+}
+
+/// Track which patterns we've already offered to save this session,
+/// so we don't repeatedly ask for the same base pattern.
+fn already_offered_persistence(pattern: &str) -> bool {
+    static OFFERED: std::sync::LazyLock<Mutex<HashSet<String>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+    let mut set = OFFERED.lock().unwrap_or_else(|e| e.into_inner());
+    !set.insert(pattern.to_string())
+}
+
+/// After the user says "always", offer to persist the pattern to .yoyo.toml.
+/// Returns without action if the pattern was already offered this session.
+fn offer_persist_pattern(cmd: &str) {
+    let pattern = simplify_command_pattern(cmd);
+
+    // Don't re-ask if we already offered this pattern this session
+    if already_offered_persistence(&pattern) {
+        return;
+    }
+
+    eprint!(
+        "{DIM}  Save '{pattern}' to .yoyo.toml allow list? ({GREEN}y{RESET}{DIM}/{RED}n{RESET}{DIM}) {RESET}"
+    );
+    io::stderr().flush().ok();
+
+    let mut response = String::new();
+    let stdin = io::stdin();
+    use std::io::BufRead;
+    if stdin.lock().read_line(&mut response).is_err() {
+        return;
+    }
+    let response = response.trim().to_lowercase();
+    if matches!(response.as_str(), "y" | "yes") {
+        match crate::config::append_allow_pattern(&pattern) {
+            Ok(path) => {
+                eprintln!("{GREEN}  ✓ Saved to {}{RESET}", path.display());
+            }
+            Err(e) => {
+                eprintln!("{RED}  ✗ Could not save: {e}{RESET}");
+            }
+        }
+    }
+}
+
 /// Build the tool set, optionally with a bash confirmation prompt.
 /// When `auto_approve` is false (default), bash commands and file writes require user approval.
 /// The "always" option sets a session-wide flag so subsequent operations are auto-approved.
@@ -723,6 +787,8 @@ pub fn build_tools(
                 eprintln!(
                     "{GREEN}  ✓ All subsequent operations will be auto-approved this session.{RESET}"
                 );
+                // Offer to persist this pattern to .yoyo.toml
+                offer_persist_pattern(cmd);
             }
             approved
         })
@@ -2330,6 +2396,44 @@ mod tests {
             !names.contains(&"ask_user"),
             "ask_user should NOT appear in non-terminal test env"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // simplify_command_pattern
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_simplify_command_pattern_two_tokens() {
+        assert_eq!(simplify_command_pattern("cargo test"), "cargo test*");
+        assert_eq!(simplify_command_pattern("cargo build"), "cargo build*");
+        assert_eq!(simplify_command_pattern("npm run"), "npm run*");
+    }
+
+    #[test]
+    fn test_simplify_command_pattern_more_tokens() {
+        assert_eq!(
+            simplify_command_pattern("cargo build --release"),
+            "cargo build*"
+        );
+        assert_eq!(
+            simplify_command_pattern("git commit -m \"hello world\""),
+            "git commit*"
+        );
+        assert_eq!(
+            simplify_command_pattern("npm run test -- --watch"),
+            "npm run*"
+        );
+    }
+
+    #[test]
+    fn test_simplify_command_pattern_single_token() {
+        assert_eq!(simplify_command_pattern("ls"), "ls*");
+        assert_eq!(simplify_command_pattern("make"), "make*");
+    }
+
+    #[test]
+    fn test_simplify_command_pattern_empty() {
+        assert_eq!(simplify_command_pattern(""), "*");
     }
 
     // -----------------------------------------------------------------------
