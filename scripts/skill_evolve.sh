@@ -38,6 +38,69 @@ DRY_RUN="${SKILL_EVOLVE_DRY_RUN:-}"
 COUNTER_FILE=".skill_evolve_counter"
 LAST_RUN_FILE=".skill_evolve_last_run"
 
+# Cleanup state. GATES_PASSED stays 0 until every gate clears; gate-skip
+# exits must not reset the counter/cooldown.
+GATES_PASSED=0
+AUDIT_WT=""
+PROMPT_FILE=""
+LOG_FILE=""
+
+# actions/checkout uses persist-credentials: false in CI, so restore an
+# authenticated origin explicitly when the workflow provides a GitHub token.
+configure_ci_git_auth() {
+    if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -n "${GH_TOKEN:-}" ] && [ -n "${REPO:-}" ]; then
+        echo "::add-mask::${GH_TOKEN}" 2>/dev/null || true
+        git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" 2>/dev/null || \
+            echo "  WARNING: could not configure authenticated git remote" >&2
+    fi
+}
+
+# Single cleanup function for all exit paths (success, gate skip, revert, kill).
+# Order matters: worktree first (so .git/worktrees/ is cleaned), then dir.
+# Reversing this leaves a stale worktree registration that breaks the next
+# cycle with "worktree already exists".
+cleanup() {
+    local rc=$?
+    [ -n "$AUDIT_WT" ] && git worktree remove --force "$AUDIT_WT" 2>/dev/null || true
+    [ -n "$AUDIT_WT" ] && rm -rf "$AUDIT_WT" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    [ -n "$PROMPT_FILE" ] && rm -f "$PROMPT_FILE" 2>/dev/null || true
+    [ -n "$LOG_FILE" ] && rm -f "$LOG_FILE" 2>/dev/null || true
+
+    # Gate state reset: only when a real cycle ran. NO-OP gate-skip exits do
+    # not bump the cooldown timestamp (otherwise gate skips would gate themselves).
+    if [ "$GATES_PASSED" = "1" ]; then
+        # Reset counter on every completed cycle, including NO-OP and refused —
+        # cooldown gates frequency, not outcome. The counter file is tracked;
+        # the timestamp file is gitignored.
+        echo 0 > "$COUNTER_FILE"
+        echo "$now" > "$LAST_RUN_FILE"
+
+        # Race protection (C2): evolve.sh and skill_evolve.sh both touch the
+        # counter on different cron offsets. Pull-rebase before committing so
+        # a concurrent bump from evolve.sh doesn't get swallowed by a
+        # non-fast-forward rejection on push.
+        git pull --rebase --autostash 2>/dev/null || \
+            echo "  WARNING: pull --rebase failed; counter commit may conflict" >&2
+
+        git add "$COUNTER_FILE" 2>/dev/null || true
+        if ! git diff --cached --quiet 2>/dev/null; then
+            git commit -m "skill-evolve: reset counter (cycle $(date -u +%Y-%m-%dT%H:%MZ))" 2>/dev/null || \
+                echo "  WARNING: counter commit failed" >&2
+        fi
+
+        if [ "${HEAD_BEFORE:-}" != "$(git rev-parse HEAD 2>/dev/null)" ] || ! git diff-index --quiet HEAD -- 2>/dev/null; then
+            git push origin HEAD 2>/dev/null || \
+                echo "  WARNING: push failed (next cron will retry)" >&2
+        fi
+    fi
+
+    exit "$rc"
+}
+trap cleanup EXIT
+
+configure_ci_git_auth
+
 # ── Gate 0: refuse to run with a dirty working tree ────────────────────
 # The revert path below uses `git reset --hard $HEAD_BEFORE` which would
 # discard unstaged work. CI never has uncommitted changes; for local
@@ -114,57 +177,6 @@ fi
 # evidence corpus. Writes belong on `audit-log` branch via the session-end
 # push in evolve.sh (Step 7c2), not from skill-evolve.
 AUDIT_WT="/tmp/skill-evolve-audit-$$"
-PROMPT_FILE=""  # set later; declared here so cleanup can reference it
-LOG_FILE=""
-
-# GATES_PASSED gates the state-reset path inside cleanup(). Set to 1 only after
-# every gate (0/1/2/3) has been cleared — so a gate-failure exit does NOT reset
-# the counter (which would let a misconfigured environment thrash forever).
-GATES_PASSED=0
-
-# Single cleanup function for all exit paths (success, gate skip, revert, kill).
-# Order matters: worktree first (so .git/worktrees/ is cleaned), then dir.
-# Reversing this leaves a stale worktree registration that breaks the next
-# cycle with "worktree already exists".
-cleanup() {
-    local rc=$?
-    git worktree remove --force "$AUDIT_WT" 2>/dev/null || true
-    rm -rf "$AUDIT_WT" 2>/dev/null || true
-    git worktree prune 2>/dev/null || true
-    [ -n "$PROMPT_FILE" ] && rm -f "$PROMPT_FILE" 2>/dev/null || true
-    [ -n "$LOG_FILE" ] && rm -f "$LOG_FILE" 2>/dev/null || true
-
-    # Gate state reset: only when a real cycle ran. NO-OP gate-skip exits do
-    # not bump the cooldown timestamp (otherwise gate skips would gate themselves).
-    if [ "$GATES_PASSED" = "1" ]; then
-        # Reset counter on every completed cycle, including NO-OP and refused —
-        # cooldown gates frequency, not outcome. The counter file is tracked;
-        # the timestamp file is gitignored.
-        echo 0 > "$COUNTER_FILE"
-        echo "$now" > "$LAST_RUN_FILE"
-
-        # Race protection (C2): evolve.sh and skill_evolve.sh both touch the
-        # counter on different cron offsets. Pull-rebase before committing so
-        # a concurrent bump from evolve.sh doesn't get swallowed by a
-        # non-fast-forward rejection on push.
-        git pull --rebase --autostash 2>/dev/null || \
-            echo "  WARNING: pull --rebase failed; counter commit may conflict" >&2
-
-        git add "$COUNTER_FILE" 2>/dev/null || true
-        if ! git diff --cached --quiet 2>/dev/null; then
-            git commit -m "skill-evolve: reset counter (cycle $(date -u +%Y-%m-%dT%H:%MZ))" 2>/dev/null || \
-                echo "  WARNING: counter commit failed" >&2
-        fi
-
-        if [ "${HEAD_BEFORE:-}" != "$(git rev-parse HEAD 2>/dev/null)" ] || ! git diff-index --quiet HEAD -- 2>/dev/null; then
-            git push origin HEAD 2>/dev/null || \
-                echo "  WARNING: push failed (next cron will retry)" >&2
-        fi
-    fi
-
-    exit "$rc"
-}
-trap cleanup EXIT
 
 if git fetch --depth 100 origin audit-log:audit-log 2>/dev/null; then
     if git worktree add "$AUDIT_WT" audit-log 2>/dev/null; then
