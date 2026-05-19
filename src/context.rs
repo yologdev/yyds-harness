@@ -249,6 +249,7 @@ pub fn list_project_context_files() -> Vec<(&'static str, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_project_context_file_names_not_empty() {
@@ -456,6 +457,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_project_context_includes_conventions() {
         // When run in a directory with no YOYO.md but with a Cargo.toml,
         // load_project_context should include development conventions.
@@ -494,6 +496,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_project_context_skips_conventions_with_context_file() {
         // When YOYO.md exists, conventions should NOT be injected
         use std::process::Command;
@@ -533,6 +536,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_cursorrules_file() {
         // A .cursorrules file should be loaded as project context
         use std::process::Command;
@@ -566,6 +570,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_agents_md_file() {
         // An AGENTS.md file should be loaded as project context
         use std::process::Command;
@@ -599,6 +604,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_copilot_instructions_file() {
         // A .github/copilot-instructions.md file should be loaded as project context
         use std::process::Command;
@@ -633,6 +639,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_multiple_context_files_get_separators() {
         // When multiple instruction files exist, secondary files should have
         // a "--- From <file> ---" separator for model clarity.
