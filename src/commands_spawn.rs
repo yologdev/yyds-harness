@@ -194,6 +194,10 @@ pub struct SpawnArgs {
     pub background: bool,
     /// If set, this is a `/spawn collect <id>` request.
     pub collect_id: Option<usize>,
+    /// Optional model override for the subagent (`--model <name>`).
+    pub model: Option<String>,
+    /// Optional custom system prompt for the subagent (`--system <prompt>`).
+    pub system_prompt: Option<String>,
 }
 
 /// Parse the `/spawn` command input, extracting flags and task.
@@ -203,6 +207,8 @@ pub struct SpawnArgs {
 /// - `/spawn --bg <task>` — run a task in the background
 /// - `/spawn -o <path> <task>` — run a task and capture output to a file
 /// - `/spawn --bg -o <path> <task>` — background with output capture
+/// - `/spawn --model <name> <task>` — use a specific model
+/// - `/spawn --system <prompt> <task>` — custom system prompt (quoted for multi-word)
 /// - `/spawn collect <id>` — collect a finished background spawn
 ///
 /// Returns `None` if no task or if this is a subcommand like `status`.
@@ -221,6 +227,8 @@ pub fn parse_spawn_args(input: &str) -> Option<SpawnArgs> {
                 output_path: None,
                 background: false,
                 collect_id: Some(id),
+                model: None,
+                system_prompt: None,
             });
         }
         // "collect" without valid id — fall through to show usage
@@ -230,8 +238,14 @@ pub fn parse_spawn_args(input: &str) -> Option<SpawnArgs> {
     let mut words: Vec<&str> = rest.split_whitespace().collect();
     let mut background = false;
     let mut output_path = None;
+    let mut model = None;
+    let mut system_prompt = None;
 
-    // Extract flags from the front
+    // Extract flags from the front.
+    // For --system, the value can be a quoted multi-word string. Since we
+    // split on whitespace above, we need to rejoin quoted segments when we
+    // encounter --system. We do this by checking if the next token after
+    // --system starts with a quote.
     while !words.is_empty() {
         if words[0] == "--bg" {
             background = true;
@@ -240,6 +254,35 @@ pub fn parse_spawn_args(input: &str) -> Option<SpawnArgs> {
             output_path = Some(words[1].to_string());
             words.remove(0); // remove "-o"
             words.remove(0); // remove the path (now at position 0)
+        } else if words[0] == "--model" && words.len() > 1 {
+            model = Some(words[1].to_string());
+            words.remove(0); // remove "--model"
+            words.remove(0); // remove the model name (now at position 0)
+        } else if words[0] == "--system" && words.len() > 1 {
+            words.remove(0); // remove "--system"
+                             // Check if next token starts with a quote
+            if words[0].starts_with('"') {
+                // Consume tokens until we find one that ends with a quote
+                let mut prompt_parts: Vec<String> = Vec::new();
+                while !words.is_empty() {
+                    let w = words.remove(0).to_string();
+                    prompt_parts.push(w.clone());
+                    if w.ends_with('"') {
+                        break;
+                    }
+                }
+                let joined = prompt_parts.join(" ");
+                // Strip surrounding quotes
+                let trimmed = joined
+                    .strip_prefix('"')
+                    .unwrap_or(&joined)
+                    .strip_suffix('"')
+                    .unwrap_or(&joined);
+                system_prompt = Some(trimmed.to_string());
+            } else {
+                // Single unquoted word
+                system_prompt = Some(words.remove(0).to_string());
+            }
         } else {
             break; // stop processing flags once we hit a non-flag word
         }
@@ -255,6 +298,8 @@ pub fn parse_spawn_args(input: &str) -> Option<SpawnArgs> {
         output_path,
         background,
         collect_id: None,
+        model,
+        system_prompt,
     })
 }
 
@@ -413,13 +458,17 @@ pub async fn handle_spawn(
         Some(a) => a,
         None => {
             println!("{DIM}  usage: /spawn <task>");
-            println!("         /spawn --bg <task>         (run in background)");
-            println!("         /spawn -o <file> <task>    (capture output to file)");
-            println!("         /spawn collect <id>        (collect background result)");
-            println!("         /spawn status              (show tracked spawns)");
+            println!("         /spawn --bg <task>              (run in background)");
+            println!("         /spawn -o <file> <task>         (capture output to file)");
+            println!("         /spawn --model <name> <task>    (use a specific model)");
+            println!("         /spawn --system <prompt> <task> (custom system prompt)");
+            println!("         /spawn collect <id>             (collect background result)");
+            println!("         /spawn status                   (show tracked spawns)");
             println!("  Spawn a subagent with project context to handle a task.");
             println!("  The result is summarized back into your main conversation.");
-            println!("  Example: /spawn read src/main.rs and summarize the architecture{RESET}\n");
+            println!("  Example: /spawn read src/main.rs and summarize the architecture");
+            println!("           /spawn --model claude-haiku-4-5 summarize this file");
+            println!("           /spawn --system \"You are a security auditor\" review src/safety.rs{RESET}\n");
             return None;
         }
     };
@@ -438,26 +487,48 @@ pub async fn handle_spawn(
     // Register task in tracker
     let spawn_id = tracker.register(&args.task, args.output_path.clone());
 
+    // Determine the effective model (override or inherited)
+    let effective_model = args.model.as_deref().unwrap_or(model);
+
     println!("{CYAN}  🐙 spawning subagent #{spawn_id}...{RESET}");
     println!(
         "{DIM}  task: {}{RESET}",
         crate::format::truncate_with_ellipsis(&args.task, 100)
     );
+    if args.model.is_some() {
+        println!("{DIM}  model: {effective_model}{RESET}");
+    }
+    if args.system_prompt.is_some() {
+        println!("{DIM}  system: (custom){RESET}");
+    }
 
     // Load project context for the subagent
     let project_context = crate::cli::load_project_context();
     let context_prompt = spawn_context_prompt(main_messages, project_context.as_deref());
 
+    // Prepend custom system prompt if provided
+    let effective_prompt = if let Some(ref sp) = args.system_prompt {
+        format!("{sp}\n\n{context_prompt}")
+    } else {
+        context_prompt
+    };
+
     // Build a fresh agent with context-enriched system prompt
-    let sub_config = crate::AgentConfig {
-        system_prompt: context_prompt,
+    let mut sub_config = crate::AgentConfig {
+        system_prompt: effective_prompt,
         ..clone_agent_config(agent_config)
     };
+
+    // Apply model override — update model, provider, and API key if needed
+    if let Some(ref model_override) = args.model {
+        apply_model_override(&mut sub_config, model_override);
+    }
+
     // Subagent inherits the same tools and permissions
     let mut sub_agent = sub_config.build_agent();
 
     // Run the task
-    let response = run_prompt(&mut sub_agent, &args.task, session_total, model)
+    let response = run_prompt(&mut sub_agent, &args.task, session_total, effective_model)
         .await
         .text;
 
@@ -497,23 +568,46 @@ fn handle_spawn_bg(
     // Register task in tracker with background flag
     let spawn_id = tracker.register_with_bg(&args.task, args.output_path.clone(), true);
 
+    // Determine the effective model (override or inherited)
+    let effective_model = args.model.as_deref().unwrap_or(model);
+
     println!("{CYAN}  🐙 spawning subagent #{spawn_id} in background...{RESET}");
     println!(
         "{DIM}  task: {}{RESET}",
         crate::format::truncate_with_ellipsis(&args.task, 100)
     );
+    if args.model.is_some() {
+        println!("{DIM}  model: {effective_model}{RESET}");
+    }
+    if args.system_prompt.is_some() {
+        println!("{DIM}  system: (custom){RESET}");
+    }
     println!("{DIM}  use /spawn status to check progress, /spawn collect {spawn_id} to get results{RESET}\n");
 
     // Prepare everything the background task needs (clone before moving)
     let project_context = crate::cli::load_project_context();
     let context_prompt = spawn_context_prompt(main_messages, project_context.as_deref());
-    let sub_config = crate::AgentConfig {
-        system_prompt: context_prompt,
+
+    // Prepend custom system prompt if provided
+    let effective_prompt = if let Some(ref sp) = args.system_prompt {
+        format!("{sp}\n\n{context_prompt}")
+    } else {
+        context_prompt
+    };
+
+    let mut sub_config = crate::AgentConfig {
+        system_prompt: effective_prompt,
         ..clone_agent_config(agent_config)
     };
+
+    // Apply model override — update model, provider, and API key if needed
+    if let Some(ref model_override) = args.model {
+        apply_model_override(&mut sub_config, model_override);
+    }
+
     let task_text = args.task.clone();
     let output_path = args.output_path.clone();
-    let model = model.to_string();
+    let model = effective_model.to_string();
     let tracker_clone = tracker.clone();
 
     let handle = tokio::spawn(async move {
@@ -558,6 +652,26 @@ fn handle_spawn_collect(tracker: &SpawnTracker, id: usize) -> Option<String> {
         Err(e) => {
             println!("{RED}  ✗ {e}{RESET}\n");
             None
+        }
+    }
+}
+
+/// Apply a model override to an AgentConfig.
+/// Updates the model name and, if the model implies a different provider,
+/// switches the provider and API key accordingly.
+fn apply_model_override(config: &mut crate::AgentConfig, model_name: &str) {
+    config.model = model_name.to_string();
+
+    // Try to detect the provider for the given model
+    if let Some(provider) = crate::commands_info::find_provider_for_model(model_name) {
+        if provider != config.provider {
+            config.provider = provider.to_string();
+            // Try to load the API key for the new provider
+            if let Some(env_var) = crate::providers::provider_api_key_env(provider) {
+                if let Ok(key) = std::env::var(env_var) {
+                    config.api_key = key;
+                }
+            }
         }
     }
 }
@@ -983,5 +1097,106 @@ mod tests {
         let (task, result) = collected.unwrap();
         assert_eq!(task, "bg task");
         assert_eq!(result, "bg result");
+    }
+
+    #[test]
+    fn test_parse_spawn_args_model_flag() {
+        let args = parse_spawn_args("/spawn --model claude-haiku-4-5 summarize this file");
+        assert!(args.is_some());
+        let args = args.unwrap();
+        assert_eq!(args.model, Some("claude-haiku-4-5".to_string()));
+        assert_eq!(args.task, "summarize this file");
+        assert!(!args.background);
+        assert!(args.output_path.is_none());
+        assert!(args.collect_id.is_none());
+    }
+
+    #[test]
+    fn test_parse_spawn_args_model_with_bg_and_output() {
+        let args =
+            parse_spawn_args("/spawn --bg --model gpt-4o -o report.md review error handling");
+        assert!(args.is_some());
+        let args = args.unwrap();
+        assert!(args.background);
+        assert_eq!(args.model, Some("gpt-4o".to_string()));
+        assert_eq!(args.output_path, Some("report.md".to_string()));
+        assert_eq!(args.task, "review error handling");
+    }
+
+    #[test]
+    fn test_parse_spawn_args_no_model_flag() {
+        let args = parse_spawn_args("/spawn do something normal");
+        assert!(args.is_some());
+        let args = args.unwrap();
+        assert!(args.model.is_none());
+        assert_eq!(args.task, "do something normal");
+    }
+
+    #[test]
+    fn test_parse_spawn_args_model_without_value_becomes_task() {
+        // --model at the end without a value — treated as task text since
+        // the flag requires a following token. It stops flag processing.
+        let args = parse_spawn_args("/spawn --model");
+        assert!(args.is_some());
+        let args = args.unwrap();
+        assert!(args.model.is_none());
+        assert_eq!(args.task, "--model");
+    }
+
+    #[test]
+    fn test_parse_spawn_args_system_quoted_prompt() {
+        let args =
+            parse_spawn_args("/spawn --system \"You are a security auditor\" review src/safety.rs");
+        assert!(args.is_some());
+        let args = args.unwrap();
+        assert_eq!(
+            args.system_prompt,
+            Some("You are a security auditor".to_string())
+        );
+        assert_eq!(args.task, "review src/safety.rs");
+        assert!(args.model.is_none());
+        assert!(!args.background);
+    }
+
+    #[test]
+    fn test_parse_spawn_args_system_single_word() {
+        let args = parse_spawn_args("/spawn --system concise summarize this file");
+        assert!(args.is_some());
+        let args = args.unwrap();
+        assert_eq!(args.system_prompt, Some("concise".to_string()));
+        assert_eq!(args.task, "summarize this file");
+    }
+
+    #[test]
+    fn test_parse_spawn_args_system_with_model_and_bg() {
+        let args = parse_spawn_args(
+            "/spawn --bg --model gpt-4o --system \"Be brief\" -o out.md analyze errors",
+        );
+        assert!(args.is_some());
+        let args = args.unwrap();
+        assert!(args.background);
+        assert_eq!(args.model, Some("gpt-4o".to_string()));
+        assert_eq!(args.system_prompt, Some("Be brief".to_string()));
+        assert_eq!(args.output_path, Some("out.md".to_string()));
+        assert_eq!(args.task, "analyze errors");
+    }
+
+    #[test]
+    fn test_parse_spawn_args_no_system_flag() {
+        let args = parse_spawn_args("/spawn do something normal");
+        assert!(args.is_some());
+        let args = args.unwrap();
+        assert!(args.system_prompt.is_none());
+    }
+
+    #[test]
+    fn test_parse_spawn_args_system_without_value_becomes_task() {
+        // --system at the end without a value — stops flag processing,
+        // treated as task text.
+        let args = parse_spawn_args("/spawn --system");
+        assert!(args.is_some());
+        let args = args.unwrap();
+        assert!(args.system_prompt.is_none());
+        assert_eq!(args.task, "--system");
     }
 }

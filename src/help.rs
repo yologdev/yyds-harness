@@ -818,21 +818,31 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
             "/spawn <task> — Spawn a subagent to handle a task\n\n\
              Usage:\n\
              \x20 /spawn <task description>\n\
-             \x20 /spawn --bg <task>         Run in background (returns immediately)\n\
-             \x20 /spawn -o <file> <task>    Capture output to a file\n\
-             \x20 /spawn --bg -o <f> <task>  Background with output capture\n\
-             \x20 /spawn collect <id>        Collect a finished background spawn\n\
-             \x20 /spawn status              Show all tracked spawns\n\n\
+             \x20 /spawn --bg <task>              Run in background (returns immediately)\n\
+             \x20 /spawn -o <file> <task>         Capture output to a file\n\
+             \x20 /spawn --model <name> <task>    Use a specific model for the subagent\n\
+             \x20 /spawn --system <prompt> <task> Custom system prompt for the subagent\n\
+             \x20 /spawn --bg -o <f> <task>       Background with output capture\n\
+             \x20 /spawn collect <id>             Collect a finished background spawn\n\
+             \x20 /spawn status                   Show all tracked spawns\n\n\
              Creates a new AI agent with a separate context window to\n\
              handle the given task. The subagent has access to the same\n\
              tools but operates independently.\n\n\
+             Use --model to run the subagent with a different model than\n\
+             your main session (e.g. a cheaper model for simple tasks,\n\
+             or a more powerful one for complex analysis).\n\n\
+             Use --system to give the subagent a custom persona or instruction\n\
+             set. Quote multi-word prompts. The custom prompt is prepended to\n\
+             the standard subagent context (project info + conversation summary).\n\n\
              Background spawns (--bg) return control immediately so you can\n\
              keep working while the subagent runs in parallel. Use\n\
              /spawn collect <id> to retrieve the result when ready.\n\n\
              Examples:\n\
              \x20 /spawn write unit tests for the parser module\n\
+             \x20 /spawn --model claude-haiku-4-5 summarize this file\n\
+             \x20 /spawn --system \"You are a security auditor\" review src/safety.rs\n\
              \x20 /spawn --bg analyze test coverage for src/\n\
-             \x20 /spawn --bg -o report.md review the error handling\n\
+             \x20 /spawn --bg --model gpt-4o -o report.md review error handling\n\
              \x20 /spawn collect 1\n\
              \x20 /spawn status",
         ),
