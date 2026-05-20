@@ -90,6 +90,7 @@ mod rtk;
 mod safety;
 mod session;
 mod setup;
+mod symbols;
 mod sync_util;
 mod tool_wrappers;
 mod tools;
