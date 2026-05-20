@@ -1035,6 +1035,7 @@ pub enum PrSubcommand {
     List,
     View(u32),
     Diff(u32),
+    Review(u32),
     Comment(u32, String),
     Checkout(u32),
     Create { draft: bool },
@@ -1049,6 +1050,16 @@ pub fn parse_pr_args(arg: &str) -> PrSubcommand {
     }
 
     let parts: Vec<&str> = arg.splitn(3, char::is_whitespace).collect();
+
+    // Check for "review" subcommand first (before trying to parse as number)
+    if parts[0].eq_ignore_ascii_case("review") {
+        if let Some(num_str) = parts.get(1) {
+            if let Ok(n) = num_str.parse::<u32>() {
+                return PrSubcommand::Review(n);
+            }
+        }
+        return PrSubcommand::Help;
+    }
 
     // Check for "create" subcommand first (before trying to parse as number)
     if parts[0].eq_ignore_ascii_case("create") {
@@ -1070,6 +1081,7 @@ pub fn parse_pr_args(arg: &str) -> PrSubcommand {
 
     match parts[1].to_lowercase().as_str() {
         "diff" => PrSubcommand::Diff(number),
+        "review" => PrSubcommand::Review(number),
         "checkout" => PrSubcommand::Checkout(number),
         "comment" => {
             let text = if parts.len() == 3 {
@@ -1194,6 +1206,83 @@ pub async fn handle_pr(input: &str, agent: &mut Agent, session_total: &mut Usage
                 }
             }
         }
+        PrSubcommand::Review(number) => {
+            let num_str = number.to_string();
+
+            // Fetch PR diff
+            let diff = match std::process::Command::new("gh")
+                .args(["pr", "diff", &num_str])
+                .output()
+            {
+                Ok(output) if output.status.success() => {
+                    String::from_utf8_lossy(&output.stdout).to_string()
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    eprintln!("{RED}  error: {}{RESET}\n", stderr.trim());
+                    return;
+                }
+                Err(_) => {
+                    eprintln!("{RED}  error: `gh` CLI not found. Install it from https://cli.github.com{RESET}\n");
+                    return;
+                }
+            };
+
+            if diff.trim().is_empty() {
+                eprintln!("{DIM}  PR #{number} has no diff{RESET}\n");
+                return;
+            }
+
+            // Optionally fetch PR title/body for context
+            let pr_info = std::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "view",
+                    &num_str,
+                    "--json",
+                    "title,body",
+                    "--jq",
+                    r#".title + "\n\n" + .body"#,
+                ])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+
+            // Truncate diff if very large (50KB limit)
+            const PR_REVIEW_MAX_BYTES: usize = 50_000;
+            let diff_content = safe_truncate(&diff, PR_REVIEW_MAX_BYTES);
+            let truncated_note = if diff.len() > PR_REVIEW_MAX_BYTES {
+                "\n\n... (diff truncated for context limit)"
+            } else {
+                ""
+            };
+
+            // Build review prompt
+            let pr_section = if pr_info.trim().is_empty() {
+                String::new()
+            } else {
+                format!("## PR Description\n\n{}\n\n", pr_info.trim())
+            };
+
+            let prompt = format!(
+                "Review this pull request (PR #{number}). Analyze the diff for:\n\
+                 - Potential bugs or logic errors\n\
+                 - Code quality issues\n\
+                 - Missing error handling\n\
+                 - Performance concerns\n\
+                 - Suggestions for improvement\n\n\
+                 Be specific — reference file names and line numbers from the diff.\n\
+                 Praise good patterns too. Be constructive.\n\n\
+                 {pr_section}\
+                 ## Diff\n\n```diff\n{diff_content}{truncated_note}\n```"
+            );
+
+            eprintln!("{DIM}  [review] analyzing PR #{number}...{RESET}");
+            auto_compact_if_needed(agent);
+            run_prompt(agent, &prompt, session_total, model).await;
+        }
         PrSubcommand::Create { draft } => {
             // 1. Detect current branch
             let branch = match git_branch() {
@@ -1292,6 +1381,7 @@ pub async fn handle_pr(input: &str, agent: &mut Agent, session_total: &mut Usage
             );
             println!("         /pr <number>                View details of a specific PR");
             println!("         /pr <number> diff           Show the diff of a PR");
+            println!("         /pr <number> review         AI-powered code review of a PR");
             println!("         /pr <number> comment <text> Add a comment to a PR");
             println!("         /pr <number> checkout       Checkout a PR locally{RESET}\n");
         }
@@ -1549,6 +1639,28 @@ mod tests {
     #[test]
     fn parse_pr_args_number_checkout() {
         assert_eq!(parse_pr_args("7 checkout"), PrSubcommand::Checkout(7));
+    }
+
+    #[test]
+    fn parse_pr_args_number_review() {
+        assert_eq!(parse_pr_args("42 review"), PrSubcommand::Review(42));
+    }
+
+    #[test]
+    fn parse_pr_args_review_number() {
+        assert_eq!(parse_pr_args("review 42"), PrSubcommand::Review(42));
+    }
+
+    #[test]
+    fn parse_pr_args_review_case_insensitive() {
+        assert_eq!(parse_pr_args("Review 10"), PrSubcommand::Review(10));
+        assert_eq!(parse_pr_args("REVIEW 10"), PrSubcommand::Review(10));
+    }
+
+    #[test]
+    fn parse_pr_args_review_no_number_is_help() {
+        assert_eq!(parse_pr_args("review"), PrSubcommand::Help);
+        assert_eq!(parse_pr_args("review abc"), PrSubcommand::Help);
     }
 
     #[test]

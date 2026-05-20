@@ -181,7 +181,9 @@ pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high"
 pub const GIT_SUBCOMMANDS: &[&str] = &["status", "log", "add", "diff", "branch", "stash"];
 
 /// PR subcommand names for `/pr <Tab>` completion.
-pub const PR_SUBCOMMANDS: &[&str] = &["list", "view", "diff", "comment", "create", "checkout"];
+pub const PR_SUBCOMMANDS: &[&str] = &[
+    "list", "view", "diff", "review", "comment", "create", "checkout",
+];
 
 /// Undo option names for `/undo <Tab>` completion.
 pub const UNDO_OPTIONS: &[&str] = &["--all", "--last-commit"];
