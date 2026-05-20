@@ -1,5 +1,7 @@
 //! Git-related command handlers: /diff, /undo, /commit, /pr, /git.
 
+use crate::agent_builder::AgentConfig;
+use crate::commands_session::auto_compact_if_needed;
 use crate::format::*;
 use crate::git::*;
 use crate::prompt::run_prompt;
@@ -168,6 +170,7 @@ pub struct DiffOptions {
     pub staged_only: bool,
     pub name_only: bool,
     pub stat_only: bool,
+    pub explain: bool,
     pub file: Option<String>,
 }
 
@@ -177,6 +180,7 @@ pub struct DiffOptions {
 /// - `/diff` — all changes (default)
 /// - `/diff --staged` or `/diff --cached` — staged only
 /// - `/diff --name-only` — filenames only
+/// - `/diff --explain` — AI-powered explanation of changes
 /// - `/diff <file>` — diff for a specific file
 /// - Combined: `/diff --staged --name-only src/main.rs`
 pub fn parse_diff_args(input: &str) -> DiffOptions {
@@ -185,6 +189,7 @@ pub fn parse_diff_args(input: &str) -> DiffOptions {
     let mut staged_only = false;
     let mut name_only = false;
     let mut stat_only = false;
+    let mut explain = false;
     let mut file = None;
 
     for part in parts {
@@ -192,6 +197,7 @@ pub fn parse_diff_args(input: &str) -> DiffOptions {
             "--staged" | "--cached" => staged_only = true,
             "--name-only" => name_only = true,
             "--stat" => stat_only = true,
+            "--explain" => explain = true,
             _ => file = Some(part.to_string()),
         }
     }
@@ -200,6 +206,7 @@ pub fn parse_diff_args(input: &str) -> DiffOptions {
         staged_only,
         name_only,
         stat_only,
+        explain,
         file,
     }
 }
@@ -436,6 +443,109 @@ fn combine_stats(a: &str, b: &str) -> String {
     } else {
         a.to_string()
     }
+}
+
+/// Maximum diff size (in bytes) to send for AI explanation.
+const DIFF_EXPLAIN_MAX_BYTES: usize = 50_000;
+
+/// Gather the current diff text based on options.
+/// Returns the diff content or None if there are no changes.
+fn gather_diff_text(opts: &DiffOptions) -> Option<String> {
+    // Check for changes first
+    let status = run_git(&["status", "--short"]).unwrap_or_default();
+    if status.trim().is_empty() {
+        println!("{DIM}  (no uncommitted changes to explain){RESET}\n");
+        return None;
+    }
+
+    let mut diff_text;
+
+    if opts.staged_only {
+        // Only staged changes
+        let mut args = vec!["diff", "--cached"];
+        let file_ref;
+        if let Some(ref f) = opts.file {
+            args.push("--");
+            file_ref = f.as_str();
+            args.push(file_ref);
+        }
+        diff_text = run_git(&args).unwrap_or_default();
+    } else {
+        // Both staged and unstaged
+        let mut unstaged_args = vec!["diff"];
+        let file_ref;
+        if let Some(ref f) = opts.file {
+            unstaged_args.push("--");
+            file_ref = f.as_str();
+            unstaged_args.push(file_ref);
+        }
+        let unstaged = run_git(&unstaged_args).unwrap_or_default();
+
+        let mut staged_args = vec!["diff", "--cached"];
+        let staged_file_ref;
+        if let Some(ref f) = opts.file {
+            staged_args.push("--");
+            staged_file_ref = f.as_str();
+            staged_args.push(staged_file_ref);
+        }
+        let staged = run_git(&staged_args).unwrap_or_default();
+
+        if !unstaged.trim().is_empty() && !staged.trim().is_empty() {
+            diff_text = format!("{unstaged}\n{staged}");
+        } else if !staged.trim().is_empty() {
+            diff_text = staged;
+        } else {
+            diff_text = unstaged;
+        }
+    }
+
+    if diff_text.trim().is_empty() {
+        let scope = if opts.staged_only { "staged " } else { "" };
+        println!("{DIM}  (no {scope}changes to explain){RESET}\n");
+        return None;
+    }
+
+    // Truncate if too large
+    if diff_text.len() > DIFF_EXPLAIN_MAX_BYTES {
+        let mut b = DIFF_EXPLAIN_MAX_BYTES;
+        while b > 0 && !diff_text.is_char_boundary(b) {
+            b -= 1;
+        }
+        diff_text.truncate(b);
+        diff_text.push_str("\n\n... (diff truncated for context limit)");
+    }
+
+    Some(diff_text)
+}
+
+/// Handle `/diff --explain`: send the diff to the AI for a natural-language explanation.
+/// Returns the prompt if sent, None otherwise.
+pub async fn handle_diff_explain(
+    input: &str,
+    agent: &mut Agent,
+    session_total: &mut Usage,
+    model: &str,
+) -> Option<String> {
+    let opts = parse_diff_args(input);
+    let diff_text = gather_diff_text(&opts)?;
+
+    let scope = if opts.staged_only { "staged " } else { "" };
+    let file_note = opts
+        .file
+        .as_ref()
+        .map(|f| format!(" in `{f}`"))
+        .unwrap_or_default();
+
+    let prompt = format!(
+        "Explain the following {scope}code changes{file_note}. \
+         Describe what was changed, why it might have been changed, \
+         and any potential issues. Be concise.\n\n\
+         ```diff\n{diff_text}\n```"
+    );
+
+    run_prompt(agent, &prompt, session_total, model).await;
+    auto_compact_if_needed(agent);
+    Some(prompt)
 }
 
 // ── /undo ────────────────────────────────────────────────────────────────
@@ -741,6 +851,183 @@ pub fn handle_commit(input: &str) {
 }
 
 // ── /pr ──────────────────────────────────────────────────────────────────
+
+/// Maximum diff size (in bytes) sent to the AI for commit message generation.
+const COMMIT_AI_MAX_BYTES: usize = 30_000;
+
+/// Build the prompt sent to the side agent for AI commit message generation.
+///
+/// This is a pure function — easy to test without an actual agent.
+pub(crate) fn build_commit_ai_prompt(diff: &str) -> String {
+    let truncated = if diff.len() > COMMIT_AI_MAX_BYTES {
+        let mut b = COMMIT_AI_MAX_BYTES;
+        while b > 0 && !diff.is_char_boundary(b) {
+            b -= 1;
+        }
+        format!(
+            "{}\n\n... (diff truncated, {} total bytes)",
+            &diff[..b],
+            diff.len()
+        )
+    } else {
+        diff.to_string()
+    };
+
+    format!(
+        "Generate a concise git commit message for the following diff.\n\
+         Use conventional commit format: type(scope): description\n\
+         Types: feat, fix, refactor, docs, test, chore, style, perf\n\
+         The message MUST be a single line, max 72 characters.\n\
+         Output ONLY the commit message — no quotes, no backticks, no explanation.\n\n\
+         ```diff\n{truncated}\n```"
+    )
+}
+
+/// Extract a clean commit message from AI output.
+///
+/// Strips markdown formatting, quotes, and extra whitespace that the model
+/// might include despite instructions.
+fn clean_ai_commit_message(raw: &str) -> String {
+    let msg = raw
+        .trim()
+        .trim_matches('`')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim();
+    // Take only the first line in case the model returns multiple
+    let first_line = msg.lines().next().unwrap_or("").trim();
+    // Strip any leading "commit message:" or similar preamble
+    let cleaned = first_line
+        .strip_prefix("commit message:")
+        .or_else(|| first_line.strip_prefix("Commit message:"))
+        .or_else(|| first_line.strip_prefix("Commit Message:"))
+        .unwrap_or(first_line)
+        .trim()
+        .trim_matches('`')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim();
+    cleaned.to_string()
+}
+
+/// Handle `/commit --ai` — generate a commit message using a side agent.
+///
+/// Falls back to the heuristic `generate_commit_message` if the AI returns
+/// an empty response.
+pub async fn handle_commit_ai(input: &str, agent_config: &AgentConfig) {
+    let arg = input.strip_prefix("/commit").unwrap_or("").trim();
+
+    // Strip flags to see if user also provided an explicit message
+    let explicit = arg
+        .replace("--ai", "")
+        .replace("--generate", "")
+        .trim()
+        .to_string();
+    if !explicit.is_empty() {
+        // User gave a message alongside --ai — just use it directly
+        let (ok, output) = run_git_commit_with_trailer(&explicit);
+        if ok {
+            println!("{GREEN}  ✓ {}{RESET}\n", output.trim());
+        } else {
+            eprintln!("{RED}  ✗ {}{RESET}\n", output.trim());
+        }
+        return;
+    }
+
+    // Get staged diff
+    let diff = match get_staged_diff() {
+        None => {
+            eprintln!("{RED}  error: not in a git repository{RESET}\n");
+            return;
+        }
+        Some(d) if d.trim().is_empty() => {
+            println!("{DIM}  nothing staged — use `git add` first{RESET}\n");
+            return;
+        }
+        Some(d) => d,
+    };
+
+    eprintln!("{DIM}  generating commit message...{RESET}");
+
+    let prompt = build_commit_ai_prompt(&diff);
+    let mut side_agent = agent_config.build_side_agent();
+    let mut rx = side_agent.prompt(&prompt).await;
+
+    let mut message = String::new();
+    loop {
+        match rx.recv().await {
+            Some(AgentEvent::MessageUpdate {
+                delta: StreamDelta::Text { delta },
+                ..
+            }) => {
+                message.push_str(&delta);
+            }
+            Some(AgentEvent::AgentEnd { .. }) | None => break,
+            _ => {}
+        }
+    }
+    side_agent.finish().await;
+
+    let message = clean_ai_commit_message(&message);
+
+    // Fall back to heuristic if AI returned nothing useful
+    let suggested = if message.is_empty() {
+        eprintln!("{DIM}  (AI returned empty — falling back to heuristic){RESET}");
+        generate_commit_message(&diff)
+    } else {
+        message
+    };
+
+    println!("{DIM}  Suggested commit message:{RESET}");
+    println!("    {BOLD}{suggested}{RESET}");
+    eprint!(
+        "\n  {DIM}({GREEN}y{RESET}{DIM})es / ({RED}n{RESET}{DIM})o / ({CYAN}e{RESET}{DIM})dit: {RESET}"
+    );
+    io::stderr().flush().ok();
+
+    let mut response = String::new();
+    if io::stdin().read_line(&mut response).is_ok() {
+        let response = response.trim().to_lowercase();
+        match response.as_str() {
+            "y" | "yes" | "" => {
+                let (ok, output) = run_git_commit_with_trailer(&suggested);
+                if ok {
+                    println!("{GREEN}  ✓ {}{RESET}\n", output.trim());
+                } else {
+                    eprintln!("{RED}  ✗ {}{RESET}\n", output.trim());
+                }
+            }
+            "e" | "edit" => {
+                println!("{DIM}  Enter your commit message:{RESET}");
+                eprint!("  > ");
+                io::stderr().flush().ok();
+                let mut custom_msg = String::new();
+                if io::stdin().read_line(&mut custom_msg).is_ok() {
+                    let custom_msg = custom_msg.trim();
+                    if custom_msg.is_empty() {
+                        println!("{DIM}  (commit cancelled — empty message){RESET}\n");
+                    } else {
+                        let (ok, output) = run_git_commit_with_trailer(custom_msg);
+                        if ok {
+                            println!("{GREEN}  ✓ {}{RESET}\n", output.trim());
+                        } else {
+                            eprintln!("{RED}  ✗ {}{RESET}\n", output.trim());
+                        }
+                    }
+                }
+            }
+            _ => {
+                println!("{DIM}  (commit cancelled){RESET}\n");
+            }
+        }
+    }
+}
+
+/// Returns `true` if the input contains `--ai` or `--generate` flags.
+pub fn wants_ai_commit(input: &str) -> bool {
+    let arg = input.strip_prefix("/commit").unwrap_or("").trim();
+    arg.contains("--ai") || arg.contains("--generate")
+}
 
 /// Represents a parsed `/pr` subcommand.
 #[derive(Debug, PartialEq)]
@@ -1443,6 +1730,32 @@ mod tests {
         assert_eq!(opts.file, Some("src/tools.rs".to_string()));
     }
 
+    #[test]
+    fn test_parse_diff_args_explain() {
+        let opts = parse_diff_args("/diff --explain");
+        assert!(!opts.staged_only);
+        assert!(!opts.name_only);
+        assert!(!opts.stat_only);
+        assert!(opts.explain);
+        assert_eq!(opts.file, None);
+    }
+
+    #[test]
+    fn test_parse_diff_args_staged_explain() {
+        let opts = parse_diff_args("/diff --staged --explain");
+        assert!(opts.staged_only);
+        assert!(opts.explain);
+        assert_eq!(opts.file, None);
+    }
+
+    #[test]
+    fn test_parse_diff_args_explain_with_file() {
+        let opts = parse_diff_args("/diff --explain src/main.rs");
+        assert!(opts.explain);
+        assert!(!opts.staged_only);
+        assert_eq!(opts.file, Some("src/main.rs".to_string()));
+    }
+
     // ── PR tests (moved from commands.rs) ───────────────────────────────
 
     #[test]
@@ -2057,5 +2370,79 @@ mod tests {
             content, "initial",
             "File should be reverted to initial content"
         );
+    }
+
+    // --- AI commit message tests ---
+
+    #[test]
+    fn build_commit_ai_prompt_includes_diff() {
+        let diff = "+++ b/src/main.rs\n+fn hello() {}\n";
+        let prompt = build_commit_ai_prompt(diff);
+        assert!(prompt.contains("conventional commit format"));
+        assert!(prompt.contains("+fn hello() {}"));
+        assert!(prompt.contains("```diff"));
+    }
+
+    #[test]
+    fn build_commit_ai_prompt_truncates_large_diff() {
+        // Create a diff larger than COMMIT_AI_MAX_BYTES
+        let big_diff = "a".repeat(40_000);
+        let prompt = build_commit_ai_prompt(&big_diff);
+        assert!(prompt.contains("(diff truncated"));
+        assert!(prompt.contains("40000 total bytes"));
+        // Should not contain the full 40k chars
+        assert!(prompt.len() < 35_000);
+    }
+
+    #[test]
+    fn build_commit_ai_prompt_truncates_safely_on_multibyte() {
+        // Build a diff with multi-byte chars right around the boundary
+        let prefix = "x".repeat(COMMIT_AI_MAX_BYTES - 2);
+        let diff = format!("{prefix}✓✓✓"); // ✓ is 3 bytes
+        let prompt = build_commit_ai_prompt(&diff);
+        // Should not panic and should contain truncation notice
+        assert!(prompt.contains("(diff truncated"));
+    }
+
+    #[test]
+    fn clean_ai_commit_message_strips_quotes() {
+        assert_eq!(
+            clean_ai_commit_message("\"feat: add login\""),
+            "feat: add login"
+        );
+        assert_eq!(clean_ai_commit_message("`fix: typo`"), "fix: typo");
+    }
+
+    #[test]
+    fn clean_ai_commit_message_takes_first_line() {
+        let msg = "feat: add login\n\nThis is a longer description.";
+        assert_eq!(clean_ai_commit_message(msg), "feat: add login");
+    }
+
+    #[test]
+    fn clean_ai_commit_message_strips_preamble() {
+        assert_eq!(
+            clean_ai_commit_message("Commit message: feat: add login"),
+            "feat: add login"
+        );
+        assert_eq!(
+            clean_ai_commit_message("commit message: fix: typo"),
+            "fix: typo"
+        );
+    }
+
+    #[test]
+    fn clean_ai_commit_message_handles_empty() {
+        assert_eq!(clean_ai_commit_message(""), "");
+        assert_eq!(clean_ai_commit_message("   "), "");
+    }
+
+    #[test]
+    fn wants_ai_commit_detects_flags() {
+        assert!(wants_ai_commit("/commit --ai"));
+        assert!(wants_ai_commit("/commit --generate"));
+        assert!(wants_ai_commit("/commit --ai some msg"));
+        assert!(!wants_ai_commit("/commit"));
+        assert!(!wants_ai_commit("/commit fix: typo"));
     }
 }

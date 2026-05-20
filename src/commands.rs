@@ -190,7 +190,7 @@ pub const UNDO_OPTIONS: &[&str] = &["--all", "--last-commit"];
 pub const REFACTOR_SUBCOMMANDS: &[&str] = &["rename", "extract", "move"];
 
 /// Diff flag names for `/diff <Tab>` completion.
-pub const DIFF_FLAGS: &[&str] = &["--staged", "--cached", "--name-only", "--stat"];
+pub const DIFF_FLAGS: &[&str] = &["--staged", "--cached", "--name-only", "--stat", "--explain"];
 
 pub const BG_SUBCOMMANDS: &[&str] = &["run", "list", "output", "kill"];
 
@@ -496,7 +496,10 @@ pub fn handle_provider_switch(
 // with `commands::handle_*` calls unchanged.
 
 // Git-related handlers
-pub use crate::commands_git::{handle_commit, handle_diff, handle_git, handle_pr, handle_undo};
+pub use crate::commands_git::{
+    handle_commit, handle_commit_ai, handle_diff, handle_diff_explain, handle_git, handle_pr,
+    handle_undo, parse_diff_args, wants_ai_commit,
+};
 pub use crate::commands_goal::handle_goal;
 
 // Git review/blame handlers

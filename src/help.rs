@@ -137,12 +137,17 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
         "commit" => Some(
             "/commit [message] — Commit staged changes\n\n\
              Usage:\n\
-             \x20 /commit              AI generates a commit message from the diff\n\
+             \x20 /commit              Generate a heuristic commit message from the diff\n\
+             \x20 /commit --ai         Use AI to generate a descriptive commit message\n\
              \x20 /commit <message>    Commit with the given message\n\n\
-             Stages all changes and commits. If no message is provided, the AI\n\
-             analyzes the diff and generates an appropriate commit message.\n\n\
+             Without arguments, a heuristic message is generated from the diff.\n\
+             With --ai (or --generate), a side agent analyzes the diff and writes\n\
+             a conventional-commit-style message describing the actual changes.\n\
+             Both modes show the suggestion and let you accept (y), reject (n),\n\
+             or edit (e) before committing.\n\n\
              Examples:\n\
              \x20 /commit\n\
+             \x20 /commit --ai\n\
              \x20 /commit fix: resolve off-by-one in parser",
         ),
         "cost" => Some(
@@ -431,11 +436,14 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /diff --staged           Show only staged changes\n\
              \x20 /diff --name-only        List changed filenames only\n\
              \x20 /diff --stat             Show compact diffstat summary only\n\
+             \x20 /diff --explain          AI-powered explanation of current changes\n\
              \x20 /diff src/main.rs        Show changes for a specific file\n\
              \x20 /diff --staged main.rs   Staged changes for a specific file\n\
-             \x20 /diff --stat --staged    Diffstat for staged changes only\n\n\
+             \x20 /diff --stat --staged    Diffstat for staged changes only\n\
+             \x20 /diff --explain --staged Explain only staged changes\n\n\
              Aliases: --staged, --cached\n\n\
              Displays file summary, change stats, and colored diff output.\n\
+             --explain sends the diff to the AI for a natural-language summary.\n\
              Works in any git repository.",
         ),
         "blame" => Some(
@@ -1540,7 +1548,7 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
-        "    /commit [msg]      Commit staged changes (AI message if omitted)"
+        "    /commit [msg]      Commit staged changes (--ai for AI-generated message)"
     );
     let _ = writeln!(
         s,
@@ -1829,7 +1837,7 @@ pub fn help_text() -> String {
     out.push_str("  /diff [opts] [file] Show git changes (--staged, --name-only, file filter)\n");
     out.push_str("  /blame <file>      Show git blame with colored output (/blame file:10-20)\n");
     out.push_str("  /undo [N|--all|--last-commit] Undo changes (turn, all, or last commit)\n");
-    out.push_str("  /commit [msg]      Commit staged changes (AI-generates message if no msg)\n");
+    out.push_str("  /commit [msg]      Commit staged changes (--ai for AI-generated message)\n");
     out.push_str("  /pr [number]       List open PRs, view, diff, comment, or checkout a PR\n");
     out.push_str(
         "                     /pr create [--draft] | /pr <n> diff | /pr <n> comment <text>\n",
