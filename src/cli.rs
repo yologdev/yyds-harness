@@ -69,7 +69,10 @@ pub fn print_banner() {
     let name = crate::commands_project::detect_project_name(dir);
     let branch = crate::git::git_branch();
     if let Some(line) = banner_project_line(&project_type, &name, branch.as_deref()) {
-        println!("{DIM}  {line}{RESET}");
+        let status_suffix = git_status_summary()
+            .map(|s| format!(" · {s}"))
+            .unwrap_or_default();
+        println!("{DIM}  {line}{status_suffix}{RESET}");
     }
 
     println!("{DIM}  Type /help for commands, /quit to exit{RESET}\n");
@@ -115,6 +118,72 @@ pub fn banner_project_line(
     Some(format!(
         "\u{1F4C1} {type_label} project{name_part}{branch_part}"
     ))
+}
+
+/// Parse `git status --porcelain` output into (staged, modified, untracked) counts.
+///
+/// Each line of porcelain output has two status columns:
+///   - Column 0 = index (staging area) status
+///   - Column 1 = worktree status
+///   - Lines starting with `??` are untracked files.
+fn parse_git_status_counts(porcelain: &str) -> (u32, u32, u32) {
+    let mut staged = 0u32;
+    let mut modified = 0u32;
+    let mut untracked = 0u32;
+
+    for line in porcelain.lines() {
+        let bytes = line.as_bytes();
+        if bytes.len() < 2 {
+            continue;
+        }
+
+        let index = bytes[0];
+        let worktree = bytes[1];
+
+        if index == b'?' && worktree == b'?' {
+            untracked += 1;
+        } else {
+            // Staged changes (index column has a letter, not space or ?)
+            if index != b' ' && index != b'?' {
+                staged += 1;
+            }
+            // Worktree changes (worktree column has a letter, not space or ?)
+            if worktree != b' ' && worktree != b'?' {
+                modified += 1;
+            }
+        }
+    }
+
+    (staged, modified, untracked)
+}
+
+/// Build a compact git status summary for the banner.
+/// Returns `None` if not in a git repo.
+fn git_status_summary() -> Option<String> {
+    let output = crate::git::run_git(&["status", "--porcelain"]).ok()?;
+
+    if output.trim().is_empty() {
+        return Some("clean".to_string());
+    }
+
+    let (staged, modified, untracked) = parse_git_status_counts(&output);
+
+    let mut parts = Vec::new();
+    if staged > 0 {
+        parts.push(format!("{staged} staged"));
+    }
+    if modified > 0 {
+        parts.push(format!("{modified} modified"));
+    }
+    if untracked > 0 {
+        parts.push(format!("{untracked} untracked"));
+    }
+
+    if parts.is_empty() {
+        Some("clean".to_string())
+    } else {
+        Some(parts.join(", "))
+    }
 }
 
 /// Parse a thinking level string into a ThinkingLevel enum.
@@ -2614,6 +2683,67 @@ command = "server-two"
         use crate::commands_project::ProjectType;
         let line = banner_project_line(&ProjectType::Make, "", None);
         assert_eq!(line, Some("\u{1F4C1} Make project".to_string()));
+    }
+
+    #[test]
+    fn test_parse_git_status_counts_empty() {
+        assert_eq!(parse_git_status_counts(""), (0, 0, 0));
+    }
+
+    #[test]
+    fn test_parse_git_status_counts_worktree_modified() {
+        // " M src/main.rs" = modified in worktree, not staged
+        assert_eq!(parse_git_status_counts(" M src/main.rs"), (0, 1, 0));
+    }
+
+    #[test]
+    fn test_parse_git_status_counts_untracked() {
+        assert_eq!(parse_git_status_counts("?? new.txt"), (0, 0, 1));
+    }
+
+    #[test]
+    fn test_parse_git_status_counts_staged() {
+        // "A  added.rs" = added to index
+        assert_eq!(parse_git_status_counts("A  added.rs"), (1, 0, 0));
+    }
+
+    #[test]
+    fn test_parse_git_status_counts_mixed() {
+        let porcelain = " M src/main.rs\n?? new.txt\nA  added.rs\n";
+        assert_eq!(parse_git_status_counts(porcelain), (1, 1, 1));
+    }
+
+    #[test]
+    fn test_parse_git_status_counts_both_staged_and_modified() {
+        // "MM both.rs" = staged AND modified in worktree
+        assert_eq!(parse_git_status_counts("MM both.rs"), (1, 1, 0));
+    }
+
+    #[test]
+    fn test_parse_git_status_counts_multiple_untracked() {
+        let porcelain = "?? a.txt\n?? b.txt\n?? c.txt\n";
+        assert_eq!(parse_git_status_counts(porcelain), (0, 0, 3));
+    }
+
+    #[test]
+    fn test_parse_git_status_counts_deleted() {
+        // " D deleted.rs" = deleted in worktree
+        assert_eq!(parse_git_status_counts(" D deleted.rs"), (0, 1, 0));
+        // "D  deleted.rs" = deleted in index (staged)
+        assert_eq!(parse_git_status_counts("D  deleted.rs"), (1, 0, 0));
+    }
+
+    #[test]
+    fn test_parse_git_status_counts_renamed() {
+        // "R  old -> new" = renamed in index
+        assert_eq!(parse_git_status_counts("R  old -> new"), (1, 0, 0));
+    }
+
+    #[test]
+    fn test_parse_git_status_counts_short_lines_ignored() {
+        // Lines shorter than 2 bytes are skipped
+        assert_eq!(parse_git_status_counts("X"), (0, 0, 0));
+        assert_eq!(parse_git_status_counts(""), (0, 0, 0));
     }
 
     // ── bare positional prompt tests ──────────────────────────────────
