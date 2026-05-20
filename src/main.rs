@@ -78,6 +78,7 @@ mod docs;
 mod format;
 mod git;
 mod help;
+mod help_data;
 mod hooks;
 mod memory;
 mod prompt;

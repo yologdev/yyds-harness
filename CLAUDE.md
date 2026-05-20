@@ -63,7 +63,8 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `commands.rs` — slash command dispatch, grouped /help, custom command discovery (loads user-defined `.md` files from `.yoyo/commands/` and `~/.yoyo/commands/`)
 - `dispatch.rs` — REPL `/command` routing (`dispatch_command`), `CommandResult`, `DispatchContext`
 - `dispatch_sub.rs` — CLI subcommand routing (`try_dispatch_subcommand` for `yoyo <subcmd>`), `flag_value`, `FlagValueCheck`, `require_flag_value`
-- `help.rs` — canonical source for all help content: `cli_help_text()` (`--help` output), `/help` REPL help, per-command detailed help
+- `help.rs` — canonical source for all help content: `cli_help_text()` (`--help` output), `/help` REPL help, per-command detailed help (re-exports data from `help_data.rs`)
+- `help_data.rs` — static command help text and short descriptions: `command_help()`, `command_short_description()` (pure data, extracted from `help.rs`)
 - `config.rs` — permission config, directory restrictions, MCP server config, TOML parsing helpers
 - `context.rs` — project context loading (reads YOYO.md, CLAUDE.md, AGENTS.md, .cursorrules, .github/copilot-instructions.md), file listing, git status, recently changed files, project-type convention hints
 - `conversations.rs` — side, quick, and extended conversation handlers (extracted from `repl.rs`): `build_add_content_blocks`, `handle_side`, `handle_quick`, `handle_extended`
