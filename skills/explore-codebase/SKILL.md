@@ -5,10 +5,10 @@ tools: [bash, read_file, list_files, search, sub_agent, shared_state]
 core: false
 origin: yoyo
 status: active
-score: 0.5
-uses: 0
-wins: 0
-last_used: null
+score: 0.59
+uses: 1
+wins: 1
+last_used: "2026-04-30T12:03:36Z"
 last_evolved: null
 parent_pattern_key: null
 keywords: ["explore codebase", "understand module", "map dependencies", "large refactor scope", "archaeology", "comprehension"]
