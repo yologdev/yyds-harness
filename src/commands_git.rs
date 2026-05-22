@@ -1035,7 +1035,7 @@ pub enum PrSubcommand {
     List,
     View(u32),
     Diff(u32),
-    Review(u32),
+    Review(u32, bool), // (PR number, post_to_github)
     Comment(u32, String),
     Checkout(u32),
     Create { draft: bool },
@@ -1055,7 +1055,11 @@ pub fn parse_pr_args(arg: &str) -> PrSubcommand {
     if parts[0].eq_ignore_ascii_case("review") {
         if let Some(num_str) = parts.get(1) {
             if let Ok(n) = num_str.parse::<u32>() {
-                return PrSubcommand::Review(n);
+                let post = parts
+                    .get(2)
+                    .map(|s| s.eq_ignore_ascii_case("--post"))
+                    .unwrap_or(false);
+                return PrSubcommand::Review(n, post);
             }
         }
         return PrSubcommand::Help;
@@ -1081,7 +1085,14 @@ pub fn parse_pr_args(arg: &str) -> PrSubcommand {
 
     match parts[1].to_lowercase().as_str() {
         "diff" => PrSubcommand::Diff(number),
-        "review" => PrSubcommand::Review(number),
+        "review" => {
+            let post = if parts.len() == 3 {
+                parts[2].eq_ignore_ascii_case("--post")
+            } else {
+                false
+            };
+            PrSubcommand::Review(number, post)
+        }
         "checkout" => PrSubcommand::Checkout(number),
         "comment" => {
             let text = if parts.len() == 3 {
@@ -1206,7 +1217,7 @@ pub async fn handle_pr(input: &str, agent: &mut Agent, session_total: &mut Usage
                 }
             }
         }
-        PrSubcommand::Review(number) => {
+        PrSubcommand::Review(number, post) => {
             let num_str = number.to_string();
 
             // Fetch PR diff
@@ -1259,29 +1270,78 @@ pub async fn handle_pr(input: &str, agent: &mut Agent, session_total: &mut Usage
                 ""
             };
 
-            // Build review prompt
-            let pr_section = if pr_info.trim().is_empty() {
-                String::new()
+            let diff_with_note = format!("{diff_content}{truncated_note}");
+
+            if post {
+                // --post mode: generate structured review and post to GitHub
+                use crate::commands_git_review::{
+                    build_review_prompt_structured, extract_review_json, parse_review_comments,
+                    post_pr_review,
+                };
+
+                let prompt = build_review_prompt_structured(number, &pr_info, &diff_with_note);
+
+                eprintln!("{DIM}  [review] analyzing PR #{number} for inline comments...{RESET}");
+                auto_compact_if_needed(agent);
+                let outcome = run_prompt(agent, &prompt, session_total, model).await;
+
+                // Extract JSON from the response
+                match extract_review_json(&outcome.text) {
+                    Some(json) => match parse_review_comments(&json) {
+                        Ok(comments) => {
+                            eprintln!(
+                                "{DIM}  [review] posting {} comment{} to PR #{number}...{RESET}",
+                                comments.len(),
+                                if comments.len() == 1 { "" } else { "s" }
+                            );
+                            match post_pr_review(number, &comments) {
+                                Ok(msg) => {
+                                    println!("{GREEN}  {msg}{RESET}\n");
+                                }
+                                Err(e) => {
+                                    eprintln!("{RED}  error posting review: {e}{RESET}\n");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "{RED}  error parsing review comments: {e}{RESET}\n\
+                                 {DIM}  (the review was still displayed above){RESET}\n"
+                            );
+                        }
+                    },
+                    None => {
+                        eprintln!(
+                            "{YELLOW}  warning: could not extract JSON review from response{RESET}\n\
+                             {DIM}  (the review was still displayed above — try without --post){RESET}\n"
+                        );
+                    }
+                }
             } else {
-                format!("## PR Description\n\n{}\n\n", pr_info.trim())
-            };
+                // Normal mode: just display the review
+                let pr_section = if pr_info.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("## PR Description\n\n{}\n\n", pr_info.trim())
+                };
 
-            let prompt = format!(
-                "Review this pull request (PR #{number}). Analyze the diff for:\n\
-                 - Potential bugs or logic errors\n\
-                 - Code quality issues\n\
-                 - Missing error handling\n\
-                 - Performance concerns\n\
-                 - Suggestions for improvement\n\n\
-                 Be specific — reference file names and line numbers from the diff.\n\
-                 Praise good patterns too. Be constructive.\n\n\
-                 {pr_section}\
-                 ## Diff\n\n```diff\n{diff_content}{truncated_note}\n```"
-            );
+                let prompt = format!(
+                    "Review this pull request (PR #{number}). Analyze the diff for:\n\
+                     - Potential bugs or logic errors\n\
+                     - Code quality issues\n\
+                     - Missing error handling\n\
+                     - Performance concerns\n\
+                     - Suggestions for improvement\n\n\
+                     Be specific — reference file names and line numbers from the diff.\n\
+                     Praise good patterns too. Be constructive.\n\n\
+                     {pr_section}\
+                     ## Diff\n\n```diff\n{diff_with_note}\n```"
+                );
 
-            eprintln!("{DIM}  [review] analyzing PR #{number}...{RESET}");
-            auto_compact_if_needed(agent);
-            run_prompt(agent, &prompt, session_total, model).await;
+                eprintln!("{DIM}  [review] analyzing PR #{number}...{RESET}");
+                auto_compact_if_needed(agent);
+                run_prompt(agent, &prompt, session_total, model).await;
+            }
         }
         PrSubcommand::Create { draft } => {
             // 1. Detect current branch
@@ -1643,24 +1703,51 @@ mod tests {
 
     #[test]
     fn parse_pr_args_number_review() {
-        assert_eq!(parse_pr_args("42 review"), PrSubcommand::Review(42));
+        assert_eq!(parse_pr_args("42 review"), PrSubcommand::Review(42, false));
     }
 
     #[test]
     fn parse_pr_args_review_number() {
-        assert_eq!(parse_pr_args("review 42"), PrSubcommand::Review(42));
+        assert_eq!(parse_pr_args("review 42"), PrSubcommand::Review(42, false));
     }
 
     #[test]
     fn parse_pr_args_review_case_insensitive() {
-        assert_eq!(parse_pr_args("Review 10"), PrSubcommand::Review(10));
-        assert_eq!(parse_pr_args("REVIEW 10"), PrSubcommand::Review(10));
+        assert_eq!(parse_pr_args("Review 10"), PrSubcommand::Review(10, false));
+        assert_eq!(parse_pr_args("REVIEW 10"), PrSubcommand::Review(10, false));
     }
 
     #[test]
     fn parse_pr_args_review_no_number_is_help() {
         assert_eq!(parse_pr_args("review"), PrSubcommand::Help);
         assert_eq!(parse_pr_args("review abc"), PrSubcommand::Help);
+    }
+
+    #[test]
+    fn parse_pr_args_review_post() {
+        assert_eq!(
+            parse_pr_args("42 review --post"),
+            PrSubcommand::Review(42, true)
+        );
+        assert_eq!(
+            parse_pr_args("review 42 --post"),
+            PrSubcommand::Review(42, true)
+        );
+    }
+
+    #[test]
+    fn parse_pr_args_review_post_case_insensitive() {
+        assert_eq!(
+            parse_pr_args("42 REVIEW --POST"),
+            PrSubcommand::Review(42, true)
+        );
+    }
+
+    #[test]
+    fn parse_pr_args_review_no_post_flag() {
+        // Without --post, post should be false
+        assert_eq!(parse_pr_args("42 review"), PrSubcommand::Review(42, false));
+        assert_eq!(parse_pr_args("review 42"), PrSubcommand::Review(42, false));
     }
 
     #[test]

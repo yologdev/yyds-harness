@@ -716,16 +716,21 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /pr view <n>            View PR details\n\
              \x20 /pr diff <n>            Show PR diff\n\
              \x20 /pr review <n>          AI-powered code review of a PR\n\
+             \x20 /pr review <n> --post   Review and post inline comments to GitHub\n\
              \x20 /pr comment <n> <text>  Comment on a PR\n\
              \x20 /pr create [--draft]    Create a PR from current branch\n\
              \x20 /pr checkout <n>        Checkout a PR's branch\n\n\
              The review subcommand fetches the PR diff and description,\n\
              then sends them to the AI for a detailed code review.\n\n\
+             With --post, the review is also posted to GitHub as an inline\n\
+             PR review with file-specific comments. Without --post, the\n\
+             review is only displayed in the terminal.\n\n\
              Requires the `gh` CLI to be installed and authenticated.\n\n\
              Examples:\n\
              \x20 /pr\n\
              \x20 /pr create --draft\n\
              \x20 /pr review 42\n\
+             \x20 /pr review 42 --post\n\
              \x20 /pr diff 42",
         ),
         "git" => Some(
