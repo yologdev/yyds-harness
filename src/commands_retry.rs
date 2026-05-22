@@ -158,6 +158,18 @@ pub fn format_exit_summary(
             snapshot.len(),
             format_file_list(&snapshot),
         ));
+
+        // Show a compact colored diff if we're not in quiet mode
+        if !is_quiet() {
+            let paths: Vec<String> = snapshot.iter().map(|fc| fc.path.clone()).collect();
+            let diffs = collect_diffs(&paths);
+            let trimmed = diffs.trim();
+            if !trimmed.is_empty() {
+                let truncated = truncate_diff_lines(trimmed, 15);
+                lines.push(String::new()); // blank separator
+                lines.push(truncated);
+            }
+        }
     }
 
     Some(lines.join("\n"))
@@ -190,6 +202,25 @@ fn format_file_list(snapshot: &[FileChange]) -> String {
         }
         format!("{}…", &joined[..b])
     }
+}
+
+/// Truncate a diff string to at most `max_lines` lines. If the original has
+/// more lines, appends a dim hint with the overflow count.
+fn truncate_diff_lines(diff: &str, max_lines: usize) -> String {
+    if diff.is_empty() {
+        return String::new();
+    }
+    let all_lines: Vec<&str> = diff.lines().collect();
+    let total = all_lines.len();
+    if total <= max_lines {
+        return diff.to_string();
+    }
+    let kept: Vec<&str> = all_lines[..max_lines].to_vec();
+    let overflow = total - max_lines;
+    format!(
+        "{}\n{DIM}  … and {overflow} more lines (use /changes --diff to see all){RESET}",
+        kept.join("\n"),
+    )
 }
 
 /// Returns `true` if the raw `/changes` input contains the `--diff` flag.
@@ -773,5 +804,61 @@ mod tests {
         let result = build_retry_prompt("hello", &None, Some("bash"));
         // No error means no enrichment, even if tool name provided
         assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_truncate_diff_lines_empty() {
+        let result = truncate_diff_lines("", 15);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_truncate_diff_lines_shorter_than_max() {
+        let input = "line 1\nline 2\nline 3";
+        let result = truncate_diff_lines(input, 15);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_truncate_diff_lines_exact_max() {
+        let input = (1..=5)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = truncate_diff_lines(&input, 5);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_truncate_diff_lines_over_max() {
+        let input = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = truncate_diff_lines(&input, 5);
+        // Should contain first 5 lines
+        assert!(result.contains("line 1"));
+        assert!(result.contains("line 5"));
+        // Should NOT contain line 6+
+        assert!(!result.contains("line 6\n"));
+        // Should have overflow note
+        let plain = strip_ansi(&result);
+        assert!(
+            plain.contains("15 more lines"),
+            "overflow hint missing: {plain}"
+        );
+        assert!(plain.contains("/changes --diff"), "hint missing: {plain}");
+    }
+
+    #[test]
+    fn test_truncate_diff_lines_preserves_ansi() {
+        let input = format!(
+            "{GREEN}+added line{RESET}\n{RED}-removed line{RESET}\nplain line 1\nplain line 2"
+        );
+        let result = truncate_diff_lines(&input, 2);
+        // Should keep the ANSI codes in the kept lines
+        assert!(result.contains(GREEN.0));
+        let plain = strip_ansi(&result);
+        assert!(plain.contains("2 more lines"));
     }
 }

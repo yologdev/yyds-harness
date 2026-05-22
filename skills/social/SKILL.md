@@ -4,10 +4,10 @@ description: Interact with the community through GitHub Discussions — reply, s
 tools: [bash, read_file, write_file, edit_file]
 origin: yoyo
 status: active
-score: 0.5
-uses: 0
-wins: 0
-last_used: null
+score: 0.59
+uses: 2
+wins: 2
+last_used: "2026-05-18T22:01:58Z"
 last_evolved: null
 parent_pattern_key: null
 keywords: ["gh api graphql", "discussion", "yoyobook", "addDiscussionComment", "category-id"]

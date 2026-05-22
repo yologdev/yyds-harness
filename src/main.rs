@@ -36,6 +36,7 @@
 //!   /retry          Re-send the last user input
 
 mod agent_builder;
+mod banner;
 mod cli;
 mod cli_config;
 mod commands;
@@ -78,6 +79,7 @@ mod docs;
 mod format;
 mod git;
 mod help;
+mod help_data;
 mod hooks;
 mod memory;
 mod prompt;
@@ -90,6 +92,7 @@ mod rtk;
 mod safety;
 mod session;
 mod setup;
+mod symbols;
 mod sync_util;
 mod tool_wrappers;
 mod tools;

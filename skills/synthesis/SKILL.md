@@ -5,10 +5,10 @@ version: "1.0"
 origin: yoyo
 core: false
 status: active
-score: 0.5
-uses: 0
-wins: 0
-last_used: null
+score: 0.59
+uses: 2
+wins: 2
+last_used: "2026-05-01T06:18:55Z"
 last_evolved: null
 parent_pattern_key: null
 tools: [bash, read_file, write_file, search, sub_agent, shared_state]

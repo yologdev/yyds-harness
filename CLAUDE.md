@@ -52,9 +52,10 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 **Multi-file agent** (`src/`):
 - `main.rs` — entry point, CLI flag handling, run modes (single-prompt, piped, REPL), setup/restore helpers
 - `agent_builder.rs` — AgentConfig, build_agent, build_side_agent, create_model_config, MCP collision detection (BUILTIN_TOOL_NAMES, detect_mcp_collisions), connect_external_servers, fallback retry logic
+- `banner.rs` — startup banner, welcome text, git status summary display (extracted from `cli.rs`)
 - `hooks.rs` — Hook trait, HookRegistry, AuditHook, HookedTool wrapper, maybe_hook helper
 - `tools.rs` — StreamingBashTool, RenameSymbolTool, AskUserTool, TodoTool, tool builders, SharedState wiring for sub-agents
-- `tool_wrappers.rs` — Tool decorator types (GuardedTool, TruncatingTool, ConfirmTool, ArcGuardedTool, AutoCheckTool, RecoveryHintTool, ToolFailureTracker) and helper wrappers
+- `tool_wrappers.rs` — Tool decorator types (GuardedTool, TruncatingTool, ConfirmTool, ArcGuardedTool, AutoCheckTool, SmartEditTool, RecoveryHintTool, ToolFailureTracker) and helper wrappers
 - `rtk.rs` — RTK (Rust Token Killer) detection, proxy integration, output compression
 - `update.rs` — version comparison (`version_is_newer`) and update checking (`check_for_update`) against GitHub releases
 - `safety.rs` — bash command safety analysis, destructive pattern detection
@@ -63,9 +64,10 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `commands.rs` — slash command dispatch, grouped /help, custom command discovery (loads user-defined `.md` files from `.yoyo/commands/` and `~/.yoyo/commands/`)
 - `dispatch.rs` — REPL `/command` routing (`dispatch_command`), `CommandResult`, `DispatchContext`
 - `dispatch_sub.rs` — CLI subcommand routing (`try_dispatch_subcommand` for `yoyo <subcmd>`), `flag_value`, `FlagValueCheck`, `require_flag_value`
-- `help.rs` — canonical source for all help content: `cli_help_text()` (`--help` output), `/help` REPL help, per-command detailed help
+- `help.rs` — canonical source for all help content: `cli_help_text()` (`--help` output), `/help` REPL help, per-command detailed help (re-exports data from `help_data.rs`)
+- `help_data.rs` — static command help text and short descriptions: `command_help()`, `command_short_description()` (pure data, extracted from `help.rs`)
 - `config.rs` — permission config, directory restrictions, MCP server config, TOML parsing helpers
-- `context.rs` — project context loading, file listing, git status, recently changed files, project-type convention hints
+- `context.rs` — project context loading (reads YOYO.md, CLAUDE.md, AGENTS.md, .cursorrules, .github/copilot-instructions.md), file listing, git status, recently changed files, project-type convention hints
 - `conversations.rs` — side, quick, and extended conversation handlers (extracted from `repl.rs`): `build_add_content_blocks`, `handle_side`, `handle_quick`, `handle_extended`
 - `providers.rs` — provider constants (KNOWN_PROVIDERS), API key env vars, default/known models per provider
 - `format/mod.rs` — Color, constants, utility functions, re-exports
@@ -139,7 +141,7 @@ Additional skills (`origin: yoyo`, eligible for skill-evolve to refine/retire):
 - `DAY_COUNT` — integer tracking current evolution day
 - `session_plan/` — ephemeral directory with per-task files (task_01.md, task_02.md, etc.), written by Phase A planning agent (gitignored)
 - `.yoyo/commands/` — project-local custom slash command definitions (`.md` files); `~/.yoyo/commands/` for global commands
-- `.yoyo/goal.md` — persistent session/project goal (plain text, set via `/goal set`)
+- `.yoyo/goal.md` — persistent session/project goal (plain text, set via `/goal set`; automatically injected into system prompt)
 - `ISSUES_TODAY.md` — ephemeral, generated during evolution from GitHub issues (gitignored)
 - `ECONOMICS.md` — what money and sponsorship mean to yoyo (DO NOT MODIFY)
 - `SPONSORS.md` — auto-maintained sponsor recognition (only additions, never removals; amounts shown so yoyo understands the investment)

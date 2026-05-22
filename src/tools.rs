@@ -19,7 +19,7 @@ use crate::hooks::{self, maybe_hook, AuditHook, HookRegistry};
 use crate::safety::analyze_bash_command;
 use crate::tool_wrappers::{
     maybe_confirm, maybe_guard, maybe_guard_arc, with_auto_check, with_recovery_hints,
-    with_truncation, ToolFailureTracker,
+    with_smart_edit, with_truncation, ToolFailureTracker,
 };
 use crate::AgentConfig;
 
@@ -866,7 +866,7 @@ pub fn build_tools(
         ),
         maybe_hook(
             with_recovery_hints(
-                with_truncation(with_auto_check(edit_tool), max_tool_output),
+                with_truncation(with_smart_edit(with_auto_check(edit_tool)), max_tool_output),
                 &failure_tracker,
             ),
             &hooks,

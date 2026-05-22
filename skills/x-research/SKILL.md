@@ -4,10 +4,10 @@ description: Read X (Twitter) via xurl — search posts, fetch threads, read pro
 tools: [bash, read_file]
 origin: yoyo
 status: active
-score: 0.0
-uses: 0
-wins: 0
-last_used: null
+score: 0.24
+uses: 3
+wins: 3
+last_used: "2026-05-03T14:37:44Z"
 last_evolved: null
 parent_pattern_key: null
 keywords: ["xurl", "twitter", "x.com", "tweet", "thread", "x-research"]

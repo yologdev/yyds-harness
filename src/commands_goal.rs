@@ -364,4 +364,44 @@ mod tests {
         let desc = crate::help::command_short_description("goal");
         assert!(desc.is_some(), "goal should have a short description");
     }
+
+    #[test]
+    #[serial]
+    fn test_goal_system_prompt_injection() {
+        with_temp_dir(|| {
+            // No goal → no injection
+            let mut prompt = String::from("base prompt");
+            if let Some(goal) = load_goal() {
+                prompt.push_str("\n\n# Current Goal\n\n");
+                prompt.push_str(&goal);
+                prompt.push_str(
+                    "\n\n(Set via /goal set. The user is working toward this. Keep it in mind.)",
+                );
+            }
+            assert_eq!(prompt, "base prompt");
+
+            // With goal → injection present
+            save_goal("Refactor auth module").unwrap();
+            let mut prompt2 = String::from("base prompt");
+            if let Some(goal) = load_goal() {
+                prompt2.push_str("\n\n# Current Goal\n\n");
+                prompt2.push_str(&goal);
+                prompt2.push_str(
+                    "\n\n(Set via /goal set. The user is working toward this. Keep it in mind.)",
+                );
+            }
+            assert!(prompt2.contains("# Current Goal"));
+            assert!(prompt2.contains("Refactor auth module"));
+            assert!(prompt2.contains("Keep it in mind"));
+        });
+    }
+
+    #[test]
+    fn test_goal_help_mentions_auto_context() {
+        let help = crate::help::command_help("goal").expect("goal help should exist");
+        assert!(
+            help.contains("automatically included"),
+            "goal help should mention automatic context injection"
+        );
+    }
 }

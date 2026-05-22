@@ -102,6 +102,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "/grep",
     "/test",
     "/lint",
+    "/security",
     "/loop",
     "/spawn",
     "/update",
@@ -181,7 +182,9 @@ pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high"
 pub const GIT_SUBCOMMANDS: &[&str] = &["status", "log", "add", "diff", "branch", "stash"];
 
 /// PR subcommand names for `/pr <Tab>` completion.
-pub const PR_SUBCOMMANDS: &[&str] = &["list", "view", "diff", "comment", "create", "checkout"];
+pub const PR_SUBCOMMANDS: &[&str] = &[
+    "list", "view", "diff", "review", "comment", "create", "checkout",
+];
 
 /// Undo option names for `/undo <Tab>` completion.
 pub const UNDO_OPTIONS: &[&str] = &["--all", "--last-commit"];
@@ -190,7 +193,7 @@ pub const UNDO_OPTIONS: &[&str] = &["--all", "--last-commit"];
 pub const REFACTOR_SUBCOMMANDS: &[&str] = &["rename", "extract", "move"];
 
 /// Diff flag names for `/diff <Tab>` completion.
-pub const DIFF_FLAGS: &[&str] = &["--staged", "--cached", "--name-only", "--stat"];
+pub const DIFF_FLAGS: &[&str] = &["--staged", "--cached", "--name-only", "--stat", "--explain"];
 
 pub const BG_SUBCOMMANDS: &[&str] = &["run", "list", "output", "kill"];
 
@@ -496,7 +499,10 @@ pub fn handle_provider_switch(
 // with `commands::handle_*` calls unchanged.
 
 // Git-related handlers
-pub use crate::commands_git::{handle_commit, handle_diff, handle_git, handle_pr, handle_undo};
+pub use crate::commands_git::{
+    handle_commit, handle_commit_ai, handle_diff, handle_diff_explain, handle_git, handle_pr,
+    handle_undo, parse_diff_args, wants_ai_commit,
+};
 pub use crate::commands_goal::handle_goal;
 
 // Git review/blame handlers
@@ -529,7 +535,7 @@ pub use crate::watch::handle_watch;
 
 pub use crate::commands_update::handle_update;
 
-pub use crate::commands_lint::{handle_lint, handle_lint_fix, handle_test};
+pub use crate::commands_lint::{handle_lint, handle_lint_fix, handle_security, handle_test};
 
 pub use crate::commands_run::{handle_loop, handle_run, handle_run_usage};
 

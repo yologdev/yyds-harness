@@ -56,6 +56,7 @@ pub(crate) enum CommandRoute {
     LintFix,
     Lint,
     Fix,
+    Security,
     History,
     Search,
     Marks,
@@ -143,6 +144,7 @@ pub(crate) fn route_command(input: &str) -> CommandRoute {
         "/health" => CommandRoute::Health,
         "/doctor" => CommandRoute::Doctor,
         "/test" => CommandRoute::Test,
+        "/security" => CommandRoute::Security,
         "/lint fix" => CommandRoute::LintFix,
         "/fix" => CommandRoute::Fix,
         "/marks" => CommandRoute::Marks,
@@ -543,7 +545,21 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             CommandResult::Continue
         }
         CommandRoute::Diff => {
-            commands::handle_diff(ctx.input);
+            let opts = commands::parse_diff_args(ctx.input);
+            if opts.explain {
+                if let Some(prompt) = commands::handle_diff_explain(
+                    ctx.input,
+                    ctx.agent,
+                    ctx.session_total,
+                    &ctx.agent_config.model,
+                )
+                .await
+                {
+                    *ctx.last_input = Some(prompt);
+                }
+            } else {
+                commands::handle_diff(ctx.input);
+            }
             CommandResult::Continue
         }
         CommandRoute::Blame => {
@@ -566,6 +582,10 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
         }
         CommandRoute::Test => {
             commands::handle_test();
+            CommandResult::Continue
+        }
+        CommandRoute::Security => {
+            commands::handle_security();
             CommandResult::Continue
         }
         CommandRoute::LintFix => {
@@ -684,7 +704,11 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             CommandResult::Continue
         }
         CommandRoute::Commit => {
-            commands::handle_commit(ctx.input);
+            if commands::wants_ai_commit(ctx.input) {
+                commands::handle_commit_ai(ctx.input, ctx.agent_config).await;
+            } else {
+                commands::handle_commit(ctx.input);
+            }
             CommandResult::Continue
         }
         CommandRoute::Context => {
