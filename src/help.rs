@@ -188,6 +188,10 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "  --lite            Optimize for small/local LLMs (minimal prompt, 4 tools, 8K context)"
+    );
+    let _ = writeln!(
+        s,
         "  --context-strategy <s>  Context management: compaction (default) or checkpoint"
     );
     let _ = writeln!(

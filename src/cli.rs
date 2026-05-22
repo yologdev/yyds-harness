@@ -86,6 +86,16 @@ pub fn clamp_temperature(t: f32) -> f32 {
     }
 }
 
+/// Compute the list of disallowed tools for lite mode.
+/// Disallows everything NOT in `LITE_TOOLS` from the builtin tool set.
+pub fn compute_lite_disallowed_tools() -> Vec<String> {
+    crate::agent_builder::BUILTIN_TOOL_NAMES
+        .iter()
+        .filter(|name| !LITE_TOOLS.contains(name))
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
 /// All known CLI flags (both boolean and value-taking).
 const KNOWN_FLAGS: &[&str] = &[
     "--model",
@@ -134,6 +144,7 @@ const KNOWN_FLAGS: &[&str] = &[
     "-q",
     "--disallowed-tools",
     "--no-tools",
+    "--lite",
     "--help",
     "-h",
     "--version",
@@ -759,6 +770,22 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
             .push_str("\n\n(Set via /goal set. The user is working toward this. Keep it in mind.)");
     }
 
+    // --lite: replace system prompt with minimal version for small/local LLMs
+    // (skips project context, repo map, goal — they consume too much context)
+    // CLI flag takes priority; falls back to config file `lite = true`
+    let lite_flag = args.iter().any(|a| a == "--lite");
+    let lite_from_config = crate::config::parse_lite_from_config(&file_config);
+    let lite = lite_flag || lite_from_config;
+
+    // Track whether user explicitly set a custom system prompt (CLI or config file)
+    let user_set_system_prompt = args.iter().any(|a| a == "--system" || a == "--system-file")
+        || file_config.contains_key("system_prompt")
+        || file_config.contains_key("system_file");
+
+    if lite && !user_set_system_prompt {
+        system_prompt = LITE_SYSTEM_PROMPT.to_string();
+    }
+
     // --thinking <level> enables extended thinking (CLI overrides config file)
     let thinking = args
         .iter()
@@ -807,13 +834,21 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
     let context_window =
         parse_numeric_flag::<u32>(args, "--context-window", &file_config, "context_window");
 
+    // --lite: default context window to LITE_DEFAULT_CONTEXT_WINDOW unless user
+    // explicitly provided --context-window
+    let context_window = if lite && context_window.is_none() {
+        Some(LITE_DEFAULT_CONTEXT_WINDOW)
+    } else {
+        context_window
+    };
+
     // Parse MCP servers and OpenAPI specs
     let mcp = parse_mcp_and_openapi_config(args, &file_config, &raw_config_content);
 
     // Parse shell hooks from config file
     let shell_hooks = crate::hooks::parse_hooks_from_config(&file_config);
 
-    Some(Config {
+    let mut result = Some(Config {
         model: mc.model,
         api_key: mc.api_key,
         provider: mc.provider,
@@ -850,12 +885,14 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         auto_watch: crate::config::parse_auto_watch_from_config(&file_config),
         disallowed_tools: {
             let no_tools = args.iter().any(|a| a == "--no-tools");
-            let mut tools: Vec<String> = collect_repeatable_flag(args, "--disallowed-tools")
+            let user_disallowed: Vec<String> = collect_repeatable_flag(args, "--disallowed-tools")
                 .iter()
                 .flat_map(|v| v.split(','))
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
+            let has_explicit_disallowed = !user_disallowed.is_empty();
+            let mut tools = user_disallowed;
             if no_tools {
                 // Add all builtin tool names
                 for name in crate::agent_builder::BUILTIN_TOOL_NAMES {
@@ -864,11 +901,50 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
                         tools.push(s);
                     }
                 }
+            } else if lite && !has_explicit_disallowed {
+                // In lite mode, disallow everything NOT in LITE_TOOLS
+                // (but only if user didn't explicitly pass --disallowed-tools)
+                tools = compute_lite_disallowed_tools();
             }
             tools
         },
         no_tools: args.iter().any(|a| a == "--no-tools"),
-    })
+        lite,
+    });
+
+    // Auto-lite detection: when context window ≤16K, automatically enable lite mode
+    // (but don't override any explicit user choices)
+    if let Some(ref mut config) = result {
+        if !config.lite {
+            if let Some(cw) = config.context_window {
+                if cw <= 16_000 {
+                    config.lite = true;
+
+                    // Only override system_prompt if user didn't pass --system/--system-file
+                    if !user_set_system_prompt {
+                        config.system_prompt = LITE_SYSTEM_PROMPT.to_string();
+                    }
+
+                    // Only set disallowed_tools if user didn't pass --disallowed-tools
+                    if config.disallowed_tools.is_empty() {
+                        config.disallowed_tools = compute_lite_disallowed_tools();
+                    }
+
+                    // Set default lite context window if not already set to a lower value
+                    // (it's already set since we checked context_window above)
+
+                    if !is_quiet() {
+                        eprintln!(
+                            "{}  🪶 Auto-lite: context window ≤16K, using minimal tool set{}",
+                            DIM, RESET
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -2762,5 +2838,168 @@ command = "server-two"
             1,
             "bash should appear exactly once even when specified both ways"
         );
+    }
+
+    #[test]
+    fn test_lite_flag_sets_lite_true() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--lite".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert!(config.lite);
+    }
+
+    #[test]
+    fn test_lite_flag_sets_context_window() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--lite".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert_eq!(config.context_window, Some(LITE_DEFAULT_CONTEXT_WINDOW));
+    }
+
+    #[test]
+    fn test_lite_flag_with_explicit_context_window() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--lite".to_string(),
+            "--context-window".to_string(),
+            "4000".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        // User's explicit value should override lite default
+        assert_eq!(config.context_window, Some(4000));
+    }
+
+    #[test]
+    fn test_lite_flag_sets_system_prompt() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--lite".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert_eq!(config.system_prompt, LITE_SYSTEM_PROMPT);
+    }
+
+    #[test]
+    fn test_lite_flag_disallows_non_essential_tools() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--lite".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        // Should disallow tools NOT in LITE_TOOLS
+        assert!(config.disallowed_tools.contains(&"search".to_string()));
+        assert!(config.disallowed_tools.contains(&"list_files".to_string()));
+        assert!(config
+            .disallowed_tools
+            .contains(&"rename_symbol".to_string()));
+        assert!(config.disallowed_tools.contains(&"ask_user".to_string()));
+        assert!(config.disallowed_tools.contains(&"todo".to_string()));
+        assert!(config.disallowed_tools.contains(&"sub_agent".to_string()));
+        assert!(config
+            .disallowed_tools
+            .contains(&"shared_state".to_string()));
+        // Should NOT disallow essential tools
+        assert!(!config.disallowed_tools.contains(&"bash".to_string()));
+        assert!(!config.disallowed_tools.contains(&"read_file".to_string()));
+        assert!(!config.disallowed_tools.contains(&"write_file".to_string()));
+        assert!(!config.disallowed_tools.contains(&"edit_file".to_string()));
+    }
+
+    #[test]
+    fn test_lite_default_false() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec!["yoyo".to_string()];
+        let config = parse_args(&args).expect("should parse");
+        assert!(!config.lite);
+    }
+
+    #[test]
+    fn test_lite_in_known_flags() {
+        assert!(
+            KNOWN_FLAGS.contains(&"--lite"),
+            "--lite should be in KNOWN_FLAGS"
+        );
+    }
+
+    #[test]
+    fn test_auto_lite_context_window_8000() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--context-window".to_string(),
+            "8000".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        // Auto-lite should activate: context window ≤16K
+        assert!(config.lite);
+        assert!(!config.disallowed_tools.is_empty());
+        // Should disallow the same tools as --lite
+        assert!(config.disallowed_tools.contains(&"search".to_string()));
+        assert!(config.disallowed_tools.contains(&"list_files".to_string()));
+    }
+
+    #[test]
+    fn test_no_auto_lite_context_window_32000() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--context-window".to_string(),
+            "32000".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        // Auto-lite should NOT activate: context window > 16K
+        assert!(!config.lite);
+        assert!(config.disallowed_tools.is_empty());
+    }
+
+    #[test]
+    fn test_auto_lite_preserves_explicit_disallowed_tools() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--context-window".to_string(),
+            "8000".to_string(),
+            "--disallowed-tools".to_string(),
+            "bash".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        // Auto-lite activates (lite=true) but should NOT override user's explicit disallowed_tools
+        assert!(config.lite);
+        assert_eq!(config.disallowed_tools, vec!["bash".to_string()]);
+    }
+
+    #[test]
+    fn test_validate_config_value_lite() {
+        use crate::config::validate_config_value;
+        // Valid values
+        assert!(validate_config_value("lite", "true").is_ok());
+        assert!(validate_config_value("lite", "false").is_ok());
+        // Invalid values
+        assert!(validate_config_value("lite", "banana").is_err());
     }
 }

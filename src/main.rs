@@ -646,6 +646,7 @@ async fn main() {
         auto_watch: config.auto_watch,
         disallowed_tools: config.disallowed_tools,
         no_tools: config.no_tools,
+        lite: config.lite,
     };
 
     if !run_setup_wizard_if_needed(is_interactive, &mut agent_config) {
@@ -918,6 +919,7 @@ mod tests {
             auto_watch: true,
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         }
     }
 
@@ -1345,6 +1347,7 @@ mod tests {
             auto_watch: true,
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         }
     }
 

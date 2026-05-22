@@ -702,6 +702,7 @@ fn clone_agent_config(config: &crate::AgentConfig) -> crate::AgentConfig {
         auto_watch: config.auto_watch,
         disallowed_tools: vec![],
         no_tools: false,
+        lite: false,
     }
 }
 

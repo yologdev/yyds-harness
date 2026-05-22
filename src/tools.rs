@@ -1000,6 +1000,7 @@ mod tests {
             auto_watch: true,
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         }
     }
 

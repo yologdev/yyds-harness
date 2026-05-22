@@ -457,6 +457,17 @@ pub fn parse_auto_watch_from_config(config: &std::collections::HashMap<String, S
     }
 }
 
+/// Check whether lite mode is enabled in the config.
+///
+/// Reads `lite` from the given config map. Defaults to `false`
+/// when the key is absent — lite mode must be explicitly opted into.
+pub fn parse_lite_from_config(config: &std::collections::HashMap<String, String>) -> bool {
+    match config.get("lite").map(|v| v.as_str()) {
+        Some("true") | Some("1") | Some("yes") | Some("on") => true,
+        _ => false, // default: disabled
+    }
+}
+
 /// Check whether auto-continue is enabled in the config.
 ///
 /// Reads `auto_continue` from the given config map. Defaults to `true`
@@ -500,6 +511,7 @@ pub const SETTABLE_KEYS: &[(&str, &str)] = &[
         "max_auto_continues",
         "max auto-continue follow-ups per turn (0-20)",
     ),
+    ("lite", "enable lite mode for small/local LLMs (true/false)"),
 ];
 
 /// Validate a config value for a given key. Returns `Ok(canonical_value)`
@@ -564,6 +576,14 @@ pub fn validate_config_value(key: &str, value: &str) -> Result<String, String> {
             Ok(n) => Err(format!("max_auto_continues {n} out of range (0-20)")),
             Err(_) => Err(format!("'{value}' is not a valid integer")),
         },
+        "lite" => {
+            let lower = value.to_ascii_lowercase();
+            match lower.as_str() {
+                "true" | "1" | "yes" | "on" => Ok("true".to_string()),
+                "false" | "0" | "no" | "off" => Ok("false".to_string()),
+                _ => Err(format!("invalid lite value '{value}' — use true or false")),
+            }
+        }
         _ => Err(format!(
             "unknown config key '{key}' — settable keys: {}",
             SETTABLE_KEYS

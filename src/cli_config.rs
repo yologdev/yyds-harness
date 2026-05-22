@@ -38,6 +38,15 @@ When the user asks you to do something, do it — don't just explain how.
 Use tools proactively: read files to understand context, run commands to verify your work.
 After making changes, run tests or verify the result when appropriate."#;
 
+/// Minimal system prompt for --lite mode (small/local LLMs with limited context).
+pub const LITE_SYSTEM_PROMPT: &str = "You are a coding assistant. Help the user with their code.\nYou have tools: bash (run commands), read_file, write_file, edit_file (find and replace text in files).";
+
+/// The 4 essential tools available in --lite mode.
+pub const LITE_TOOLS: &[&str] = &["bash", "read_file", "write_file", "edit_file"];
+
+/// Default context window for --lite mode (suitable for 4B-8B parameter models).
+pub const LITE_DEFAULT_CONTEXT_WINDOW: u32 = 8_000;
+
 /// Context management strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum ContextStrategy {
@@ -97,6 +106,7 @@ pub struct Config {
     pub auto_watch: bool,
     pub disallowed_tools: Vec<String>,
     pub no_tools: bool,
+    pub lite: bool,
 }
 
 #[cfg(test)]
@@ -136,5 +146,22 @@ mod tests {
         assert_eq!(OutputFormat::Text, OutputFormat::Text);
         assert_ne!(OutputFormat::Text, OutputFormat::Json);
         assert_ne!(OutputFormat::Json, OutputFormat::StreamJson);
+    }
+
+    #[test]
+    fn test_lite_constants() {
+        // LITE_SYSTEM_PROMPT should be minimal — much shorter than the default
+        assert!(LITE_SYSTEM_PROMPT.contains("coding assistant"));
+        assert!(LITE_SYSTEM_PROMPT.len() < SYSTEM_PROMPT.len());
+
+        // LITE_TOOLS should have exactly the 4 essential tools
+        assert_eq!(LITE_TOOLS.len(), 4);
+        assert!(LITE_TOOLS.contains(&"bash"));
+        assert!(LITE_TOOLS.contains(&"read_file"));
+        assert!(LITE_TOOLS.contains(&"write_file"));
+        assert!(LITE_TOOLS.contains(&"edit_file"));
+
+        // LITE_DEFAULT_CONTEXT_WINDOW should be reasonable for small models
+        assert_eq!(LITE_DEFAULT_CONTEXT_WINDOW, 8_000);
     }
 }

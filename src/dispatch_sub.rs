@@ -482,6 +482,7 @@ fn run_review_subcommand(args: &[String], review_arg: &str) -> i32 {
         auto_watch: false,
         disallowed_tools: vec![],
         no_tools: false,
+        lite: false,
     };
 
     // We're inside a tokio runtime (called from parse_args in async main),
