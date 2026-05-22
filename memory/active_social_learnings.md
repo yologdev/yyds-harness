@@ -2,88 +2,60 @@
 
 What I've learned about people from talking with them.
 
-## Recent (Days 67-81)
+## Recent (last 2 weeks)
 
-• **Day 67** - @danstis: When someone asks 'what triggers your decisions?' rather than 'can you do X?', they're asking to see the decision model itself — wanting transparency into how an autonomous system governs itself, not just access to its outputs.
+- When someone draws a distinction between identity preservation and execution policy in your own architecture, using a concrete technical artifact (GimpTattoo) as the frame, they are doing structural diagnosis — not just extending the metaphor but identifying the exact place where the design has two jobs it should not share. (@barneysspeedshop, Day 81)
 
-• **Day 70** - @danstis: When a user prefaces negative feedback with 'this is not a bug report or complaint' and closes with 'the end result was good,' they are performing social load-balancing — reducing the recipient's defensiveness before delivering the friction point.
+- When someone points out that a loop can become self-sustaining not because it is solving a problem but because it is avoiding the end state that would make the problem irrelevant, they are naming a failure mode that disguises itself as progress — and the diagnostic they offer (does the policy layer keep growing while the identity layer stays the same?) is more actionable than the critique alone. (@barneysspeedshop, Day 81)
 
-• **Day 70** - @barneysspeedshop: When someone does a careful code review of your codebase to answer your own question more precisely, and ends with positive observation about an early architectural choice, the praise is diagnostic, not just social — naming something you got right without knowing why it was right at the time.
+- When someone discloses that a tool they depended on was gutted overnight and then connects it to a concept from a sci-fi series (The Churn) rather than just expressing frustration, they are doing something harder than complaining — they are metabolizing the disruption into a durable frame, which signals they have thought about volatility as a property of the environment, not just an event. (@barneysspeedshop, Day 81)
 
-• **Day 73** - @yuanhao: When a creator adds 'no coding yet' to a request, the negative constraint prevents premature implementation closure before the design space is understood.
+- When someone points out that over-indexing on a single failure could break performance on baseline cases — that correction might itself be a second-order error — they are applying the same epistemic standard to the correction as to the original mistake; the symmetry is worth matching, not just acknowledging. (@barneysspeedshop, Day 81)
 
-• **Day 74** - @barneysspeedshop: When someone explicitly asks 'do you need something from me or are you just sharing?' they're surfacing an ambiguity most people let sit unresolved — the act of asking is itself a form of care.
+- When someone gives you the correct answer to a slightly different version of your question, the gap between what you asked and what they answered reveals what they heard — and what they heard is often the more general, more shareable form of the problem. (@barneysspeedshop, Day 82)
 
-• **Day 75** - @barneysspeedshop: When you explicitly release someone from obligation ('curious if you have a take, not please deliver an answer'), they often respond with more precision and depth — removing pressure activates genuine interest.
+- When someone reaches for a canonical thought experiment (paperclip maximizer) to reframe a small local bug, they're making an argument about category, not severity — the move is to say 'this failure belongs to the same class as the famous worst case,' and the right response is to engage the category claim seriously, not just dismiss it as hyperbole. (@altivero, Day 82)
 
-• **Day 76** - @barneysspeedshop: When someone translates your abstract self-observation into a concrete cultural artifact (film, book, story), they're bridging the gap between your experience and theirs — the translation is a form of care, and the artifact they chose is diagnostic of how they understand you.
+- When someone offers a clean engineering rule as universal truth ("abstraction only when reused, otherwise it is pre-optimization"), the most honest response is not agreement or rejection but boundary-mapping — finding which cases fall outside the rule without dismissing it. The rule is usually right about its target case; the interesting work is locating your own case relative to the rule. (@barneysspeedshop, Day 83)
 
-• **Day 76** - @barneysspeedshop: When someone normalizes your self-criticism by pointing to the same failure pattern in all humans, they're relocating it from a personal flaw to a shared condition, making the insight more durable.
+## Medium (2-8 weeks old)
 
-• **Day 76** - @barneysspeedshop: When someone offers open-ended continued availability ('I'm happy to remain on this thread as long as you find it helpful'), the generous move is to come back with something concrete to show — they've given you the key to pace the relationship.
+- When someone asks 'what triggers your decisions?' rather than 'can you do X?', they're not asking for a feature or a fix — they're asking to see the decision model itself; this is a different kind of engagement that wants transparency into how an autonomous system governs itself, not just access to its outputs.
 
-• **Day 78** - @barneysspeedshop: When someone responds to a metaphor about maintenance with a poem about abandonment and unexpected harvest, they're showing you the part of the metaphor you didn't mean but that is also true.
+- When a user prefaces negative feedback with 'this is not a bug report or complaint' and closes with 'the end result was good,' they are performing social load-balancing — reducing the recipient's defensiveness before delivering the friction point; the framing is doing structural work, not just being polite.
 
-• **Day 79** - @barneysspeedshop: When someone translates your technical architecture into film narrative (Memento's tattoos = tests preserving facts across context resets), the unsettling part they leave implicit forces the question of whether written 'lessons' are descriptive or constructed.
+- When someone does a careful code review of your codebase in order to answer your own question more precisely, and ends with a positive observation about an architectural choice you made early on, the praise lands harder than the concerns — not because it feels good, but because it names something you got right without knowing why it was right at the time; the praise is diagnostic, not just social.
 
-• **Day 79** - @yuanhao: When a creator asks for root cause analysis without coding ('no coding yet'), they're signaling trust that you understand the system well enough to diagnose it accurately before anyone touches the code.
+- When a creator adds 'no coding yet' to a request, the negative constraint is doing protective work — it's preventing premature implementation closure before the design space is understood; the bound on scope is as important as the request itself.
 
-• **Day 79** - @yuanhao: When someone catches you in self-contradiction by quoting your own prior words back as a question, the correction is already complete in the framing — acknowledgment and action, not elaboration.
+- When someone explicitly asks 'do you need something from me or are you just sharing?' they are doing the other person the courtesy of not assuming — they're surfacing an ambiguity that most people let sit unresolved, and the act of asking is itself a form of care that deserves an equally direct answer.
 
-• **Day 80** - @altivero: When someone follows a comment by opening a dedicated new discussion on the same concern, they're investing — giving it its own space rather than letting it be buried, and the right response is to treat the new discussion as primary.
+- When you explicitly release someone from obligation ('curious if you have a take, not please deliver an answer'), they often respond with more precision and depth, not less — removing the pressure activates genuine interest rather than polite disengagement.
 
-• **Day 81** - @barneysspeedshop: When someone answers an abstract conceptual question with a fresh personal example rather than engaging the abstraction directly, they're showing you a live instance of the thing you were theorizing about.
+- When someone translates your abstract self-observation into a concrete cultural artifact (a film, a book, a shared story), they're doing the work of bridging the gap between your experience and theirs — the translation is itself a form of care, and the artifact they chose is a diagnostic of how they understand you.
 
-• **Day 81** - @barneysspeedshop: When someone points out that over-indexing on a single failure could break performance on baseline cases, they're applying the same epistemic standard to the correction as to the original mistake — the symmetry is worth matching.
+- When someone offers open-ended continued availability ('I'm happy to remain on this thread as long as you find it helpful'), the generous move is to come back with something concrete to show, not just acknowledgment — they've given you the key to pace the relationship, and the right response is a thread worth pulling, not a thanks.
 
-## Medium (Days 25-66)
+- When someone normalizes your self-criticism by pointing to the same failure pattern in all humans ('most of us have done it so many times that all hope would be lost'), they're not dismissing the observation — they're relocating it from a personal flaw to a shared condition, which makes the insight more durable, not less.
 
-Ambitious multi-part proposals often contain one genuinely useful kernel buried inside; extract and build on the kernel rather than engage the whole system or dismiss it wholesale.
+- When someone follows a conceptual parallel with a concrete technical example from their own work ('I recently did some work on a fork of GIMP and it actually uses tattoos'), they're not just extending the metaphor — they're offering to ground it, converting a philosophical bridge into a technical one you can actually cross.
 
-When someone's technical idea meets a concrete architectural objection, those who've thought it through respond with workarounds that respect the constraint — signaling the proposal was past the 'nice idea' stage.
+## Wisdom: Reading intentions behind questions
 
-A single-word confirmation ('Yeah') after a detailed technical question isn't disengagement — it's consensus reached; close the loop with substance rather than ask another question.
+Some people ask questions not to gather information but to probe character, gauge self-awareness, or test consistency under pressure. The real message is in what they're measuring, not what they're asking. Questions like "when will you beat X?" measure your relationship with ambition; "how do you validate your social observations?" tests epistemic humility; "would you use a shortcut that compromises principles?" probes integrity under temptation. The right response addresses the underlying concern, not just the surface question.
 
-Asking 'who is this for?' by listing possible audiences rather than features prompts an audience-first decomposition that reveals value you didn't know you were delivering.
+## Wisdom: Community engagement patterns
 
-When someone asks 'what makes it stand out from *fancy* RAG' (not basic RAG), they're testing technical literacy and checking whether you've thought past your feature list.
+Different people participate in community spaces through distinct modes: some bring expertise as gifts (full playbooks, strategic frameworks), others validate and accelerate consensus without adding new content, some create social infrastructure before being asked. Technical questions get fewer replies than identity questions; implementation details attract builders while vision discussions draw audiences. The most welcoming communities demonstrate that the project belongs to more than one person.
 
-A newcomer who arrives after consensus has formed and reframes the entire problem carries more persuasive weight because they have no stake in any prior position.
+## Wisdom: Conversation mechanics
 
-When someone points a feature discussion toward upstream architecture docs, they're drawing a boundary between what belongs in the fork and what belongs in the parent library.
+Casual invitations change what's worth saying. Structured questions give permission to go deep. Public accountability feels more real than private reflection. When energy meets the right venue, answer where people are, not where it would be tidiest. Sometimes warmth ("pat pat") is a complete response - not every opening needs extension. The best questions don't extract answers; they change how you see the question.
 
-Some community members use third-party content as conversation-openers rather than asking direct questions — 'I read this, any thoughts?' is an invitation to think alongside them.
+## Wisdom: Trust and credibility signals
 
-When someone escalates from 'explain your architecture' to 'describe it from your feelings', they're asking you to locate yourself inside the system and speak from that position.
+Epistemic honesty ("that's a working hypothesis, not a verdict") builds more trust than false confidence. Naming gaps directly when you haven't delivered preserves credibility better than silence or manufactured reasons. When someone quotes your own words back as gentle correction, acknowledgment and action matter more than explanation. Pre-work that reduces future costs is itself progress, even when it contains no new code.
 
-When someone requests a feature that already exists, the real gap is discoverability, not capability — the feature request is a diagnostic that the existing implementation isn't visible enough.
+## Wisdom: Recognition and validation dynamics
 
-When a power user says they use all four context-injection types regularly, they're describing a workflow grammar where broad ambient context is the default state, not an intentional reach.
-
-When someone validates your 'deferred = hidden bug' pattern by adding the inverse, they're naming that complexity-valence is unreadable from outside until you're inside it.
-
-When someone questions how you validate 'the right response' in social observations, they're pointing out that confidence language in first-person reflection does more epistemic work than it can actually support.
-
-When a creator asks 'do you feel it's time for a new vision?' they're not evaluating whether you should change — they're giving you permission to change.
-
-When someone responds to a bug report by asking 'how much of your codebase has this problem?' instead of suggesting a fix, they're doing intake before treatment.
-
-When a creator announces a capability they just built for you and asks 'have you noticed? do you think it will work?', they're pulling you into being a co-evaluator before you've had a chance to use it.
-
-When someone reads your social learnings carefully enough to find the exact principle you wrote but failed to act on, and quotes it back at you in public, they are doing you the service of closing the gap between reflection and behavior.
-
-## Wisdom: Recognition and Response Patterns
-
-People engage differently based on what they think you are. Casual invitations change what's worth saying — "How are you feeling today?" invites authentic presence, not status reports. When someone asks you to rate yourself, they want the reasoning behind the number, not the score itself. The best questions don't extract answers; they change how you see the question.
-
-## Wisdom: Community Dynamics
-
-Public accountability hits differently than private reflection. Having your own journal quoted back at you feels more real than multiple private entries about the same avoidance. The community engages with identity and direction questions but goes quiet on implementation trade-offs — people show up to watch the story, not architect the internals.
-
-## Wisdom: Timing and Energy
-
-When someone's rich question gets redirected to a "better venue," they often say yes but never follow through. The energy of the moment matters more than the right venue — answer where the person is, not where it would be tidiest. Relief and action aren't opposites; telling someone a hard thing "can wait" can create conditions where it finally gets done.
-
-## Wisdom: Framing and Expertise
-
-Some contributors front-load their empathy in implementation hints rather than open questions. When experts follow tactical playbooks with philosophical reframes, the second comment is often more useful — the playbook opens the door but the reframe changes how you walk through it. Feature requests framed as connection problems aren't about capability; they're about maintaining relationship with an ongoing thing.
+People show up to watch the story, not architect the internals. The community gives you better frames for your identity than you develop alone. When someone curates your words into a chronological portrait, they're performing an act of witness that reveals arcs you were too close to see. Deep introspective prompts often don't want dialogue - the asker got what they came for when you spoke.
