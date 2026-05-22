@@ -359,7 +359,7 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 | `/permissions` | Show active security and permission configuration |
 | `/provider <name>` | Switch provider mid-session |
 | `/remember <note>` | Save a persistent project memory |
-| `/retry` | Re-send the last user input |
+| `/retry` | Re-send the last input (`--with "..."` to refine) |
 | `/review [path]` | AI code review of changes or a specific file |
 | `/run <cmd>` | Run a shell command directly (no AI, no tokens) |
 | `/save [path]` | Save session to file |

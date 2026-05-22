@@ -465,7 +465,13 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
         "retry" => Some(
             "/retry — Re-send the last user input\n\n\
              Repeats the most recent user message to the AI. Useful when\n\
-             a response was interrupted or you want a different answer.",
+             a response was interrupted or you want a different answer.\n\n\
+             Modifiers:\n\
+             \x20 /retry --with \"...\"   Append additional instructions to the retry\n\n\
+             Examples:\n\
+             \x20 /retry                        Re-run as-is\n\
+             \x20 /retry --with \"use async\"     Re-run with extra guidance\n\
+             \x20 /retry --with \"make it shorter\"",
         ),
         "history" => Some(
             "/history — Show summary of conversation messages\n\n\
@@ -1242,7 +1248,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "refactor" => Some("Refactoring tools (extract, rename, move)"),
         "remember" => Some("Save a memory note"),
         "rename" => Some("Rename a symbol across the project"),
-        "retry" => Some("Re-send the last input"),
+        "retry" => Some("Re-send the last input (--with \"...\" to refine)"),
         "review" => Some("AI code review"),
         "revisit" => Some("Review closed/shelved issues that may now be feasible"),
         "run" => Some("Run a shell command"),

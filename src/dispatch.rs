@@ -802,6 +802,7 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
         CommandRoute::Retry => {
             *ctx.last_error = commands::handle_retry(
                 ctx.agent,
+                ctx.input,
                 ctx.last_input,
                 ctx.last_error,
                 ctx.session_total,
