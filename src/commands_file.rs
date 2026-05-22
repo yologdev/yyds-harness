@@ -162,6 +162,19 @@ pub fn read_image_for_add(path: &str) -> Result<(String, String), String> {
     Ok((data, mime))
 }
 
+/// Estimate the number of tokens in a text string.
+///
+/// Uses the standard approximation of ~4 characters per token, which is
+/// widely used for English text and code. Returns an approximate value
+/// (callers should display with a `~` prefix).
+pub fn estimate_tokens_simple(text: &str) -> usize {
+    // 4 bytes per token is the standard rough estimate.
+    // We use byte length (not char count) since most tokenizers
+    // operate on bytes/byte-pairs and this matches the ~4 chars/token
+    // heuristic for ASCII-heavy content like code.
+    text.len() / 4
+}
+
 /// Handle the `/add` command: read file(s) and return the formatted content
 /// to be injected as a user message.
 ///
@@ -196,15 +209,16 @@ pub fn handle_add(input: &str) -> Vec<AddResult> {
                         smart_truncate_for_context(&text, ADD_MAX_LINES);
                     let line_count = text.lines().count();
                     let char_count = text.len();
+                    let token_est = estimate_tokens_simple(&text);
                     let formatted = format!("**{arg}**\n```\n{text}\n```");
                     let summary = if was_truncated {
                         format!(
-                            "{GREEN}  ✓ added {arg} (truncated: {line_count} of {original_lines} lines, {char_count} chars){RESET}"
+                            "{GREEN}  ✓ added {arg} (truncated: {line_count} of {original_lines} lines, {char_count} chars, ~{token_est} tokens){RESET}"
                         )
                     } else {
                         let word = crate::format::pluralize(line_count, "line", "lines");
                         format!(
-                            "{GREEN}  ✓ added {arg} ({line_count} {word}, {char_count} chars){RESET}"
+                            "{GREEN}  ✓ added {arg} ({line_count} {word}, {char_count} chars, ~{token_est} tokens){RESET}"
                         )
                     };
                     results.push(AddResult::Text {
@@ -271,6 +285,7 @@ pub fn handle_add(input: &str) -> Vec<AddResult> {
                     };
 
                     let formatted = format_add_content(path, &content);
+                    let token_est = estimate_tokens_simple(&content);
                     let word = crate::format::pluralize(line_count, "line", "lines");
                     let range_info = if let Some((s, e)) = range {
                         format!(" (lines {s}-{e})")
@@ -281,10 +296,10 @@ pub fn handle_add(input: &str) -> Vec<AddResult> {
                         let head_count = (ADD_MAX_LINES * 2) / 5;
                         let tail_count = ADD_MAX_LINES / 5;
                         format!(
-                            "{GREEN}  📎 added {path} (truncated: {head_count} head + {tail_count} tail of {original_lines} lines){RESET}\n{DIM}     use /add {path}:START-END to add specific sections{RESET}"
+                            "{GREEN}  📎 added {path} (truncated: {head_count} head + {tail_count} tail of {original_lines} lines, ~{token_est} tokens){RESET}\n{DIM}     use /add {path}:START-END to add specific sections{RESET}"
                         )
                     } else {
-                        format!("{GREEN}  ✓ added {path}{range_info} ({line_count} {word}){RESET}")
+                        format!("{GREEN}  ✓ added {path}{range_info} ({line_count} {word}, ~{token_est} tokens){RESET}")
                     };
                     results.push(AddResult::Text {
                         summary,
@@ -408,6 +423,7 @@ pub fn expand_file_mentions(input: &str) -> (String, Vec<AddResult>) {
             match read_file_for_add(raw_path, range) {
                 Ok((content, line_count)) => {
                     let formatted = format_add_content(raw_path, &content);
+                    let token_est = estimate_tokens_simple(&content);
                     let word = crate::format::pluralize(line_count, "line", "lines");
                     let range_info = if let Some((s, e)) = range {
                         format!(" (lines {s}-{e})")
@@ -415,7 +431,7 @@ pub fn expand_file_mentions(input: &str) -> (String, Vec<AddResult>) {
                         String::new()
                     };
                     let summary = format!(
-                        "{GREEN}  ✓ added {raw_path}{range_info} ({line_count} {word}){RESET}"
+                        "{GREEN}  ✓ added {raw_path}{range_info} ({line_count} {word}, ~{token_est} tokens){RESET}"
                     );
                     results.push(AddResult::Text {
                         summary,
@@ -1720,6 +1736,27 @@ diff --git a/clean.txt b/clean.txt
     }
 
     #[test]
+    fn test_handle_add_shows_token_estimate() {
+        let root = env!("CARGO_MANIFEST_DIR");
+        let cargo_path = format!("{}/Cargo.toml", root);
+        let results = handle_add(&format!("/add {}", cargo_path));
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            AddResult::Text { summary, .. } => {
+                assert!(
+                    summary.contains("tokens"),
+                    "Summary should include token estimate, got: {summary}"
+                );
+                assert!(
+                    summary.contains('~'),
+                    "Token estimate should use ~ prefix for approximation"
+                );
+            }
+            _ => panic!("Expected AddResult::Text"),
+        }
+    }
+
+    #[test]
     fn test_handle_add_with_line_range() {
         let root = env!("CARGO_MANIFEST_DIR");
         let results = handle_add(&format!("/add {}/Cargo.toml:1-3", root));
@@ -1982,12 +2019,16 @@ diff --git a/clean.txt b/clean.txt
         // that a URL doesn't produce "no files matched" (which would mean
         // it fell through to the file-path branch).
         //
-        // With a non-existent URL, fetch_url will fail and we get an error,
-        // but the important thing is it doesn't try to glob-expand the URL.
+        // The server may return content (error page HTML) or an empty body,
+        // so the result can be empty or contain one entry. Either is fine —
+        // the important thing is it took the URL code-path rather than
+        // trying to glob-expand the URL as a file path.
         let results = handle_add("/add https://httpbin.org/status/404");
-        // Should return empty (fetch fails on 404 with empty body) but
-        // should NOT print "no files matched" — it took the URL path
-        assert!(results.is_empty());
+        assert!(
+            results.len() <= 1,
+            "URL should produce at most one result, got {}",
+            results.len()
+        );
     }
 
     #[test]
@@ -1996,5 +2037,42 @@ diff --git a/clean.txt b/clean.txt
         let results = handle_add("/add nonexistent_file_that_does_not_exist.rs");
         // Should be empty because file doesn't exist (glob returns nothing)
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_estimate_tokens_simple_empty() {
+        assert_eq!(estimate_tokens_simple(""), 0);
+    }
+
+    #[test]
+    fn test_estimate_tokens_simple_known_text() {
+        // "hello world" is 11 bytes → 11/4 = 2
+        let est = estimate_tokens_simple("hello world");
+        assert_eq!(est, 2);
+    }
+
+    #[test]
+    fn test_estimate_tokens_simple_code() {
+        let code = "fn main() {\n    println!(\"Hello, world!\");\n}\n";
+        let est = estimate_tokens_simple(code);
+        // 45 bytes → 45/4 = 11, reasonable for a small code snippet
+        assert!(est > 0, "should produce a non-zero estimate for code");
+        assert!(est < 100, "should not wildly overestimate a small snippet");
+    }
+
+    #[test]
+    fn test_estimate_tokens_simple_large_input() {
+        // 40,000 chars → ~10,000 tokens
+        let large = "x".repeat(40_000);
+        let est = estimate_tokens_simple(&large);
+        assert_eq!(est, 10_000);
+    }
+
+    #[test]
+    fn test_estimate_tokens_simple_unicode() {
+        // Multi-byte characters: "日本語" is 9 bytes (3 chars × 3 bytes each)
+        let est = estimate_tokens_simple("日本語");
+        // 9 bytes / 4 = 2 — doesn't panic, gives reasonable result
+        assert_eq!(est, 2);
     }
 }

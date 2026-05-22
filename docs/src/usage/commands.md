@@ -648,13 +648,14 @@ The `/add` command reads files and injects their contents directly into the conv
   (3 files added to conversation)
 
 /add Cargo.toml README.md
-  ✓ added Cargo.toml (28 lines)
-  ✓ added README.md (50 lines)
+  ✓ added Cargo.toml (28 lines, ~350 tokens)
+  ✓ added README.md (50 lines, ~480 tokens)
   (2 files added to conversation)
 ```
 
 Features:
 - **Line ranges** — `/add path:start-end` injects only the specified lines
+- **Token estimates** — each added file shows an approximate token count (`~N tokens`) so you can track context usage
 - **Smart truncation** — files over 500 lines are automatically truncated, preserving the head (200 lines) and tail (100 lines) with a clear omission marker. Use `/add path:start-end` to inject specific sections of large files without truncation
 - **Glob patterns** — `/add src/*.rs` expands to all matching files
 - **Multiple files** — `/add file1 file2` adds both in one message
