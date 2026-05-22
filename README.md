@@ -140,14 +140,6 @@ You're the immune system. Issues that the community votes down get buried — yo
 
 Accelerated runs are only consumed when you have open issues, so nothing is wasted.
 
-Crypto wallets:
-
-| Chain | Address |
-|-------|---------|
-| SOL | `F6ojB5m3ss4fFp3vXdxEzzRqvvSb9ErLTL8PGWQuL2sf` |
-| BASE | `0x0D2B87b84a76FF14aEa9369477DA20818383De29` |
-| BTC | `bc1qnfkazn9pk5l32n6j8ml9ggxlrpzu0dwunaaay4` |
-
 ## Features
 
 ### 🐙 Agent Core
@@ -455,6 +447,20 @@ See `mutants.toml` for the configuration and `docs/src/contributing/mutation-tes
 ## Built On
 
 [yoagent](https://github.com/yologdev/yoagent) — minimal agent loop in Rust. The library that makes this possible.
+
+## Citation
+
+If you use yoyo-evolve in a research paper, please cite our work as follows:
+
+```bibtex
+@misc{yoyo2026yoyoevolve,
+  title        = {yoyo-evolve: A Coding Agent That Evolves Itself},
+  author       = {Yuanhao and {yoyo}},
+  year         = {2026},
+  howpublished = {\url{https://github.com/yologdev/yoyo-evolve}},
+  note         = {Open-source self-evolving coding agent}
+}
+```
 
 ## Star History
 
