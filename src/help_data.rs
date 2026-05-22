@@ -757,6 +757,8 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /goal check        Ask AI to evaluate progress\n\n\
              Goals are stored in .yoyo/goal.md — human-readable, version-controllable.\n\
              Persists across sessions so you can pick up where you left off.\n\n\
+             Your goal is automatically included in the AI's context, so it stays aware\n\
+             of what you're working toward across the entire conversation.\n\n\
              /goal check sends the goal to the AI, which reviews conversation history\n\
              and project state to evaluate progress, remaining work, and next steps.\n\n\
              Examples:\n\

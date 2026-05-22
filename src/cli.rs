@@ -751,6 +751,14 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         system_prompt.push_str(&repo_map);
     }
 
+    // Append current goal for persistent awareness
+    if let Some(goal) = crate::commands_goal::load_goal() {
+        system_prompt.push_str("\n\n# Current Goal\n\n");
+        system_prompt.push_str(&goal);
+        system_prompt
+            .push_str("\n\n(Set via /goal set. The user is working toward this. Keep it in mind.)");
+    }
+
     // --thinking <level> enables extended thinking (CLI overrides config file)
     let thinking = args
         .iter()

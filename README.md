@@ -348,7 +348,7 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 | `/loop <N\|until-pass> <prompt>` | Repeat a prompt in a polling loop |
 | `/forget <n>` | Remove a project memory by index |
 | `/git <subcmd>` | Quick git: status, log, add, diff, branch, stash |
-| `/goal [subcmd]` | Set, view, or check progress on a session goal (set/show/clear/check) |
+| `/goal [subcmd]` | Persistent goal — auto-injected into AI context (set/show/clear/check) |
 | `/health` | Run project health checks |
 | `/history` | Show conversation message summary |
 | `/history detail` | Per-turn breakdown with tools and token counts |
