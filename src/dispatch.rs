@@ -720,6 +720,17 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
         CommandRoute::Add => {
             let results = commands::handle_add(ctx.input);
             if !results.is_empty() {
+                // Collect paths that were added for related-file suggestions
+                let added_paths: Vec<String> = {
+                    let args = ctx.input.strip_prefix("/add").unwrap_or("").trim();
+                    args.split_whitespace()
+                        .flat_map(|arg| {
+                            let (raw_path, _) = crate::commands_file::parse_add_arg(arg);
+                            crate::commands_file::expand_add_paths(raw_path)
+                        })
+                        .collect()
+                };
+
                 // Print summaries
                 for result in &results {
                     match result {
@@ -727,6 +738,22 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
                         commands::AddResult::Image { summary, .. } => println!("{summary}"),
                     }
                 }
+
+                // Suggest related files for each added source file
+                let mut all_suggestions: Vec<String> = Vec::new();
+                for path in &added_paths {
+                    let suggestions = commands::suggest_related_files(path, &added_paths);
+                    for s in suggestions {
+                        if !all_suggestions.contains(&s) && all_suggestions.len() < 3 {
+                            all_suggestions.push(s);
+                        }
+                    }
+                }
+                if !all_suggestions.is_empty() {
+                    let list = all_suggestions.join(", ");
+                    eprintln!("{DIM}  💡 Related: {list} (use /add to include){RESET}");
+                }
+
                 // Build content blocks with proper text context for images
                 let content_blocks = crate::conversations::build_add_content_blocks(&results);
                 let word = crate::format::pluralize(results.len(), "file", "files");

@@ -68,14 +68,20 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /bg kill 1",
         ),
         "help" => Some(
-            "/help [command] — Show help information\n\n\
+            "/help [command|search <keyword>] — Show help information\n\n\
              Usage:\n\
              \x20 /help              Show all available commands\n\
-             \x20 /help <command>    Show detailed help for a specific command\n\n\
+             \x20 /help <command>    Show detailed help for a specific command\n\
+             \x20 /help search <kw>  Search commands by keyword\n\n\
+             The search looks across command names, descriptions, and detailed\n\
+             help text. Results are ranked by relevance (name match > description\n\
+             match > help text match).\n\n\
              Examples:\n\
              \x20 /help\n\
              \x20 /help add\n\
-             \x20 /help commit",
+             \x20 /help commit\n\
+             \x20 /help search git\n\
+             \x20 /help search test",
         ),
         "quit" | "exit" => Some(
             "/quit — Exit yoyo\n\n\

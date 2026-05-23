@@ -455,6 +455,8 @@ struct PostPromptContext<'a> {
     last_error: &'a mut Option<String>,
     prompt_start: Instant,
     effective_input: &'a str,
+    turn_count: usize,
+    turns_since_slash_command: usize,
 }
 
 /// Post-prompt handling: bell, error tracking, fallback retry, turn snapshots,
@@ -548,6 +550,27 @@ async fn handle_post_prompt(mut ctx: PostPromptContext<'_>) {
         let summary = format_turn_changes(ctx.changes_before, ctx.session_changes);
         if !summary.is_empty() {
             eprintln!("{DIM}{summary}{RESET}");
+        }
+    }
+
+    // ── Contextual hint: teach users about relevant commands ─────────
+    if !is_quiet() {
+        let ctx_max = crate::cli_config::effective_context_tokens();
+        let usage_ratio = if ctx_max > 0 {
+            ctx.session_total.total_tokens as f64 / ctx_max as f64
+        } else {
+            0.0
+        };
+        let hint_ctx = crate::format::HintContext {
+            turn_count: ctx.turn_count,
+            files_modified,
+            has_watch: get_watch_command().is_some(),
+            had_tool_error: ctx.outcome.last_tool_error.is_some(),
+            context_usage_ratio: usage_ratio,
+            turns_since_slash_command: ctx.turns_since_slash_command,
+        };
+        if let Some(hint) = crate::format::contextual_hint(&hint_ctx) {
+            eprintln!("{DIM}  {hint}{RESET}");
         }
     }
 
@@ -693,6 +716,7 @@ pub async fn run_repl(
     let mut session_total = Usage::default();
     let session_start = Instant::now();
     let mut turn_count: usize = 0;
+    let mut turns_since_slash_command: usize = 0;
     let mut last_input: Option<String> = None;
     let mut last_error: Option<String> = None;
     let mut bookmarks = commands::Bookmarks::new();
@@ -783,12 +807,17 @@ pub async fn run_repl(
         let cmd_result = crate::dispatch::dispatch_command(&mut dispatch_ctx).await;
         match cmd_result {
             CommandResult::Quit => break,
-            CommandResult::Continue => continue,
+            CommandResult::Continue => {
+                turns_since_slash_command = 0;
+                continue;
+            }
             CommandResult::SendToAgent(prompt) => {
+                turns_since_slash_command = 0;
                 last_input = Some(prompt);
                 // fall through to agent prompt handling
             }
             CommandResult::NotACommand => {
+                turns_since_slash_command += 1;
                 last_input = Some(input.to_string());
                 // fall through to agent prompt handling
             }
@@ -908,6 +937,8 @@ pub async fn run_repl(
             last_error: &mut last_error,
             prompt_start,
             effective_input: &effective_input,
+            turn_count,
+            turns_since_slash_command,
         })
         .await;
 
@@ -977,6 +1008,8 @@ pub async fn run_repl(
                     last_error: &mut last_error,
                     prompt_start: cont_start,
                     effective_input: cont_prompt,
+                    turn_count,
+                    turns_since_slash_command,
                 })
                 .await;
             }

@@ -541,7 +541,8 @@ pub use crate::commands_lint::{handle_lint, handle_lint_fix, handle_security, ha
 pub use crate::commands_run::{handle_loop, handle_run, handle_run_usage};
 
 pub use crate::commands_file::{
-    build_explain_prompt, expand_file_mentions, handle_add, handle_apply, handle_open, AddResult,
+    build_explain_prompt, expand_file_mentions, handle_add, handle_apply, handle_open,
+    suggest_related_files, AddResult,
 };
 
 pub use crate::commands_web::{handle_copy, handle_web, COPY_SUBCOMMANDS};

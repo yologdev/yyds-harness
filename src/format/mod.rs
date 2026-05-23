@@ -1,8 +1,9 @@
 //! Formatting helpers: ANSI colors, cost, duration, tokens, context bar, truncation.
 
+use std::collections::HashSet;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 // --- Color support with NO_COLOR and --no-color ---
@@ -631,6 +632,93 @@ pub fn context_budget_warning(used: u64, max: u64) -> Option<String> {
 /// Reset the context budget warning tracker so warnings re-arm after `/clear`.
 pub fn reset_context_budget_warning() {
     LAST_WARNED_THRESHOLD.store(0, Ordering::Relaxed);
+}
+
+// ── Contextual command hints (discoverability) ─────────────────────────
+
+/// Tracks which hint categories have already been shown this session.
+/// Once a category fires, it won't repeat.
+static SHOWN_HINTS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+
+fn shown_hints() -> &'static Mutex<HashSet<&'static str>> {
+    SHOWN_HINTS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Reset shown hints (for testing or session clear).
+#[cfg(test)]
+pub fn reset_shown_hints() {
+    if let Ok(mut guard) = shown_hints().lock() {
+        guard.clear();
+    }
+}
+
+/// Signals used by the contextual hint system to decide what to suggest.
+pub struct HintContext {
+    /// Which turn number this is (1-indexed).
+    pub turn_count: usize,
+    /// Whether files were modified in this turn.
+    pub files_modified: bool,
+    /// Whether a watch command is currently set.
+    pub has_watch: bool,
+    /// Whether the last tool call produced an error.
+    pub had_tool_error: bool,
+    /// Ratio of tokens used (0.0–1.0).
+    pub context_usage_ratio: f64,
+    /// Number of consecutive turns without any slash command.
+    pub turns_since_slash_command: usize,
+}
+
+/// Return at most one contextual hint based on what just happened.
+///
+/// Rules are evaluated in priority order. Each hint category fires at most
+/// once per session. Returns `None` when no rules match or the matching
+/// category was already shown. Callers should gate on `is_quiet()` before
+/// printing.
+pub fn contextual_hint(ctx: &HintContext) -> Option<String> {
+    let mut guard = shown_hints().lock().ok()?;
+
+    // Priority-ordered rules. First match wins.
+    let candidates: &[(&str, bool, &str)] = &[
+        (
+            "first_turn",
+            ctx.turn_count == 1,
+            "💡 Type /help to see available commands",
+        ),
+        (
+            "watch",
+            ctx.files_modified && !ctx.has_watch,
+            "💡 /watch to auto-test after every prompt",
+        ),
+        (
+            "retry",
+            ctx.had_tool_error,
+            "💡 /retry to re-run with the error context",
+        ),
+        (
+            "compact",
+            ctx.context_usage_ratio > 0.5,
+            "💡 /compact to free context space",
+        ),
+        (
+            "diff",
+            ctx.files_modified,
+            "💡 /diff to review changes, /commit to save",
+        ),
+        (
+            "tips",
+            ctx.turns_since_slash_command >= 3,
+            "💡 Try /tips to discover features",
+        ),
+    ];
+
+    for &(category, condition, message) in candidates {
+        if condition && !guard.contains(category) {
+            guard.insert(category);
+            return Some(message.to_string());
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -1675,5 +1763,167 @@ mod tests {
         enable_quiet();
         // This should be a no-op (early return) when quiet.
         print_context_usage(5000, 200_000);
+    }
+
+    // ── Contextual hint tests ──────────────────────────────────────────
+
+    fn make_hint_ctx() -> HintContext {
+        HintContext {
+            turn_count: 5,
+            files_modified: false,
+            has_watch: false,
+            had_tool_error: false,
+            context_usage_ratio: 0.1,
+            turns_since_slash_command: 0,
+        }
+    }
+
+    #[test]
+    fn test_hint_first_turn() {
+        reset_shown_hints();
+        let ctx = HintContext {
+            turn_count: 1,
+            ..make_hint_ctx()
+        };
+        let hint = contextual_hint(&ctx);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("/help"));
+    }
+
+    #[test]
+    fn test_hint_watch_when_files_modified_no_watch() {
+        reset_shown_hints();
+        let ctx = HintContext {
+            turn_count: 2,
+            files_modified: true,
+            has_watch: false,
+            ..make_hint_ctx()
+        };
+        let hint = contextual_hint(&ctx);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("/watch"));
+    }
+
+    #[test]
+    fn test_hint_no_watch_hint_when_watch_set() {
+        reset_shown_hints();
+        let ctx = HintContext {
+            turn_count: 2,
+            files_modified: true,
+            has_watch: true,
+            ..make_hint_ctx()
+        };
+        let hint = contextual_hint(&ctx);
+        // Should not get the watch hint; might get diff hint instead
+        if let Some(ref h) = hint {
+            assert!(!h.contains("/watch"));
+        }
+    }
+
+    #[test]
+    fn test_hint_retry_on_tool_error() {
+        reset_shown_hints();
+        let ctx = HintContext {
+            turn_count: 3,
+            had_tool_error: true,
+            ..make_hint_ctx()
+        };
+        let hint = contextual_hint(&ctx);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("/retry"));
+    }
+
+    #[test]
+    fn test_hint_compact_on_high_usage() {
+        reset_shown_hints();
+        let ctx = HintContext {
+            turn_count: 3,
+            context_usage_ratio: 0.6,
+            ..make_hint_ctx()
+        };
+        let hint = contextual_hint(&ctx);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("/compact"));
+    }
+
+    #[test]
+    fn test_hint_diff_when_files_modified() {
+        reset_shown_hints();
+        // watch hint fires first for files_modified + no watch, so set has_watch
+        let ctx = HintContext {
+            turn_count: 3,
+            files_modified: true,
+            has_watch: true,
+            ..make_hint_ctx()
+        };
+        let hint = contextual_hint(&ctx);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("/diff"));
+    }
+
+    #[test]
+    fn test_hint_tips_after_no_slash_commands() {
+        reset_shown_hints();
+        let ctx = HintContext {
+            turn_count: 5,
+            turns_since_slash_command: 3,
+            ..make_hint_ctx()
+        };
+        let hint = contextual_hint(&ctx);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("/tips"));
+    }
+
+    #[test]
+    fn test_hint_no_repeat_same_category() {
+        reset_shown_hints();
+        let ctx = HintContext {
+            turn_count: 3,
+            had_tool_error: true,
+            ..make_hint_ctx()
+        };
+        // First time: should get retry hint
+        let hint1 = contextual_hint(&ctx);
+        assert!(hint1.is_some());
+        assert!(hint1.unwrap().contains("/retry"));
+
+        // Second time: retry already shown, should not repeat
+        let hint2 = contextual_hint(&ctx);
+        // Could be None or a different hint, but NOT retry
+        if let Some(ref h) = hint2 {
+            assert!(!h.contains("/retry"));
+        }
+    }
+
+    #[test]
+    fn test_hint_none_when_no_conditions_match() {
+        reset_shown_hints();
+        let ctx = HintContext {
+            turn_count: 3,
+            files_modified: false,
+            has_watch: true,
+            had_tool_error: false,
+            context_usage_ratio: 0.1,
+            turns_since_slash_command: 0,
+        };
+        let hint = contextual_hint(&ctx);
+        assert!(hint.is_none());
+    }
+
+    #[test]
+    fn test_hint_priority_first_turn_wins() {
+        reset_shown_hints();
+        // Multiple conditions true, but first_turn is highest priority
+        let ctx = HintContext {
+            turn_count: 1,
+            files_modified: true,
+            has_watch: false,
+            had_tool_error: true,
+            context_usage_ratio: 0.8,
+            turns_since_slash_command: 5,
+        };
+        let hint = contextual_hint(&ctx);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("/help"));
     }
 }
