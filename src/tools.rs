@@ -17,9 +17,10 @@ use crate::commands_todo;
 use crate::format::*;
 use crate::hooks::{self, maybe_hook, AuditHook, HookRegistry};
 use crate::safety::analyze_bash_command;
+use crate::smart_edit::with_smart_edit;
 use crate::tool_wrappers::{
     maybe_confirm, maybe_guard, maybe_guard_arc, with_auto_check, with_lite_description,
-    with_recovery_hints, with_smart_edit, with_truncation, ToolFailureTracker,
+    with_recovery_hints, with_truncation, ToolFailureTracker,
 };
 use crate::AgentConfig;
 
