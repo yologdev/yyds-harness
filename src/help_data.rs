@@ -876,21 +876,28 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /spawn status",
         ),
         "review" => Some(
-            "/review [target] — AI code review\n\n\
+            "/review [--quick|--thorough] [target] — AI code review\n\n\
              Usage:\n\
              \x20 /review                   Review staged/uncommitted changes\n\
              \x20 /review <path>            Review a specific file\n\
              \x20 /review HEAD~3..HEAD      Review a commit range\n\
-             \x20 /review --pr 42           Review a GitHub PR\n\n\
-             Sends the diff or file to the AI for a code review, looking\n\
-             for bugs, style issues, and improvement opportunities.\n\n\
+             \x20 /review --pr 42           Review a GitHub PR\n\
+             \x20 /review --quick           Quick review: bugs & security only\n\
+             \x20 /review --thorough        Deep review: all dimensions\n\n\
+             Effort levels:\n\
+             \x20 --quick     Focus on bugs and security only. Skip style nits. Terse output.\n\
+             \x20 (default)   Bugs, security, style, performance, and suggestions.\n\
+             \x20 --thorough  Exhaustive review: also checks error handling, edge cases,\n\
+             \x20             API contracts, test coverage, docs, and concurrency.\n\n\
+             Sends the diff or file to the AI for a code review.\n\n\
              Also works as a CLI subcommand (non-interactive):\n\
              \x20 yoyo review               Review from the command line\n\
+             \x20 yoyo review --quick       Quick review from CLI\n\
              \x20 yoyo review HEAD~1 > r.md Pipe review to a file\n\n\
              Examples:\n\
              \x20 /review\n\
-             \x20 /review src/main.rs\n\
-             \x20 /review HEAD~3..HEAD",
+             \x20 /review --quick src/main.rs\n\
+             \x20 /review --thorough HEAD~3..HEAD",
         ),
         "revisit" => Some(
             "/revisit [subcommand] — Review closed/shelved issues that may now be feasible\n\n\
@@ -1273,7 +1280,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "remember" => Some("Save a memory note"),
         "rename" => Some("Rename a symbol across the project"),
         "retry" => Some("Re-send the last input (--with \"...\" to refine)"),
-        "review" => Some("AI code review"),
+        "review" => Some("AI code review (--quick, --thorough)"),
         "revisit" => Some("Review closed/shelved issues that may now be feasible"),
         "run" => Some("Run a shell command"),
         "save" => Some("Save session to file"),
