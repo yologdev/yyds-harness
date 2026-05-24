@@ -2,7 +2,9 @@
 //! /mark, /jump, /marks, /export.
 
 use crate::format::*;
-use crate::prompt_utils::{search_messages, summarize_message};
+use crate::prompt_utils::{
+    format_context_summary, search_messages, summarize_context_topics, summarize_message,
+};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -201,10 +203,16 @@ pub fn handle_compact(agent: &mut Agent, input: &str) {
                 None => String::new(),
             };
             println!(
-                "{DIM}  compacted{keep_label}: {before_count} → {after_count} messages, ~{} → ~{} tokens{RESET}\n",
+                "{DIM}  compacted{keep_label}: {before_count} → {after_count} messages, ~{} → ~{} tokens{RESET}",
                 format_token_count(before_tokens),
                 format_token_count(after_tokens)
             );
+            // Show what topics/files survived compaction
+            let topics = summarize_context_topics(agent.messages());
+            if let Some(summary) = format_context_summary(&topics) {
+                println!("{DIM}  {summary}{RESET}");
+            }
+            println!();
         }
         None => {
             println!(

@@ -138,6 +138,147 @@ pub fn search_messages(messages: &[AgentMessage], query: &str) -> Vec<(usize, St
     results
 }
 
+/// File-tool names whose `path` argument references a file.
+const FILE_TOOLS: &[&str] = &[
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_files",
+    "search",
+];
+
+/// Max number of file paths to include in the context summary.
+const MAX_FILES: usize = 10;
+/// Max number of topic strings to include in the context summary.
+const MAX_TOPICS: usize = 5;
+
+/// Summarize what topics and files are present in a set of messages.
+///
+/// Scans tool calls for file paths and user messages for topic keywords.
+/// Returns a vec of short strings like `["src/main.rs", "auth refactor"]`.
+pub fn summarize_context_topics(messages: &[AgentMessage]) -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    let mut topics: Vec<String> = Vec::new();
+    let mut user_count = 0;
+
+    for msg in messages {
+        match msg {
+            // Extract file paths from tool calls in assistant messages
+            AgentMessage::Llm(Message::Assistant { content, .. }) => {
+                for c in content {
+                    if let Content::ToolCall {
+                        name, arguments, ..
+                    } = c
+                    {
+                        if FILE_TOOLS.contains(&name.as_str()) {
+                            if let Some(path) = arguments.get("path").and_then(|v| v.as_str()) {
+                                if !path.is_empty()
+                                    && files.len() < MAX_FILES
+                                    && !files.iter().any(|f| f == path)
+                                {
+                                    files.push(path.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Extract topics from user messages (first few meaningful messages)
+            AgentMessage::Llm(Message::User { content, .. }) if user_count < MAX_TOPICS => {
+                let text: String = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        Content::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let text = text.trim();
+                // Skip empty, slash-commands, and very short messages
+                if !text.is_empty() && !text.starts_with('/') && text.len() > 3 {
+                    let topic = extract_topic_phrase(text);
+                    if !topic.is_empty() && !topics.contains(&topic) && !files.contains(&topic) {
+                        topics.push(topic);
+                    }
+                    user_count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut result: Vec<String> = files.into_iter().collect();
+    result.extend(topics);
+    result
+}
+
+/// Extract a short topic phrase from user text.
+/// Takes the first meaningful segment (up to ~50 chars), stopping at sentence/clause boundaries.
+fn extract_topic_phrase(text: &str) -> String {
+    // Take first line only
+    let first_line = text.lines().next().unwrap_or("").trim();
+    if first_line.is_empty() {
+        return String::new();
+    }
+    // Truncate at a reasonable length, preferring to break at word boundaries
+    let max_len = 50;
+    if first_line.len() <= max_len {
+        return first_line.to_string();
+    }
+    // Find a safe char boundary and then a word boundary
+    let mut end = max_len;
+    while end > 0 && !first_line.is_char_boundary(end) {
+        end -= 1;
+    }
+    // Try to break at the last space before the limit
+    if let Some(space_pos) = first_line[..end].rfind(' ') {
+        if space_pos > 10 {
+            end = space_pos;
+        }
+    }
+    format!("{}…", &first_line[..end])
+}
+
+/// Format the context summary for display after compaction.
+/// Returns `None` if there's nothing to summarize.
+pub fn format_context_summary(topics: &[String]) -> Option<String> {
+    if topics.is_empty() {
+        return None;
+    }
+
+    let file_count = topics.iter().filter(|t| looks_like_path(t)).count();
+    let topic_count = topics.len() - file_count;
+
+    let items = topics.join(", ");
+
+    let mut suffix_parts = Vec::new();
+    if file_count > 0 {
+        suffix_parts.push(format!(
+            "{file_count} file{}",
+            if file_count == 1 { "" } else { "s" }
+        ));
+    }
+    if topic_count > 0 {
+        suffix_parts.push(format!(
+            "{topic_count} topic{}",
+            if topic_count == 1 { "" } else { "s" }
+        ));
+    }
+
+    let suffix = if suffix_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", suffix_parts.join(", "))
+    };
+
+    Some(format!("📋 Still in context: {items}{suffix}"))
+}
+
+/// Heuristic: does this string look like a file path?
+fn looks_like_path(s: &str) -> bool {
+    s.contains('/') || (s.contains('.') && !s.contains(' '))
+}
+
 /// Summarize a message for /history display.
 pub fn summarize_message(msg: &AgentMessage) -> (&str, String) {
     match msg {
@@ -448,5 +589,156 @@ mod tests {
         assert_eq!(results.len(), 1);
         // The preview should contain BOLD highlighting around "hello"
         assert!(results[0].2.contains(&format!("{BOLD}hello{RESET}")));
+    }
+
+    // --- summarize_context_topics tests ---
+
+    /// Helper: build an assistant message with a single tool call.
+    fn assistant_with_tool(name: &str, path: &str) -> AgentMessage {
+        AgentMessage::Llm(Message::Assistant {
+            content: vec![Content::ToolCall {
+                id: "tc_1".into(),
+                name: name.into(),
+                arguments: serde_json::json!({ "path": path }),
+                provider_metadata: None,
+            }],
+            stop_reason: StopReason::ToolUse,
+            model: "test".into(),
+            provider: "test".into(),
+            usage: Usage::default(),
+            timestamp: 0,
+            error_message: None,
+        })
+    }
+
+    #[test]
+    fn test_summarize_context_topics_extracts_file_paths() {
+        let messages = vec![
+            assistant_with_tool("read_file", "src/main.rs"),
+            assistant_with_tool("edit_file", "src/tools.rs"),
+            assistant_with_tool("write_file", "src/new.rs"),
+        ];
+        let topics = summarize_context_topics(&messages);
+        assert!(topics.contains(&"src/main.rs".to_string()));
+        assert!(topics.contains(&"src/tools.rs".to_string()));
+        assert!(topics.contains(&"src/new.rs".to_string()));
+        assert_eq!(topics.len(), 3);
+    }
+
+    #[test]
+    fn test_summarize_context_topics_deduplicates_paths() {
+        let messages = vec![
+            assistant_with_tool("read_file", "src/main.rs"),
+            assistant_with_tool("edit_file", "src/main.rs"),
+            assistant_with_tool("read_file", "src/main.rs"),
+        ];
+        let topics = summarize_context_topics(&messages);
+        assert_eq!(
+            topics.iter().filter(|t| *t == "src/main.rs").count(),
+            1,
+            "should deduplicate file paths"
+        );
+    }
+
+    #[test]
+    fn test_summarize_context_topics_empty_messages() {
+        let topics = summarize_context_topics(&[]);
+        assert!(topics.is_empty());
+    }
+
+    #[test]
+    fn test_summarize_context_topics_ignores_non_file_tools() {
+        let messages = vec![assistant_with_tool("bash", "/usr/bin/ls")];
+        let topics = summarize_context_topics(&messages);
+        // bash is not a file tool, so no paths extracted
+        assert!(
+            !topics.contains(&"/usr/bin/ls".to_string()),
+            "should not extract paths from non-file tools"
+        );
+    }
+
+    #[test]
+    fn test_summarize_context_topics_extracts_user_topics() {
+        let messages = vec![
+            AgentMessage::Llm(Message::user(
+                "refactor the authentication module to use JWT tokens",
+            )),
+            assistant_with_tool("read_file", "src/auth.rs"),
+        ];
+        let topics = summarize_context_topics(&messages);
+        assert!(topics.contains(&"src/auth.rs".to_string()));
+        // Should have a topic from the user message
+        assert!(topics.len() >= 2, "should include user topic");
+        assert!(
+            topics
+                .iter()
+                .any(|t| t.contains("refactor") || t.contains("authentication")),
+            "should extract topic from user message"
+        );
+    }
+
+    #[test]
+    fn test_summarize_context_topics_caps_files() {
+        // Create 15 unique file paths — should cap at MAX_FILES (10)
+        let messages: Vec<AgentMessage> = (0..15)
+            .map(|i| assistant_with_tool("read_file", &format!("src/file_{i}.rs")))
+            .collect();
+        let topics = summarize_context_topics(&messages);
+        let file_count = topics.iter().filter(|t| looks_like_path(t)).count();
+        assert!(file_count <= 10, "should cap at MAX_FILES");
+    }
+
+    #[test]
+    fn test_summarize_context_topics_skips_slash_commands() {
+        let messages = vec![AgentMessage::Llm(Message::user("/compact"))];
+        let topics = summarize_context_topics(&messages);
+        assert!(
+            topics.is_empty(),
+            "should skip slash commands as user topics"
+        );
+    }
+
+    #[test]
+    fn test_format_context_summary_empty() {
+        assert!(format_context_summary(&[]).is_none());
+    }
+
+    #[test]
+    fn test_format_context_summary_files_only() {
+        let topics = vec!["src/main.rs".to_string(), "src/tools.rs".to_string()];
+        let summary = format_context_summary(&topics).unwrap();
+        assert!(summary.contains("src/main.rs"));
+        assert!(summary.contains("src/tools.rs"));
+        assert!(summary.contains("2 files"));
+    }
+
+    #[test]
+    fn test_format_context_summary_mixed() {
+        let topics = vec![
+            "src/main.rs".to_string(),
+            "refactor auth module".to_string(),
+        ];
+        let summary = format_context_summary(&topics).unwrap();
+        assert!(summary.contains("1 file"));
+        assert!(summary.contains("1 topic"));
+        assert!(summary.contains("📋"));
+    }
+
+    #[test]
+    fn test_extract_topic_phrase_short() {
+        assert_eq!(extract_topic_phrase("fix the bug"), "fix the bug");
+    }
+
+    #[test]
+    fn test_extract_topic_phrase_long() {
+        let long_text = "this is a very long message that should be truncated at a reasonable point so it doesn't overflow the display area in the terminal";
+        let result = extract_topic_phrase(long_text);
+        assert!(result.len() <= 55); // 50 + a few for the ellipsis
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn test_extract_topic_phrase_empty() {
+        assert_eq!(extract_topic_phrase(""), "");
     }
 }

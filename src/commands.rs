@@ -180,7 +180,7 @@ pub const KNOWN_MODELS: &[&str] = &[
 pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high"];
 
 /// Git subcommand names for `/git <Tab>` completion.
-pub const GIT_SUBCOMMANDS: &[&str] = &["status", "log", "add", "diff", "branch", "stash"];
+pub const GIT_SUBCOMMANDS: &[&str] = &["status", "log", "add", "stage", "diff", "branch", "stash"];
 
 /// PR subcommand names for `/pr <Tab>` completion.
 pub const PR_SUBCOMMANDS: &[&str] = &[
@@ -1143,10 +1143,11 @@ mod tests {
         let candidates = command_arg_completions("/git", "st");
         assert_eq!(
             candidates.len(),
-            2,
-            "Should match 'status' and 'stash': {candidates:?}"
+            3,
+            "Should match 'status', 'stage', and 'stash': {candidates:?}"
         );
         assert!(candidates.contains(&"status".to_string()));
+        assert!(candidates.contains(&"stage".to_string()));
         assert!(candidates.contains(&"stash".to_string()));
     }
 
