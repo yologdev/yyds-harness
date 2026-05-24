@@ -113,6 +113,156 @@ pub fn format_memories_for_prompt(memory: &ProjectMemory) -> Option<String> {
     Some(lines.join("\n"))
 }
 
+/// Format an ISO-like timestamp as a human-readable relative time.
+///
+/// Accepts timestamps in the `YYYY-MM-DD HH:MM` format (as stored by
+/// `current_timestamp()`). Returns strings like "just now", "5m ago",
+/// "2h ago", "3d ago", "2w ago", "3mo ago".
+///
+/// On parse failure, returns the original timestamp unchanged.
+pub fn format_relative_time(iso_timestamp: &str) -> String {
+    format_relative_time_from(iso_timestamp, now_epoch_secs())
+}
+
+/// Testable inner implementation — takes an explicit "now" epoch.
+fn format_relative_time_from(iso_timestamp: &str, now_secs: i64) -> String {
+    let ts_secs = match parse_timestamp_to_epoch(iso_timestamp.trim()) {
+        Some(s) => s,
+        None => return iso_timestamp.to_string(),
+    };
+    let diff = now_secs.saturating_sub(ts_secs);
+    if diff < 0 {
+        return iso_timestamp.to_string();
+    }
+    let diff = diff as u64;
+
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    const WEEK: u64 = 7 * DAY;
+    const MONTH: u64 = 30 * DAY;
+
+    if diff < MINUTE {
+        "just now".to_string()
+    } else if diff < HOUR {
+        format!("{}m ago", diff / MINUTE)
+    } else if diff < DAY {
+        format!("{}h ago", diff / HOUR)
+    } else if diff < WEEK {
+        format!("{}d ago", diff / DAY)
+    } else if diff < MONTH {
+        format!("{}w ago", diff / WEEK)
+    } else {
+        format!("{}mo ago", diff / MONTH)
+    }
+}
+
+/// Parse `YYYY-MM-DD HH:MM` (local time) into epoch seconds.
+/// Returns `None` on any parse failure.
+fn parse_timestamp_to_epoch(s: &str) -> Option<i64> {
+    // Expected format: "2026-03-15 08:32"
+    if s.len() < 16 {
+        return None;
+    }
+    let year: i32 = s.get(0..4)?.parse().ok()?;
+    if s.as_bytes().get(4)? != &b'-' {
+        return None;
+    }
+    let month: u32 = s.get(5..7)?.parse().ok()?;
+    if s.as_bytes().get(7)? != &b'-' {
+        return None;
+    }
+    let day: u32 = s.get(8..10)?.parse().ok()?;
+    if s.as_bytes().get(10)? != &b' ' {
+        return None;
+    }
+    let hour: u32 = s.get(11..13)?.parse().ok()?;
+    if s.as_bytes().get(13)? != &b':' {
+        return None;
+    }
+    let min: u32 = s.get(14..16)?.parse().ok()?;
+
+    // Validate ranges
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hour >= 24 || min >= 60 {
+        return None;
+    }
+
+    // Convert to epoch using the same local-time assumption as `date`.
+    // We shell out to `date -d` (Linux) or `date -j -f` (macOS) for
+    // portability — but that's fragile. Instead, compute a UTC-ish epoch
+    // inline and accept the same local-time offset error that `date +%Y-%m-%d`
+    // introduces. Since both the stored timestamp and "now" share the offset,
+    // the *difference* is correct (which is all we need for relative display).
+
+    // Days from year 0 to start of `year`, then add month/day.
+    let epoch = simple_local_epoch(year, month, day, hour, min);
+    Some(epoch)
+}
+
+/// A lightweight local-time epoch (seconds since 1970-01-01 00:00 local).
+/// Does NOT account for timezone — but since both stored timestamps and
+/// `now_epoch_secs` share the same offset, the difference is correct.
+fn simple_local_epoch(year: i32, month: u32, day: u32, hour: u32, min: u32) -> i64 {
+    // Days in each month (non-leap)
+    const MONTH_DAYS: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+    fn is_leap(y: i32) -> bool {
+        (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    }
+
+    // Days from 1970-01-01 to start of `year`
+    let mut days: i64 = 0;
+    if year >= 1970 {
+        for y in 1970..year {
+            days += if is_leap(y) { 366 } else { 365 };
+        }
+    } else {
+        for y in year..1970 {
+            days -= if is_leap(y) { 366 } else { 365 };
+        }
+    }
+
+    // Add months
+    for (m, &md) in MONTH_DAYS.iter().enumerate().take((month - 1) as usize) {
+        days += md as i64;
+        if m == 1 && is_leap(year) {
+            days += 1; // Feb in leap year
+        }
+    }
+
+    // Add days (1-indexed)
+    days += (day - 1) as i64;
+
+    days * 86400 + hour as i64 * 3600 + min as i64 * 60
+}
+
+/// Current local time as epoch seconds (same basis as `current_timestamp`).
+fn now_epoch_secs() -> i64 {
+    // Parse the output of `date +%s` for a local-consistent epoch.
+    // Falls back to UNIX_EPOCH-based SystemTime if shell fails.
+    std::process::Command::new("date")
+        .arg("+%Y-%m-%d %H:%M")
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                let s = String::from_utf8(o.stdout).ok()?;
+                parse_timestamp_to_epoch(s.trim())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0)
+        })
+}
+
 /// Get the current timestamp in a human-readable format.
 fn current_timestamp() -> String {
     // Use a simple approach: shell out to date command for portability
@@ -493,5 +643,90 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].0, 0);
         assert_eq!(results[1].0, 2);
+    }
+
+    // --- format_relative_time tests ---
+
+    fn fixed_now() -> i64 {
+        // 2026-05-24 12:00 as local epoch
+        simple_local_epoch(2026, 5, 24, 12, 0)
+    }
+
+    #[test]
+    fn test_relative_time_just_now() {
+        let now = fixed_now();
+        // 30 seconds ago — "just now"
+        let ts = "2026-05-24 12:00"; // same minute
+        assert_eq!(format_relative_time_from(ts, now), "just now");
+    }
+
+    #[test]
+    fn test_relative_time_minutes_ago() {
+        let now = fixed_now();
+        // 5 minutes ago → 2026-05-24 11:55
+        let ts = "2026-05-24 11:55";
+        assert_eq!(format_relative_time_from(ts, now), "5m ago");
+    }
+
+    #[test]
+    fn test_relative_time_hours_ago() {
+        let now = fixed_now();
+        // 2 hours ago → 2026-05-24 10:00
+        let ts = "2026-05-24 10:00";
+        let result = format_relative_time_from(ts, now);
+        assert_eq!(result, "2h ago");
+    }
+
+    #[test]
+    fn test_relative_time_days_ago() {
+        let now = fixed_now();
+        // 3 days ago → 2026-05-21 12:00
+        let ts = "2026-05-21 12:00";
+        assert_eq!(format_relative_time_from(ts, now), "3d ago");
+    }
+
+    #[test]
+    fn test_relative_time_weeks_ago() {
+        let now = fixed_now();
+        // 14 days ago → 2026-05-10 12:00
+        let ts = "2026-05-10 12:00";
+        assert_eq!(format_relative_time_from(ts, now), "2w ago");
+    }
+
+    #[test]
+    fn test_relative_time_months_ago() {
+        let now = fixed_now();
+        // ~90 days ago → 2026-02-23 12:00
+        let ts = "2026-02-23 12:00";
+        assert_eq!(format_relative_time_from(ts, now), "3mo ago");
+    }
+
+    #[test]
+    fn test_relative_time_malformed_returns_original() {
+        let now = fixed_now();
+        let ts = "not-a-timestamp";
+        assert_eq!(format_relative_time_from(ts, now), "not-a-timestamp");
+    }
+
+    #[test]
+    fn test_relative_time_exactly_one_hour() {
+        let now = fixed_now();
+        // Exactly 1 hour ago → 2026-05-24 11:00
+        let ts = "2026-05-24 11:00";
+        assert_eq!(format_relative_time_from(ts, now), "1h ago");
+    }
+
+    #[test]
+    fn test_parse_timestamp_to_epoch_valid() {
+        let epoch = parse_timestamp_to_epoch("2026-05-24 12:00");
+        assert!(epoch.is_some());
+    }
+
+    #[test]
+    fn test_parse_timestamp_to_epoch_invalid() {
+        assert!(parse_timestamp_to_epoch("garbage").is_none());
+        assert!(parse_timestamp_to_epoch("2026-13-01 00:00").is_none()); // bad month
+        assert!(parse_timestamp_to_epoch("2026-05-32 00:00").is_none()); // bad day
+        assert!(parse_timestamp_to_epoch("2026-05-24 25:00").is_none()); // bad hour
     }
 }
