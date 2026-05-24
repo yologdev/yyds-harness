@@ -363,6 +363,11 @@ pub fn handle_tokens(agent: &Agent, session_total: &Usage, model: &str) {
     );
     println!("    {bar}");
 
+    // Estimated remaining turns
+    if let Some((remaining, avg)) = estimate_remaining_turns(&messages, max_context) {
+        println!("    {}", format_remaining_turns(remaining, avg));
+    }
+
     // Show per-category context breakdown
     if !messages.is_empty() {
         let breakdown = context_breakdown(&messages);
@@ -820,7 +825,20 @@ pub fn handle_profile(
         format!("{ctx_color}{ctx_plain}{DIM}"),
     ));
 
-    // Use fixed label column of 10 chars (longest key is "Provider" = 8 + ":  " = 11)
+    // Estimated remaining turns
+    let remaining_str = estimate_remaining_turns(messages, max_context)
+        .map(|(r, a)| format_remaining_turns(r, a))
+        .unwrap_or_default();
+    // Strip ANSI codes for width calculation
+    let remaining_plain = remaining_str
+        .replace("\x1b[33m", "")
+        .replace("\x1b[31m", "")
+        .replace("\x1b[0m", "");
+    if !remaining_str.is_empty() {
+        lines.push(("Remaining", &remaining_plain, remaining_str.clone()));
+    }
+
+    // Use fixed label column of 10 chars (longest key is "Remaining" = 9 + ":" = 10)
     let label_col = 10;
     // Find the longest value for box width
     let max_val_width = lines.iter().map(|(_, pv, _)| pv.len()).max().unwrap_or(20);

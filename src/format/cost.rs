@@ -287,6 +287,61 @@ pub fn context_bar(used: u64, max: u64) -> String {
     format!("{bar} {label}")
 }
 
+/// Estimate how many more turns fit before hitting the context limit.
+///
+/// Returns `None` if fewer than 2 assistant turns have occurred (not enough
+/// data for a meaningful average). Otherwise returns
+/// `Some((remaining_turns, avg_tokens_per_turn))`.
+pub fn estimate_remaining_turns(
+    messages: &[yoagent::AgentMessage],
+    max_context: u64,
+) -> Option<(usize, f64)> {
+    // Count assistant turns
+    let turn_count = messages
+        .iter()
+        .filter(|m| {
+            matches!(
+                m,
+                yoagent::AgentMessage::Llm(yoagent::Message::Assistant { .. })
+            )
+        })
+        .count();
+
+    if turn_count < 2 {
+        return None;
+    }
+
+    let context_used = yoagent::context::total_tokens(messages) as u64;
+    if context_used == 0 {
+        return None;
+    }
+
+    let avg_per_turn = context_used as f64 / turn_count as f64;
+    let remaining_capacity = max_context.saturating_sub(context_used);
+    let remaining_turns = (remaining_capacity as f64 / avg_per_turn).floor() as usize;
+
+    Some((remaining_turns, avg_per_turn))
+}
+
+/// Format estimated remaining turns for display.
+///
+/// Uses yellow for ≤3 remaining turns and red when context is nearly full.
+pub fn format_remaining_turns(remaining: usize, avg_per_turn: f64) -> String {
+    use super::{RED, RESET, YELLOW};
+
+    let avg_str = format_token_count(avg_per_turn as u64);
+    if remaining == 0 {
+        format!("{RED}⚠ Context nearly full (~{avg_str}/turn avg){RESET}")
+    } else if remaining <= 3 {
+        format!(
+            "{YELLOW}~{remaining} {} remaining (~{avg_str}/turn avg){RESET}",
+            if remaining == 1 { "turn" } else { "turns" }
+        )
+    } else {
+        format!("~{remaining} turns remaining (~{avg_str}/turn avg)")
+    }
+}
+
 /// Truncate a string with an ellipsis if it exceeds `max` characters.
 /// Return the correct singular or plural form of a word based on count.
 ///
@@ -1696,5 +1751,123 @@ mod tests {
         }];
         let output = format_tool_call_summary(&summary);
         assert!(output.contains("(3 errors)"));
+    }
+
+    // ── estimate_remaining_turns / format_remaining_turns ──
+
+    #[test]
+    fn test_estimate_remaining_turns_empty() {
+        let messages: Vec<yoagent::AgentMessage> = vec![];
+        assert!(estimate_remaining_turns(&messages, 200_000).is_none());
+    }
+
+    #[test]
+    fn test_estimate_remaining_turns_one_turn() {
+        use yoagent::{AgentMessage, Content, Message, StopReason, Usage};
+
+        let messages = vec![AgentMessage::Llm(Message::Assistant {
+            content: vec![Content::Text { text: "hi".into() }],
+            stop_reason: StopReason::Stop,
+            model: "test".into(),
+            provider: "test".into(),
+            usage: Usage {
+                input: 1000,
+                output: 500,
+                cache_read: 0,
+                cache_write: 0,
+                total_tokens: 1500,
+            },
+            timestamp: 0,
+            error_message: None,
+        })];
+        // Only 1 turn — not enough data
+        assert!(estimate_remaining_turns(&messages, 200_000).is_none());
+    }
+
+    #[test]
+    fn test_estimate_remaining_turns_basic() {
+        use yoagent::{AgentMessage, Content, Message, StopReason, Usage};
+
+        let make_assistant = |input: u64, output: u64| {
+            AgentMessage::Llm(Message::Assistant {
+                content: vec![Content::Text { text: "hi".into() }],
+                stop_reason: StopReason::Stop,
+                model: "test".into(),
+                provider: "test".into(),
+                usage: Usage {
+                    input,
+                    output,
+                    cache_read: 0,
+                    cache_write: 0,
+                    total_tokens: input + output,
+                },
+                timestamp: 0,
+                error_message: None,
+            })
+        };
+        let user_msg = AgentMessage::Llm(Message::User {
+            content: vec![Content::Text { text: "q".into() }],
+            timestamp: 0,
+        });
+
+        // 3 assistant turns, each with ~1500 total tokens in usage
+        // total_tokens() estimates based on content, not usage fields,
+        // so the actual context size depends on message_tokens().
+        let messages = vec![
+            user_msg.clone(),
+            make_assistant(1000, 500),
+            user_msg.clone(),
+            make_assistant(1000, 500),
+            user_msg.clone(),
+            make_assistant(1000, 500),
+        ];
+
+        let result = estimate_remaining_turns(&messages, 200_000);
+        assert!(result.is_some());
+        let (remaining, avg) = result.unwrap();
+        // With 3 assistant turns and small messages, plenty of room left
+        assert!(remaining > 0, "expected remaining > 0, got {remaining}");
+        assert!(avg > 0.0, "expected avg > 0, got {avg}");
+    }
+
+    #[test]
+    fn test_format_remaining_turns_normal() {
+        let output = format_remaining_turns(12, 4200.0);
+        assert!(
+            output.contains("~12 turns remaining"),
+            "expected turn count in output: {output}"
+        );
+        assert!(
+            output.contains("~4.2k/turn avg"),
+            "expected avg in output: {output}"
+        );
+    }
+
+    #[test]
+    fn test_format_remaining_turns_low() {
+        let output = format_remaining_turns(2, 5000.0);
+        assert!(
+            output.contains("~2 turns remaining"),
+            "expected turn count: {output}"
+        );
+        // Should contain YELLOW ANSI escape for warning
+        assert!(
+            output.contains("\x1b["),
+            "expected ANSI color code for low remaining: {output}"
+        );
+    }
+
+    #[test]
+    fn test_format_remaining_turns_zero() {
+        let output = format_remaining_turns(0, 8000.0);
+        assert!(
+            output.contains("nearly full"),
+            "expected 'nearly full' warning: {output}"
+        );
+        // Should contain RED ANSI escape
+        assert!(
+            output.contains("\x1b["),
+            "expected ANSI color code for zero remaining: {output}"
+        );
     }
 }
