@@ -750,6 +750,22 @@ fn find_nearest_match(file_content: &str, old_text: &str) -> Option<(usize, bool
     Some((match_line_idx + 1, is_ws_only, snippet)) // 1-indexed line number
 }
 
+/// Extract exact text from file content starting at `match_line_0indexed` for `line_count` lines.
+/// Returns the joined text (with newlines between lines). If the file doesn't have enough lines,
+/// returns as many as are available.
+fn extract_matched_text(
+    file_content: &str,
+    match_line_0indexed: usize,
+    line_count: usize,
+) -> String {
+    let file_lines: Vec<&str> = file_content.lines().collect();
+    let end = (match_line_0indexed + line_count).min(file_lines.len());
+    if match_line_0indexed >= file_lines.len() {
+        return String::new();
+    }
+    file_lines[match_line_0indexed..end].join("\n")
+}
+
 /// Wrap an edit_file tool with smart error augmentation.
 pub(crate) fn with_smart_edit(tool: Box<dyn AgentTool>) -> Box<dyn AgentTool> {
     Box::new(SmartEditTool { inner: tool })
@@ -778,10 +794,14 @@ impl AgentTool for SmartEditTool {
         params: serde_json::Value,
         ctx: yoagent::types::ToolContext,
     ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
-        match self.inner.execute(params.clone(), ctx).await {
+        match self.inner.execute(params.clone(), ctx.clone()).await {
             Ok(result) => Ok(result),
             Err(yoagent::types::ToolError::Failed(msg)) if msg.contains("not found") => {
-                // Try to augment the error with location information
+                // Try whitespace auto-fix before falling back to augmented error
+                if let Some(retry_result) = self.try_whitespace_autofix(&msg, &params, &ctx).await {
+                    return retry_result;
+                }
+                // No auto-fix possible — augment the error with location info
                 let augmented = self.augment_not_found_error(&msg, &params);
                 Err(yoagent::types::ToolError::Failed(augmented))
             }
@@ -791,6 +811,63 @@ impl AgentTool for SmartEditTool {
 }
 
 impl SmartEditTool {
+    /// Attempt to auto-fix a whitespace-only mismatch by extracting the actual text
+    /// from the file and retrying with corrected `old_text`.
+    ///
+    /// Returns `Some(Ok(..))` if the retry succeeded, `Some(Err(..))` if the retry
+    /// also failed (falls through to normal augmented error), or `None` if the mismatch
+    /// is not whitespace-only (so caller should use the normal augmentation path).
+    async fn try_whitespace_autofix(
+        &self,
+        _original_msg: &str,
+        params: &serde_json::Value,
+        ctx: &yoagent::types::ToolContext,
+    ) -> Option<Result<yoagent::types::ToolResult, yoagent::types::ToolError>> {
+        let path = params.get("path").and_then(|v| v.as_str())?;
+        let old_text = params.get("old_text").and_then(|v| v.as_str())?;
+
+        // Check file size
+        let metadata = std::fs::metadata(path).ok()?;
+        if metadata.len() > SMART_EDIT_MAX_FILE_SIZE {
+            return None;
+        }
+
+        let content = std::fs::read_to_string(path).ok()?;
+
+        // find_nearest_match returns 1-indexed line number
+        let (line_num_1indexed, is_ws_only, _snippet) = find_nearest_match(&content, old_text)?;
+
+        if !is_ws_only {
+            return None; // Not a whitespace-only diff — let caller handle it
+        }
+
+        // Extract the actual text from the file at the match position
+        let old_line_count = old_text.lines().count().max(1);
+        let match_line_0indexed = line_num_1indexed - 1;
+        let actual_text = extract_matched_text(&content, match_line_0indexed, old_line_count);
+
+        // Build corrected params with the file's actual whitespace
+        let mut corrected_params = params.clone();
+        corrected_params["old_text"] = serde_json::Value::String(actual_text);
+
+        // Retry with corrected old_text
+        match self.inner.execute(corrected_params, ctx.clone()).await {
+            Ok(mut result) => {
+                // Append auto-fix note to the result
+                let note = format!(
+                    "\n⚡ Auto-fixed whitespace mismatch at line {}",
+                    line_num_1indexed
+                );
+                result.content.push(yoagent::Content::Text { text: note });
+                Some(Ok(result))
+            }
+            Err(_) => {
+                // Retry also failed — return None to fall through to augmented error
+                None
+            }
+        }
+    }
+
     fn augment_not_found_error(&self, original_msg: &str, params: &serde_json::Value) -> String {
         // Extract path and old_text from params
         let path = match params.get("path").and_then(|v| v.as_str()) {
@@ -3006,6 +3083,232 @@ mod tests {
         assert!(
             err.contains("old_text not found"),
             "Should contain original error: {err}"
+        );
+    }
+
+    // === extract_matched_text tests ===
+
+    #[test]
+    fn test_extract_matched_text_basic() {
+        let content = "line 0\nline 1\nline 2\nline 3\nline 4\n";
+        let result = extract_matched_text(content, 1, 2);
+        assert_eq!(result, "line 1\nline 2");
+    }
+
+    #[test]
+    fn test_extract_matched_text_from_start() {
+        let content = "fn main() {\n    hello();\n}\n";
+        let result = extract_matched_text(content, 0, 3);
+        assert_eq!(result, "fn main() {\n    hello();\n}");
+    }
+
+    #[test]
+    fn test_extract_matched_text_beyond_end() {
+        let content = "line 0\nline 1\n";
+        // Request more lines than available
+        let result = extract_matched_text(content, 1, 5);
+        assert_eq!(result, "line 1");
+    }
+
+    #[test]
+    fn test_extract_matched_text_out_of_bounds() {
+        let content = "line 0\n";
+        let result = extract_matched_text(content, 10, 2);
+        assert_eq!(result, "");
+    }
+
+    // === SmartEditTool whitespace auto-fix tests ===
+
+    /// A stateful mock tool that fails on first call and succeeds on second.
+    /// Used to simulate auto-fix retry behavior.
+    struct SmartEditRetryMockTool {
+        call_count: std::sync::atomic::AtomicUsize,
+        /// If set, first call fails with this message.
+        first_fail_msg: String,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentTool for SmartEditRetryMockTool {
+        fn name(&self) -> &str {
+            "edit_file"
+        }
+        fn label(&self) -> &str {
+            "edit_file"
+        }
+        fn description(&self) -> &str {
+            "mock edit_file (retry-aware)"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        async fn execute(
+            &self,
+            _params: serde_json::Value,
+            _ctx: yoagent::types::ToolContext,
+        ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+            let call = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call == 0 {
+                Err(yoagent::types::ToolError::Failed(
+                    self.first_fail_msg.clone(),
+                ))
+            } else {
+                Ok(yoagent::types::ToolResult {
+                    content: vec![yoagent::Content::Text {
+                        text: "edit applied".into(),
+                    }],
+                    details: serde_json::Value::Null,
+                })
+            }
+        }
+    }
+
+    /// A stateful mock that always fails (used to test retry-failure fallback).
+    struct SmartEditAlwaysFailMockTool {
+        fail_msg: String,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentTool for SmartEditAlwaysFailMockTool {
+        fn name(&self) -> &str {
+            "edit_file"
+        }
+        fn label(&self) -> &str {
+            "edit_file"
+        }
+        fn description(&self) -> &str {
+            "mock edit_file (always fails)"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        async fn execute(
+            &self,
+            _params: serde_json::Value,
+            _ctx: yoagent::types::ToolContext,
+        ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+            Err(yoagent::types::ToolError::Failed(self.fail_msg.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_smart_edit_autofix_whitespace_mismatch() {
+        // Create a temp file with 4-space indentation
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("ws_fix.rs");
+        std::fs::write(
+            &file_path,
+            "fn main() {\n    let x = 1;\n    let y = 2;\n}\n",
+        )
+        .unwrap();
+
+        // The mock fails on first call (wrong whitespace), succeeds on retry
+        let tool = with_smart_edit(Box::new(SmartEditRetryMockTool {
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+            first_fail_msg: "old_text not found in file".into(),
+        }));
+
+        // old_text with 2-space indent (wrong), new_text is the intended replacement
+        let params = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "old_text": "fn main() {\n  let x = 1;\n  let y = 2;\n}",
+            "new_text": "fn main() {\n    let x = 42;\n}"
+        });
+
+        let result = tool.execute(params, test_tool_context()).await;
+        assert!(result.is_ok(), "Auto-fix should succeed: {:?}", result);
+        let result = result.unwrap();
+        // Check that the auto-fix note is appended
+        let texts: Vec<String> = result
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                yoagent::Content::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        let combined = texts.join(" ");
+        assert!(
+            combined.contains("Auto-fixed whitespace mismatch"),
+            "Should contain auto-fix note: {combined}"
+        );
+        assert!(
+            combined.contains("line 1"),
+            "Should mention the line number: {combined}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_smart_edit_no_autofix_for_non_whitespace_mismatch() {
+        // Create a temp file
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("no_fix.rs");
+        std::fs::write(&file_path, "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
+
+        let tool = with_smart_edit(Box::new(SmartEditMockTool {
+            fail_msg: Some("old_text not found in file".into()),
+            result_text: None,
+        }));
+
+        // old_text differs in content, not just whitespace
+        let params = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "old_text": "fn main() {\n    println!(\"world\");\n}",
+            "new_text": "fn main() {\n    println!(\"goodbye\");\n}"
+        });
+
+        let result = tool.execute(params, test_tool_context()).await;
+        assert!(result.is_err(), "Non-whitespace mismatch should still fail");
+        let err = result.unwrap_err().to_string();
+        // Should have the augmented error with nearest match, NOT auto-fix
+        assert!(
+            err.contains("not found"),
+            "Should contain original error: {err}"
+        );
+        assert!(
+            !err.contains("Auto-fixed"),
+            "Should NOT contain auto-fix note: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_smart_edit_autofix_retry_failure_falls_through() {
+        // Create a temp file with 4-space indentation
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("fail_retry.rs");
+        std::fs::write(
+            &file_path,
+            "fn main() {\n    let x = 1;\n    let y = 2;\n}\n",
+        )
+        .unwrap();
+
+        // The mock always fails — even the retry
+        let tool = with_smart_edit(Box::new(SmartEditAlwaysFailMockTool {
+            fail_msg: "old_text not found in file".into(),
+        }));
+
+        // old_text with whitespace mismatch (will trigger auto-fix attempt, but retry also fails)
+        let params = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "old_text": "fn main() {\n  let x = 1;\n  let y = 2;\n}",
+            "new_text": "fn main() {\n    let x = 42;\n}"
+        });
+
+        let result = tool.execute(params, test_tool_context()).await;
+        assert!(
+            result.is_err(),
+            "Should fall through to augmented error when retry fails"
+        );
+        let err = result.unwrap_err().to_string();
+        // Should have the augmented error (from augment_not_found_error), including the hint
+        assert!(
+            err.contains("Nearest match"),
+            "Should contain nearest match info: {err}"
+        );
+        assert!(
+            err.contains("whitespace"),
+            "Should contain whitespace hint: {err}"
         );
     }
 
