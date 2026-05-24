@@ -370,6 +370,13 @@ pub fn handle_tokens(agent: &Agent, session_total: &Usage, model: &str) {
         println!("{}", format_context_breakdown(&breakdown));
     }
 
+    // Per-tool call summary
+    let tool_summary = extract_tool_call_summary(&messages);
+    if !tool_summary.is_empty() {
+        println!();
+        println!("{}", format_tool_call_summary(&tool_summary));
+    }
+
     if session_total.input > context_used + 1000 {
         println!("    {DIM}(earlier messages were compacted to save space — session totals below show full usage){RESET}");
     }
@@ -443,6 +450,13 @@ pub fn handle_cost(session_total: &Usage, model: &str, messages: &[yoagent::Agen
         if !turn_costs.is_empty() {
             println!();
             println!("{}", format_turn_costs(&turn_costs));
+        }
+
+        // Per-tool call summary
+        let tool_summary = extract_tool_call_summary(messages);
+        if !tool_summary.is_empty() {
+            println!();
+            println!("{}", format_tool_call_summary(&tool_summary));
         }
 
         println!("{RESET}");

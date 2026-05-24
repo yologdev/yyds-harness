@@ -378,6 +378,116 @@ pub fn format_turn_costs(costs: &[TurnCost]) -> String {
     lines.join("\n")
 }
 
+// ---------------------------------------------------------------------------
+// Per-tool call summary
+// ---------------------------------------------------------------------------
+
+/// Summary of tool usage during a session.
+pub struct ToolCallSummary {
+    pub name: String,
+    pub calls: usize,
+    pub errors: usize,
+}
+
+/// Extract per-tool call counts from conversation messages.
+///
+/// Iterates over all `ToolResult` messages, counts calls per tool name,
+/// and tracks error counts. Returns sorted by call count descending,
+/// then alphabetically by name for ties.
+pub fn extract_tool_call_summary(messages: &[yoagent::AgentMessage]) -> Vec<ToolCallSummary> {
+    use std::collections::HashMap;
+
+    let mut counts: HashMap<String, (usize, usize)> = HashMap::new();
+
+    for msg in messages {
+        if let yoagent::AgentMessage::Llm(yoagent::Message::ToolResult {
+            tool_name,
+            is_error,
+            ..
+        }) = msg
+        {
+            let entry = counts.entry(tool_name.clone()).or_insert((0, 0));
+            entry.0 += 1;
+            if *is_error {
+                entry.1 += 1;
+            }
+        }
+    }
+
+    let mut result: Vec<ToolCallSummary> = counts
+        .into_iter()
+        .map(|(name, (calls, errors))| ToolCallSummary {
+            name,
+            calls,
+            errors,
+        })
+        .collect();
+
+    // Sort by call count descending, then alphabetically for ties
+    result.sort_by(|a, b| b.calls.cmp(&a.calls).then_with(|| a.name.cmp(&b.name)));
+    result
+}
+
+/// Format tool call summary as a compact table.
+///
+/// Output looks like:
+/// ```text
+///     Tool usage:
+///       bash           12 calls
+///       edit_file       8 calls (1 error)
+///       read_file       5 calls
+/// ```
+pub fn format_tool_call_summary(summary: &[ToolCallSummary]) -> String {
+    if summary.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = Vec::new();
+    lines.push("    Tool usage:".to_string());
+
+    // Find max tool name length for alignment
+    let max_name_len = summary.iter().map(|s| s.name.len()).max().unwrap_or(0);
+
+    let total_calls: usize = summary.iter().map(|s| s.calls).sum();
+    let total_errors: usize = summary.iter().map(|s| s.errors).sum();
+
+    for s in summary {
+        let error_str = if s.errors > 0 {
+            format!(" ({} {})", s.errors, pluralize(s.errors, "error", "errors"))
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "      {:<width$}  {:>3} {}{}",
+            s.name,
+            s.calls,
+            pluralize(s.calls, "call", "calls"),
+            error_str,
+            width = max_name_len,
+        ));
+    }
+
+    // Total line
+    let total_error_str = if total_errors > 0 {
+        format!(
+            " ({} {})",
+            total_errors,
+            pluralize(total_errors, "error", "errors")
+        )
+    } else {
+        String::new()
+    };
+    lines.push(format!(
+        "      {:<width$}  {:>3} total{}",
+        "—",
+        total_calls,
+        total_error_str,
+        width = max_name_len,
+    ));
+
+    lines.join("\n")
+}
+
 /// Format a context breakdown table with colors and percentages.
 ///
 /// Each category is shown with its token count and percentage of total.
@@ -1434,5 +1544,157 @@ mod tests {
         let (inp, _, _, out) = model_pricing("o4-mini-high").unwrap();
         assert!((inp - 1.10).abs() < 0.001);
         assert!((out - 4.40).abs() < 0.001);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool call summary tests
+    // -----------------------------------------------------------------------
+
+    fn make_tool_result(tool_name: &str, is_error: bool) -> yoagent::AgentMessage {
+        use yoagent::{AgentMessage, Content, Message};
+        AgentMessage::Llm(Message::ToolResult {
+            tool_call_id: "test-id".into(),
+            tool_name: tool_name.into(),
+            content: vec![Content::Text {
+                text: "result".into(),
+            }],
+            is_error,
+            timestamp: 0,
+        })
+    }
+
+    #[test]
+    fn test_extract_tool_call_summary_empty() {
+        let messages: Vec<yoagent::AgentMessage> = vec![];
+        let summary = extract_tool_call_summary(&messages);
+        assert!(summary.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tool_call_summary_counts() {
+        let messages = vec![
+            make_tool_result("bash", false),
+            make_tool_result("bash", false),
+            make_tool_result("bash", false),
+            make_tool_result("edit_file", false),
+            make_tool_result("edit_file", false),
+            make_tool_result("read_file", false),
+        ];
+        let summary = extract_tool_call_summary(&messages);
+        assert_eq!(summary.len(), 3);
+        assert_eq!(summary[0].name, "bash");
+        assert_eq!(summary[0].calls, 3);
+        assert_eq!(summary[0].errors, 0);
+        assert_eq!(summary[1].name, "edit_file");
+        assert_eq!(summary[1].calls, 2);
+        assert_eq!(summary[2].name, "read_file");
+        assert_eq!(summary[2].calls, 1);
+    }
+
+    #[test]
+    fn test_extract_tool_call_summary_errors() {
+        let messages = vec![
+            make_tool_result("bash", false),
+            make_tool_result("bash", true),
+            make_tool_result("edit_file", true),
+            make_tool_result("edit_file", true),
+        ];
+        let summary = extract_tool_call_summary(&messages);
+        assert_eq!(summary.len(), 2);
+        // Both have 2 calls each, sorted alphabetically for ties
+        assert_eq!(summary[0].name, "bash");
+        assert_eq!(summary[0].calls, 2);
+        assert_eq!(summary[0].errors, 1);
+        assert_eq!(summary[1].name, "edit_file");
+        assert_eq!(summary[1].calls, 2);
+        assert_eq!(summary[1].errors, 2);
+    }
+
+    #[test]
+    fn test_extract_tool_call_summary_sorted() {
+        let messages = vec![
+            make_tool_result("search", false),
+            make_tool_result("bash", false),
+            make_tool_result("bash", false),
+            make_tool_result("bash", false),
+            make_tool_result("edit_file", false),
+            make_tool_result("edit_file", false),
+        ];
+        let summary = extract_tool_call_summary(&messages);
+        assert_eq!(summary.len(), 3);
+        // Sorted by call count descending
+        assert_eq!(summary[0].name, "bash");
+        assert_eq!(summary[0].calls, 3);
+        assert_eq!(summary[1].name, "edit_file");
+        assert_eq!(summary[1].calls, 2);
+        assert_eq!(summary[2].name, "search");
+        assert_eq!(summary[2].calls, 1);
+    }
+
+    #[test]
+    fn test_extract_tool_call_summary_ignores_non_tool_messages() {
+        use yoagent::{AgentMessage, Content, Message};
+        let messages = vec![
+            AgentMessage::Llm(Message::User {
+                content: vec![Content::Text {
+                    text: "hello".into(),
+                }],
+                timestamp: 0,
+            }),
+            make_tool_result("bash", false),
+        ];
+        let summary = extract_tool_call_summary(&messages);
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].name, "bash");
+        assert_eq!(summary[0].calls, 1);
+    }
+
+    #[test]
+    fn test_format_tool_call_summary_empty() {
+        let output = format_tool_call_summary(&[]);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_format_tool_call_summary() {
+        let summary = vec![
+            ToolCallSummary {
+                name: "bash".into(),
+                calls: 12,
+                errors: 0,
+            },
+            ToolCallSummary {
+                name: "edit_file".into(),
+                calls: 8,
+                errors: 1,
+            },
+            ToolCallSummary {
+                name: "search".into(),
+                calls: 3,
+                errors: 0,
+            },
+        ];
+        let output = format_tool_call_summary(&summary);
+        assert!(output.contains("Tool usage:"));
+        assert!(output.contains("bash"));
+        assert!(output.contains("12 calls"));
+        assert!(output.contains("edit_file"));
+        assert!(output.contains("8 calls (1 error)"));
+        assert!(output.contains("search"));
+        assert!(output.contains("3 calls"));
+        assert!(output.contains("23 total"));
+        // Total should show the 1 error
+        assert!(output.contains("(1 error)"));
+    }
+
+    #[test]
+    fn test_format_tool_call_summary_multiple_errors() {
+        let summary = vec![ToolCallSummary {
+            name: "bash".into(),
+            calls: 5,
+            errors: 3,
+        }];
+        let output = format_tool_call_summary(&summary);
+        assert!(output.contains("(3 errors)"));
     }
 }
