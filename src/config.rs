@@ -457,6 +457,17 @@ pub fn parse_auto_watch_from_config(config: &std::collections::HashMap<String, S
     }
 }
 
+/// Check whether auto-commit is enabled in the config.
+///
+/// Reads `auto_commit` from the given config map. Defaults to `false`
+/// when the key is absent — auto-commit must be explicitly opted into.
+pub fn parse_auto_commit_from_config(config: &std::collections::HashMap<String, String>) -> bool {
+    match config.get("auto_commit").map(|v| v.as_str()) {
+        Some("true") | Some("1") | Some("yes") | Some("on") => true,
+        _ => false, // default: disabled
+    }
+}
+
 /// Check whether lite mode is enabled in the config.
 ///
 /// Reads `lite` from the given config map. Defaults to `false`
@@ -503,6 +514,10 @@ pub const SETTABLE_KEYS: &[(&str, &str)] = &[
     ("max_tokens", "maximum response tokens"),
     ("max_turns", "maximum agent turns per prompt"),
     ("auto_watch", "auto-enable watch mode on start (true/false)"),
+    (
+        "auto_commit",
+        "auto-commit file changes after each agent turn (true/false)",
+    ),
     (
         "auto_continue",
         "auto-continue incomplete responses (true/false)",
@@ -558,6 +573,16 @@ pub fn validate_config_value(key: &str, value: &str) -> Result<String, String> {
                 "false" | "0" | "no" | "off" => Ok("false".to_string()),
                 _ => Err(format!(
                     "invalid auto_watch value '{value}' — use true or false"
+                )),
+            }
+        }
+        "auto_commit" => {
+            let lower = value.to_ascii_lowercase();
+            match lower.as_str() {
+                "true" | "1" | "yes" | "on" => Ok("true".to_string()),
+                "false" | "0" | "no" | "off" => Ok("false".to_string()),
+                _ => Err(format!(
+                    "invalid auto_commit value '{value}' — use true or false"
                 )),
             }
         }
@@ -1272,6 +1297,54 @@ env = { API_KEY = "secret" }
             Ok("false".to_string())
         );
         assert!(validate_config_value("auto_watch", "maybe").is_err());
+    }
+
+    #[test]
+    fn auto_commit_defaults_to_false() {
+        let config = std::collections::HashMap::new();
+        assert!(!parse_auto_commit_from_config(&config));
+    }
+
+    #[test]
+    fn auto_commit_respects_true() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("auto_commit".to_string(), "true".to_string());
+        assert!(parse_auto_commit_from_config(&config));
+    }
+
+    #[test]
+    fn auto_commit_respects_false() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("auto_commit".to_string(), "false".to_string());
+        assert!(!parse_auto_commit_from_config(&config));
+    }
+
+    #[test]
+    fn auto_commit_invalid_value_returns_false() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("auto_commit".to_string(), "maybe".to_string());
+        assert!(!parse_auto_commit_from_config(&config));
+    }
+
+    #[test]
+    fn validate_auto_commit_values() {
+        assert_eq!(
+            validate_config_value("auto_commit", "true"),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            validate_config_value("auto_commit", "false"),
+            Ok("false".to_string())
+        );
+        assert_eq!(
+            validate_config_value("auto_commit", "yes"),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            validate_config_value("auto_commit", "no"),
+            Ok("false".to_string())
+        );
+        assert!(validate_config_value("auto_commit", "maybe").is_err());
     }
 
     #[test]

@@ -461,7 +461,8 @@ fn parse_output_flags(args: &[String], file_config: &HashMap<String, String>) ->
     // --print implies --yes (auto-approve all tool use)
     let auto_approve = auto_approve || print_mode;
 
-    let auto_commit = args.iter().any(|a| a == "--auto-commit");
+    let auto_commit = args.iter().any(|a| a == "--auto-commit")
+        || crate::config::parse_auto_commit_from_config(file_config);
 
     let no_update_check = args.iter().any(|a| a == "--no-update-check")
         || std::env::var("YOYO_NO_UPDATE_CHECK")
@@ -2474,6 +2475,32 @@ command = "server-two"
         assert!(
             config.auto_commit,
             "auto_commit should be true when --auto-commit is passed"
+        );
+    }
+
+    #[test]
+    fn test_auto_commit_from_config() {
+        // When config has auto_commit = "true", auto_commit should be true
+        // even without the --auto-commit CLI flag
+        let args: Vec<String> = vec!["yoyo".to_string()];
+        let mut file_config = std::collections::HashMap::new();
+        file_config.insert("auto_commit".to_string(), "true".to_string());
+        let of = parse_output_flags(&args, &file_config);
+        assert!(
+            of.auto_commit,
+            "auto_commit should be true when config has auto_commit = true"
+        );
+    }
+
+    #[test]
+    fn test_auto_commit_config_default_false() {
+        // When config is empty and no CLI flag, auto_commit should be false
+        let args: Vec<String> = vec!["yoyo".to_string()];
+        let file_config = std::collections::HashMap::new();
+        let of = parse_output_flags(&args, &file_config);
+        assert!(
+            !of.auto_commit,
+            "auto_commit should default to false without CLI flag or config"
         );
     }
 
