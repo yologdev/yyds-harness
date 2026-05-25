@@ -1159,7 +1159,15 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              Keep track of multi-step plans without losing context.\n\
              Tasks persist for the duration of the session.\n\n\
              The AI agent can also manage tasks via the todo tool during\n\
-             agentic runs, helping it stay organized on multi-step operations.",
+             agentic runs, helping it stay organized on multi-step operations.\n\n\
+             Board (persistent TODO.md Kanban):\n\
+             \x20 /todo board              Show TODO.md board\n\
+             \x20 /todo board init [goal]  Create TODO.md\n\
+             \x20 /todo board add <section> <task>  Add task to section\n\
+             \x20 /todo board move <task> <section> Move task\n\
+             \x20 /todo board done <task>  Mark task done\n\
+             \x20 /todo board goal <text>  Set current goal\n\
+             \x20 /todo board evidence <text>  Add to evidence log",
         ),
         "teach" => Some(
             "/teach — Toggle teach mode\n\n\
@@ -1298,7 +1306,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "test" => Some("Run project tests"),
         "think" => Some("Set thinking level"),
         "tips" => Some("Context-sensitive feature suggestions"),
-        "todo" => Some("Track tasks (add, done, remove, clear)"),
+        "todo" => Some("Track tasks (add, done, remove, clear, board)"),
         "tokens" => Some("Show token usage and context window"),
         "tree" => Some("Show project directory tree"),
         "undo" => Some("Undo last turn's changes, all uncommitted, or last commit"),

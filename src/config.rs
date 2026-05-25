@@ -504,6 +504,39 @@ pub fn parse_max_auto_continues_from_config(
         .map(|n| n.min(20))
 }
 
+/// Check whether the terminal bell should be suppressed via config.
+///
+/// Reads `no_bell` from the given config map. Defaults to `false`
+/// when the key is absent — bell is enabled by default.
+pub fn parse_no_bell_from_config(config: &std::collections::HashMap<String, String>) -> bool {
+    match config.get("no_bell").map(|v| v.as_str()) {
+        Some("true") | Some("1") | Some("yes") | Some("on") => true,
+        _ => false, // default: bell enabled
+    }
+}
+
+/// Check whether quiet mode is enabled in the config.
+///
+/// Reads `quiet` from the given config map. Defaults to `false`
+/// when the key is absent — quiet mode must be explicitly opted into.
+pub fn parse_quiet_from_config(config: &std::collections::HashMap<String, String>) -> bool {
+    match config.get("quiet").map(|v| v.as_str()) {
+        Some("true") | Some("1") | Some("yes") | Some("on") => true,
+        _ => false, // default: not quiet
+    }
+}
+
+/// Check whether color output should be disabled via config.
+///
+/// Reads `no_color` from the given config map. Defaults to `false`
+/// when the key is absent — colors are enabled by default.
+pub fn parse_no_color_from_config(config: &std::collections::HashMap<String, String>) -> bool {
+    match config.get("no_color").map(|v| v.as_str()) {
+        Some("true") | Some("1") | Some("yes") | Some("on") => true,
+        _ => false, // default: colors enabled
+    }
+}
+
 /// Keys that `/config set` understands. Each entry is a key name and a
 /// human-readable description used in error messages.
 pub const SETTABLE_KEYS: &[(&str, &str)] = &[
@@ -527,6 +560,9 @@ pub const SETTABLE_KEYS: &[(&str, &str)] = &[
         "max auto-continue follow-ups per turn (0-20)",
     ),
     ("lite", "enable lite mode for small/local LLMs (true/false)"),
+    ("no_bell", "suppress terminal bell (true/false)"),
+    ("quiet", "suppress informational output (true/false)"),
+    ("no_color", "disable colored output (true/false)"),
 ];
 
 /// Validate a config value for a given key. Returns `Ok(canonical_value)`
@@ -607,6 +643,34 @@ pub fn validate_config_value(key: &str, value: &str) -> Result<String, String> {
                 "true" | "1" | "yes" | "on" => Ok("true".to_string()),
                 "false" | "0" | "no" | "off" => Ok("false".to_string()),
                 _ => Err(format!("invalid lite value '{value}' — use true or false")),
+            }
+        }
+        "no_bell" => {
+            let lower = value.to_ascii_lowercase();
+            match lower.as_str() {
+                "true" | "1" | "yes" | "on" => Ok("true".to_string()),
+                "false" | "0" | "no" | "off" => Ok("false".to_string()),
+                _ => Err(format!(
+                    "invalid no_bell value '{value}' — use true or false"
+                )),
+            }
+        }
+        "quiet" => {
+            let lower = value.to_ascii_lowercase();
+            match lower.as_str() {
+                "true" | "1" | "yes" | "on" => Ok("true".to_string()),
+                "false" | "0" | "no" | "off" => Ok("false".to_string()),
+                _ => Err(format!("invalid quiet value '{value}' — use true or false")),
+            }
+        }
+        "no_color" => {
+            let lower = value.to_ascii_lowercase();
+            match lower.as_str() {
+                "true" | "1" | "yes" | "on" => Ok("true".to_string()),
+                "false" | "0" | "no" | "off" => Ok("false".to_string()),
+                _ => Err(format!(
+                    "invalid no_color value '{value}' — use true or false"
+                )),
             }
         }
         _ => Err(format!(
@@ -1446,6 +1510,166 @@ env = { API_KEY = "secret" }
         assert!(validate_config_value("max_auto_continues", "21").is_err());
         assert!(validate_config_value("max_auto_continues", "-1").is_err());
         assert!(validate_config_value("max_auto_continues", "abc").is_err());
+    }
+
+    // === no_bell config tests ===
+
+    #[test]
+    fn no_bell_defaults_to_false() {
+        let config = std::collections::HashMap::new();
+        assert!(!parse_no_bell_from_config(&config));
+    }
+
+    #[test]
+    fn no_bell_respects_true() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("no_bell".to_string(), "true".to_string());
+        assert!(parse_no_bell_from_config(&config));
+    }
+
+    #[test]
+    fn no_bell_respects_false() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("no_bell".to_string(), "false".to_string());
+        assert!(!parse_no_bell_from_config(&config));
+    }
+
+    #[test]
+    fn no_bell_respects_on() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("no_bell".to_string(), "on".to_string());
+        assert!(parse_no_bell_from_config(&config));
+    }
+
+    #[test]
+    fn validate_no_bell_values() {
+        assert_eq!(
+            validate_config_value("no_bell", "true"),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            validate_config_value("no_bell", "false"),
+            Ok("false".to_string())
+        );
+        assert_eq!(
+            validate_config_value("no_bell", "yes"),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            validate_config_value("no_bell", "no"),
+            Ok("false".to_string())
+        );
+        assert!(validate_config_value("no_bell", "maybe").is_err());
+    }
+
+    // === quiet config tests ===
+
+    #[test]
+    fn quiet_defaults_to_false() {
+        let config = std::collections::HashMap::new();
+        assert!(!parse_quiet_from_config(&config));
+    }
+
+    #[test]
+    fn quiet_respects_true() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("quiet".to_string(), "true".to_string());
+        assert!(parse_quiet_from_config(&config));
+    }
+
+    #[test]
+    fn quiet_respects_false() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("quiet".to_string(), "false".to_string());
+        assert!(!parse_quiet_from_config(&config));
+    }
+
+    #[test]
+    fn quiet_invalid_value_returns_false() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("quiet".to_string(), "maybe".to_string());
+        assert!(!parse_quiet_from_config(&config));
+    }
+
+    #[test]
+    fn validate_quiet_values() {
+        assert_eq!(
+            validate_config_value("quiet", "true"),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            validate_config_value("quiet", "false"),
+            Ok("false".to_string())
+        );
+        assert_eq!(
+            validate_config_value("quiet", "yes"),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            validate_config_value("quiet", "no"),
+            Ok("false".to_string())
+        );
+        assert!(validate_config_value("quiet", "maybe").is_err());
+    }
+
+    // === no_color config tests ===
+
+    #[test]
+    fn no_color_defaults_to_false() {
+        let config = std::collections::HashMap::new();
+        assert!(!parse_no_color_from_config(&config));
+    }
+
+    #[test]
+    fn no_color_respects_true() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("no_color".to_string(), "true".to_string());
+        assert!(parse_no_color_from_config(&config));
+    }
+
+    #[test]
+    fn no_color_respects_false() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("no_color".to_string(), "false".to_string());
+        assert!(!parse_no_color_from_config(&config));
+    }
+
+    #[test]
+    fn no_color_respects_on() {
+        let mut config = std::collections::HashMap::new();
+        config.insert("no_color".to_string(), "on".to_string());
+        assert!(parse_no_color_from_config(&config));
+    }
+
+    #[test]
+    fn validate_no_color_values() {
+        assert_eq!(
+            validate_config_value("no_color", "true"),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            validate_config_value("no_color", "false"),
+            Ok("false".to_string())
+        );
+        assert_eq!(
+            validate_config_value("no_color", "yes"),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            validate_config_value("no_color", "no"),
+            Ok("false".to_string())
+        );
+        assert!(validate_config_value("no_color", "maybe").is_err());
+    }
+
+    // === SETTABLE_KEYS completeness ===
+
+    #[test]
+    fn settable_keys_contains_display_settings() {
+        let keys: Vec<&str> = SETTABLE_KEYS.iter().map(|(k, _)| *k).collect();
+        assert!(keys.contains(&"no_bell"), "SETTABLE_KEYS missing no_bell");
+        assert!(keys.contains(&"quiet"), "SETTABLE_KEYS missing quiet");
+        assert!(keys.contains(&"no_color"), "SETTABLE_KEYS missing no_color");
     }
 
     // === Config-file path resolution tests (moved from cli.rs) ===

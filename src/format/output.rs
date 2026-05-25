@@ -1680,4 +1680,388 @@ mod tests {
         assert!(result.contains("fn last_function() {}"));
         assert!(result.contains("// EOF"));
     }
+
+    // ========================================================================
+    // Day 86: Edge-case coverage for compression, truncation, and filtering
+    // ========================================================================
+
+    // --- compress_tool_output edge cases ---
+
+    #[test]
+    fn test_compress_empty_returns_empty() {
+        assert_eq!(compress_tool_output(""), "");
+    }
+
+    #[test]
+    fn test_compress_short_input_unchanged_content() {
+        // Short input with no ANSI, no repetition — should pass through
+        let input = "hello\nworld\nfoo";
+        let result = compress_tool_output(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_compress_repeated_blank_lines_collapsed() {
+        // 5 blank lines should be collapsed to at most 2
+        let input = "start\n\n\n\n\n\nend";
+        let result = compress_tool_output(input);
+        // filter_noisy_patterns collapses 3+ blanks to 2
+        let blank_count = result.lines().filter(|l| l.trim().is_empty()).count();
+        assert!(
+            blank_count <= 2,
+            "Expected at most 2 blank lines, got {blank_count} in:\n{result}"
+        );
+        assert!(result.contains("start"));
+        assert!(result.contains("end"));
+    }
+
+    #[test]
+    fn test_compress_consecutive_duplicate_lines_collapsed() {
+        // 6 identical lines should trigger collapse (COLLAPSE_MIN_LINES = 4)
+        let lines: Vec<&str> = vec![
+            "warning: unused variable",
+            "warning: unused variable",
+            "warning: unused variable",
+            "warning: unused variable",
+            "warning: unused variable",
+            "warning: unused variable",
+        ];
+        let input = lines.join("\n");
+        let result = compress_tool_output(&input);
+        assert!(
+            result.contains("more similar lines"),
+            "Expected collapse marker in:\n{result}"
+        );
+        // Should be shorter than input
+        assert!(result.lines().count() < 6);
+    }
+
+    #[test]
+    fn test_compress_very_long_lines_in_output() {
+        // A single very long line should still work without panic
+        let long_line = "x".repeat(100_000);
+        let result = compress_tool_output(&long_line);
+        // Should not panic and should contain the content
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_compress_mixed_repetitive_and_unique() {
+        // Mix of repetitive sections and unique content
+        let mut lines = Vec::new();
+        lines.push("unique header".to_string());
+        // 5 similar lines (same category prefix)
+        for i in 0..5 {
+            lines.push(format!("warning: item {i} is unused"));
+        }
+        lines.push("unique middle".to_string());
+        // 4 more similar lines
+        for i in 0..4 {
+            lines.push(format!("error: cannot find {i}"));
+        }
+        lines.push("unique footer".to_string());
+        let input = lines.join("\n");
+        let result = compress_tool_output(&input);
+        // Unique lines preserved
+        assert!(result.contains("unique header"));
+        assert!(result.contains("unique middle"));
+        assert!(result.contains("unique footer"));
+        // Both repetitive sections should be collapsed
+        assert!(
+            result.contains("more similar lines"),
+            "Expected collapse in:\n{result}"
+        );
+    }
+
+    #[test]
+    fn test_compress_ansi_then_collapse() {
+        // ANSI codes should be stripped first, then collapse applies
+        let input = "\x1b[31mwarning: x\x1b[0m\n\
+                      \x1b[31mwarning: y\x1b[0m\n\
+                      \x1b[31mwarning: z\x1b[0m\n\
+                      \x1b[31mwarning: w\x1b[0m\n\
+                      \x1b[31mwarning: v\x1b[0m";
+        let result = compress_tool_output(input);
+        // ANSI should be gone
+        assert!(!result.contains("\x1b["));
+        // 5 lines with same category → collapse
+        assert!(
+            result.contains("more similar lines"),
+            "Expected collapse after ANSI strip in:\n{result}"
+        );
+    }
+
+    // --- filter_test_output edge cases ---
+
+    #[test]
+    fn test_filter_test_no_test_markers_unchanged() {
+        // Non-test output should pass through unchanged
+        let input = "Building project...\nCompilation succeeded\nDone in 2.3s";
+        let result = filter_test_output(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_filter_test_only_passing_no_fails() {
+        // All passing tests (>= 5) with no failures → compressed
+        let mut lines = Vec::new();
+        for i in 0..10 {
+            lines.push(format!("test test_{i} ... ok"));
+        }
+        lines.push("test result: ok. 10 passed; 0 failed".to_string());
+        let input = lines.join("\n");
+        let result = filter_test_output(&input);
+        // Pass lines should be replaced with count marker
+        assert!(
+            result.contains("10 passing tests omitted"),
+            "Expected omission marker in:\n{result}"
+        );
+        // Summary should be preserved
+        assert!(result.contains("test result:"));
+        // Individual pass lines should be gone
+        assert!(!result.contains("test test_0 ... ok"));
+    }
+
+    #[test]
+    fn test_filter_test_fewer_than_threshold_unchanged() {
+        // Only 3 passing tests (< 5 threshold) — should NOT be filtered
+        let mut lines = Vec::new();
+        for i in 0..3 {
+            lines.push(format!("test test_{i} ... ok"));
+        }
+        lines.push("test result: ok. 3 passed; 0 failed".to_string());
+        let input = lines.join("\n");
+        let result = filter_test_output(&input);
+        // Should keep all lines since < threshold
+        assert!(result.contains("test test_0 ... ok"));
+        assert!(result.contains("test test_1 ... ok"));
+        assert!(result.contains("test test_2 ... ok"));
+    }
+
+    #[test]
+    fn test_filter_test_empty_input() {
+        assert_eq!(filter_test_output(""), "");
+    }
+
+    #[test]
+    fn test_filter_test_preserves_failures_among_passes() {
+        // Mix of passes and failures — failures must be kept
+        let mut lines = Vec::new();
+        for i in 0..8 {
+            lines.push(format!("test pass_{i} ... ok"));
+        }
+        lines.push("test failing_test ... FAILED".to_string());
+        lines.push("test result: FAILED. 8 passed; 1 failed".to_string());
+        let input = lines.join("\n");
+        let result = filter_test_output(&input);
+        // Passes should be omitted
+        assert!(result.contains("passing tests omitted"));
+        // Failure must be preserved
+        assert!(result.contains("test failing_test ... FAILED"));
+        // Summary preserved
+        assert!(result.contains("test result:"));
+    }
+
+    // --- smart_truncate_for_context edge cases ---
+
+    #[test]
+    fn test_smart_truncate_exactly_at_limit() {
+        // Content exactly at limit should NOT be truncated
+        let content = (0..500)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (result, truncated, total) = smart_truncate_for_context(&content, 500);
+        assert!(!truncated);
+        assert_eq!(total, 500);
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_smart_truncate_single_line_under_limit() {
+        let content = "just one line";
+        let (result, truncated, total) = smart_truncate_for_context(content, 500);
+        assert!(!truncated);
+        assert_eq!(total, 1);
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_smart_truncate_headers_in_truncated_content() {
+        // Multi-section content: headers at start should be preserved in head
+        let mut lines = Vec::new();
+        lines.push("# Section 1".to_string());
+        lines.push("## Subsection A".to_string());
+        for i in 0..800 {
+            lines.push(format!("body line {i}"));
+        }
+        lines.push("# Final Section".to_string());
+        lines.push("final line".to_string());
+        let content = lines.join("\n");
+        let (result, truncated, total) = smart_truncate_for_context(&content, 500);
+        assert!(truncated);
+        assert_eq!(total, 804);
+        // Head headers preserved
+        assert!(result.contains("# Section 1"));
+        assert!(result.contains("## Subsection A"));
+        // Tail preserved
+        assert!(result.contains("# Final Section"));
+        assert!(result.contains("final line"));
+        // Omission marker present
+        assert!(result.contains("lines omitted"));
+    }
+
+    // --- truncate_tool_output UTF-8 safety ---
+
+    #[test]
+    fn test_truncate_tool_output_multibyte_utf8_no_panic() {
+        // Critical: multi-byte UTF-8 chars at truncation boundaries must not panic
+        // ✓ is 3 bytes, 日 is 3 bytes, 🦀 is 4 bytes
+        let mut lines = Vec::new();
+        for i in 0..200 {
+            lines.push(format!("U{i} ✓日本語テスト🦀 {}", "あ".repeat(50)));
+        }
+        let output = lines.join("\n");
+        // Use a small limit to force truncation
+        let result = truncate_tool_output(&output, 500);
+        // Should not panic, and should contain the truncation marker
+        assert!(
+            result.contains("[... truncated") || result.len() <= 500,
+            "Should either be truncated with marker or under limit"
+        );
+    }
+
+    #[test]
+    fn test_truncate_tool_output_emoji_boundary() {
+        // Build output with emoji that are 4 bytes each
+        let emoji_line = "🦀🐙🎉🚀✨🌟💫⭐".repeat(30);
+        let lines: Vec<String> = (0..200).map(|i| format!("E{i} {emoji_line}")).collect();
+        let output = lines.join("\n");
+        // This must not panic
+        let result = truncate_tool_output(&output, 1000);
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_compress_multibyte_category_prefix_no_panic() {
+        // Lines where the category prefix lands on a multi-byte boundary
+        // 日 is 3 bytes; 7 of them = 21 bytes > CATEGORY_PREFIX_MAX (20)
+        let mut lines = Vec::new();
+        for i in 0..5 {
+            lines.push(format!("日本語テスト甲乙 item {i}"));
+        }
+        let input = lines.join("\n");
+        // Must not panic on char boundary issues
+        let result = compress_tool_output(&input);
+        assert!(!result.is_empty());
+    }
+
+    // --- format_tool_batch_summary edge cases ---
+
+    #[test]
+    fn test_tool_batch_summary_large_count() {
+        let result = format_tool_batch_summary(15, 12, 3, Duration::from_secs(45));
+        assert!(result.contains("15 tools"));
+        assert!(result.contains("45.0s"));
+        assert!(result.contains("12"));
+        assert!(result.contains("3"));
+    }
+
+    #[test]
+    fn test_tool_batch_summary_two_tools_all_fail() {
+        let result = format_tool_batch_summary(2, 0, 2, Duration::from_millis(200));
+        assert!(result.contains("2 tools"));
+        // Should show failure marker
+        assert!(result.contains("✗"));
+    }
+
+    #[test]
+    fn test_tool_batch_summary_succeeds_no_fail_marker() {
+        let result = format_tool_batch_summary(3, 3, 0, Duration::from_millis(800));
+        // When all succeed, no failure marker
+        assert!(!result.contains("✗"));
+        assert!(result.contains("✓"));
+    }
+
+    // --- collapse_repetitive_lines edge cases ---
+
+    #[test]
+    fn test_collapse_three_similar_lines_not_collapsed() {
+        // Exactly 3 similar lines (below COLLAPSE_MIN_LINES=4) — should NOT collapse
+        let input = "warning: x\nwarning: y\nwarning: z";
+        let result = collapse_repetitive_lines(input);
+        assert_eq!(result, input, "3 lines should not be collapsed");
+    }
+
+    #[test]
+    fn test_collapse_four_similar_lines_collapsed() {
+        // Exactly 4 similar lines (= COLLAPSE_MIN_LINES) — SHOULD collapse
+        let input = "warning: a\nwarning: b\nwarning: c\nwarning: d";
+        let result = collapse_repetitive_lines(input);
+        assert!(
+            result.contains("more similar lines"),
+            "4 lines should be collapsed, got:\n{result}"
+        );
+        // First and last preserved
+        assert!(result.contains("warning: a"));
+        assert!(result.contains("warning: d"));
+    }
+
+    #[test]
+    fn test_collapse_empty_lines_not_collapsed_as_similar() {
+        // Empty lines have empty category and should NOT be collapsed by this function
+        // (that's handled by filter_noisy_patterns instead)
+        let input = "\n\n\n\n\n";
+        let result = collapse_repetitive_lines(input);
+        // Empty category → no collapse
+        assert!(!result.contains("more similar lines"));
+    }
+
+    // --- indent_tool_output edge cases ---
+
+    #[test]
+    fn test_indent_tool_output_preserves_content() {
+        let input = "line 1\nline 2\nline 3";
+        let result = indent_tool_output(input);
+        // Each line should have the prefix
+        for line in result.lines() {
+            assert!(
+                line.contains("│"),
+                "Each line should contain the indent bar: {line}"
+            );
+        }
+        // Original content preserved
+        assert!(result.contains("line 1"));
+        assert!(result.contains("line 2"));
+        assert!(result.contains("line 3"));
+    }
+
+    // --- strip_ansi_codes edge cases ---
+
+    #[test]
+    fn test_strip_ansi_empty() {
+        assert_eq!(strip_ansi_codes(""), "");
+    }
+
+    #[test]
+    fn test_strip_ansi_no_codes() {
+        let input = "plain text with no ANSI";
+        assert_eq!(strip_ansi_codes(input), input);
+    }
+
+    #[test]
+    fn test_strip_ansi_nested_codes() {
+        // Multiple ANSI codes in sequence
+        let input = "\x1b[1m\x1b[31mBold Red\x1b[0m Normal";
+        let result = strip_ansi_codes(input);
+        assert_eq!(result, "Bold Red Normal");
+    }
+
+    #[test]
+    fn test_strip_ansi_mid_multibyte_char() {
+        // ANSI code followed immediately by multi-byte UTF-8
+        let input = "\x1b[32m日本語\x1b[0m";
+        let result = strip_ansi_codes(input);
+        assert_eq!(result, "日本語");
+    }
 }

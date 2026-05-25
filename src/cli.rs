@@ -618,6 +618,30 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
     // Read the file once and reuse raw content for permissions + directory parsing
     let (file_config, raw_config_content) = load_config_file();
 
+    // Apply config-file defaults for display/audio settings.
+    // CLI flags (handled earlier in apply_cli_flags / parse_args) take priority.
+    if !args.iter().any(|a| a == "--quiet" || a == "-q")
+        && !args.iter().any(|a| a == "--print")
+        && !std::env::var("YOYO_QUIET")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        && (std::io::stdin().is_terminal() || std::io::stdout().is_terminal())
+        && crate::config::parse_quiet_from_config(&file_config)
+    {
+        crate::format::enable_quiet();
+    }
+    if !args.iter().any(|a| a == "--no-bell")
+        && crate::config::parse_no_bell_from_config(&file_config)
+    {
+        crate::format::disable_bell();
+    }
+    if !args.iter().any(|a| a == "--no-color")
+        && std::io::stdout().is_terminal()
+        && crate::config::parse_no_color_from_config(&file_config)
+    {
+        crate::format::disable_color();
+    }
+
     // Validate that flags requiring values actually have them
     let flags_needing_values = [
         "--model",
