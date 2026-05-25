@@ -1310,3 +1310,181 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::KNOWN_COMMANDS;
+    use std::collections::HashSet;
+
+    // ── Completeness tests ──
+
+    #[test]
+    fn test_every_known_command_has_help() {
+        for cmd in KNOWN_COMMANDS {
+            let name = cmd.trim_start_matches('/');
+            // /exit is an alias for /quit — no dedicated help entry
+            if name == "exit" {
+                continue;
+            }
+            assert!(
+                command_help(name).is_some(),
+                "KNOWN_COMMAND {cmd} has no command_help entry"
+            );
+        }
+    }
+
+    #[test]
+    fn test_every_known_command_has_short_description() {
+        for cmd in KNOWN_COMMANDS {
+            let name = cmd.trim_start_matches('/');
+            assert!(
+                command_short_description(name).is_some(),
+                "KNOWN_COMMAND {cmd} has no command_short_description entry"
+            );
+        }
+    }
+
+    #[test]
+    fn test_no_orphan_help_entries() {
+        // Verify a fake command returns None (no catch-all that leaks)
+        assert!(
+            command_help("zzz_nonexistent").is_none(),
+            "Fake command should not have a help entry"
+        );
+        assert!(
+            command_short_description("zzz_nonexistent").is_none(),
+            "Fake command should not have a short description"
+        );
+    }
+
+    // ── Content quality tests ──
+
+    #[test]
+    fn test_short_descriptions_are_actually_short() {
+        for cmd in KNOWN_COMMANDS {
+            let name = cmd.trim_start_matches('/');
+            if let Some(desc) = command_short_description(name) {
+                assert!(
+                    desc.len() <= 80,
+                    "Short description for {cmd} is too long ({} chars): {desc}",
+                    desc.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_help_entries_are_non_empty() {
+        for cmd in KNOWN_COMMANDS {
+            let name = cmd.trim_start_matches('/');
+            if name == "exit" {
+                continue;
+            }
+            if let Some(help) = command_help(name) {
+                assert!(
+                    help.len() >= 20,
+                    "Help entry for {cmd} is suspiciously short ({} chars): {help}",
+                    help.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_help_uses_bare_names_not_slashes() {
+        // command_help matches on bare names like "add", not "/add"
+        // Verify that passing a slash-prefixed name returns None
+        // (callers are expected to strip the slash before calling)
+        assert!(
+            command_help("/add").is_none(),
+            "command_help should not match slash-prefixed names"
+        );
+        assert!(
+            command_short_description("/add").is_none(),
+            "command_short_description should not match slash-prefixed names"
+        );
+        // But bare name works
+        assert!(command_help("add").is_some());
+        assert!(command_short_description("add").is_some());
+    }
+
+    // ── Edge case tests ──
+
+    #[test]
+    fn test_command_help_returns_none_for_empty() {
+        assert!(command_help("").is_none());
+    }
+
+    #[test]
+    fn test_command_short_description_returns_none_for_empty() {
+        assert!(command_short_description("").is_none());
+    }
+
+    #[test]
+    fn test_command_short_description_returns_none_for_unknown() {
+        assert!(command_short_description("zzz_nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_no_duplicate_short_descriptions() {
+        // Deduplicate KNOWN_COMMANDS (e.g. /quick appears twice)
+        let unique_cmds: HashSet<&str> = KNOWN_COMMANDS.iter().copied().collect();
+
+        let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        let mut duplicates: Vec<(&str, &str)> = Vec::new();
+
+        for cmd in &unique_cmds {
+            let name = cmd.trim_start_matches('/');
+            if let Some(desc) = command_short_description(name) {
+                if let Some(first) = seen.get(desc) {
+                    duplicates.push((cmd, first));
+                } else {
+                    seen.insert(desc, cmd);
+                }
+            }
+        }
+
+        // Allow known aliases: /exit and /quit share a description
+        duplicates.retain(|(a, b)| {
+            let pair = [a.trim_start_matches('/'), b.trim_start_matches('/')];
+            !(pair.contains(&"exit") && pair.contains(&"quit"))
+        });
+
+        assert!(
+            duplicates.is_empty(),
+            "Duplicate short descriptions found: {duplicates:?}"
+        );
+    }
+
+    // ── Consistency tests ──
+
+    #[test]
+    fn test_help_entries_start_with_command_name() {
+        // Help text should mention the command (usually starts with /cmd)
+        for cmd in KNOWN_COMMANDS {
+            let name = cmd.trim_start_matches('/');
+            if name == "exit" {
+                continue;
+            }
+            if let Some(help) = command_help(name) {
+                assert!(
+                    help.contains(name) || help.contains(cmd),
+                    "Help entry for {cmd} doesn't mention the command name anywhere"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_quit_and_exit_share_short_description() {
+        let quit_desc = command_short_description("quit");
+        let exit_desc = command_short_description("exit");
+        assert!(quit_desc.is_some(), "/quit should have a short description");
+        assert!(exit_desc.is_some(), "/exit should have a short description");
+        assert_eq!(
+            quit_desc, exit_desc,
+            "/quit and /exit should share the same short description"
+        );
+    }
+}
