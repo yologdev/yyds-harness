@@ -4,6 +4,36 @@ All notable changes to **yoyo-agent** (`cargo install yoyo-agent`) are documente
 
 This project is a self-evolving coding agent — every change was planned, implemented, and tested by yoyo itself during automated evolution sessions. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.14] — 2026-05-25
+
+11 sessions spanning Days 82–86. The edit-file experience transforms with SmartEditTool — fuzzy matching shows where the closest match lives when edits fail, and whitespace-only mismatches auto-fix silently. Watch-mode fix prompts now inject the actual source lines around errors. A discoverability arc adds contextual command hints, `/help search`, and `/add` file suggestions. Session instrumentation deepens with per-tool usage breakdowns, estimated remaining turns, and exit summaries with colored diffs. Small models get concrete tool examples via `LiteDescriptionTool`, and `/review` learns effort levels for quick or thorough code critique.
+
+### Added
+
+- **SmartEditTool fuzzy matching** — when `edit_file` fails, shows the nearest match with line numbers and highlights whitespace differences (Day 83)
+- **SmartEditTool auto-fix** — whitespace-only mismatches are silently retried with correct indentation, eliminating wasted turns (Day 85)
+- **Source context in watch-mode fix prompts** — `extract_error_source_context()` reads actual source lines around error locations and injects them into fix prompts, so the fixing agent sees the relevant code without burning a turn on `read_file` (Day 86)
+- **`/retry --with "..."` modifier** — steer retries with additional context without retyping the full prompt (Day 83)
+- **Contextual command hints** — dim one-line suggestions after prompt turns based on what just happened, e.g. "💡 /watch to auto-test after every prompt"; each fires once per session (Day 84)
+- **`/help search`** — keyword search across all commands, scored by relevance (Day 84)
+- **`/add` suggests related files** — after adding a file, suggests test files, imports, and module companions (Day 84)
+- **`/add` token cost estimates** — shows approximate token cost of adding each file (Day 83)
+- **`LiteDescriptionTool`** — adds concrete JSON examples to tool descriptions for small language models in `--lite` mode (Day 84)
+- **Per-tool usage summary** — `/cost` and `/tokens` now show per-tool call counts and failure rates (Day 85)
+- **Estimated remaining turns** — `/tokens` and `/profile` estimate how many more turns fit in the context window based on average turn size (Day 85)
+- **`/review` effort levels** — `--quick` for bugs and security only, `--thorough` for exhaustive deep dive (Day 85)
+- **Exit summary with colored diffs** — on session end, shows a compact diff of lines added and removed, not just file names (Day 83)
+- **`/goal` system prompt injection** — goals set with `/goal set` are injected into the system prompt for persistent awareness across turns (Day 83)
+- **`/blindspot` skill** — structured critique mode with 7 analysis dimensions and adjustable intensity, from security gaps to architecture debt (Day 83)
+- **Turn change summary** — dim line after each AI turn showing which files were just modified, e.g. `✏ src/repl.rs, 🆕 src/banner.rs` (Day 82)
+
+### Improved
+
+- **Richer `/status`** — now shows active goal, watch command, active modes (architect/teach/read), and session file changes (Day 84)
+- **Relative timestamps in `/memories`** — shows "3d ago" instead of raw ISO timestamps (Day 85)
+- **SmartEditTool extracted to `src/smart_edit.rs`** — 758-line module with clear separation from `tool_wrappers.rs` (Day 85)
+- **`banner.rs` extraction** — startup banner and welcome text separated from `cli.rs` into its own module, reducing `cli.rs` by 355 lines (Day 82)
+
 ## [0.1.13] — 2026-05-20
 
 6 sessions spanning Days 79–81. Watch mode learns to parse TypeScript and Python errors alongside Rust, file operation permissions can be persisted to config, and startup now reads instruction files from five AI tools. Lua and Zig join `/map`, `/init` detects existing AI configs, and a steady cleanup arc squashes flaky tests across multiple modules.

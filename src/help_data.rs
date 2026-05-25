@@ -103,15 +103,18 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              Always clears immediately regardless of message count.",
         ),
         "compact" => Some(
-            "/compact [N|all] — Compact conversation to save context space\n\n\
+            "/compact [N|all|--preview] — Compact conversation to save context space\n\n\
              Summarizes older turns to free context window space.\n\n\
              Usage:\n\
              \x20 /compact              Default — keep last 10 messages at full fidelity\n\
              \x20 /compact 4            Keep last 4 messages, summarize everything before\n\
-             \x20 /compact all          Summarize everything except the last 2 messages\n\n\
+             \x20 /compact all          Summarize everything except the last 2 messages\n\
+             \x20 /compact --preview    Show what compaction would do without performing it\n\n\
              The number controls how many recent messages survive compaction at\n\
              full detail. Lower numbers free more space but lose more context.\n\
-             Minimum value is 2 (always keeps at least the last exchange).",
+             Minimum value is 2 (always keeps at least the last exchange).\n\n\
+             The --preview flag shows estimated token savings, message counts,\n\
+             files touched, and topics in the conversation — without changing anything.",
         ),
         "commit" => Some(
             "/commit [message] — Commit staged changes\n\n\
