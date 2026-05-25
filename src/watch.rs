@@ -949,6 +949,78 @@ fn classify_watch_command(cmd: &str) -> &'static str {
     }
 }
 
+/// Maximum total bytes of source context to inject into fix prompts.
+const SOURCE_CONTEXT_MAX_BYTES: usize = 3072;
+
+/// Extract relevant source file lines around error locations.
+///
+/// For each unique `(file, line)` pair in the error list, reads the file and
+/// extracts a window of context (±5 lines). Results are deduped by file+line,
+/// capped at [`SOURCE_CONTEXT_MAX_BYTES`] total, and formatted as markdown.
+///
+/// Files that don't exist or can't be read are silently skipped.
+pub fn extract_error_source_context(errors: &[CompilerError]) -> String {
+    use std::collections::HashSet;
+    use std::fs;
+
+    if errors.is_empty() {
+        return String::new();
+    }
+
+    // Deduplicate (file, line) pairs — preserve insertion order via Vec
+    let mut seen = HashSet::new();
+    let mut locations: Vec<(String, u32)> = Vec::new();
+    for e in errors {
+        if let (Some(file), Some(line)) = (&e.file, e.line) {
+            let key = (file.clone(), line);
+            if seen.insert(key.clone()) {
+                locations.push(key);
+            }
+        }
+    }
+
+    if locations.is_empty() {
+        return String::new();
+    }
+
+    let mut sections: Vec<String> = Vec::new();
+    let mut total_bytes: usize = 0;
+
+    for (file, line) in &locations {
+        let content = match fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        let line_idx = (*line as usize).saturating_sub(1); // 0-indexed
+        let start = line_idx.saturating_sub(5);
+        let end = (line_idx + 6).min(lines.len()); // exclusive, +5 lines after
+
+        if start >= lines.len() {
+            continue;
+        }
+
+        let mut snippet = format!("**{}** (around line {}):\n```\n", file, line);
+        for (i, src_line) in lines.iter().enumerate().take(end).skip(start) {
+            snippet.push_str(&format!("{:>4}: {}\n", i + 1, src_line));
+        }
+        snippet.push_str("```\n");
+
+        // Check if adding this snippet would exceed our budget
+        if total_bytes + snippet.len() > SOURCE_CONTEXT_MAX_BYTES {
+            break;
+        }
+        total_bytes += snippet.len();
+        sections.push(snippet);
+    }
+
+    if sections.is_empty() {
+        return String::new();
+    }
+
+    format!("\n## Relevant source context\n\n{}", sections.join("\n"))
+}
+
 /// Build a prompt asking the agent to fix failures from a watch command.
 ///
 /// Includes a hint about the command type (lint, test, or general command)
@@ -996,6 +1068,7 @@ pub fn build_watch_fix_prompt(watch_cmd: &str, output: &str) -> String {
         }
     };
     let structured_section = build_error_summary_for(&errors, detected_lang);
+    let source_context = extract_error_source_context(&errors);
 
     let hint = match cmd_type {
         "lint" => "\n\nThis is a **lint** failure — fixes are usually mechanical (unused imports, \
@@ -1010,13 +1083,13 @@ pub fn build_watch_fix_prompt(watch_cmd: &str, output: &str) -> String {
         format!(
             "Your changes caused {cmd_type} failures. Here's the output from `{watch_cmd}`:\n\
              ```\n{truncated}\n```\n\n\
-             {summary}{hint}"
+             {summary}{source_context}{hint}"
         )
     } else {
         format!(
             "Your changes caused {cmd_type} failures. Here's the output from `{watch_cmd}`:\n\
              ```\n{truncated}\n```\n\
-             Please fix the issues.{hint}"
+             Please fix the issues.{source_context}{hint}"
         )
     }
 }
@@ -2472,7 +2545,187 @@ E       assert 3 == 4
             build_error_summary_for(&errors, WatchLanguage::Python).expect("should return summary");
         assert!(
             summary.contains("Python"),
-            "should label as Python: {summary}"
+            "should label as Python: {summary}",
+        );
+    }
+
+    #[test]
+    fn extract_error_source_context_empty_errors() {
+        let result = extract_error_source_context(&[]);
+        assert!(
+            result.is_empty(),
+            "empty errors should produce empty string"
+        );
+    }
+
+    #[test]
+    fn extract_error_source_context_nonexistent_files() {
+        let errors = vec![CompilerError {
+            code: Some("E0308".to_string()),
+            message: "mismatched types".to_string(),
+            file: Some("/tmp/nonexistent_file_xyz_12345.rs".to_string()),
+            line: Some(10),
+            category: ErrorCategory::Type,
+        }];
+        let result = extract_error_source_context(&errors);
+        assert!(
+            result.is_empty(),
+            "non-existent files should produce empty string: {result}",
+        );
+    }
+
+    #[test]
+    fn extract_error_source_context_no_file_field() {
+        let errors = vec![CompilerError {
+            code: Some("E0308".to_string()),
+            message: "mismatched types".to_string(),
+            file: None,
+            line: Some(10),
+            category: ErrorCategory::Type,
+        }];
+        let result = extract_error_source_context(&errors);
+        assert!(
+            result.is_empty(),
+            "errors without file field should produce empty string",
+        );
+    }
+
+    #[test]
+    fn extract_error_source_context_reads_real_file() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test_source.rs");
+        {
+            let mut f = std::fs::File::create(&file_path).unwrap();
+            for i in 1..=20 {
+                writeln!(f, "// line {i}").unwrap();
+            }
+        }
+        let errors = vec![CompilerError {
+            code: Some("E0308".to_string()),
+            message: "mismatched types".to_string(),
+            file: Some(file_path.to_str().unwrap().to_string()),
+            line: Some(10),
+            category: ErrorCategory::Type,
+        }];
+        let result = extract_error_source_context(&errors);
+        assert!(
+            result.contains("## Relevant source context"),
+            "should include header: {result}",
+        );
+        assert!(
+            result.contains("around line 10"),
+            "should indicate target line: {result}",
+        );
+        // Should include lines 5-15 (10 ± 5)
+        assert!(
+            result.contains("// line 5"),
+            "should include line 5: {result}"
+        );
+        assert!(
+            result.contains("// line 15"),
+            "should include line 15: {result}",
+        );
+        // Should NOT include line 1 (out of ±5 window from line 10)
+        assert!(
+            !result.contains("   1: // line 1"),
+            "should not include line 1: {result}",
+        );
+    }
+
+    #[test]
+    fn extract_error_source_context_deduplicates() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("dup_test.rs");
+        {
+            let mut f = std::fs::File::create(&file_path).unwrap();
+            for i in 1..=20 {
+                writeln!(f, "// line {i}").unwrap();
+            }
+        }
+        let path_str = file_path.to_str().unwrap().to_string();
+        let errors = vec![
+            CompilerError {
+                code: Some("E0308".to_string()),
+                message: "error one".to_string(),
+                file: Some(path_str.clone()),
+                line: Some(10),
+                category: ErrorCategory::Type,
+            },
+            CompilerError {
+                code: Some("E0277".to_string()),
+                message: "error two".to_string(),
+                file: Some(path_str.clone()),
+                line: Some(10), // same file+line
+                category: ErrorCategory::Type,
+            },
+        ];
+        let result = extract_error_source_context(&errors);
+        // Should only appear once
+        let count = result.matches("around line 10").count();
+        assert_eq!(count, 1, "same file+line should appear only once: {result}");
+    }
+
+    #[test]
+    fn extract_error_source_context_respects_cap() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        // Create many files with long lines to exceed the 3KB cap
+        let mut errors = Vec::new();
+        for i in 0..50 {
+            let file_path = dir.path().join(format!("file_{i}.rs"));
+            {
+                let mut f = std::fs::File::create(&file_path).unwrap();
+                for j in 1..=20 {
+                    // Long lines to fill up the budget quickly
+                    writeln!(f, "// line {j} {}", "x".repeat(80)).unwrap();
+                }
+            }
+            errors.push(CompilerError {
+                code: Some("E0308".to_string()),
+                message: format!("error in file {i}"),
+                file: Some(file_path.to_str().unwrap().to_string()),
+                line: Some(10),
+                category: ErrorCategory::Type,
+            });
+        }
+        let result = extract_error_source_context(&errors);
+        // The result should be capped at roughly SOURCE_CONTEXT_MAX_BYTES
+        assert!(
+            result.len() <= SOURCE_CONTEXT_MAX_BYTES + 200, // small margin for the header
+            "result should respect cap: got {} bytes",
+            result.len(),
+        );
+        // But should have at least some content
+        assert!(
+            !result.is_empty(),
+            "should include at least one file snippet",
+        );
+    }
+
+    #[test]
+    fn build_watch_fix_prompt_includes_source_context() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("src_context_test.rs");
+        {
+            let mut f = std::fs::File::create(&file_path).unwrap();
+            for i in 1..=20 {
+                writeln!(f, "fn line_{i}() {{}}").unwrap();
+            }
+        }
+        let path_str = file_path.to_str().unwrap();
+        // Construct output that parse_rust_errors will parse with our file path
+        let output = format!("error[E0308]: mismatched types\n  --> {}:10:5\n", path_str);
+        let prompt = build_watch_fix_prompt("cargo build", &output);
+        assert!(
+            prompt.contains("## Relevant source context"),
+            "prompt should include source context section: {prompt}",
+        );
+        assert!(
+            prompt.contains("around line 10"),
+            "prompt should reference the error line: {prompt}",
         );
     }
 }
