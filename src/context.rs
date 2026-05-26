@@ -179,18 +179,17 @@ pub fn load_project_context() -> Option<String> {
         None
     };
 
-    // Append project-type conventions if no explicit context file was found
+    // Append project-type conventions (always, regardless of context files —
+    // conventions complement explicit instructions rather than replacing them)
     let mut conventions_injected = false;
-    if found.is_empty() {
-        let project_type = detect_project_type(std::path::Path::new("."));
-        if let Some(hints) = project_type_hints(&project_type) {
-            if !context.is_empty() {
-                context.push_str("\n\n");
-            }
-            context.push_str("## Development Conventions\n\n");
-            context.push_str(&hints);
-            conventions_injected = true;
+    let project_type = detect_project_type(std::path::Path::new("."));
+    if let Some(hints) = project_type_hints(&project_type) {
+        if !context.is_empty() {
+            context.push_str("\n\n");
         }
+        context.push_str("## Development Conventions\n\n");
+        context.push_str(&hints);
+        conventions_injected = true;
     }
 
     // Append project memories if available
@@ -210,7 +209,6 @@ pub fn load_project_context() -> Option<String> {
                 eprintln!("{DIM}  context: {name}{RESET}");
             }
             if conventions_injected {
-                let project_type = detect_project_type(std::path::Path::new("."));
                 eprintln!("{DIM}  context: {project_type} conventions{RESET}");
             }
             if context.contains("## Recently Changed Files") {
@@ -497,8 +495,9 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_project_context_skips_conventions_with_context_file() {
-        // When YOYO.md exists, conventions should NOT be injected
+    fn test_project_context_includes_conventions_with_context_file() {
+        // When YOYO.md exists, conventions should STILL be injected
+        // (they complement explicit instructions)
         use std::process::Command;
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
@@ -526,12 +525,23 @@ mod tests {
 
         let ctx = ctx.unwrap();
         assert!(
-            !ctx.contains("## Development Conventions"),
-            "Should NOT include conventions when YOYO.md exists"
+            ctx.contains("## Development Conventions"),
+            "Should include conventions even when YOYO.md exists"
+        );
+        assert!(
+            ctx.contains("cargo"),
+            "Rust conventions should mention cargo"
         );
         assert!(
             ctx.contains("Custom instructions"),
             "Should include YOYO.md content"
+        );
+        // Verify ordering: context file content comes BEFORE conventions
+        let context_pos = ctx.find("Custom instructions").unwrap();
+        let conventions_pos = ctx.find("## Development Conventions").unwrap();
+        assert!(
+            context_pos < conventions_pos,
+            "Context file content should appear before conventions"
         );
     }
 
