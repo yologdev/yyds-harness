@@ -569,6 +569,39 @@ impl AgentConfig {
         }
     }
 
+    /// Rebuild `agent` with the current config, preserving conversation history.
+    ///
+    /// Returns `true` if the conversation was fully preserved, `false` if
+    /// messages could not be saved or restored (the agent is still rebuilt
+    /// either way — it just starts with a blank conversation).
+    ///
+    /// This is the single call-site for the save→rebuild→restore pattern that
+    /// was previously duplicated across dispatch.rs, commands.rs,
+    /// commands_config.rs, and prompt.rs.
+    pub fn rebuild_preserving_messages(&self, agent: &mut Agent) -> bool {
+        let saved = match agent.save_messages() {
+            Ok(json) => Some(json),
+            Err(e) => {
+                eprintln!("{DIM}  ⚠ could not preserve conversation: {e}{RESET}");
+                None
+            }
+        };
+        *agent = self.build_agent();
+        if let Some(json) = saved {
+            match agent.restore_messages(&json) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!(
+                        "{YELLOW}  ⚠ conversation could not be restored after rebuild: {e}{RESET}"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
     /// Build a minimal agent for `/side` conversations — same provider/model/API key,
     /// but no tools, no skills, and a concise system prompt. The agent is one-shot
     /// (1 turn max) so it answers the question and stops.

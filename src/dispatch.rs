@@ -447,19 +447,7 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             let new_model = arg;
             ctx.agent_config.model = new_model.to_string();
             // Rebuild ctx.agent with new model, preserving conversation
-            let saved = match ctx.agent.save_messages() {
-                Ok(json) => Some(json),
-                Err(e) => {
-                    eprintln!("{DIM}  ⚠ could not preserve conversation: {e}{RESET}");
-                    None
-                }
-            };
-            *ctx.agent = ctx.agent_config.build_agent();
-            let restored = if let Some(json) = saved {
-                ctx.agent.restore_messages(&json).is_ok()
-            } else {
-                false
-            };
+            let restored = ctx.agent_config.rebuild_preserving_messages(ctx.agent);
             if restored {
                 println!("{DIM}  (switched to {new_model}, conversation preserved){RESET}\n");
             } else {
@@ -502,19 +490,7 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             }
             ctx.agent_config.thinking = new_thinking;
             // Rebuild ctx.agent with new thinking level, preserving conversation
-            let saved = match ctx.agent.save_messages() {
-                Ok(json) => Some(json),
-                Err(e) => {
-                    eprintln!("{DIM}  ⚠ could not preserve conversation: {e}{RESET}");
-                    None
-                }
-            };
-            *ctx.agent = ctx.agent_config.build_agent();
-            let restored = if let Some(json) = saved {
-                ctx.agent.restore_messages(&json).is_ok()
-            } else {
-                false
-            };
+            let restored = ctx.agent_config.rebuild_preserving_messages(ctx.agent);
             let level_name = thinking_level_name(ctx.agent_config.thinking);
             if restored {
                 println!("{DIM}  (thinking set to {level_name}, conversation preserved){RESET}\n");
