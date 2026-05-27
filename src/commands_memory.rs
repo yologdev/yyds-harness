@@ -264,6 +264,8 @@ mod tests {
 
         let results = search_memories(&memory, "sqlx");
         assert_eq!(results.len(), 2);
+        // "uses sqlx for DB" is shorter (more focused) so scores slightly
+        // higher than "sqlx migrations in ./migrations" despite later position
         assert_eq!(results[0].0, 0);
         assert_eq!(results[1].0, 2);
 

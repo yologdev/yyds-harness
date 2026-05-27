@@ -755,4 +755,384 @@ mod tests {
             "Should contain whitespace hint: {err}"
         );
     }
+
+    // === find_nearest_match edge case tests ===
+
+    #[test]
+    fn test_find_nearest_match_extra_blank_lines_in_old_text() {
+        // File has no blank lines between statements; old_text has an extra blank line
+        let file_content = "fn foo() {\n    let a = 1;\n    let b = 2;\n}\n";
+        let old_text = "fn foo() {\n    let a = 1;\n\n    let b = 2;\n}";
+        let result = find_nearest_match(file_content, old_text);
+        // Should still find a match anchored on "fn foo()" even with the blank line mismatch
+        assert!(
+            result.is_some(),
+            "Should find a match despite extra blank line"
+        );
+        let (line, _is_ws, _snippet) = result.unwrap();
+        assert_eq!(line, 1, "Match should be at line 1");
+    }
+
+    #[test]
+    fn test_find_nearest_match_fewer_blank_lines_in_old_text() {
+        // File has a blank line; old_text omits it
+        let file_content = "fn bar() {\n    let a = 1;\n\n    let b = 2;\n}\n";
+        let old_text = "fn bar() {\n    let a = 1;\n    let b = 2;\n}";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(
+            result.is_some(),
+            "Should find a match despite fewer blank lines"
+        );
+        let (line, _is_ws, _snippet) = result.unwrap();
+        assert_eq!(line, 1, "Match should be at line 1");
+    }
+
+    #[test]
+    fn test_find_nearest_match_at_start_of_file() {
+        // Match is at the very first line
+        let file_content = "fn first() {\n    body();\n}\nfn second() {}\n";
+        let old_text = "fn first() {\n    body();\n}";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(result.is_some(), "Should find match at start");
+        let (line, is_ws, _snippet) = result.unwrap();
+        assert_eq!(line, 1, "Match should be at line 1 (very start)");
+        assert!(!is_ws, "Should be an exact match, not whitespace-only");
+    }
+
+    #[test]
+    fn test_find_nearest_match_at_end_of_file_no_trailing_newline() {
+        // Match at the very end, file has no trailing newline
+        let file_content = "fn first() {}\nfn last() {\n    done();\n}";
+        let old_text = "fn last() {\n    done();\n}";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(result.is_some(), "Should find match at end of file");
+        let (line, is_ws, _snippet) = result.unwrap();
+        assert_eq!(line, 2, "Match should be at line 2");
+        assert!(!is_ws, "Should be exact match");
+    }
+
+    #[test]
+    fn test_find_nearest_match_at_end_snippet_truncated() {
+        // When match is near the end, snippet should not go past file end
+        let file_content = "a\nb\nc\nlast_line";
+        let old_text = "last_line";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(result.is_some());
+        let (line, _, snippet) = result.unwrap();
+        assert_eq!(line, 4, "Match at line 4 (last line)");
+        // Snippet should only have 1 line since there's nothing after
+        let snippet_lines: Vec<&str> = snippet.lines().collect();
+        assert_eq!(snippet_lines.len(), 1, "Snippet limited to remaining lines");
+        assert!(snippet.contains("last_line"));
+    }
+
+    #[test]
+    fn test_find_nearest_match_very_short_old_text_single_char() {
+        // A single character should still match if it exists as a whole line
+        let file_content = "a\nb\nc\n";
+        let old_text = "b";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(result.is_some(), "Single char should match a whole line");
+        let (line, is_ws, _) = result.unwrap();
+        assert_eq!(line, 2);
+        assert!(!is_ws);
+    }
+
+    #[test]
+    fn test_find_nearest_match_very_short_old_text_no_line_match() {
+        // Short old_text that doesn't match any whole line (only substring)
+        let file_content = "hello world\nfoo bar\nbaz qux\n";
+        let old_text = "oo"; // substring of "foo" but not a whole line
+        let result = find_nearest_match(file_content, old_text);
+        assert!(
+            result.is_none(),
+            "Partial substring should not match (trimmed comparison is exact)"
+        );
+    }
+
+    #[test]
+    fn test_find_nearest_match_tabs_vs_spaces() {
+        // File uses tabs, old_text uses spaces
+        let file_content = "fn main() {\n\tlet x = 1;\n\tlet y = 2;\n}\n";
+        let old_text = "fn main() {\n    let x = 1;\n    let y = 2;\n}";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(
+            result.is_some(),
+            "Should find match with tab/space mismatch"
+        );
+        let (line, is_ws, _snippet) = result.unwrap();
+        assert_eq!(line, 1);
+        assert!(is_ws, "Tab vs space difference should be whitespace-only");
+    }
+
+    #[test]
+    fn test_find_nearest_match_spaces_vs_tabs() {
+        // Reverse: file uses spaces, old_text uses tabs
+        let file_content = "fn main() {\n    let x = 1;\n}\n";
+        let old_text = "fn main() {\n\tlet x = 1;\n}";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(
+            result.is_some(),
+            "Should find match with space/tab mismatch"
+        );
+        let (_, is_ws, _) = result.unwrap();
+        assert!(is_ws, "Space vs tab difference should be whitespace-only");
+    }
+
+    #[test]
+    fn test_find_nearest_match_multiple_partial_matches_picks_best() {
+        // Two functions with the same opening but different bodies.
+        // The old_text matches the second one better (more lines match).
+        let file_content = "fn do_thing() {\n    alpha();\n}\n\nfn do_thing() {\n    alpha();\n    beta();\n    gamma();\n}\n";
+        let old_text = "fn do_thing() {\n    alpha();\n    beta();\n    gamma();\n}";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(result.is_some(), "Should find the best match");
+        let (line, is_ws, _) = result.unwrap();
+        // The second fn do_thing() starts at line 5 and matches 5 lines
+        assert_eq!(line, 5, "Should pick the better (longer) match at line 5");
+        assert!(!is_ws);
+    }
+
+    #[test]
+    fn test_find_nearest_match_multiple_matches_first_if_equal() {
+        // Two identical matches — should pick the one with the higher match count
+        // (in practice, if equal, the later one wins because of > comparison)
+        let file_content = "let x = 1;\nlet y = 2;\nlet x = 1;\nlet y = 2;\n";
+        let old_text = "let x = 1;\nlet y = 2;";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(result.is_some());
+        let (line, _, _) = result.unwrap();
+        // Both matches have count=2, so the second one wins (> not >=)
+        // Actually let's check: is_none_or with match_count > prev_count means
+        // equal count does NOT replace, so first match wins
+        assert_eq!(line, 1, "Equal matches: first one wins");
+    }
+
+    #[test]
+    fn test_find_nearest_match_unicode_content() {
+        let file_content =
+            "fn greet() {\n    println!(\"こんにちは\");\n    println!(\"世界\");\n}\n";
+        let old_text = "fn greet() {\n    println!(\"こんにちは\");\n    println!(\"世界\");\n}";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(result.is_some(), "Should match Unicode content");
+        let (line, is_ws, snippet) = result.unwrap();
+        assert_eq!(line, 1);
+        assert!(!is_ws);
+        assert!(
+            snippet.contains("こんにちは"),
+            "Snippet should contain Unicode"
+        );
+    }
+
+    #[test]
+    fn test_find_nearest_match_unicode_with_whitespace_diff() {
+        // Unicode content with indentation mismatch
+        let file_content = "fn emoji() {\n    let msg = \"🎉✓\";\n}\n";
+        let old_text = "fn emoji() {\n  let msg = \"🎉✓\";\n}";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(result.is_some());
+        let (_, is_ws, _) = result.unwrap();
+        assert!(
+            is_ws,
+            "Unicode content with only whitespace diff should be detected"
+        );
+    }
+
+    #[test]
+    fn test_find_nearest_match_empty_file() {
+        let result = find_nearest_match("", "fn hello()");
+        assert!(result.is_none(), "Empty file should return None");
+    }
+
+    #[test]
+    fn test_find_nearest_match_empty_file_empty_old_text() {
+        let result = find_nearest_match("", "");
+        assert!(result.is_none(), "Both empty should return None");
+    }
+
+    #[test]
+    fn test_find_nearest_match_old_text_with_leading_empty_lines() {
+        // old_text starts with empty lines, the anchor is on a later line
+        let file_content = "fn alpha() {}\n\nfn beta() {\n    body();\n}\n";
+        let old_text = "\n\nfn beta() {\n    body();\n}";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(
+            result.is_some(),
+            "Should find match even with leading empty lines in old_text"
+        );
+        let (line, _is_ws, _snippet) = result.unwrap();
+        // The anchor "fn beta() {" is at file line 3 (1-indexed),
+        // and anchor_offset is 2 (two leading empty lines), so start_line adjusts back
+        assert!(line <= 3, "Line should account for leading empty lines");
+    }
+
+    #[test]
+    fn test_find_nearest_match_single_line_file() {
+        let file_content = "only_line";
+        let old_text = "only_line";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(result.is_some());
+        let (line, is_ws, _) = result.unwrap();
+        assert_eq!(line, 1);
+        assert!(!is_ws);
+    }
+
+    #[test]
+    fn test_find_nearest_match_trailing_whitespace_diff() {
+        // File lines have trailing spaces, old_text doesn't
+        let file_content = "fn main() {  \n    let x = 1;  \n}\n";
+        let old_text = "fn main() {\n    let x = 1;\n}";
+        let result = find_nearest_match(file_content, old_text);
+        assert!(result.is_some());
+        let (line, is_ws, _) = result.unwrap();
+        assert_eq!(line, 1);
+        assert!(
+            is_ws,
+            "Trailing whitespace difference should be whitespace-only"
+        );
+    }
+
+    // === augment_not_found_error edge case tests ===
+
+    #[test]
+    fn test_augment_not_found_error_missing_path() {
+        let tool = SmartEditTool {
+            inner: Box::new(SmartEditMockTool {
+                fail_msg: None,
+                result_text: None,
+            }),
+        };
+        let params = serde_json::json!({
+            "old_text": "fn hello()",
+            "new_text": "fn goodbye()"
+        });
+        let result = tool.augment_not_found_error("old_text not found in file", &params);
+        assert_eq!(
+            result, "old_text not found in file",
+            "Missing path should return original msg"
+        );
+    }
+
+    #[test]
+    fn test_augment_not_found_error_missing_old_text() {
+        let tool = SmartEditTool {
+            inner: Box::new(SmartEditMockTool {
+                fail_msg: None,
+                result_text: None,
+            }),
+        };
+        let params = serde_json::json!({
+            "path": "/some/file.rs",
+            "new_text": "fn goodbye()"
+        });
+        let result = tool.augment_not_found_error("old_text not found in file", &params);
+        assert_eq!(
+            result, "old_text not found in file",
+            "Missing old_text should return original msg"
+        );
+    }
+
+    #[test]
+    fn test_augment_not_found_error_nonexistent_file() {
+        let tool = SmartEditTool {
+            inner: Box::new(SmartEditMockTool {
+                fail_msg: None,
+                result_text: None,
+            }),
+        };
+        let params = serde_json::json!({
+            "path": "/definitely/does/not/exist/file.rs",
+            "old_text": "fn hello()",
+            "new_text": "fn goodbye()"
+        });
+        let result = tool.augment_not_found_error("old_text not found in file", &params);
+        assert_eq!(
+            result, "old_text not found in file",
+            "Nonexistent file should return original msg"
+        );
+    }
+
+    #[test]
+    fn test_augment_not_found_error_line_number_accuracy() {
+        // Create a temp file with known content, verify exact line number in output
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("lines.rs");
+        std::fs::write(
+            &file_path,
+            "line 1\nline 2\nline 3\nfn target() {\n    body();\n}\nline 7\n",
+        )
+        .unwrap();
+
+        let tool = SmartEditTool {
+            inner: Box::new(SmartEditMockTool {
+                fail_msg: None,
+                result_text: None,
+            }),
+        };
+        let params = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "old_text": "fn target() {\n  body();\n}",
+            "new_text": "fn replacement()"
+        });
+        let result = tool.augment_not_found_error("old_text not found", &params);
+        assert!(
+            result.contains("line 4"),
+            "Should report line 4 for fn target(): {result}"
+        );
+        assert!(
+            result.contains("fn target()"),
+            "Should show the actual content"
+        );
+        assert!(
+            result.contains("whitespace"),
+            "Should hint about whitespace diff"
+        );
+    }
+
+    #[test]
+    fn test_augment_not_found_error_no_match_in_file() {
+        // File exists but old_text has no match at all
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("nomatch.rs");
+        std::fs::write(&file_path, "fn alpha() {}\nfn beta() {}\n").unwrap();
+
+        let tool = SmartEditTool {
+            inner: Box::new(SmartEditMockTool {
+                fail_msg: None,
+                result_text: None,
+            }),
+        };
+        let params = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "old_text": "fn completely_unrelated()",
+            "new_text": "fn replacement()"
+        });
+        let result = tool.augment_not_found_error("old_text not found", &params);
+        // No match found, should return original message unaugmented
+        assert_eq!(
+            result, "old_text not found",
+            "No match should return original: {result}"
+        );
+    }
+
+    // === extract_matched_text additional tests ===
+
+    #[test]
+    fn test_extract_matched_text_empty_content() {
+        let result = extract_matched_text("", 0, 3);
+        assert_eq!(result, "", "Empty content should return empty string");
+    }
+
+    #[test]
+    fn test_extract_matched_text_single_line() {
+        let result = extract_matched_text("only_line", 0, 1);
+        assert_eq!(result, "only_line");
+    }
+
+    #[test]
+    fn test_extract_matched_text_exact_range() {
+        let content = "a\nb\nc\nd\n";
+        let result = extract_matched_text(content, 0, 4);
+        assert_eq!(result, "a\nb\nc\nd");
+    }
 }

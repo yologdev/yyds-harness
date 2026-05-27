@@ -82,20 +82,192 @@ pub fn remove_memory(memory: &mut ProjectMemory, index: usize) -> Option<MemoryE
     }
 }
 
-/// Search memories by case-insensitive substring match.
-/// Returns a vec of `(index, &MemoryEntry)` for matching entries.
-/// An empty query matches all entries.
+/// Score a memory note against a query using fuzzy matching.
+///
+/// Returns `None` for non-matches and `Some(score)` for matches.
+/// Higher scores indicate better matches.
+///
+/// Matching rules:
+/// - Single word query: case-insensitive substring match
+/// - Multi-word query: ALL words must appear in the note (AND semantics, case-insensitive)
+///
+/// Score boosters:
+/// - Exact substring match of the full query → highest base score
+/// - Word-boundary matches (word starts at beginning of a note word) → bonus
+/// - Consecutive word matches in the note → bonus
+/// - Shorter notes (more focused) → bonus
+pub fn fuzzy_score_memory(note: &str, query: &str) -> Option<f64> {
+    if query.is_empty() {
+        // Empty query matches everything with a neutral score
+        return Some(1.0);
+    }
+
+    let note_lower = note.to_lowercase();
+    let query_lower = query.to_lowercase();
+    let query_words: Vec<&str> = query_lower.split_whitespace().collect();
+
+    if query_words.is_empty() {
+        return Some(1.0);
+    }
+
+    if query_words.len() == 1 {
+        // Single word: substring match
+        let word = query_words[0];
+        let pos = note_lower.find(word)?;
+        return Some(single_word_score(&note_lower, word, pos));
+    }
+
+    // Multi-word: all words must be present (AND semantics)
+    let mut word_positions: Vec<usize> = Vec::with_capacity(query_words.len());
+    for word in &query_words {
+        let pos = note_lower.find(word)?;
+        word_positions.push(pos);
+    }
+
+    // Base score for matching all words
+    let mut score = 10.0;
+
+    // Bonus for exact full-query substring match
+    if note_lower.contains(&query_lower) {
+        score += 20.0;
+    }
+
+    // Word-boundary bonus: each query word that starts at a word boundary in the note
+    for (i, word) in query_words.iter().enumerate() {
+        let pos = word_positions[i];
+        if is_word_boundary(&note_lower, pos) {
+            score += 3.0;
+        }
+        // Bonus if word appears early in note
+        let position_bonus = 1.0 / (1.0 + pos as f64 / 20.0);
+        score += position_bonus;
+        // Extra bonus if exact word (bounded on both sides)
+        if is_exact_word(&note_lower, word, pos) {
+            score += 2.0;
+        }
+    }
+
+    // Consecutive-match bonus: check if query words appear in order
+    let mut sorted_positions = word_positions.clone();
+    sorted_positions.sort_unstable();
+    let in_order = word_positions == sorted_positions;
+    if in_order {
+        score += 5.0;
+    }
+
+    // Check for consecutive (adjacent) word matches in the note
+    if in_order && word_positions.len() > 1 {
+        let mut consecutive_count = 0;
+        for j in 1..word_positions.len() {
+            let prev_end = word_positions[j - 1] + query_words[j - 1].len();
+            // Allow a small gap (whitespace, punctuation) between consecutive matches
+            let gap = word_positions[j].saturating_sub(prev_end);
+            if gap <= 3 {
+                consecutive_count += 1;
+            }
+        }
+        score += consecutive_count as f64 * 3.0;
+    }
+
+    // Shorter notes are more focused → small bonus
+    let length_bonus = 10.0 / (1.0 + note.len() as f64 / 30.0);
+    score += length_bonus;
+
+    Some(score)
+}
+
+/// Score a single-word match.
+fn single_word_score(note_lower: &str, word: &str, pos: usize) -> f64 {
+    let mut score = 10.0;
+
+    // Bonus for word-boundary match
+    if is_word_boundary(note_lower, pos) {
+        score += 5.0;
+    }
+
+    // Bonus for exact word match (bounded on both sides)
+    if is_exact_word(note_lower, word, pos) {
+        score += 3.0;
+    }
+
+    // Earlier position in note → better
+    let position_bonus = 2.0 / (1.0 + pos as f64 / 20.0);
+    score += position_bonus;
+
+    // Shorter notes → more focused
+    let length_bonus = 5.0 / (1.0 + note_lower.len() as f64 / 30.0);
+    score += length_bonus;
+
+    score
+}
+
+/// Check if position `pos` in `text` is at a word boundary (start of a word).
+fn is_word_boundary(text: &str, pos: usize) -> bool {
+    if pos == 0 {
+        return true;
+    }
+    text.as_bytes()
+        .get(pos.wrapping_sub(1))
+        .map(|&b| !b.is_ascii_alphanumeric() && b != b'_')
+        .unwrap_or(true)
+}
+
+/// Check if the match at `pos` for `word` is an exact word (bounded on both sides).
+fn is_exact_word(text: &str, word: &str, pos: usize) -> bool {
+    let end = pos + word.len();
+    let start_ok = is_word_boundary(text, pos);
+    let end_ok = end >= text.len()
+        || text
+            .as_bytes()
+            .get(end)
+            .map(|&b| !b.is_ascii_alphanumeric() && b != b'_')
+            .unwrap_or(true);
+    start_ok && end_ok
+}
+
+/// Search memories with fuzzy matching and relevance scoring.
+///
+/// Returns a vec of `(index, &MemoryEntry)` sorted by relevance (highest first).
+/// An empty query matches all entries (sorted by recency, newest first).
+///
+/// For non-empty queries, results are scored by `fuzzy_score_memory()` with a
+/// recency bonus for newer memories.
 pub fn search_memories<'a>(
     memory: &'a ProjectMemory,
     query: &str,
 ) -> Vec<(usize, &'a MemoryEntry)> {
-    let query_lower = query.to_lowercase();
-    memory
+    if query.trim().is_empty() {
+        // Empty query: return all, newest first
+        let mut results: Vec<(usize, &MemoryEntry)> = memory.entries.iter().enumerate().collect();
+        results.reverse();
+        return results;
+    }
+
+    let now = now_epoch_secs();
+
+    let mut scored: Vec<(usize, &MemoryEntry, f64)> = memory
         .entries
         .iter()
         .enumerate()
-        .filter(|(_, entry)| entry.note.to_lowercase().contains(&query_lower))
-        .collect()
+        .filter_map(|(i, entry)| {
+            let mut score = fuzzy_score_memory(&entry.note, query)?;
+
+            // Recency bonus: newer memories get a small boost
+            if let Some(ts_epoch) = parse_timestamp_to_epoch(&entry.timestamp) {
+                let age_days = (now - ts_epoch).max(0) as f64 / 86400.0;
+                // Recency bonus decays over ~30 days, max +5.0
+                let recency = 5.0 / (1.0 + age_days / 7.0);
+                score += recency;
+            }
+
+            Some((i, entry, score))
+        })
+        .collect();
+
+    // Sort by score descending (highest relevance first)
+    scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+
+    scored.into_iter().map(|(i, entry, _)| (i, entry)).collect()
 }
 
 /// Format memories for display in the system prompt.
@@ -728,5 +900,226 @@ mod tests {
         assert!(parse_timestamp_to_epoch("2026-13-01 00:00").is_none()); // bad month
         assert!(parse_timestamp_to_epoch("2026-05-32 00:00").is_none()); // bad day
         assert!(parse_timestamp_to_epoch("2026-05-24 25:00").is_none()); // bad hour
+    }
+
+    // --- fuzzy_score_memory tests ---
+
+    #[test]
+    fn test_fuzzy_score_single_word_exact_match() {
+        let score = fuzzy_score_memory("docker required", "docker");
+        assert!(score.is_some());
+        let s = score.unwrap();
+        assert!(s > 15.0, "exact word-boundary match should score high: {s}");
+    }
+
+    #[test]
+    fn test_fuzzy_score_single_word_mid_word_match() {
+        // "sqlx" inside "postgresql_sqlx_config" — not at word boundary
+        let score = fuzzy_score_memory("postgresql_sqlx_config", "sqlx");
+        assert!(score.is_some(), "substring should still match");
+        let s = score.unwrap();
+        // Should be lower than a word-boundary match
+        let boundary_score = fuzzy_score_memory("sqlx config", "sqlx").unwrap();
+        assert!(
+            boundary_score > s,
+            "word-boundary match ({boundary_score}) should score higher than mid-word ({s})"
+        );
+    }
+
+    #[test]
+    fn test_fuzzy_score_multi_word_all_present() {
+        let score = fuzzy_score_memory("uses sqlx for database access", "sqlx database");
+        assert!(score.is_some(), "both words present → should match");
+    }
+
+    #[test]
+    fn test_fuzzy_score_multi_word_partial_no_match() {
+        let score = fuzzy_score_memory("uses sqlx for database access", "sqlx python");
+        assert!(score.is_none(), "not all words present → should not match");
+    }
+
+    #[test]
+    fn test_fuzzy_score_multi_word_missing_one() {
+        let score = fuzzy_score_memory("docker needed for tests", "docker python");
+        assert!(score.is_none(), "python not in note → no match");
+    }
+
+    #[test]
+    fn test_fuzzy_score_empty_query_matches_all() {
+        let score = fuzzy_score_memory("anything at all", "");
+        assert!(score.is_some());
+        assert!(
+            (score.unwrap() - 1.0).abs() < f64::EPSILON,
+            "empty query should return neutral score of 1.0"
+        );
+    }
+
+    #[test]
+    fn test_fuzzy_score_case_insensitive() {
+        let score_lower = fuzzy_score_memory("Docker Required", "docker");
+        let score_upper = fuzzy_score_memory("Docker Required", "DOCKER");
+        assert!(score_lower.is_some());
+        assert!(score_upper.is_some());
+        assert!(
+            (score_lower.unwrap() - score_upper.unwrap()).abs() < f64::EPSILON,
+            "case should not affect score"
+        );
+    }
+
+    #[test]
+    fn test_fuzzy_score_ordering_exact_over_boundary_over_midword() {
+        // Exact full-query substring match should score highest
+        let exact = fuzzy_score_memory("sqlx database config", "sqlx database").unwrap();
+        // Words present but not as exact substring
+        let scattered = fuzzy_score_memory("database layer uses sqlx", "sqlx database").unwrap();
+        // Word boundary single word vs mid-word
+        let boundary = fuzzy_score_memory("sqlx config", "sqlx").unwrap();
+        let midword = fuzzy_score_memory("nosqlx config", "sqlx").unwrap();
+
+        assert!(
+            exact > scattered,
+            "exact substring ({exact}) should score higher than scattered ({scattered})"
+        );
+        assert!(
+            boundary > midword,
+            "word-boundary ({boundary}) should score higher than mid-word ({midword})"
+        );
+    }
+
+    #[test]
+    fn test_fuzzy_score_shorter_note_bonus() {
+        // Same match, but shorter note should score higher
+        let short = fuzzy_score_memory("uses docker", "docker").unwrap();
+        let long = fuzzy_score_memory(
+            "this project uses docker for running integration tests in CI",
+            "docker",
+        )
+        .unwrap();
+        assert!(
+            short > long,
+            "shorter note ({short}) should score higher than longer ({long})"
+        );
+    }
+
+    #[test]
+    fn test_fuzzy_score_no_match_returns_none() {
+        assert!(fuzzy_score_memory("uses sqlx for database", "python").is_none());
+        assert!(fuzzy_score_memory("", "something").is_none());
+    }
+
+    #[test]
+    fn test_search_memories_sorted_by_relevance() {
+        let memory = ProjectMemory {
+            entries: vec![
+                MemoryEntry {
+                    note: "this project has a complex database layer using sqlx".to_string(),
+                    timestamp: "t0".to_string(),
+                },
+                MemoryEntry {
+                    note: "docker needed for tests".to_string(),
+                    timestamp: "t1".to_string(),
+                },
+                MemoryEntry {
+                    note: "sqlx config in .env".to_string(),
+                    timestamp: "t2".to_string(),
+                },
+            ],
+        };
+
+        let results = search_memories(&memory, "sqlx");
+        assert_eq!(results.len(), 2);
+        // "sqlx config in .env" (shorter, sqlx at word boundary pos 0) should rank
+        // higher than the longer note where sqlx appears later
+        assert_eq!(
+            results[0].1.note, "sqlx config in .env",
+            "shorter, earlier-match note should rank first"
+        );
+    }
+
+    #[test]
+    fn test_search_memories_multi_word_filters_correctly() {
+        let memory = ProjectMemory {
+            entries: vec![
+                MemoryEntry {
+                    note: "uses sqlx for database access".to_string(),
+                    timestamp: "t0".to_string(),
+                },
+                MemoryEntry {
+                    note: "docker needed for tests".to_string(),
+                    timestamp: "t1".to_string(),
+                },
+                MemoryEntry {
+                    note: "sqlx migrations in ./migrations".to_string(),
+                    timestamp: "t2".to_string(),
+                },
+            ],
+        };
+
+        let results = search_memories(&memory, "sqlx database");
+        assert_eq!(
+            results.len(),
+            1,
+            "only one note has both 'sqlx' and 'database'"
+        );
+        assert_eq!(results[0].1.note, "uses sqlx for database access");
+    }
+
+    #[test]
+    fn test_search_memories_single_word_backward_compatible() {
+        // Single-word substring search still works as before
+        let memory = ProjectMemory {
+            entries: vec![
+                MemoryEntry {
+                    note: "uses sqlx for database".to_string(),
+                    timestamp: "t0".to_string(),
+                },
+                MemoryEntry {
+                    note: "docker needed".to_string(),
+                    timestamp: "t1".to_string(),
+                },
+            ],
+        };
+
+        let results = search_memories(&memory, "docker");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1.note, "docker needed");
+    }
+
+    #[test]
+    fn test_search_memories_recency_boost() {
+        // Two identical notes, but one newer — newer should rank first
+        let memory = ProjectMemory {
+            entries: vec![
+                MemoryEntry {
+                    note: "uses sqlx for database".to_string(),
+                    timestamp: "2020-01-01 00:00".to_string(),
+                },
+                MemoryEntry {
+                    note: "uses sqlx for database".to_string(),
+                    timestamp: "2026-05-24 12:00".to_string(),
+                },
+            ],
+        };
+
+        let results = search_memories(&memory, "sqlx");
+        assert_eq!(results.len(), 2);
+        // The newer one (index 1) should rank first due to recency bonus
+        assert_eq!(results[0].0, 1, "newer memory should rank first");
+    }
+
+    #[test]
+    fn test_is_word_boundary() {
+        assert!(is_word_boundary("docker needed", 0)); // start of string
+        assert!(is_word_boundary("uses docker", 5)); // after space
+        assert!(!is_word_boundary("nosqlx", 2)); // mid-word
+        assert!(is_word_boundary("(docker)", 1)); // after paren
+    }
+
+    #[test]
+    fn test_is_exact_word() {
+        assert!(is_exact_word("docker needed", "docker", 0));
+        assert!(is_exact_word("uses docker here", "docker", 5));
+        assert!(!is_exact_word("dockerized app", "docker", 0)); // not bounded on right
+        assert!(!is_exact_word("mydocker", "docker", 2)); // not bounded on left
     }
 }
