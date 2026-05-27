@@ -323,6 +323,8 @@ pub fn format_changes(changes: &SessionChanges) -> String {
 mod tests {
     use super::*;
 
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     // --- SessionChanges tests ---
 
     #[test]
@@ -475,35 +477,39 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_snapshot_save_and_restore() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_snapshot_save_and_restore() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.txt");
-        std::fs::write(&path, "original content").unwrap();
-        let path_str = path.to_str().unwrap();
+        std::fs::write(&path, "original content")?;
+        let path_str = path.to_str().ok_or("non-UTF8 path")?;
 
         let mut snap = TurnSnapshot::new();
         snap.snapshot_file(path_str);
 
         assert!(!snap.is_empty());
         assert_eq!(snap.file_count(), 1);
-        assert_eq!(snap.originals.get(path_str).unwrap(), "original content");
+        assert_eq!(
+            snap.originals.get(path_str).expect("entry should exist"),
+            "original content"
+        );
 
         // Simulate agent modifying the file
-        std::fs::write(&path, "modified content").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "modified content");
+        std::fs::write(&path, "modified content")?;
+        assert_eq!(std::fs::read_to_string(&path)?, "modified content");
 
         // Restore should revert to original
         let actions = snap.restore();
         assert_eq!(actions.len(), 1);
         assert!(actions[0].contains("restored"));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original content");
+        assert_eq!(std::fs::read_to_string(&path)?, "original content");
+        Ok(())
     }
 
     #[test]
-    fn test_turn_snapshot_created_files_deleted() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_snapshot_created_files_deleted() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("new_file.txt");
-        let path_str = path.to_str().unwrap();
+        let path_str = path.to_str().ok_or("non-UTF8 path")?;
 
         let mut snap = TurnSnapshot::new();
         // File doesn't exist yet — record as created
@@ -513,7 +519,7 @@ mod tests {
         assert_eq!(snap.file_count(), 1);
 
         // Simulate agent creating the file
-        std::fs::write(&path, "new content").unwrap();
+        std::fs::write(&path, "new content")?;
         assert!(path.exists());
 
         // Restore should delete it
@@ -521,23 +527,28 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert!(actions[0].contains("deleted"));
         assert!(!path.exists());
+        Ok(())
     }
 
     #[test]
-    fn test_turn_snapshot_no_duplicate_snapshots() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_snapshot_no_duplicate_snapshots() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.txt");
-        std::fs::write(&path, "v1").unwrap();
-        let path_str = path.to_str().unwrap();
+        std::fs::write(&path, "v1")?;
+        let path_str = path.to_str().ok_or("non-UTF8 path")?;
 
         let mut snap = TurnSnapshot::new();
         snap.snapshot_file(path_str);
 
         // Modify file, then snapshot again — should keep original
-        std::fs::write(&path, "v2").unwrap();
+        std::fs::write(&path, "v2")?;
         snap.snapshot_file(path_str);
 
-        assert_eq!(snap.originals.get(path_str).unwrap(), "v1");
+        assert_eq!(
+            snap.originals.get(path_str).expect("entry should exist"),
+            "v1"
+        );
+        Ok(())
     }
 
     #[test]
@@ -557,17 +568,18 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_snapshot_created_ignores_existing() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_snapshot_created_ignores_existing() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.txt");
-        std::fs::write(&path, "content").unwrap();
-        let path_str = path.to_str().unwrap();
+        std::fs::write(&path, "content")?;
+        let path_str = path.to_str().ok_or("non-UTF8 path")?;
 
         let mut snap = TurnSnapshot::new();
         snap.snapshot_file(path_str);
         // Should not add to created since it was already snapshotted
         snap.record_created(path_str);
         assert!(snap.created.is_empty());
+        Ok(())
     }
 
     // --- TurnHistory tests ---
@@ -580,15 +592,15 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_history_push_pop() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_history_push_pop() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("a.txt");
-        std::fs::write(&path, "original").unwrap();
+        std::fs::write(&path, "original")?;
 
         let mut hist = TurnHistory::new();
 
         let mut snap = TurnSnapshot::new();
-        snap.snapshot_file(path.to_str().unwrap());
+        snap.snapshot_file(path.to_str().ok_or("non-UTF8 path")?);
         hist.push(snap);
 
         assert_eq!(hist.len(), 1);
@@ -596,6 +608,7 @@ mod tests {
         let popped = hist.pop();
         assert!(popped.is_some());
         assert_eq!(hist.len(), 0);
+        Ok(())
     }
 
     #[test]
@@ -606,20 +619,20 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_history_undo_last_n() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_history_undo_last_n() -> TestResult {
+        let dir = tempfile::tempdir()?;
 
         // Turn 1: modify a.txt
         let path_a = dir.path().join("a.txt");
-        std::fs::write(&path_a, "a_original").unwrap();
+        std::fs::write(&path_a, "a_original")?;
         let mut snap1 = TurnSnapshot::new();
-        snap1.snapshot_file(path_a.to_str().unwrap());
+        snap1.snapshot_file(path_a.to_str().ok_or("non-UTF8 path")?);
 
         // Turn 2: modify b.txt
         let path_b = dir.path().join("b.txt");
-        std::fs::write(&path_b, "b_original").unwrap();
+        std::fs::write(&path_b, "b_original")?;
         let mut snap2 = TurnSnapshot::new();
-        snap2.snapshot_file(path_b.to_str().unwrap());
+        snap2.snapshot_file(path_b.to_str().ok_or("non-UTF8 path")?);
 
         let mut hist = TurnHistory::new();
         hist.push(snap1);
@@ -627,51 +640,53 @@ mod tests {
         assert_eq!(hist.len(), 2);
 
         // Simulate modifications
-        std::fs::write(&path_a, "a_modified").unwrap();
-        std::fs::write(&path_b, "b_modified").unwrap();
+        std::fs::write(&path_a, "a_modified")?;
+        std::fs::write(&path_b, "b_modified")?;
 
         // Undo last 1 — only b.txt should be restored
         let actions = hist.undo_last(1);
         assert!(!actions.is_empty());
-        assert_eq!(std::fs::read_to_string(&path_b).unwrap(), "b_original");
-        assert_eq!(std::fs::read_to_string(&path_a).unwrap(), "a_modified");
+        assert_eq!(std::fs::read_to_string(&path_b)?, "b_original");
+        assert_eq!(std::fs::read_to_string(&path_a)?, "a_modified");
         assert_eq!(hist.len(), 1);
 
         // Undo last 1 — now a.txt should be restored
         let actions = hist.undo_last(1);
         assert!(!actions.is_empty());
-        assert_eq!(std::fs::read_to_string(&path_a).unwrap(), "a_original");
+        assert_eq!(std::fs::read_to_string(&path_a)?, "a_original");
         assert!(hist.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_turn_history_undo_more_than_available() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_history_undo_more_than_available() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("x.txt");
-        std::fs::write(&path, "orig").unwrap();
+        std::fs::write(&path, "orig")?;
 
         let mut snap = TurnSnapshot::new();
-        snap.snapshot_file(path.to_str().unwrap());
+        snap.snapshot_file(path.to_str().ok_or("non-UTF8 path")?);
 
         let mut hist = TurnHistory::new();
         hist.push(snap);
 
         // Undo 5 when only 1 exists — should undo 1 without panic
-        std::fs::write(&path, "changed").unwrap();
+        std::fs::write(&path, "changed")?;
         let actions = hist.undo_last(5);
         assert!(!actions.is_empty());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "orig");
+        assert_eq!(std::fs::read_to_string(&path)?, "orig");
         assert!(hist.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_turn_history_clear() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_history_clear() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("c.txt");
-        std::fs::write(&path, "content").unwrap();
+        std::fs::write(&path, "content")?;
 
         let mut snap = TurnSnapshot::new();
-        snap.snapshot_file(path.to_str().unwrap());
+        snap.snapshot_file(path.to_str().ok_or("non-UTF8 path")?);
 
         let mut hist = TurnHistory::new();
         hist.push(snap);
@@ -679,18 +694,23 @@ mod tests {
 
         hist.clear();
         assert!(hist.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_to_json_summary_empty() {
+    fn test_to_json_summary_empty() -> TestResult {
         let changes = SessionChanges::new();
         let summary = changes.to_json_summary();
         assert_eq!(summary["files_changed"], 0);
-        assert!(summary["changes"].as_array().unwrap().is_empty());
+        assert!(summary["changes"]
+            .as_array()
+            .expect("should be array")
+            .is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_to_json_summary_mixed_changes() {
+    fn test_to_json_summary_mixed_changes() -> TestResult {
         let changes = SessionChanges::new();
         changes.record("src/main.rs", ChangeKind::Write);
         changes.record("src/cli.rs", ChangeKind::Edit);
@@ -699,7 +719,7 @@ mod tests {
         let summary = changes.to_json_summary();
         assert_eq!(summary["files_changed"], 3);
 
-        let arr = summary["changes"].as_array().unwrap();
+        let arr = summary["changes"].as_array().expect("should be array");
         assert_eq!(arr.len(), 3);
 
         assert_eq!(arr[0]["path"], "src/main.rs");
@@ -710,20 +730,22 @@ mod tests {
 
         assert_eq!(arr[2]["path"], "src/new.rs");
         assert_eq!(arr[2]["kind"], "write");
+        Ok(())
     }
 
     #[test]
-    fn test_to_json_summary_is_valid_json() {
+    fn test_to_json_summary_is_valid_json() -> TestResult {
         let changes = SessionChanges::new();
         changes.record("a.rs", ChangeKind::Write);
         let summary = changes.to_json_summary();
         // Round-trip through serde to verify it's valid JSON
-        let serialized = serde_json::to_string(&summary).unwrap();
-        let _: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        let serialized = serde_json::to_string(&summary)?;
+        let _: serde_json::Value = serde_json::from_str(&serialized)?;
+        Ok(())
     }
 
     #[test]
-    fn test_to_json_summary_deduplicates_paths() {
+    fn test_to_json_summary_deduplicates_paths() -> TestResult {
         let changes = SessionChanges::new();
         changes.record("src/main.rs", ChangeKind::Write);
         changes.record("src/main.rs", ChangeKind::Edit); // overwrites
@@ -731,9 +753,10 @@ mod tests {
         let summary = changes.to_json_summary();
         assert_eq!(summary["files_changed"], 1);
 
-        let arr = summary["changes"].as_array().unwrap();
+        let arr = summary["changes"].as_array().expect("should be array");
         assert_eq!(arr[0]["path"], "src/main.rs");
         assert_eq!(arr[0]["kind"], "edit"); // latest kind wins
+        Ok(())
     }
 
     // --- Additional SessionChanges tests ---
@@ -780,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn test_session_changes_thread_safety() {
+    fn test_session_changes_thread_safety() -> TestResult {
         use std::thread;
 
         let changes = SessionChanges::new();
@@ -794,14 +817,15 @@ mod tests {
         }
 
         for h in handles {
-            h.join().unwrap();
+            h.join().expect("thread should not panic");
         }
 
         assert_eq!(changes.len(), 10);
+        Ok(())
     }
 
     #[test]
-    fn test_session_changes_concurrent_record_and_snapshot() {
+    fn test_session_changes_concurrent_record_and_snapshot() -> TestResult {
         use std::thread;
 
         let changes = SessionChanges::new();
@@ -823,11 +847,12 @@ mod tests {
             }
         });
 
-        writer.join().unwrap();
-        reader.join().unwrap();
+        writer.join().expect("thread should not panic");
+        reader.join().expect("thread should not panic");
 
         // All 6 files should be recorded
         assert_eq!(changes.len(), 6);
+        Ok(())
     }
 
     #[test]
@@ -846,17 +871,18 @@ mod tests {
     }
 
     #[test]
-    fn test_session_changes_json_summary_single_file() {
+    fn test_session_changes_json_summary_single_file() -> TestResult {
         let changes = SessionChanges::new();
         changes.record("only.rs", ChangeKind::Edit);
 
         let summary = changes.to_json_summary();
         assert_eq!(summary["files_changed"], 1);
 
-        let arr = summary["changes"].as_array().unwrap();
+        let arr = summary["changes"].as_array().expect("should be array");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["path"], "only.rs");
         assert_eq!(arr[0]["kind"], "edit");
+        Ok(())
     }
 
     #[test]
@@ -874,14 +900,18 @@ mod tests {
     }
 
     #[test]
-    fn test_session_changes_clear_then_json_empty() {
+    fn test_session_changes_clear_then_json_empty() -> TestResult {
         let changes = SessionChanges::new();
         changes.record("a.rs", ChangeKind::Write);
         changes.clear();
 
         let summary = changes.to_json_summary();
         assert_eq!(summary["files_changed"], 0);
-        assert!(summary["changes"].as_array().unwrap().is_empty());
+        assert!(summary["changes"]
+            .as_array()
+            .expect("should be array")
+            .is_empty());
+        Ok(())
     }
 
     #[test]
@@ -912,65 +942,68 @@ mod tests {
     // --- Additional TurnSnapshot tests ---
 
     #[test]
-    fn test_turn_snapshot_multiple_files_restore() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_snapshot_multiple_files_restore() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let p1 = dir.path().join("one.txt");
         let p2 = dir.path().join("two.txt");
-        std::fs::write(&p1, "orig_one").unwrap();
-        std::fs::write(&p2, "orig_two").unwrap();
+        std::fs::write(&p1, "orig_one")?;
+        std::fs::write(&p2, "orig_two")?;
 
         let mut snap = TurnSnapshot::new();
-        snap.snapshot_file(p1.to_str().unwrap());
-        snap.snapshot_file(p2.to_str().unwrap());
+        snap.snapshot_file(p1.to_str().ok_or("non-UTF8 path")?);
+        snap.snapshot_file(p2.to_str().ok_or("non-UTF8 path")?);
         assert_eq!(snap.file_count(), 2);
 
         // Simulate modifications
-        std::fs::write(&p1, "changed_one").unwrap();
-        std::fs::write(&p2, "changed_two").unwrap();
+        std::fs::write(&p1, "changed_one")?;
+        std::fs::write(&p2, "changed_two")?;
 
         let actions = snap.restore();
         assert_eq!(actions.len(), 2);
-        assert_eq!(std::fs::read_to_string(&p1).unwrap(), "orig_one");
-        assert_eq!(std::fs::read_to_string(&p2).unwrap(), "orig_two");
+        assert_eq!(std::fs::read_to_string(&p1)?, "orig_one");
+        assert_eq!(std::fs::read_to_string(&p2)?, "orig_two");
+        Ok(())
     }
 
     #[test]
-    fn test_turn_snapshot_mixed_originals_and_created() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_snapshot_mixed_originals_and_created() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let existing = dir.path().join("existing.txt");
         let created = dir.path().join("created.txt");
-        std::fs::write(&existing, "original content").unwrap();
+        std::fs::write(&existing, "original content")?;
 
         let mut snap = TurnSnapshot::new();
-        snap.snapshot_file(existing.to_str().unwrap());
-        snap.record_created(created.to_str().unwrap());
+        snap.snapshot_file(existing.to_str().ok_or("non-UTF8 path")?);
+        snap.record_created(created.to_str().ok_or("non-UTF8 path")?);
 
         assert_eq!(snap.file_count(), 2);
         assert!(!snap.is_empty());
         assert_eq!(snap.originals.len(), 1);
         assert_eq!(snap.created.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn test_turn_snapshot_mixed_restore() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_snapshot_mixed_restore() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let existing = dir.path().join("existing.txt");
         let created = dir.path().join("created.txt");
-        std::fs::write(&existing, "before").unwrap();
+        std::fs::write(&existing, "before")?;
 
         let mut snap = TurnSnapshot::new();
-        snap.snapshot_file(existing.to_str().unwrap());
-        snap.record_created(created.to_str().unwrap());
+        snap.snapshot_file(existing.to_str().ok_or("non-UTF8 path")?);
+        snap.record_created(created.to_str().ok_or("non-UTF8 path")?);
 
         // Simulate agent work: modify existing, create new
-        std::fs::write(&existing, "after").unwrap();
-        std::fs::write(&created, "brand new").unwrap();
+        std::fs::write(&existing, "after")?;
+        std::fs::write(&created, "brand new")?;
         assert!(created.exists());
 
         let actions = snap.restore();
         assert_eq!(actions.len(), 2);
-        assert_eq!(std::fs::read_to_string(&existing).unwrap(), "before");
+        assert_eq!(std::fs::read_to_string(&existing)?, "before");
         assert!(!created.exists());
+        Ok(())
     }
 
     #[test]
@@ -986,35 +1019,37 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_snapshot_restore_action_messages() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_snapshot_restore_action_messages() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("msg.txt");
-        std::fs::write(&path, "content").unwrap();
-        let path_str = path.to_str().unwrap();
+        std::fs::write(&path, "content")?;
+        let path_str = path.to_str().ok_or("non-UTF8 path")?;
 
         let mut snap = TurnSnapshot::new();
         snap.snapshot_file(path_str);
 
-        std::fs::write(&path, "modified").unwrap();
+        std::fs::write(&path, "modified")?;
 
         let actions = snap.restore();
         assert_eq!(actions.len(), 1);
         assert!(actions[0].starts_with("restored "));
         assert!(actions[0].contains(path_str));
+        Ok(())
     }
 
     #[test]
-    fn test_turn_snapshot_only_originals_is_not_empty() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_snapshot_only_originals_is_not_empty() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, "data").unwrap();
+        std::fs::write(&path, "data")?;
 
         let mut snap = TurnSnapshot::new();
-        snap.snapshot_file(path.to_str().unwrap());
+        snap.snapshot_file(path.to_str().ok_or("non-UTF8 path")?);
 
         assert!(!snap.is_empty());
         assert_eq!(snap.originals.len(), 1);
         assert!(snap.created.is_empty());
+        Ok(())
     }
 
     #[test]
@@ -1028,66 +1063,69 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_snapshot_file_count_combined() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_snapshot_file_count_combined() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let p1 = dir.path().join("a.txt");
         let p2 = dir.path().join("b.txt");
-        std::fs::write(&p1, "a").unwrap();
-        std::fs::write(&p2, "b").unwrap();
+        std::fs::write(&p1, "a")?;
+        std::fs::write(&p2, "b")?;
 
         let mut snap = TurnSnapshot::new();
-        snap.snapshot_file(p1.to_str().unwrap());
-        snap.snapshot_file(p2.to_str().unwrap());
+        snap.snapshot_file(p1.to_str().ok_or("non-UTF8 path")?);
+        snap.snapshot_file(p2.to_str().ok_or("non-UTF8 path")?);
         snap.record_created("c.txt");
         snap.record_created("d.txt");
         snap.record_created("e.txt");
 
         assert_eq!(snap.file_count(), 5);
+        Ok(())
     }
 
     #[test]
-    fn test_turn_snapshot_restore_preserves_other_files() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_snapshot_restore_preserves_other_files() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let tracked = dir.path().join("tracked.txt");
         let untracked = dir.path().join("untracked.txt");
-        std::fs::write(&tracked, "original").unwrap();
-        std::fs::write(&untracked, "untouched").unwrap();
+        std::fs::write(&tracked, "original")?;
+        std::fs::write(&untracked, "untouched")?;
 
         let mut snap = TurnSnapshot::new();
-        snap.snapshot_file(tracked.to_str().unwrap());
+        snap.snapshot_file(tracked.to_str().ok_or("non-UTF8 path")?);
         // untracked is NOT snapshotted
 
-        std::fs::write(&tracked, "changed").unwrap();
-        std::fs::write(&untracked, "also changed").unwrap();
+        std::fs::write(&tracked, "changed")?;
+        std::fs::write(&untracked, "also changed")?;
 
         snap.restore();
 
-        assert_eq!(std::fs::read_to_string(&tracked).unwrap(), "original");
+        assert_eq!(std::fs::read_to_string(&tracked)?, "original");
         // untracked should remain changed — not reverted
-        assert_eq!(std::fs::read_to_string(&untracked).unwrap(), "also changed");
+        assert_eq!(std::fs::read_to_string(&untracked)?, "also changed");
+        Ok(())
     }
 
     // --- Additional TurnHistory tests ---
 
     #[test]
-    fn test_turn_history_undo_last_zero() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_history_undo_last_zero() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("keep.txt");
-        std::fs::write(&path, "original").unwrap();
+        std::fs::write(&path, "original")?;
 
         let mut snap = TurnSnapshot::new();
-        snap.snapshot_file(path.to_str().unwrap());
+        snap.snapshot_file(path.to_str().ok_or("non-UTF8 path")?);
 
         let mut hist = TurnHistory::new();
         hist.push(snap);
 
-        std::fs::write(&path, "modified").unwrap();
+        std::fs::write(&path, "modified")?;
 
         // Undo 0 should be a no-op
         let actions = hist.undo_last(0);
         assert!(actions.is_empty());
         assert_eq!(hist.len(), 1);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "modified");
+        assert_eq!(std::fs::read_to_string(&path)?, "modified");
+        Ok(())
     }
 
     #[test]
@@ -1097,37 +1135,38 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_history_multiple_pushes() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_history_multiple_pushes() -> TestResult {
+        let dir = tempfile::tempdir()?;
 
         let mut hist = TurnHistory::new();
         for i in 0..5 {
             let path = dir.path().join(format!("f{i}.txt"));
-            std::fs::write(&path, format!("content_{i}")).unwrap();
+            std::fs::write(&path, format!("content_{i}"))?;
             let mut snap = TurnSnapshot::new();
-            snap.snapshot_file(path.to_str().unwrap());
+            snap.snapshot_file(path.to_str().ok_or("non-UTF8 path")?);
             hist.push(snap);
         }
 
         assert_eq!(hist.len(), 5);
+        Ok(())
     }
 
     #[test]
-    fn test_turn_history_undo_all_at_once() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_history_undo_all_at_once() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let p1 = dir.path().join("a.txt");
         let p2 = dir.path().join("b.txt");
         let p3 = dir.path().join("c.txt");
-        std::fs::write(&p1, "a_orig").unwrap();
-        std::fs::write(&p2, "b_orig").unwrap();
-        std::fs::write(&p3, "c_orig").unwrap();
+        std::fs::write(&p1, "a_orig")?;
+        std::fs::write(&p2, "b_orig")?;
+        std::fs::write(&p3, "c_orig")?;
 
         let mut snap1 = TurnSnapshot::new();
-        snap1.snapshot_file(p1.to_str().unwrap());
+        snap1.snapshot_file(p1.to_str().ok_or("non-UTF8 path")?);
         let mut snap2 = TurnSnapshot::new();
-        snap2.snapshot_file(p2.to_str().unwrap());
+        snap2.snapshot_file(p2.to_str().ok_or("non-UTF8 path")?);
         let mut snap3 = TurnSnapshot::new();
-        snap3.snapshot_file(p3.to_str().unwrap());
+        snap3.snapshot_file(p3.to_str().ok_or("non-UTF8 path")?);
 
         let mut hist = TurnHistory::new();
         hist.push(snap1);
@@ -1135,41 +1174,42 @@ mod tests {
         hist.push(snap3);
 
         // Modify all files
-        std::fs::write(&p1, "a_mod").unwrap();
-        std::fs::write(&p2, "b_mod").unwrap();
-        std::fs::write(&p3, "c_mod").unwrap();
+        std::fs::write(&p1, "a_mod")?;
+        std::fs::write(&p2, "b_mod")?;
+        std::fs::write(&p3, "c_mod")?;
 
         // Undo all 3 at once
         let actions = hist.undo_last(3);
         assert_eq!(actions.len(), 3);
         assert!(hist.is_empty());
 
-        assert_eq!(std::fs::read_to_string(&p1).unwrap(), "a_orig");
-        assert_eq!(std::fs::read_to_string(&p2).unwrap(), "b_orig");
-        assert_eq!(std::fs::read_to_string(&p3).unwrap(), "c_orig");
+        assert_eq!(std::fs::read_to_string(&p1)?, "a_orig");
+        assert_eq!(std::fs::read_to_string(&p2)?, "b_orig");
+        assert_eq!(std::fs::read_to_string(&p3)?, "c_orig");
+        Ok(())
     }
 
     #[test]
-    fn test_turn_history_undo_reverses_in_lifo_order() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_history_undo_reverses_in_lifo_order() -> TestResult {
+        let dir = tempfile::tempdir()?;
         // Single file modified across two turns
         let path = dir.path().join("evolving.txt");
-        std::fs::write(&path, "v1").unwrap();
-        let path_str = path.to_str().unwrap();
+        std::fs::write(&path, "v1")?;
+        let path_str = path.to_str().ok_or("non-UTF8 path")?;
 
         // Turn 1: snapshot v1
         let mut snap1 = TurnSnapshot::new();
         snap1.snapshot_file(path_str);
 
         // Simulate turn 1 changing to v2
-        std::fs::write(&path, "v2").unwrap();
+        std::fs::write(&path, "v2")?;
 
         // Turn 2: snapshot v2
         let mut snap2 = TurnSnapshot::new();
         snap2.snapshot_file(path_str);
 
         // Simulate turn 2 changing to v3
-        std::fs::write(&path, "v3").unwrap();
+        std::fs::write(&path, "v3")?;
 
         let mut hist = TurnHistory::new();
         hist.push(snap1);
@@ -1177,41 +1217,43 @@ mod tests {
 
         // Undo turn 2 → should restore v2
         hist.undo_last(1);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v2");
+        assert_eq!(std::fs::read_to_string(&path)?, "v2");
 
         // Undo turn 1 → should restore v1
         hist.undo_last(1);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
+        assert_eq!(std::fs::read_to_string(&path)?, "v1");
+        Ok(())
     }
 
     #[test]
-    fn test_turn_history_undo_with_created_files() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_history_undo_with_created_files() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let created = dir.path().join("new_file.txt");
 
         let mut snap = TurnSnapshot::new();
-        snap.record_created(created.to_str().unwrap());
+        snap.record_created(created.to_str().ok_or("non-UTF8 path")?);
 
         let mut hist = TurnHistory::new();
         hist.push(snap);
 
         // Simulate agent creating the file
-        std::fs::write(&created, "hello").unwrap();
+        std::fs::write(&created, "hello")?;
         assert!(created.exists());
 
         let actions = hist.undo_last(1);
         assert!(!actions.is_empty());
         assert!(!created.exists());
+        Ok(())
     }
 
     #[test]
-    fn test_turn_history_clear_after_undo() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_history_clear_after_undo() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("f.txt");
-        std::fs::write(&path, "x").unwrap();
+        std::fs::write(&path, "x")?;
 
         let mut snap = TurnSnapshot::new();
-        snap.snapshot_file(path.to_str().unwrap());
+        snap.snapshot_file(path.to_str().ok_or("non-UTF8 path")?);
 
         let mut hist = TurnHistory::new();
         hist.push(snap);
@@ -1221,29 +1263,31 @@ mod tests {
 
         hist.clear();
         assert!(hist.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_turn_history_push_after_clear() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_turn_history_push_after_clear() -> TestResult {
+        let dir = tempfile::tempdir()?;
 
         let mut hist = TurnHistory::new();
         let p1 = dir.path().join("a.txt");
-        std::fs::write(&p1, "a").unwrap();
+        std::fs::write(&p1, "a")?;
         let mut s1 = TurnSnapshot::new();
-        s1.snapshot_file(p1.to_str().unwrap());
+        s1.snapshot_file(p1.to_str().ok_or("non-UTF8 path")?);
         hist.push(s1);
 
         hist.clear();
         assert!(hist.is_empty());
 
         let p2 = dir.path().join("b.txt");
-        std::fs::write(&p2, "b").unwrap();
+        std::fs::write(&p2, "b")?;
         let mut s2 = TurnSnapshot::new();
-        s2.snapshot_file(p2.to_str().unwrap());
+        s2.snapshot_file(p2.to_str().ok_or("non-UTF8 path")?);
         hist.push(s2);
 
         assert_eq!(hist.len(), 1);
+        Ok(())
     }
 
     #[test]
@@ -1420,19 +1464,19 @@ mod tests {
     // --- Edge-case hardening tests ---
 
     #[test]
-    fn test_turn_snapshot_restore_recreates_deleted_file() {
+    fn test_turn_snapshot_restore_recreates_deleted_file() -> TestResult {
         // snapshot_file captures content, then the file is deleted before restore —
         // restore should recreate the file gracefully (fs::write creates if missing)
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("vanishing.txt");
-        std::fs::write(&path, "captured content").unwrap();
-        let path_str = path.to_str().unwrap();
+        std::fs::write(&path, "captured content")?;
+        let path_str = path.to_str().ok_or("non-UTF8 path")?;
 
         let mut snap = TurnSnapshot::new();
         snap.snapshot_file(path_str);
 
         // Delete the file after snapshotting
-        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(&path)?;
         assert!(!path.exists());
 
         // Restore should recreate it
@@ -1445,10 +1489,11 @@ mod tests {
         );
         assert!(path.exists(), "File should be recreated by restore");
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
+            std::fs::read_to_string(&path)?,
             "captured content",
             "Restored content should match snapshot"
         );
+        Ok(())
     }
 
     #[test]
