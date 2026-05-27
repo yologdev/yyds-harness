@@ -1946,6 +1946,7 @@ mod tests {
         clear_watch_command();
     }
 
+    #[serial]
     #[test]
     fn detect_watch_all_phases_returns_separate_commands() {
         // In a Rust project, should return 2 separate commands

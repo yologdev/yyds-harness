@@ -1416,4 +1416,91 @@ mod tests {
         // d.rs is truncated
         assert!(!output.contains("d.rs"), "4th file should be truncated");
     }
+
+    // --- Edge-case hardening tests ---
+
+    #[test]
+    fn test_turn_snapshot_restore_recreates_deleted_file() {
+        // snapshot_file captures content, then the file is deleted before restore —
+        // restore should recreate the file gracefully (fs::write creates if missing)
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vanishing.txt");
+        std::fs::write(&path, "captured content").unwrap();
+        let path_str = path.to_str().unwrap();
+
+        let mut snap = TurnSnapshot::new();
+        snap.snapshot_file(path_str);
+
+        // Delete the file after snapshotting
+        std::fs::remove_file(&path).unwrap();
+        assert!(!path.exists());
+
+        // Restore should recreate it
+        let actions = snap.restore();
+        assert_eq!(actions.len(), 1);
+        assert!(
+            actions[0].starts_with("restored "),
+            "Should report successful restore, got: {}",
+            actions[0]
+        );
+        assert!(path.exists(), "File should be recreated by restore");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "captured content",
+            "Restored content should match snapshot"
+        );
+    }
+
+    #[test]
+    fn test_turn_snapshot_restore_reports_failure_on_unwritable_path() {
+        // Restoring to a path whose parent directory doesn't exist should fail
+        // gracefully (report failure, not panic)
+        let mut snap = TurnSnapshot::new();
+        snap.originals.insert(
+            "/nonexistent/deeply/nested/dir/file.txt".to_string(),
+            "some content".to_string(),
+        );
+
+        let actions = snap.restore();
+        assert_eq!(actions.len(), 1);
+        assert!(
+            actions[0].contains("failed to restore"),
+            "Should report failure for unwritable path, got: {}",
+            actions[0]
+        );
+    }
+
+    #[test]
+    fn test_to_json_summary_handles_special_characters_in_paths() {
+        // Paths with quotes, newlines, unicode, and backslashes should serialize
+        // to valid JSON without panics
+        let changes = SessionChanges::new();
+        changes.record("src/file with spaces.rs", ChangeKind::Write);
+        changes.record("src/\"quoted\".rs", ChangeKind::Edit);
+        changes.record("src/日本語.rs", ChangeKind::Write);
+        changes.record("src/back\\slash.rs", ChangeKind::Edit);
+        changes.record("src/newline\n.rs", ChangeKind::Write);
+
+        let summary = changes.to_json_summary();
+
+        // Should produce valid, re-parseable JSON
+        let serialized = serde_json::to_string(&summary).expect("serialization should succeed");
+        let reparsed: serde_json::Value =
+            serde_json::from_str(&serialized).expect("should re-parse as valid JSON");
+        assert_eq!(reparsed["files_changed"], 5);
+
+        let arr = reparsed["changes"]
+            .as_array()
+            .expect("changes should be array");
+        // Verify all paths survived the round-trip
+        let paths: Vec<&str> = arr
+            .iter()
+            .map(|v| v["path"].as_str().expect("path should be string"))
+            .collect();
+        assert!(paths.contains(&"src/file with spaces.rs"));
+        assert!(paths.contains(&"src/\"quoted\".rs"));
+        assert!(paths.contains(&"src/日本語.rs"));
+        assert!(paths.contains(&"src/back\\slash.rs"));
+        assert!(paths.contains(&"src/newline\n.rs"));
+    }
 }
