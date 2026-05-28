@@ -1439,7 +1439,28 @@ mod tests {
     // #[serial] to prevent flaky failures from parallel test execution. The
     // `serial_test` crate ensures these tests run one at a time. Any test calling
     // set_watch_command, set_watch_commands, get_watch_command, get_watch_commands,
-    // clear_watch_command, or handle_watch must use #[serial].
+    // clear_watch_command, handle_watch, detect_watch_all_phases,
+    // detect_watch_all_command, or auto_detect_watch_command must use #[serial].
+
+    /// Drop guard that clears global watch state on drop (even on panic).
+    /// Use via `with_clean_watch_state` to ensure every serial test starts
+    /// and ends with a clean `WATCH_COMMANDS`.
+    struct WatchStateGuard;
+
+    impl Drop for WatchStateGuard {
+        fn drop(&mut self) {
+            clear_watch_command();
+        }
+    }
+
+    /// Run a closure with clean global watch state. Clears WATCH_COMMANDS
+    /// before the closure runs, and clears again on return — even if the
+    /// closure panics (via a drop guard).
+    fn with_clean_watch_state<F: FnOnce()>(f: F) {
+        clear_watch_command();
+        let _guard = WatchStateGuard;
+        f();
+    }
 
     #[test]
     fn test_build_watch_fix_prompt() {
@@ -1547,73 +1568,75 @@ mod tests {
     #[serial]
     #[test]
     fn test_watch_command_none_by_default() {
-        // After clearing, there should be no watch command
-        clear_watch_command();
-        assert!(
-            get_watch_command().is_none(),
-            "should have no watch command after clear"
-        );
+        with_clean_watch_state(|| {
+            assert!(
+                get_watch_command().is_none(),
+                "should have no watch command after clear"
+            );
+        });
     }
 
     #[serial]
     #[test]
     fn test_watch_command_roundtrip() {
-        // Set a command, get it back, clear it
-        set_watch_command("cargo test --release");
-        let cmd = get_watch_command();
-        assert_eq!(cmd.as_deref(), Some("cargo test --release"));
-        clear_watch_command();
-        assert!(get_watch_command().is_none());
+        with_clean_watch_state(|| {
+            set_watch_command("cargo test --release");
+            let cmd = get_watch_command();
+            assert_eq!(cmd.as_deref(), Some("cargo test --release"));
+            clear_watch_command();
+            assert!(get_watch_command().is_none());
+        });
     }
 
     #[serial]
     #[test]
     fn test_run_watch_after_prompt_no_watch_returns_passed() {
-        // When no watch command is set, run_watch_after_prompt should return
-        // WatchResult { passed: true, last_tool_error: None } immediately.
-        // We verify the guard condition that makes it return early.
-        clear_watch_command();
-        assert!(
-            get_watch_command().is_none(),
-            "precondition: no watch command set"
-        );
-        // The function checks get_watch_command() first and returns a passing
-        // WatchResult if None. We can't call the async function in a sync test,
-        // but we verify the guard condition that makes it return early.
+        with_clean_watch_state(|| {
+            // When no watch command is set, run_watch_after_prompt should return
+            // WatchResult { passed: true, last_tool_error: None } immediately.
+            // We verify the guard condition that makes it return early.
+            assert!(
+                get_watch_command().is_none(),
+                "precondition: no watch command set"
+            );
+            // The function checks get_watch_command() first and returns a passing
+            // WatchResult if None. We can't call the async function in a sync test,
+            // but we verify the guard condition that makes it return early.
+        });
     }
 
     #[serial]
     #[test]
     fn test_run_watch_command_pass_with_set_watch() {
-        // Simulate: set a watch command that passes, run it
-        set_watch_command("echo ok");
-        if let Some(cmd) = get_watch_command() {
-            let (ok, output) = run_watch_command(&cmd);
-            assert!(ok, "echo ok should succeed");
-            assert!(output.contains("ok"));
-        } else {
-            panic!("watch command should be set");
-        }
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            set_watch_command("echo ok");
+            if let Some(cmd) = get_watch_command() {
+                let (ok, output) = run_watch_command(&cmd);
+                assert!(ok, "echo ok should succeed");
+                assert!(output.contains("ok"));
+            } else {
+                panic!("watch command should be set");
+            }
+        });
     }
 
     #[serial]
     #[test]
     fn test_run_watch_command_fail_with_set_watch() {
-        // Simulate: set a watch command that fails, run it, check output
-        set_watch_command("sh -c 'echo FAIL; exit 1'");
-        if let Some(cmd) = get_watch_command() {
-            let (ok, output) = run_watch_command(&cmd);
-            assert!(!ok, "command should fail");
-            assert!(output.contains("FAIL"), "output should contain FAIL");
-            // Verify build_watch_fix_prompt works with the output
-            let fix_prompt = build_watch_fix_prompt(&cmd, &output);
-            assert!(fix_prompt.contains("FAIL"));
-            assert!(fix_prompt.contains("Please fix"));
-        } else {
-            panic!("watch command should be set");
-        }
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            set_watch_command("sh -c 'echo FAIL; exit 1'");
+            if let Some(cmd) = get_watch_command() {
+                let (ok, output) = run_watch_command(&cmd);
+                assert!(!ok, "command should fail");
+                assert!(output.contains("FAIL"), "output should contain FAIL");
+                // Verify build_watch_fix_prompt works with the output
+                let fix_prompt = build_watch_fix_prompt(&cmd, &output);
+                assert!(fix_prompt.contains("FAIL"));
+                assert!(fix_prompt.contains("Please fix"));
+            } else {
+                panic!("watch command should be set");
+            }
+        });
     }
 
     #[test]
@@ -1663,48 +1686,54 @@ mod tests {
     #[serial]
     #[test]
     fn test_set_get_watch_commands_roundtrip() {
-        set_watch_commands(&["cargo clippy", "cargo test"]);
-        let cmds = get_watch_commands();
-        assert_eq!(cmds.len(), 2);
-        assert_eq!(cmds[0], "cargo clippy");
-        assert_eq!(cmds[1], "cargo test");
-        clear_watch_command();
-        assert!(get_watch_commands().is_empty());
+        with_clean_watch_state(|| {
+            set_watch_commands(&["cargo clippy", "cargo test"]);
+            let cmds = get_watch_commands();
+            assert_eq!(cmds.len(), 2);
+            assert_eq!(cmds[0], "cargo clippy");
+            assert_eq!(cmds[1], "cargo test");
+            clear_watch_command();
+            assert!(get_watch_commands().is_empty());
+        });
     }
 
     #[serial]
     #[test]
     fn test_get_watch_command_joins_multi_phase() {
-        set_watch_commands(&["cargo clippy", "cargo test"]);
-        let display = get_watch_command();
-        assert_eq!(
-            display.as_deref(),
-            Some("cargo clippy && cargo test"),
-            "get_watch_command should join phases with &&"
-        );
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            set_watch_commands(&["cargo clippy", "cargo test"]);
+            let display = get_watch_command();
+            assert_eq!(
+                display.as_deref(),
+                Some("cargo clippy && cargo test"),
+                "get_watch_command should join phases with &&"
+            );
+        });
     }
 
     #[serial]
     #[test]
     fn test_single_command_still_works() {
-        set_watch_command("cargo test");
-        let cmds = get_watch_commands();
-        assert_eq!(cmds.len(), 1, "single command should store one-element vec");
-        assert_eq!(cmds[0], "cargo test");
-        let display = get_watch_command();
-        assert_eq!(display.as_deref(), Some("cargo test"));
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            set_watch_command("cargo test");
+            let cmds = get_watch_commands();
+            assert_eq!(cmds.len(), 1, "single command should store one-element vec");
+            assert_eq!(cmds[0], "cargo test");
+            let display = get_watch_command();
+            assert_eq!(display.as_deref(), Some("cargo test"));
+        });
     }
 
     #[serial]
     #[test]
     fn test_clear_clears_multi_phase() {
-        set_watch_commands(&["a", "b", "c"]);
-        assert_eq!(get_watch_commands().len(), 3);
-        clear_watch_command();
-        assert!(get_watch_commands().is_empty());
-        assert!(get_watch_command().is_none());
+        with_clean_watch_state(|| {
+            set_watch_commands(&["a", "b", "c"]);
+            assert_eq!(get_watch_commands().len(), 3);
+            clear_watch_command();
+            assert!(get_watch_commands().is_empty());
+            assert!(get_watch_command().is_none());
+        });
     }
 
     #[test]
@@ -1782,61 +1811,68 @@ mod tests {
     #[serial]
     #[test]
     fn test_run_watch_after_prompt_empty_commands_returns_passed() {
-        // When no watch commands are set, should return passed immediately
-        clear_watch_command();
-        assert!(
-            get_watch_commands().is_empty(),
-            "precondition: no commands set"
-        );
-        // The function checks get_watch_commands() first and returns a passing
-        // WatchResult if empty. We verify the guard condition.
+        with_clean_watch_state(|| {
+            // When no watch commands are set, should return passed immediately
+            assert!(
+                get_watch_commands().is_empty(),
+                "precondition: no commands set"
+            );
+            // The function checks get_watch_commands() first and returns a passing
+            // WatchResult if empty. We verify the guard condition.
+        });
     }
 
+    #[serial]
     #[test]
     fn auto_detect_watch_command_returns_lint_and_test_in_rust_project() {
-        // We're running from a directory with Cargo.toml, so this should detect Rust
-        // After the Day 58 change, auto-detect defaults to lint+test (not test-only)
-        let cmd = auto_detect_watch_command();
-        assert!(
-            cmd.is_some(),
-            "should detect a watch command in a Rust project"
-        );
-        let cmd = cmd.unwrap();
-        assert!(
-            cmd.contains("clippy"),
-            "auto-detect should include lint (clippy): {cmd}"
-        );
-        assert!(
-            cmd.contains("cargo test"),
-            "auto-detect should include test: {cmd}"
-        );
-        assert!(
-            cmd.contains("&&"),
-            "auto-detect should chain lint && test: {cmd}"
-        );
+        with_clean_watch_state(|| {
+            // We're running from a directory with Cargo.toml, so this should detect Rust
+            // After the Day 58 change, auto-detect defaults to lint+test (not test-only)
+            let cmd = auto_detect_watch_command();
+            assert!(
+                cmd.is_some(),
+                "should detect a watch command in a Rust project"
+            );
+            let cmd = cmd.unwrap();
+            assert!(
+                cmd.contains("clippy"),
+                "auto-detect should include lint (clippy): {cmd}"
+            );
+            assert!(
+                cmd.contains("cargo test"),
+                "auto-detect should include test: {cmd}"
+            );
+            assert!(
+                cmd.contains("&&"),
+                "auto-detect should chain lint && test: {cmd}"
+            );
+        });
     }
 
+    #[serial]
     #[test]
     fn detect_watch_all_command_returns_lint_and_test_for_rust() {
-        // We're running from a directory with Cargo.toml, so this should detect Rust
-        let cmd = detect_watch_all_command();
-        assert!(
-            cmd.is_some(),
-            "should detect a combined command in a Rust project"
-        );
-        let cmd = cmd.unwrap();
-        assert!(
-            cmd.contains("clippy"),
-            "combined command should include lint (clippy): {cmd}"
-        );
-        assert!(
-            cmd.contains("cargo test"),
-            "combined command should include test: {cmd}"
-        );
-        assert!(
-            cmd.contains("&&"),
-            "combined command should chain with &&: {cmd}"
-        );
+        with_clean_watch_state(|| {
+            // We're running from a directory with Cargo.toml, so this should detect Rust
+            let cmd = detect_watch_all_command();
+            assert!(
+                cmd.is_some(),
+                "should detect a combined command in a Rust project"
+            );
+            let cmd = cmd.unwrap();
+            assert!(
+                cmd.contains("clippy"),
+                "combined command should include lint (clippy): {cmd}"
+            );
+            assert!(
+                cmd.contains("cargo test"),
+                "combined command should include test: {cmd}"
+            );
+            assert!(
+                cmd.contains("&&"),
+                "combined command should chain with &&: {cmd}"
+            );
+        });
     }
 
     #[test]
@@ -1850,39 +1886,37 @@ mod tests {
     #[serial]
     #[test]
     fn handle_watch_all_sets_combined_command() {
-        // Clear any previous watch command
-        clear_watch_command();
-        // Run /watch all — since we're in a Rust project, it should set separate phases
-        handle_watch("/watch all");
-        let cmd = get_watch_command();
-        assert!(
-            cmd.is_some(),
-            "watch command should be set after /watch all"
-        );
-        let cmd = cmd.unwrap();
-        assert!(
-            cmd.contains("clippy") && cmd.contains("cargo test"),
-            "watch all should set lint && test: {cmd}"
-        );
-        // Verify multi-phase: should have 2 separate commands
-        let phases = get_watch_commands();
-        assert_eq!(
-            phases.len(),
-            2,
-            "watch all should set 2 separate phases: {phases:?}"
-        );
-        assert!(
-            phases[0].contains("clippy"),
-            "first phase should be lint: {}",
-            phases[0]
-        );
-        assert!(
-            phases[1].contains("test"),
-            "second phase should be test: {}",
-            phases[1]
-        );
-        // Cleanup
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            // Run /watch all — since we're in a Rust project, it should set separate phases
+            handle_watch("/watch all");
+            let cmd = get_watch_command();
+            assert!(
+                cmd.is_some(),
+                "watch command should be set after /watch all"
+            );
+            let cmd = cmd.unwrap();
+            assert!(
+                cmd.contains("clippy") && cmd.contains("cargo test"),
+                "watch all should set lint && test: {cmd}"
+            );
+            // Verify multi-phase: should have 2 separate commands
+            let phases = get_watch_commands();
+            assert_eq!(
+                phases.len(),
+                2,
+                "watch all should set 2 separate phases: {phases:?}"
+            );
+            assert!(
+                phases[0].contains("clippy"),
+                "first phase should be lint: {}",
+                phases[0]
+            );
+            assert!(
+                phases[1].contains("test"),
+                "second phase should be test: {}",
+                phases[1]
+            );
+        });
     }
 
     #[test]
@@ -1896,54 +1930,50 @@ mod tests {
     #[serial]
     #[test]
     fn handle_watch_lint_sets_lint_only_command() {
-        // Clear any previous watch command
-        clear_watch_command();
-        // Run /watch lint — since we're in a Rust project, it should set clippy only
-        handle_watch("/watch lint");
-        let cmd = get_watch_command();
-        assert!(
-            cmd.is_some(),
-            "watch command should be set after /watch lint"
-        );
-        let cmd = cmd.unwrap();
-        assert!(
-            cmd.contains("clippy"),
-            "watch lint should set lint command: {cmd}"
-        );
-        assert!(
-            !cmd.contains("cargo test"),
-            "watch lint should NOT include test: {cmd}"
-        );
-        // Cleanup
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            // Run /watch lint — since we're in a Rust project, it should set clippy only
+            handle_watch("/watch lint");
+            let cmd = get_watch_command();
+            assert!(
+                cmd.is_some(),
+                "watch command should be set after /watch lint"
+            );
+            let cmd = cmd.unwrap();
+            assert!(
+                cmd.contains("clippy"),
+                "watch lint should set lint command: {cmd}"
+            );
+            assert!(
+                !cmd.contains("cargo test"),
+                "watch lint should NOT include test: {cmd}"
+            );
+        });
     }
 
     #[serial]
     #[test]
     fn handle_watch_bare_sets_lint_and_test() {
-        // Clear any previous watch command
-        clear_watch_command();
-        // Run bare /watch — should now set lint+test as separate phases
-        handle_watch("/watch");
-        let cmd = get_watch_command();
-        assert!(
-            cmd.is_some(),
-            "watch command should be set after bare /watch"
-        );
-        let cmd = cmd.unwrap();
-        assert!(
-            cmd.contains("clippy") && cmd.contains("cargo test"),
-            "bare /watch should set lint && test: {cmd}"
-        );
-        // Verify multi-phase
-        let phases = get_watch_commands();
-        assert_eq!(
-            phases.len(),
-            2,
-            "bare /watch should set 2 phases: {phases:?}"
-        );
-        // Cleanup
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            // Run bare /watch — should now set lint+test as separate phases
+            handle_watch("/watch");
+            let cmd = get_watch_command();
+            assert!(
+                cmd.is_some(),
+                "watch command should be set after bare /watch"
+            );
+            let cmd = cmd.unwrap();
+            assert!(
+                cmd.contains("clippy") && cmd.contains("cargo test"),
+                "bare /watch should set lint && test: {cmd}"
+            );
+            // Verify multi-phase
+            let phases = get_watch_commands();
+            assert_eq!(
+                phases.len(),
+                2,
+                "bare /watch should set 2 phases: {phases:?}"
+            );
+        });
     }
 
     #[serial]

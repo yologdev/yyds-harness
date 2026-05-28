@@ -1160,14 +1160,17 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              Tasks persist for the duration of the session.\n\n\
              The AI agent can also manage tasks via the todo tool during\n\
              agentic runs, helping it stay organized on multi-step operations.\n\n\
-             Board (persistent TODO.md Kanban):\n\
-             \x20 /todo board              Show TODO.md board\n\
-             \x20 /todo board init [goal]  Create TODO.md\n\
-             \x20 /todo board add <section> <task>  Add task to section\n\
-             \x20 /todo board move <task> <section> Move task\n\
-             \x20 /todo board done <task>  Mark task done\n\
-             \x20 /todo board goal <text>  Set current goal\n\
-             \x20 /todo board evidence <text>  Add to evidence log",
+             Board (Kanban view of session_plan/ tasks):\n\
+             \x20 /todo board              Show board (reads session_plan/task_*.md)\n\
+             \x20 /todo board init [goal]  Create session_plan/ with optional goal\n\
+             \x20 /todo board add <title>  Add task (creates task_NN.md, status: backlog)\n\
+             \x20 /todo board move <task_id> <status>  Update status in task file\n\
+             \x20   e.g. /todo board move task_02 active\n\
+             \x20 /todo board done <task_id>  Set task status to done\n\
+             \x20 /todo board goal <text>  Write/update session_plan/goal.md\n\
+             \x20 /todo board evidence <text>  Append to session_plan/evidence.md\n\n\
+             Task IDs are file-based (task_01, task_02, etc.) derived from filenames.\n\
+             Valid statuses: backlog, active, done.",
         ),
         "teach" => Some(
             "/teach — Toggle teach mode\n\n\

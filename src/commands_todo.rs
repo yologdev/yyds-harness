@@ -183,296 +183,344 @@ pub fn handle_todo(input: &str) -> String {
         .to_string()
 }
 
-// === Board (TODO.md Kanban) ===
+// === Board (session_plan/ Kanban view) ===
 
-const TODO_MD_PATH: &str = "TODO.md";
+const SESSION_PLAN_DIR: &str = "session_plan";
 
-/// Generate initial TODO.md content with Kanban sections.
-pub fn board_template(goal: &str) -> String {
-    format!(
-        "# TODO\n\n\
-         ## Current Goal\n\n\
-         {goal}\n\n\
-         ## Constraints\n\n\
-         - \n\n\
-         ## Backlog\n\n\
-         ## Ready\n\n\
-         ## In Progress\n\n\
-         ## Blocked\n\n\
-         ## Review\n\n\
-         ## Done\n\n\
-         ## Evidence Log\n"
-    )
+/// A task parsed from a `session_plan/task_*.md` file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoardTask {
+    /// File-based ID, e.g. "task_01"
+    pub id: String,
+    /// Title extracted from the `Title:` line
+    pub title: String,
+    /// Status: backlog, active, or done (defaults to backlog if missing)
+    pub status: String,
+    /// Issue reference (e.g. "#123" or "none")
+    pub issue: String,
+    /// Files listed on the `Files:` line
+    pub files: String,
 }
 
-/// Extract items (lines starting with `- [ ]` or `- [x]`) from a named section.
-pub fn parse_board_section(content: &str, section: &str) -> Vec<String> {
-    let header = format!("## {section}");
-    let mut in_section = false;
-    let mut items = Vec::new();
+/// Parse a single task file's content into a `BoardTask`.
+fn parse_task_file(id: &str, content: &str) -> BoardTask {
+    let mut title = String::new();
+    let mut status = "backlog".to_string();
+    let mut issue = "none".to_string();
+    let mut files = String::new();
 
     for line in content.lines() {
-        if line.starts_with("## ") {
-            in_section = line.trim() == header;
-            continue;
-        }
-        if in_section {
-            let trimmed = line.trim();
-            if trimmed.starts_with("- [ ] ") || trimmed.starts_with("- [x] ") {
-                items.push(trimmed.to_string());
+        if let Some(val) = line.strip_prefix("Title:") {
+            title = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("Status:") {
+            let s = val.trim().to_lowercase();
+            if s == "backlog" || s == "active" || s == "done" {
+                status = s;
             }
+        } else if let Some(val) = line.strip_prefix("Issue:") {
+            issue = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("Files:") {
+            files = val.trim().to_string();
         }
     }
-    items
+
+    BoardTask {
+        id: id.to_string(),
+        title,
+        status,
+        issue,
+        files,
+    }
 }
 
-/// Check if a task (by description text) already exists in a section.
-pub fn board_has_task(content: &str, section: &str, task: &str) -> bool {
-    let items = parse_board_section(content, section);
-    items
-        .iter()
-        .any(|item| item.ends_with(task) || item.contains(task))
-}
-
-/// Check if a task exists in ANY section of the board.
-fn board_task_exists_anywhere(content: &str, task: &str) -> bool {
-    let sections = [
-        "Backlog",
-        "Ready",
-        "In Progress",
-        "Blocked",
-        "Review",
-        "Done",
-    ];
-    sections.iter().any(|s| board_has_task(content, s, task))
-}
-
-/// Add a `- [ ] task` line to the end of the named section. Deduplicates across all sections.
-pub fn board_add_task(content: &str, section: &str, task: &str) -> String {
-    // Dedup: if task already exists in ANY section, return unchanged
-    if board_task_exists_anywhere(content, task) {
-        return content.to_string();
+/// Read all `session_plan/task_*.md` files and parse them into `BoardTask`s.
+/// Uses `base_dir` to support testing with temp directories.
+fn read_task_files(base_dir: &str) -> Vec<BoardTask> {
+    let dir = std::path::Path::new(base_dir);
+    if !dir.is_dir() {
+        return Vec::new();
     }
 
-    let header = format!("## {section}");
-    let mut result = String::new();
-    let mut in_target = false;
-    let mut inserted = false;
-    let lines: Vec<&str> = content.lines().collect();
-
-    for (i, line) in lines.iter().enumerate() {
-        if line.starts_with("## ") {
-            if in_target && !inserted {
-                // Insert task before the next section header
-                result.push_str(&format!("- [ ] {task}\n"));
-                inserted = true;
-            }
-            in_target = line.trim() == header;
-        }
-        result.push_str(line);
-        result.push('\n');
-
-        // If this is the last line and we're in the target section
-        if i == lines.len() - 1 && in_target && !inserted {
-            result.push_str(&format!("- [ ] {task}\n"));
-            inserted = true;
-        }
-    }
-
-    // Handle edge case: section exists but is at the very end with no trailing newline
-    if !inserted && in_target {
-        result.push_str(&format!("- [ ] {task}\n"));
-    }
-
-    result
-}
-
-/// Move a task from one section to another. If moving to "Done", marks it `[x]`.
-pub fn board_move_task(content: &str, from_section: &str, to_section: &str, task: &str) -> String {
-    let from_header = format!("## {from_section}");
-    let to_header = format!("## {to_section}");
-
-    // First, remove from source section
-    let mut without_task = String::new();
-    let mut in_from = false;
-    let mut found = false;
-
-    for line in content.lines() {
-        if line.starts_with("## ") {
-            in_from = line.trim() == from_header;
-        }
-        if in_from && !found {
-            let trimmed = line.trim();
-            if (trimmed.starts_with("- [ ] ") || trimmed.starts_with("- [x] "))
-                && trimmed.contains(task)
-            {
-                found = true;
-                continue; // Skip this line (remove from source)
-            }
-        }
-        without_task.push_str(line);
-        without_task.push('\n');
-    }
-
-    if !found {
-        return content.to_string();
-    }
-
-    // Now add to destination section
-    let mark = if to_section == "Done" {
-        "- [x]"
-    } else {
-        "- [ ]"
+    let mut entries: Vec<_> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("task_") && name.ends_with(".md")
+            })
+            .collect(),
+        Err(_) => return Vec::new(),
     };
-    let new_line = format!("{mark} {task}");
 
-    let mut result = String::new();
-    let mut in_to = false;
-    let mut inserted = false;
-    let lines: Vec<&str> = without_task.lines().collect();
+    // Sort by filename for stable ordering
+    entries.sort_by_key(|e| e.file_name());
 
-    for (i, line) in lines.iter().enumerate() {
-        if line.starts_with("## ") {
-            if in_to && !inserted {
-                result.push_str(&new_line);
-                result.push('\n');
-                inserted = true;
-            }
-            in_to = line.trim() == to_header;
-        }
-        result.push_str(line);
-        result.push('\n');
-
-        if i == lines.len() - 1 && in_to && !inserted {
-            result.push_str(&new_line);
-            result.push('\n');
-            inserted = true;
+    let mut tasks = Vec::new();
+    for entry in entries {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Extract ID: "task_01.md" -> "task_01"
+        let id = name.strip_suffix(".md").unwrap_or(&name).to_string();
+        if let Ok(content) = std::fs::read_to_string(entry.path()) {
+            tasks.push(parse_task_file(&id, &content));
         }
     }
-
-    if !inserted && in_to {
-        result.push_str(&new_line);
-        result.push('\n');
-    }
-
-    result
+    tasks
 }
 
-/// Replace the content under `## Current Goal` with the new goal text.
-pub fn board_set_goal(content: &str, goal: &str) -> String {
-    let mut result = String::new();
-    let mut in_goal = false;
-    let mut replaced = false;
-
-    for line in content.lines() {
-        if line.starts_with("## ") {
-            if in_goal && !replaced {
-                result.push_str(goal);
-                result.push_str("\n\n");
-                replaced = true;
-            }
-            in_goal = line.trim() == "## Current Goal";
-            result.push_str(line);
-            result.push('\n');
-            if in_goal {
-                result.push('\n');
-            }
-            continue;
-        }
-        if in_goal {
-            // Skip old content — we'll insert the new goal when we leave the section
-            continue;
-        }
-        result.push_str(line);
-        result.push('\n');
-    }
-
-    // If goal section is the last section
-    if in_goal && !replaced {
-        result.push_str(goal);
-        result.push('\n');
-    }
-
-    result
+/// Read the goal from `session_plan/goal.md`.
+fn read_board_goal(base_dir: &str) -> Option<String> {
+    let path = std::path::Path::new(base_dir).join("goal.md");
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
-/// Append an evidence line to the Evidence Log section.
-pub fn board_add_evidence(content: &str, evidence: &str) -> String {
-    let header = "## Evidence Log";
-    let mut result = String::new();
-    let mut in_evidence = false;
-    let mut inserted = false;
-    let lines: Vec<&str> = content.lines().collect();
+/// Render a Kanban-style board view from task data.
+fn render_board(tasks: &[BoardTask], goal: Option<&str>) -> String {
+    let mut out = String::new();
+    out.push_str("  Task Board\n");
+    out.push_str("  ======================================\n\n");
 
-    for (i, line) in lines.iter().enumerate() {
-        if line.starts_with("## ") {
-            if in_evidence && !inserted {
-                result.push_str(&format!("- {evidence}\n"));
-                inserted = true;
-            }
-            in_evidence = line.trim() == header;
-        }
-        result.push_str(line);
-        result.push('\n');
+    if let Some(g) = goal {
+        out.push_str(&format!("  Goal: {g}\n\n"));
+    }
 
-        if i == lines.len() - 1 && in_evidence && !inserted {
-            result.push_str(&format!("- {evidence}\n"));
-            inserted = true;
+    let backlog: Vec<_> = tasks.iter().filter(|t| t.status == "backlog").collect();
+    let active: Vec<_> = tasks.iter().filter(|t| t.status == "active").collect();
+    let done: Vec<_> = tasks.iter().filter(|t| t.status == "done").collect();
+
+    out.push_str("  -- Backlog ---------------------\n");
+    if backlog.is_empty() {
+        out.push_str("    (empty)\n");
+    } else {
+        for t in &backlog {
+            let issue_tag = if t.issue != "none" && !t.issue.is_empty() {
+                format!(" ({})", t.issue)
+            } else {
+                String::new()
+            };
+            out.push_str(&format!("    [ ] {} -- {}{}\n", t.id, t.title, issue_tag));
         }
     }
 
-    if !inserted && in_evidence {
-        result.push_str(&format!("- {evidence}\n"));
+    out.push_str("\n  -- Active ----------------------\n");
+    if active.is_empty() {
+        out.push_str("    (empty)\n");
+    } else {
+        for t in &active {
+            let issue_tag = if t.issue != "none" && !t.issue.is_empty() {
+                format!(" ({})", t.issue)
+            } else {
+                String::new()
+            };
+            out.push_str(&format!("    [~] {} -- {}{}\n", t.id, t.title, issue_tag));
+        }
     }
 
-    result
+    out.push_str("\n  -- Done ------------------------\n");
+    if done.is_empty() {
+        out.push_str("    (empty)\n");
+    } else {
+        for t in &done {
+            let issue_tag = if t.issue != "none" && !t.issue.is_empty() {
+                format!(" ({})", t.issue)
+            } else {
+                String::new()
+            };
+            out.push_str(&format!("    [x] {} -- {}{}\n", t.id, t.title, issue_tag));
+        }
+    }
+
+    out.push_str(&format!(
+        "\n  {} backlog, {} active, {} done\n",
+        backlog.len(),
+        active.len(),
+        done.len()
+    ));
+
+    out
 }
 
-/// Normalize section name from user input to canonical form.
-fn normalize_section(input: &str) -> Option<&'static str> {
+/// Find the next task number (e.g., if task_01 and task_03 exist, returns 4).
+fn next_task_number(base_dir: &str) -> u32 {
+    let dir = std::path::Path::new(base_dir);
+    if !dir.is_dir() {
+        return 1;
+    }
+
+    let mut max_num: u32 = 0;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if let Some(rest) = name.strip_prefix("task_") {
+                if let Some(num_str) = rest.strip_suffix(".md") {
+                    if let Ok(n) = num_str.parse::<u32>() {
+                        if n > max_num {
+                            max_num = n;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    max_num + 1
+}
+
+/// Create a new task file with the given title and status.
+fn create_task_file(base_dir: &str, title: &str, status: &str) -> Result<String, String> {
+    let dir = std::path::Path::new(base_dir);
+    if !dir.is_dir() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create {base_dir}/: {e}"))?;
+    }
+
+    let num = next_task_number(base_dir);
+    let id = format!("task_{num:02}");
+    let filename = format!("{id}.md");
+    let path = dir.join(&filename);
+
+    let content = format!("Title: {title}\nFiles: \nIssue: none\nStatus: {status}\n");
+    std::fs::write(&path, content).map_err(|e| format!("Failed to write {filename}: {e}"))?;
+    Ok(id)
+}
+
+/// Update or add a `Status:` line in a task file.
+fn update_task_status(base_dir: &str, task_id: &str, new_status: &str) -> Result<(), String> {
+    let path = std::path::Path::new(base_dir).join(format!("{task_id}.md"));
+    let content =
+        std::fs::read_to_string(&path).map_err(|_| format!("Task file not found: {task_id}.md"))?;
+
+    let mut found_status = false;
+    let mut lines: Vec<String> = content
+        .lines()
+        .map(|line| {
+            if line.starts_with("Status:") {
+                found_status = true;
+                format!("Status: {new_status}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+
+    if !found_status {
+        // Insert Status line after the header lines (Title/Files/Issue)
+        let insert_pos = lines
+            .iter()
+            .position(|l| {
+                !l.starts_with("Title:")
+                    && !l.starts_with("Files:")
+                    && !l.starts_with("Issue:")
+                    && !l.is_empty()
+            })
+            .unwrap_or(lines.len());
+        lines.insert(insert_pos, format!("Status: {new_status}"));
+    }
+
+    let new_content = lines.join("\n");
+    // Preserve trailing newline if the original had one
+    let new_content = if content.ends_with('\n') && !new_content.ends_with('\n') {
+        format!("{new_content}\n")
+    } else {
+        new_content
+    };
+    std::fs::write(&path, new_content).map_err(|e| format!("Failed to write {task_id}.md: {e}"))?;
+    Ok(())
+}
+
+/// Normalize a board status from user input to canonical form.
+fn normalize_board_status(input: &str) -> Option<&'static str> {
     match input.to_lowercase().as_str() {
-        "backlog" => Some("Backlog"),
-        "ready" => Some("Ready"),
-        "inprogress" | "in-progress" | "in_progress" | "wip" => Some("In Progress"),
-        "blocked" => Some("Blocked"),
-        "review" => Some("Review"),
-        "done" => Some("Done"),
+        "backlog" => Some("backlog"),
+        "active" | "wip" | "inprogress" | "in-progress" | "in_progress" => Some("active"),
+        "done" | "complete" | "completed" => Some("done"),
         _ => None,
     }
 }
 
+/// Normalize a task ID input -- accept "task_01", "01", or "1" and return "task_01".
+fn normalize_task_id(input: &str) -> String {
+    let input = input.trim();
+    if input.starts_with("task_") {
+        return input.to_string();
+    }
+    // Try to parse as a number
+    if let Ok(n) = input.parse::<u32>() {
+        return format!("task_{n:02}");
+    }
+    // Return as-is (will fail at file lookup)
+    input.to_string()
+}
+
 /// Handle `/todo board` subcommands.
 pub fn handle_todo_board(input: &str) -> String {
+    handle_todo_board_with_dir(input, SESSION_PLAN_DIR)
+}
+
+/// Inner implementation that accepts a configurable base directory (for testing).
+fn handle_todo_board_with_dir(input: &str, base_dir: &str) -> String {
     let arg = input.trim();
 
     // /todo board or /todo board show
     if arg.is_empty() || arg == "show" {
-        match std::fs::read_to_string(TODO_MD_PATH) {
-            Ok(content) => return content,
-            Err(_) => {
-                return format!(
-                    "{YELLOW}  TODO.md does not exist. Use /todo board init to create it.{RESET}"
-                )
-            }
+        let tasks = read_task_files(base_dir);
+        if tasks.is_empty() {
+            return format!(
+                "{YELLOW}  No task files in {base_dir}/. Use /todo board init to set up.{RESET}"
+            );
         }
+        let goal = read_board_goal(base_dir);
+        return render_board(&tasks, goal.as_deref());
     }
 
     // /todo board init [goal]
     if arg == "init" || arg.starts_with("init ") {
-        if std::path::Path::new(TODO_MD_PATH).exists() {
-            return format!("{YELLOW}  TODO.md already exists. Not overwriting.{RESET}");
+        let dir = std::path::Path::new(base_dir);
+        let goal_text = arg.strip_prefix("init").unwrap_or("").trim();
+
+        if dir.is_dir() {
+            // Check if there are already task files
+            let tasks = read_task_files(base_dir);
+            if !tasks.is_empty() {
+                return format!(
+                    "{YELLOW}  {base_dir}/ already has {} task(s). Not reinitializing.{RESET}",
+                    tasks.len()
+                );
+            }
         }
-        let goal = arg.strip_prefix("init").unwrap_or("").trim();
-        let goal = if goal.is_empty() {
-            "Planning board initialized."
-        } else {
-            goal
-        };
-        let content = board_template(goal);
-        match std::fs::write(TODO_MD_PATH, &content) {
-            Ok(()) => return format!("{GREEN}  ✓ Created TODO.md with goal: {goal}{RESET}"),
-            Err(e) => return format!("{RED}  Failed to write TODO.md: {e}{RESET}"),
+
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            return format!("{RED}  Failed to create {base_dir}/: {e}{RESET}");
         }
+
+        if !goal_text.is_empty() {
+            let goal_path = dir.join("goal.md");
+            if let Err(e) = std::fs::write(&goal_path, format!("{goal_text}\n")) {
+                return format!("{RED}  Failed to write goal.md: {e}{RESET}");
+            }
+        }
+
+        return format!("{GREEN}  Initialized {base_dir}/ board{RESET}");
+    }
+
+    // /todo board add <title>
+    if let Some(title) = arg.strip_prefix("add ") {
+        let title = title.trim();
+        if title.is_empty() {
+            return "  Usage: /todo board add <title>".to_string();
+        }
+        match create_task_file(base_dir, title, "backlog") {
+            Ok(id) => {
+                return format!("{GREEN}  Created {id}: {title}{RESET}");
+            }
+            Err(e) => return format!("{RED}  {e}{RESET}"),
+        }
+    }
+    if arg == "add" {
+        return "  Usage: /todo board add <title>".to_string();
     }
 
     // /todo board goal <text>
@@ -481,19 +529,14 @@ pub fn handle_todo_board(input: &str) -> String {
         if goal_text.is_empty() {
             return "  Usage: /todo board goal <text>".to_string();
         }
-        match std::fs::read_to_string(TODO_MD_PATH) {
-            Ok(content) => {
-                let updated = board_set_goal(&content, goal_text);
-                match std::fs::write(TODO_MD_PATH, &updated) {
-                    Ok(()) => return format!("{GREEN}  ✓ Updated goal: {goal_text}{RESET}"),
-                    Err(e) => return format!("{RED}  Failed to write TODO.md: {e}{RESET}"),
-                }
-            }
-            Err(_) => {
-                return format!(
-                    "{YELLOW}  TODO.md does not exist. Use /todo board init first.{RESET}"
-                )
-            }
+        let dir = std::path::Path::new(base_dir);
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            return format!("{RED}  Failed to create {base_dir}/: {e}{RESET}");
+        }
+        let goal_path = dir.join("goal.md");
+        match std::fs::write(&goal_path, format!("{goal_text}\n")) {
+            Ok(()) => return format!("{GREEN}  Updated goal: {goal_text}{RESET}"),
+            Err(e) => return format!("{RED}  Failed to write goal.md: {e}{RESET}"),
         }
     }
     if arg == "goal" {
@@ -506,152 +549,69 @@ pub fn handle_todo_board(input: &str) -> String {
         if evidence_text.is_empty() {
             return "  Usage: /todo board evidence <text>".to_string();
         }
-        match std::fs::read_to_string(TODO_MD_PATH) {
-            Ok(content) => {
-                let updated = board_add_evidence(&content, evidence_text);
-                match std::fs::write(TODO_MD_PATH, &updated) {
-                    Ok(()) => return format!("{GREEN}  ✓ Added evidence: {evidence_text}{RESET}"),
-                    Err(e) => return format!("{RED}  Failed to write TODO.md: {e}{RESET}"),
-                }
-            }
-            Err(_) => {
-                return format!(
-                    "{YELLOW}  TODO.md does not exist. Use /todo board init first.{RESET}"
-                )
-            }
+        let dir = std::path::Path::new(base_dir);
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            return format!("{RED}  Failed to create {base_dir}/: {e}{RESET}");
+        }
+        let evidence_path = dir.join("evidence.md");
+        let existing = std::fs::read_to_string(&evidence_path).unwrap_or_default();
+        let updated = format!("{existing}- {evidence_text}\n");
+        match std::fs::write(&evidence_path, updated) {
+            Ok(()) => return format!("{GREEN}  Added evidence: {evidence_text}{RESET}"),
+            Err(e) => return format!("{RED}  Failed to write evidence.md: {e}{RESET}"),
         }
     }
     if arg == "evidence" {
         return "  Usage: /todo board evidence <text>".to_string();
     }
 
-    // /todo board add <section> <task>
-    if let Some(rest) = arg.strip_prefix("add ") {
-        let rest = rest.trim();
-        // First token is section, rest is task
-        let parts: Vec<&str> = rest.splitn(2, ' ').collect();
-        if parts.len() < 2 || parts[1].trim().is_empty() {
-            return "  Usage: /todo board add <section> <task>\n  \
-                    Sections: backlog, ready, inprogress, blocked, review"
-                .to_string();
+    // /todo board done <task_id>
+    if let Some(task_id) = arg.strip_prefix("done ") {
+        let task_id = normalize_task_id(task_id.trim());
+        if task_id.is_empty() {
+            return "  Usage: /todo board done <task_id>".to_string();
         }
-        let section_input = parts[0];
-        let task = parts[1].trim();
-        let section = match normalize_section(section_input) {
-            Some(s) => s,
-            None => {
-                return format!(
-                    "{RED}  Unknown section: {section_input}. Use: backlog, ready, inprogress, blocked, review{RESET}"
-                )
-            }
-        };
-        match std::fs::read_to_string(TODO_MD_PATH) {
-            Ok(content) => {
-                let updated = board_add_task(&content, section, task);
-                if updated == content {
-                    return format!("{YELLOW}  Task already exists: {task}{RESET}");
-                }
-                match std::fs::write(TODO_MD_PATH, &updated) {
-                    Ok(()) => return format!("{GREEN}  ✓ Added to {section}: {task}{RESET}"),
-                    Err(e) => return format!("{RED}  Failed to write TODO.md: {e}{RESET}"),
-                }
-            }
-            Err(_) => {
-                return format!(
-                    "{YELLOW}  TODO.md does not exist. Use /todo board init first.{RESET}"
-                )
-            }
+        match update_task_status(base_dir, &task_id, "done") {
+            Ok(()) => return format!("{GREEN}  Marked {task_id} as done{RESET}"),
+            Err(e) => return format!("{RED}  {e}{RESET}"),
         }
     }
 
-    // /todo board done <task_text> — shortcut to move to Done
-    if let Some(task_text) = arg.strip_prefix("done ") {
-        let task_text = task_text.trim();
-        if task_text.is_empty() {
-            return "  Usage: /todo board done <task_text>".to_string();
-        }
-        match std::fs::read_to_string(TODO_MD_PATH) {
-            Ok(content) => {
-                // Try to find the task in any section and move it to Done
-                let sections = ["Backlog", "Ready", "In Progress", "Blocked", "Review"];
-                for section in &sections {
-                    if board_has_task(&content, section, task_text) {
-                        let updated = board_move_task(&content, section, "Done", task_text);
-                        match std::fs::write(TODO_MD_PATH, &updated) {
-                            Ok(()) => {
-                                return format!("{GREEN}  ✓ Moved to Done: {task_text}{RESET}")
-                            }
-                            Err(e) => return format!("{RED}  Failed to write TODO.md: {e}{RESET}"),
-                        }
-                    }
-                }
-                format!("{YELLOW}  Task not found: {task_text}{RESET}")
-            }
-            Err(_) => {
-                format!("{YELLOW}  TODO.md does not exist. Use /todo board init first.{RESET}")
-            }
-        }
-    }
-    // /todo board move <task_text> <to_section>
-    else if let Some(rest) = arg.strip_prefix("move ") {
+    // /todo board move <task_id> <status>
+    if let Some(rest) = arg.strip_prefix("move ") {
         let rest = rest.trim();
-        // Last token is destination section, everything before is task text
-        let parts: Vec<&str> = rest.rsplitn(2, ' ').collect();
+        let parts: Vec<&str> = rest.splitn(2, ' ').collect();
         if parts.len() < 2 || parts[1].trim().is_empty() {
-            return "  Usage: /todo board move <task_text> <to_section>".to_string();
+            return "  Usage: /todo board move <task_id> <status>\n  \
+                    Statuses: backlog, active, done"
+                .to_string();
         }
-        let to_section_input = parts[0];
-        let task_text = parts[1].trim();
-        let to_section = match normalize_section(to_section_input) {
+        let task_id = normalize_task_id(parts[0]);
+        let status_input = parts[1].trim();
+        let status = match normalize_board_status(status_input) {
             Some(s) => s,
             None => {
                 return format!(
-                    "{RED}  Unknown section: {to_section_input}. Use: backlog, ready, inprogress, blocked, review, done{RESET}"
+                    "{RED}  Unknown status: {status_input}. Use: backlog, active, done{RESET}"
                 )
             }
         };
-        match std::fs::read_to_string(TODO_MD_PATH) {
-            Ok(content) => {
-                // Find the task in any section
-                let sections = [
-                    "Backlog",
-                    "Ready",
-                    "In Progress",
-                    "Blocked",
-                    "Review",
-                    "Done",
-                ];
-                for section in &sections {
-                    if board_has_task(&content, section, task_text) {
-                        let updated = board_move_task(&content, section, to_section, task_text);
-                        match std::fs::write(TODO_MD_PATH, &updated) {
-                            Ok(()) => {
-                                return format!(
-                                    "{GREEN}  ✓ Moved '{task_text}' to {to_section}{RESET}"
-                                )
-                            }
-                            Err(e) => return format!("{RED}  Failed to write TODO.md: {e}{RESET}"),
-                        }
-                    }
-                }
-                format!("{YELLOW}  Task not found: {task_text}{RESET}")
-            }
-            Err(_) => {
-                format!("{YELLOW}  TODO.md does not exist. Use /todo board init first.{RESET}")
-            }
+        match update_task_status(base_dir, &task_id, status) {
+            Ok(()) => return format!("{GREEN}  Moved {task_id} to {status}{RESET}"),
+            Err(e) => return format!("{RED}  {e}{RESET}"),
         }
-    } else {
-        // Unknown board subcommand
-        "  Usage:\n\
-         \x20 /todo board              Show TODO.md board\n\
-         \x20 /todo board init [goal]  Create TODO.md\n\
-         \x20 /todo board add <section> <task>  Add task\n\
-         \x20 /todo board move <task> <section> Move task\n\
-         \x20 /todo board done <task>  Mark task done\n\
-         \x20 /todo board goal <text>  Set current goal\n\
-         \x20 /todo board evidence <text>  Add evidence"
-            .to_string()
     }
+
+    // Unknown board subcommand
+    "  Usage:\n\
+     \x20 /todo board                      Show task board\n\
+     \x20 /todo board init [goal]          Initialize session_plan/\n\
+     \x20 /todo board add <title>          Add task (backlog)\n\
+     \x20 /todo board move <id> <status>   Move task (backlog/active/done)\n\
+     \x20 /todo board done <id>            Mark task done\n\
+     \x20 /todo board goal <text>          Set/update goal\n\
+     \x20 /todo board evidence <text>      Append evidence"
+        .to_string()
 }
 
 #[cfg(test)]
@@ -863,196 +823,353 @@ mod tests {
         assert!(text.contains("/todo"), "/todo should appear in help text");
     }
 
-    // === Board tests ===
+    // === Board tests (session_plan/ based) ===
 
-    #[test]
-    fn test_board_template_has_all_sections() {
-        let content = board_template("Build something great");
-        assert!(content.contains("# TODO"));
-        assert!(content.contains("## Current Goal"));
-        assert!(content.contains("Build something great"));
-        assert!(content.contains("## Constraints"));
-        assert!(content.contains("## Backlog"));
-        assert!(content.contains("## Ready"));
-        assert!(content.contains("## In Progress"));
-        assert!(content.contains("## Blocked"));
-        assert!(content.contains("## Review"));
-        assert!(content.contains("## Done"));
-        assert!(content.contains("## Evidence Log"));
+    fn make_temp_dir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("Failed to create temp dir")
     }
 
     #[test]
-    fn test_parse_board_section_extracts_items() {
-        let content =
-            "## Backlog\n\n- [ ] task one\n- [ ] task two\n\n## Ready\n\n- [ ] task three\n";
-        let items = parse_board_section(content, "Backlog");
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0], "- [ ] task one");
-        assert_eq!(items[1], "- [ ] task two");
-
-        let ready = parse_board_section(content, "Ready");
-        assert_eq!(ready.len(), 1);
-        assert_eq!(ready[0], "- [ ] task three");
+    fn test_parse_task_file_full() {
+        let content = "Title: Fix the parser\nFiles: src/parser.rs\nIssue: #42\nStatus: active\n";
+        let task = parse_task_file("task_01", content);
+        assert_eq!(task.id, "task_01");
+        assert_eq!(task.title, "Fix the parser");
+        assert_eq!(task.status, "active");
+        assert_eq!(task.issue, "#42");
+        assert_eq!(task.files, "src/parser.rs");
     }
 
     #[test]
-    fn test_parse_board_section_handles_done_checkboxes() {
-        let content = "## Done\n\n- [x] finished task\n- [ ] not done yet\n";
-        let items = parse_board_section(content, "Done");
-        assert_eq!(items.len(), 2);
-        assert!(items[0].contains("[x]"));
-        assert!(items[1].contains("[ ]"));
+    fn test_parse_task_file_defaults_to_backlog() {
+        let content = "Title: Some task\nFiles: src/main.rs\nIssue: none\n";
+        let task = parse_task_file("task_02", content);
+        assert_eq!(task.status, "backlog");
     }
 
     #[test]
-    fn test_board_has_task_finds_existing() {
-        let content = "## Backlog\n\n- [ ] implement feature X\n\n## Ready\n";
-        assert!(board_has_task(content, "Backlog", "implement feature X"));
-        assert!(!board_has_task(content, "Backlog", "nonexistent task"));
-        assert!(!board_has_task(content, "Ready", "implement feature X"));
+    fn test_parse_task_file_ignores_invalid_status() {
+        let content = "Title: Bad status\nStatus: invalid_status\n";
+        let task = parse_task_file("task_03", content);
+        assert_eq!(task.status, "backlog");
     }
 
     #[test]
-    fn test_board_add_task_adds_to_section() {
-        let content = board_template("test");
-        let updated = board_add_task(&content, "Backlog", "new task");
-        assert!(updated.contains("- [ ] new task"));
-        let items = parse_board_section(&updated, "Backlog");
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0], "- [ ] new task");
+    fn test_read_task_files_empty_dir() {
+        let tmp = make_temp_dir();
+        let tasks = read_task_files(tmp.path().to_str().unwrap());
+        assert!(tasks.is_empty());
     }
 
     #[test]
-    fn test_board_add_task_deduplicates() {
-        let content = board_template("test");
-        let updated = board_add_task(&content, "Backlog", "task A");
-        let updated2 = board_add_task(&updated, "Backlog", "task A");
-        // Should not add duplicate
-        assert_eq!(updated, updated2);
-
-        // Also deduplicates across sections
-        let updated3 = board_add_task(&updated, "Ready", "task A");
-        assert_eq!(updated, updated3);
+    fn test_read_task_files_nonexistent_dir() {
+        let tasks = read_task_files("/tmp/nonexistent_board_test_dir_xyz");
+        assert!(tasks.is_empty());
     }
 
     #[test]
-    fn test_board_move_task_between_sections() {
-        let content = board_template("test");
-        let with_task = board_add_task(&content, "Backlog", "move me");
-        assert!(board_has_task(&with_task, "Backlog", "move me"));
+    fn test_read_task_files_reads_and_sorts() {
+        let tmp = make_temp_dir();
+        let dir = tmp.path();
+        std::fs::write(dir.join("task_02.md"), "Title: Second\nStatus: active\n").unwrap();
+        std::fs::write(dir.join("task_01.md"), "Title: First\nStatus: backlog\n").unwrap();
+        // Non-task file should be ignored
+        std::fs::write(dir.join("goal.md"), "Build something").unwrap();
 
-        let moved = board_move_task(&with_task, "Backlog", "Ready", "move me");
-        assert!(!board_has_task(&moved, "Backlog", "move me"));
-        assert!(board_has_task(&moved, "Ready", "move me"));
-
-        // Item should still have [ ] checkbox
-        let ready_items = parse_board_section(&moved, "Ready");
-        assert_eq!(ready_items.len(), 1);
-        assert!(ready_items[0].starts_with("- [ ]"));
+        let tasks = read_task_files(dir.to_str().unwrap());
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].id, "task_01");
+        assert_eq!(tasks[0].title, "First");
+        assert_eq!(tasks[1].id, "task_02");
+        assert_eq!(tasks[1].title, "Second");
     }
 
     #[test]
-    fn test_board_move_task_to_done_marks_checked() {
-        let content = board_template("test");
-        let with_task = board_add_task(&content, "In Progress", "finish me");
-        let moved = board_move_task(&with_task, "In Progress", "Done", "finish me");
-
-        assert!(!board_has_task(&moved, "In Progress", "finish me"));
-        let done_items = parse_board_section(&moved, "Done");
-        assert_eq!(done_items.len(), 1);
-        assert!(done_items[0].starts_with("- [x]"));
-        assert!(done_items[0].contains("finish me"));
+    fn test_render_board_groups_by_status() {
+        let tasks = vec![
+            BoardTask {
+                id: "task_01".into(),
+                title: "Backlog task".into(),
+                status: "backlog".into(),
+                issue: "none".into(),
+                files: String::new(),
+            },
+            BoardTask {
+                id: "task_02".into(),
+                title: "Active task".into(),
+                status: "active".into(),
+                issue: "#10".into(),
+                files: String::new(),
+            },
+            BoardTask {
+                id: "task_03".into(),
+                title: "Done task".into(),
+                status: "done".into(),
+                issue: "none".into(),
+                files: String::new(),
+            },
+        ];
+        let output = render_board(&tasks, Some("Build it"));
+        assert!(output.contains("Goal: Build it"));
+        assert!(output.contains("Backlog"));
+        assert!(output.contains("Active"));
+        assert!(output.contains("Done"));
+        assert!(output.contains("task_01"));
+        assert!(output.contains("Backlog task"));
+        assert!(output.contains("task_02"));
+        assert!(output.contains("(#10)"));
+        assert!(output.contains("task_03"));
+        assert!(output.contains("1 backlog, 1 active, 1 done"));
     }
 
     #[test]
-    fn test_board_set_goal_replaces_content() {
-        let content = board_template("old goal");
-        assert!(content.contains("old goal"));
+    fn test_board_init_creates_dir() {
+        let tmp = make_temp_dir();
+        let dir = tmp.path().join("sp");
+        let base = dir.to_str().unwrap();
 
-        let updated = board_set_goal(&content, "new goal");
-        assert!(updated.contains("new goal"));
-        assert!(!updated.contains("old goal"));
-        // Sections should still exist
-        assert!(updated.contains("## Backlog"));
+        let result = handle_todo_board_with_dir("init Build something", base);
+        assert!(result.contains("Initialized"));
+        assert!(dir.is_dir());
+
+        // Goal file should exist
+        let goal = std::fs::read_to_string(dir.join("goal.md")).unwrap();
+        assert!(goal.contains("Build something"));
     }
 
     #[test]
-    fn test_board_add_evidence() {
-        let content = board_template("test");
-        let updated = board_add_evidence(&content, "Tests pass at 95% coverage");
-        assert!(updated.contains("- Tests pass at 95% coverage"));
+    fn test_board_init_no_goal() {
+        let tmp = make_temp_dir();
+        let dir = tmp.path().join("sp2");
+        let base = dir.to_str().unwrap();
 
-        // Add another
-        let updated2 = board_add_evidence(&updated, "Lint clean");
-        assert!(updated2.contains("- Tests pass at 95% coverage"));
-        assert!(updated2.contains("- Lint clean"));
+        let result = handle_todo_board_with_dir("init", base);
+        assert!(result.contains("Initialized"));
+        assert!(dir.is_dir());
+        // No goal.md should be created
+        assert!(!dir.join("goal.md").exists());
     }
 
     #[test]
-    #[serial]
-    fn test_handle_todo_board_show_no_file() {
-        // Ensure TODO.md doesn't exist in test dir
-        let _ = std::fs::remove_file(TODO_MD_PATH);
-        let result = handle_todo_board("");
-        assert!(result.contains("does not exist"));
+    fn test_board_init_refuses_if_tasks_exist() {
+        let tmp = make_temp_dir();
+        let dir = tmp.path();
+        std::fs::write(dir.join("task_01.md"), "Title: existing\n").unwrap();
+        let base = dir.to_str().unwrap();
 
-        let result2 = handle_todo_board("show");
-        assert!(result2.contains("does not exist"));
+        let result = handle_todo_board_with_dir("init New goal", base);
+        assert!(result.contains("already has"));
+        assert!(result.contains("1 task"));
     }
 
     #[test]
-    #[serial]
-    fn test_handle_todo_board_init_creates_file() {
-        let _ = std::fs::remove_file(TODO_MD_PATH);
-        let result = handle_todo_board("init Build the thing");
-        assert!(result.contains("Created TODO.md"));
-        assert!(result.contains("Build the thing"));
+    fn test_board_add_creates_task_file() {
+        let tmp = make_temp_dir();
+        let base = tmp.path().to_str().unwrap();
 
-        // File should exist now
-        let content = std::fs::read_to_string(TODO_MD_PATH).unwrap();
-        assert!(content.contains("## Current Goal"));
-        assert!(content.contains("Build the thing"));
+        let result = handle_todo_board_with_dir("add Implement feature X", base);
+        assert!(result.contains("Created task_01"));
+        assert!(result.contains("Implement feature X"));
 
-        // Init again should NOT overwrite
-        let result2 = handle_todo_board("init Different goal");
-        assert!(result2.contains("already exists"));
-
-        // Content unchanged
-        let content2 = std::fs::read_to_string(TODO_MD_PATH).unwrap();
-        assert!(content2.contains("Build the thing"));
-        assert!(!content2.contains("Different goal"));
-
-        // Cleanup
-        let _ = std::fs::remove_file(TODO_MD_PATH);
+        let content = std::fs::read_to_string(tmp.path().join("task_01.md")).unwrap();
+        assert!(content.contains("Title: Implement feature X"));
+        assert!(content.contains("Status: backlog"));
     }
 
     #[test]
-    #[serial]
-    fn test_handle_todo_routes_board() {
-        // Ensure the routing from /todo board works
-        let _ = std::fs::remove_file(TODO_MD_PATH);
+    fn test_board_add_increments_number() {
+        let tmp = make_temp_dir();
+        let base = tmp.path().to_str().unwrap();
+
+        handle_todo_board_with_dir("add First", base);
+        let result = handle_todo_board_with_dir("add Second", base);
+        assert!(result.contains("Created task_02"));
+        assert!(tmp.path().join("task_02.md").exists());
+    }
+
+    #[test]
+    fn test_board_move_by_id() {
+        let tmp = make_temp_dir();
+        let base = tmp.path().to_str().unwrap();
+
+        handle_todo_board_with_dir("add Some task", base);
+
+        let result = handle_todo_board_with_dir("move task_01 active", base);
+        assert!(result.contains("Moved task_01 to active"));
+
+        let content = std::fs::read_to_string(tmp.path().join("task_01.md")).unwrap();
+        assert!(content.contains("Status: active"));
+    }
+
+    #[test]
+    fn test_board_move_accepts_short_id() {
+        let tmp = make_temp_dir();
+        let base = tmp.path().to_str().unwrap();
+
+        handle_todo_board_with_dir("add A task", base);
+
+        let result = handle_todo_board_with_dir("move 1 active", base);
+        assert!(result.contains("Moved task_01 to active"));
+    }
+
+    #[test]
+    fn test_board_done_shortcut() {
+        let tmp = make_temp_dir();
+        let base = tmp.path().to_str().unwrap();
+
+        handle_todo_board_with_dir("add Complete me", base);
+
+        let result = handle_todo_board_with_dir("done task_01", base);
+        assert!(result.contains("Marked task_01 as done"));
+
+        let content = std::fs::read_to_string(tmp.path().join("task_01.md")).unwrap();
+        assert!(content.contains("Status: done"));
+    }
+
+    #[test]
+    fn test_board_goal_updates() {
+        let tmp = make_temp_dir();
+        let base = tmp.path().to_str().unwrap();
+
+        handle_todo_board_with_dir("init Old goal", base);
+        let result = handle_todo_board_with_dir("goal New goal", base);
+        assert!(result.contains("Updated goal"));
+
+        let goal = std::fs::read_to_string(tmp.path().join("goal.md")).unwrap();
+        assert!(goal.contains("New goal"));
+    }
+
+    #[test]
+    fn test_board_evidence_appends() {
+        let tmp = make_temp_dir();
+        let base = tmp.path().to_str().unwrap();
+
+        handle_todo_board_with_dir("init", base);
+        handle_todo_board_with_dir("evidence Tests pass", base);
+        handle_todo_board_with_dir("evidence Lint clean", base);
+
+        let evidence = std::fs::read_to_string(tmp.path().join("evidence.md")).unwrap();
+        assert!(evidence.contains("- Tests pass"));
+        assert!(evidence.contains("- Lint clean"));
+    }
+
+    #[test]
+    fn test_board_show_empty_dir() {
+        let tmp = make_temp_dir();
+        let base = tmp.path().to_str().unwrap();
+
+        let result = handle_todo_board_with_dir("", base);
+        assert!(result.contains("No task files"));
+    }
+
+    #[test]
+    fn test_board_show_with_tasks() {
+        let tmp = make_temp_dir();
+        let base = tmp.path().to_str().unwrap();
+
+        handle_todo_board_with_dir("add First task", base);
+        handle_todo_board_with_dir("add Second task", base);
+        handle_todo_board_with_dir("move task_01 active", base);
+
+        let result = handle_todo_board_with_dir("", base);
+        assert!(result.contains("Task Board"));
+        assert!(result.contains("task_01"));
+        assert!(result.contains("task_02"));
+        assert!(result.contains("1 backlog, 1 active, 0 done"));
+    }
+
+    #[test]
+    fn test_board_reads_existing_session_plan_files() {
+        let tmp = make_temp_dir();
+        let dir = tmp.path();
+        // Simulate existing session_plan files (evolution pipeline format)
+        std::fs::write(
+            dir.join("task_01.md"),
+            "Title: Fix flaky test\nFiles: src/watch.rs\nIssue: none\n\nDescription of the task.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("task_02.md"),
+            "Title: Add new feature\nFiles: src/main.rs\nIssue: #100\nStatus: active\n",
+        )
+        .unwrap();
+        let base = dir.to_str().unwrap();
+
+        let result = handle_todo_board_with_dir("", base);
+        assert!(result.contains("task_01"));
+        assert!(result.contains("Fix flaky test"));
+        assert!(result.contains("task_02"));
+        assert!(result.contains("Add new feature"));
+        assert!(result.contains("(#100)"));
+        // task_01 has no Status line, should default to backlog
+        assert!(result.contains("1 backlog, 1 active, 0 done"));
+    }
+
+    #[test]
+    fn test_board_move_nonexistent_task() {
+        let tmp = make_temp_dir();
+        let base = tmp.path().to_str().unwrap();
+
+        let result = handle_todo_board_with_dir("move task_99 active", base);
+        assert!(result.contains("not found"));
+    }
+
+    #[test]
+    fn test_board_move_invalid_status() {
+        let tmp = make_temp_dir();
+        let base = tmp.path().to_str().unwrap();
+        handle_todo_board_with_dir("add test", base);
+
+        let result = handle_todo_board_with_dir("move task_01 invalid", base);
+        assert!(result.contains("Unknown status"));
+    }
+
+    #[test]
+    fn test_normalize_board_status() {
+        assert_eq!(normalize_board_status("backlog"), Some("backlog"));
+        assert_eq!(normalize_board_status("active"), Some("active"));
+        assert_eq!(normalize_board_status("wip"), Some("active"));
+        assert_eq!(normalize_board_status("inprogress"), Some("active"));
+        assert_eq!(normalize_board_status("in-progress"), Some("active"));
+        assert_eq!(normalize_board_status("done"), Some("done"));
+        assert_eq!(normalize_board_status("complete"), Some("done"));
+        assert_eq!(normalize_board_status("invalid"), None);
+    }
+
+    #[test]
+    fn test_normalize_task_id() {
+        assert_eq!(normalize_task_id("task_01"), "task_01");
+        assert_eq!(normalize_task_id("01"), "task_01");
+        assert_eq!(normalize_task_id("1"), "task_01");
+        assert_eq!(normalize_task_id("12"), "task_12");
+        assert_eq!(normalize_task_id("task_99"), "task_99");
+    }
+
+    #[test]
+    fn test_board_show_routes_from_handle_todo() {
         let result = handle_todo("/todo board");
-        assert!(result.contains("does not exist"));
+        // Should go through board handler — either shows tasks or "No task files"
+        assert!(
+            result.contains("Task Board")
+                || result.contains("No task files")
+                || result.contains("task"),
+            "Board routing should work: got: {result}"
+        );
     }
 
     #[test]
-    fn test_normalize_section() {
-        assert_eq!(normalize_section("backlog"), Some("Backlog"));
-        assert_eq!(normalize_section("ready"), Some("Ready"));
-        assert_eq!(normalize_section("inprogress"), Some("In Progress"));
-        assert_eq!(normalize_section("in-progress"), Some("In Progress"));
-        assert_eq!(normalize_section("wip"), Some("In Progress"));
-        assert_eq!(normalize_section("blocked"), Some("Blocked"));
-        assert_eq!(normalize_section("review"), Some("Review"));
-        assert_eq!(normalize_section("done"), Some("Done"));
-        assert_eq!(normalize_section("invalid"), None);
-    }
+    fn test_update_task_status_adds_missing_status_line() {
+        let tmp = make_temp_dir();
+        let dir = tmp.path();
+        // Task file without Status line
+        std::fs::write(
+            dir.join("task_01.md"),
+            "Title: No status\nFiles: src/main.rs\nIssue: none\n\nDescription.\n",
+        )
+        .unwrap();
 
-    #[test]
-    fn test_board_move_task_not_found() {
-        let content = board_template("test");
-        let result = board_move_task(&content, "Backlog", "Ready", "nonexistent");
-        // Should return content unchanged
-        assert_eq!(result, content);
+        update_task_status(dir.to_str().unwrap(), "task_01", "active").unwrap();
+        let content = std::fs::read_to_string(dir.join("task_01.md")).unwrap();
+        assert!(content.contains("Status: active"));
     }
 }
