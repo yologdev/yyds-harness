@@ -356,10 +356,14 @@ pub fn parse_blame_args(input: &str) -> Result<BlameArgs, String> {
 
     // Check for <file>:<start>-<end> pattern
     if let Some(colon_pos) = arg.rfind(':') {
+        // SAFETY: colon_pos from rfind(':') — ':' is ASCII (1 byte), so colon_pos
+        // and colon_pos + 1 are always valid char boundaries.
         let file_part = &arg[..colon_pos];
         let range_part = &arg[colon_pos + 1..];
 
         if let Some(dash_pos) = range_part.find('-') {
+            // SAFETY: dash_pos from find('-') — '-' is ASCII (1 byte), so dash_pos
+            // and dash_pos + 1 are always valid char boundaries within range_part.
             let start_str = &range_part[..dash_pos];
             let end_str = &range_part[dash_pos + 1..];
 
@@ -411,6 +415,9 @@ pub fn colorize_blame_line(line: &str) -> String {
         return line.to_string();
     }
 
+    // SAFETY: paren_open from find('('), paren_close from find(')') — both ASCII
+    // (1 byte each), so paren_open, paren_open + 1, paren_close, and paren_close + 1
+    // are all valid char boundaries.
     let hash = &line[..paren_open];
     let annotation = &line[paren_open + 1..paren_close];
     let code = if paren_close + 1 < line.len() {
@@ -427,14 +434,20 @@ pub fn colorize_blame_line(line: &str) -> String {
     // Look for a date pattern: 4-digit year followed by -
     for (i, _) in annotation.char_indices() {
         if i + 10 <= annotation.len() {
+            // SAFETY: i from char_indices() is always a valid char boundary.
             let slice = &annotation[i..];
             if slice.len() >= 10
+                // SAFETY: as_bytes() indexing is safe because slice.len() >= 10
+                // and bytes 0-9 are checked individually. The sub-slices [..4],
+                // [5..7], [8..10] are safe because all checked bytes are ASCII digits
+                // or '-', so every index falls on a char boundary.
                 && slice.as_bytes()[4] == b'-'
                 && slice.as_bytes()[7] == b'-'
                 && slice[..4].chars().all(|c| c.is_ascii_digit())
                 && slice[5..7].chars().all(|c| c.is_ascii_digit())
                 && slice[8..10].chars().all(|c| c.is_ascii_digit())
             {
+                // SAFETY: i from char_indices() — always a valid char boundary.
                 author = annotation[..i].trim_end();
                 date_and_lineno = &annotation[i..];
                 break;
@@ -446,6 +459,8 @@ pub fn colorize_blame_line(line: &str) -> String {
     // The lineno is typically the last whitespace-separated token
     let (date_part, lineno_part) =
         if let Some(last_space) = date_and_lineno.rfind(char::is_whitespace) {
+            // SAFETY: rfind(char::is_whitespace) returns the byte index of the
+            // start of the matching char — always a valid char boundary.
             let candidate = date_and_lineno[last_space..].trim();
             if candidate.chars().all(|c| c.is_ascii_digit()) && !candidate.is_empty() {
                 (&date_and_lineno[..last_space], candidate)
@@ -1037,6 +1052,25 @@ mod tests {
         let result = parse_blame_args("/blame some:file:thing").unwrap();
         assert_eq!(result.file, "some:file:thing");
         assert_eq!(result.range, None);
+    }
+
+    #[test]
+    fn test_parse_blame_args_unicode_file_path() {
+        // File paths can contain multi-byte UTF-8 characters (e.g., accented letters).
+        // The colon and dash splitting must not panic on such paths.
+        let result = parse_blame_args("/blame src/données.rs:10-20").unwrap();
+        assert_eq!(result.file, "src/données.rs");
+        assert_eq!(result.range, Some((10, 20)));
+
+        // Unicode path without range
+        let result2 = parse_blame_args("/blame src/données.rs").unwrap();
+        assert_eq!(result2.file, "src/données.rs");
+        assert_eq!(result2.range, None);
+
+        // Unicode path with colon but non-numeric range (treated as file)
+        let result3 = parse_blame_args("/blame café:résumé").unwrap();
+        assert_eq!(result3.file, "café:résumé");
+        assert_eq!(result3.range, None);
     }
 
     #[test]

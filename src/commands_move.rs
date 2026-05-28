@@ -77,6 +77,8 @@ pub fn find_impl_blocks(source: &str, type_name: &str) -> Vec<(usize, usize, Str
         let mut found = false;
         for pat in &patterns {
             if let Some(pos) = trimmed.find(pat.as_str()) {
+                // SAFETY: pos from find() on an ASCII pattern ("impl ") — the match
+                // starts at a char boundary, so pos is always a valid char boundary.
                 let before = &trimmed[..pos];
                 let is_valid_prefix = before.is_empty()
                     || before.trim_end().is_empty()
@@ -94,6 +96,8 @@ pub fn find_impl_blocks(source: &str, type_name: &str) -> Vec<(usize, usize, Str
             let ends_with_type = trimmed.ends_with(&format!("impl {type_name}"))
                 || trimmed.ends_with(&format!("impl {type_name} {{"));
             if ends_with_type {
+                // SAFETY: p from find("impl ") — "impl " is ASCII, so the match
+                // position is always a valid char boundary.
                 let before_impl = trimmed
                     .find("impl ")
                     .map(|p| trimmed[..p].trim_end())
@@ -169,6 +173,8 @@ pub fn find_method_in_impl(
         }
         if let Some(pos) = trimmed.find(&fn_pattern) {
             // Check word boundary after method name
+            // SAFETY: fn_pattern is "fn <name>" — all ASCII, so pos (the start of the
+            // match) and after (pos + fn_pattern.len()) are always valid char boundaries.
             let after = pos + fn_pattern.len();
             let is_word_char_after = after < trimmed.len()
                 && trimmed[after..]
@@ -179,6 +185,8 @@ pub fn find_method_in_impl(
                 continue;
             }
             // Check valid prefix (pub, pub(crate), async, etc.)
+            // SAFETY: pos from find(&fn_pattern) where fn_pattern is ASCII ("fn <name>"),
+            // so pos is always a valid char boundary.
             let before = &trimmed[..pos];
             let is_valid = before.is_empty()
                 || before.trim_end().is_empty()
@@ -313,6 +321,10 @@ pub fn move_method(
     let target_indent = if *target_impl_end > *target_impl_start + 1 {
         let sample_line = target_lines[target_impl_start + 1];
         let indent_len = sample_line.len() - sample_line.trim_start().len();
+        // SAFETY: indent_len is the count of leading whitespace bytes. Since
+        // trim_start() only removes ASCII whitespace (space, tab, etc.), the
+        // difference is always a valid char boundary. The is_char_boundary()
+        // check below is a belt-and-suspenders guard.
         if sample_line.is_char_boundary(indent_len) {
             &sample_line[..indent_len]
         } else {
@@ -438,6 +450,10 @@ fn reindent_method(method_text: &str, target_indent: &str) -> String {
             if line.trim().is_empty() {
                 String::new()
             } else {
+                // SAFETY: min_indent is the minimum leading whitespace length across
+                // all non-empty lines. Since Rust's trim_start() removes only ASCII
+                // whitespace, min_indent always falls on a char boundary. The
+                // is_char_boundary() check is a belt-and-suspenders guard.
                 let stripped = if line.len() >= min_indent && line.is_char_boundary(min_indent) {
                     &line[min_indent..]
                 } else {
@@ -658,6 +674,23 @@ mod tests {
     #[test]
     fn test_parse_move_args_too_many() {
         assert!(parse_move_args("/move A::b C D").is_none());
+    }
+
+    #[test]
+    fn test_parse_move_args_unicode_method_name() {
+        // Method and type names can contain multi-byte UTF-8 characters.
+        // The "::" splitting must not panic on such names.
+        let args = parse_move_args("/move Type::método Target").unwrap();
+        assert_eq!(args.source_type, "Type");
+        assert_eq!(args.method_name, "método");
+        assert_eq!(args.target_type, "Target");
+        assert!(args.target_file.is_none());
+
+        // Unicode in both type and method
+        let args2 = parse_move_args("/move Données::résumé Cible").unwrap();
+        assert_eq!(args2.source_type, "Données");
+        assert_eq!(args2.method_name, "résumé");
+        assert_eq!(args2.target_type, "Cible");
     }
 
     #[test]
