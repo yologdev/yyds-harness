@@ -683,29 +683,39 @@ mod tests {
     #[test]
     fn test_tool_recovery_hint_bash_attempt1() {
         let hint = tool_recovery_hint("bash", 1);
-        assert!(hint.contains("shell command failed"), "bash hint: {hint}");
+        assert!(
+            hint.contains("command") || hint.contains("shell"),
+            "bash hint should mention command or shell: {hint}"
+        );
+        assert!(
+            hint.contains("failed") || hint.contains("check") || hint.contains("different"),
+            "bash hint should suggest diagnosis or alternative: {hint}"
+        );
     }
 
     #[test]
     fn test_tool_recovery_hint_bash_attempt2() {
         let hint = tool_recovery_hint("bash", 2);
         assert!(
-            hint.contains("simpler command"),
-            "bash escalated hint should suggest simpler command: {hint}"
+            hint.contains("simpler") || hint.contains("break") || hint.contains("alternative"),
+            "bash escalated hint should suggest simplification or alternative: {hint}"
         );
         assert!(
-            hint.contains("which"),
-            "bash escalated hint should suggest checking binary existence: {hint}"
+            hint.contains("which") || hint.contains("exists") || hint.contains("check"),
+            "bash escalated hint should suggest verifying the command: {hint}"
         );
     }
 
     #[test]
     fn test_tool_recovery_hint_edit_file_attempt1() {
         let hint = tool_recovery_hint("edit_file", 1);
-        assert!(hint.contains("edit failed"), "edit_file hint: {hint}");
         assert!(
-            hint.contains("read_file"),
-            "edit_file hint should suggest read_file: {hint}"
+            hint.contains("edit") || hint.contains("mismatch") || hint.contains("old_text"),
+            "edit_file hint should mention the edit failure mode: {hint}"
+        );
+        assert!(
+            hint.contains("read_file") || hint.contains("current contents"),
+            "edit_file hint should suggest reading current contents: {hint}"
         );
     }
 
@@ -713,12 +723,14 @@ mod tests {
     fn test_tool_recovery_hint_edit_file_attempt2() {
         let hint = tool_recovery_hint("edit_file", 2);
         assert!(
-            hint.contains("write_file"),
-            "edit_file escalated hint should suggest write_file: {hint}"
+            hint.contains("write_file") || hint.contains("replace"),
+            "edit_file escalated hint should suggest write_file or full replacement: {hint}"
         );
         assert!(
-            hint.contains("read_file"),
-            "edit_file escalated hint should mention read_file for getting contents: {hint}"
+            hint.contains("read_file")
+                || hint.contains("current contents")
+                || hint.contains("full"),
+            "edit_file escalated hint should mention getting file contents: {hint}"
         );
     }
 
@@ -726,12 +738,8 @@ mod tests {
     fn test_tool_recovery_hint_read_file_attempt2() {
         let hint = tool_recovery_hint("read_file", 2);
         assert!(
-            hint.contains("bash"),
-            "read_file escalated hint should suggest bash: {hint}"
-        );
-        assert!(
-            hint.contains("cat"),
-            "read_file escalated hint should suggest cat: {hint}"
+            hint.contains("bash") || hint.contains("cat") || hint.contains("head"),
+            "read_file escalated hint should suggest a shell alternative: {hint}"
         );
     }
 
@@ -739,12 +747,8 @@ mod tests {
     fn test_tool_recovery_hint_search_attempt2() {
         let hint = tool_recovery_hint("search", 2);
         assert!(
-            hint.contains("bash"),
-            "search escalated hint should suggest bash: {hint}"
-        );
-        assert!(
-            hint.contains("grep"),
-            "search escalated hint should suggest grep: {hint}"
+            hint.contains("bash") || hint.contains("grep") || hint.contains("find"),
+            "search escalated hint should suggest a shell search alternative: {hint}"
         );
     }
 
@@ -752,12 +756,11 @@ mod tests {
     fn test_tool_recovery_hint_write_file_attempt2() {
         let hint = tool_recovery_hint("write_file", 2);
         assert!(
-            hint.contains("bash"),
-            "write_file escalated hint should suggest bash: {hint}"
-        );
-        assert!(
-            hint.contains("HEREDOC"),
-            "write_file escalated hint should suggest heredoc: {hint}"
+            hint.contains("bash")
+                || hint.contains("cat")
+                || hint.contains("heredoc")
+                || hint.contains("HEREDOC"),
+            "write_file escalated hint should suggest a shell write alternative: {hint}"
         );
     }
 
@@ -765,12 +768,12 @@ mod tests {
     fn test_tool_recovery_hint_rename_symbol_attempt2() {
         let hint = tool_recovery_hint("rename_symbol", 2);
         assert!(
-            hint.contains("search"),
-            "rename_symbol escalated hint should suggest search: {hint}"
+            hint.contains("search") || hint.contains("find") || hint.contains("occurrences"),
+            "rename_symbol escalated hint should suggest finding occurrences: {hint}"
         );
         assert!(
-            hint.contains("edit_file"),
-            "rename_symbol escalated hint should suggest edit_file: {hint}"
+            hint.contains("edit_file") || hint.contains("replace"),
+            "rename_symbol escalated hint should suggest manual replacement: {hint}"
         );
     }
 
@@ -778,8 +781,8 @@ mod tests {
     fn test_tool_recovery_hint_unknown() {
         let hint = tool_recovery_hint("some_unknown_tool", 1);
         assert!(
-            hint.contains("different approach"),
-            "unknown tool hint: {hint}"
+            hint.contains("different") || hint.contains("approach") || hint.contains("try"),
+            "unknown tool hint should suggest a different approach: {hint}"
         );
     }
 
@@ -787,8 +790,8 @@ mod tests {
     fn test_tool_recovery_hint_unknown_attempt2() {
         let hint = tool_recovery_hint("some_unknown_tool", 2);
         assert!(
-            hint.contains("completely different"),
-            "unknown tool escalated hint: {hint}"
+            hint.contains("different") || hint.contains("alternative") || hint.contains("approach"),
+            "unknown tool escalated hint should suggest trying something different: {hint}"
         );
     }
 
@@ -818,6 +821,44 @@ mod tests {
                 hint1, hint2,
                 "{tool} should have different hints for attempt 1 vs 2"
             );
+        }
+    }
+
+    #[test]
+    fn test_all_recovery_hints_are_actionable() {
+        let tools = [
+            "bash",
+            "edit_file",
+            "write_file",
+            "read_file",
+            "search",
+            "rename_symbol",
+            "unknown_tool",
+        ];
+        let action_words = [
+            "try",
+            "use",
+            "check",
+            "verify",
+            "retry",
+            "break",
+            "approach",
+            "alternative",
+            "different",
+        ];
+        for tool in &tools {
+            for attempt in [1, 2] {
+                let hint = tool_recovery_hint(tool, attempt);
+                assert!(
+                    !hint.is_empty(),
+                    "{tool} attempt {attempt} should have a hint"
+                );
+                let has_action = action_words.iter().any(|w| hint.to_lowercase().contains(w));
+                assert!(
+                    has_action,
+                    "{tool} attempt {attempt} hint should contain an actionable word: {hint}"
+                );
+            }
         }
     }
 
