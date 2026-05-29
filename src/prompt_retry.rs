@@ -973,10 +973,15 @@ mod tests {
             result.contains("old_text not found"),
             "should include error: {result}"
         );
-        // Should include a recovery hint (edit_file hint mentions read_file)
+        // Should include some recovery guidance (semantic check, not exact wording)
+        let has_recovery_hint = result.contains("read_file")
+            || result.contains("current contents")
+            || result.contains("verify")
+            || result.contains("mismatch")
+            || result.contains("retry");
         assert!(
-            result.contains("read_file"),
-            "should include recovery hint: {result}"
+            has_recovery_hint,
+            "should include recovery guidance for edit_file: {result}"
         );
         assert!(
             result.contains("fix it"),

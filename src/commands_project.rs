@@ -1714,7 +1714,7 @@ mod tests {
         assert!(
             content.contains("yoyo"),
             "Should contain project name: {}",
-            &content[..200.min(content.len())]
+            crate::format::safe_truncate(&content, 200)
         );
         // Should detect Rust
         assert!(content.contains("Rust"), "Should mention Rust project type");

@@ -1789,7 +1789,7 @@ mod tests {
                 assert!(
                     text.contains("truncated"),
                     "Should contain truncation marker: {}",
-                    &text[..text.len().min(200)]
+                    crate::format::safe_truncate(text, 200)
                 );
             }
             _ => panic!("Expected Text content"),
@@ -2028,7 +2028,7 @@ mod tests {
         assert!(
             text.contains("truncated"),
             "Output exceeding limit should be truncated: {}...",
-            &text[..text.len().min(100)]
+            crate::format::safe_truncate(&text, 100)
         );
     }
 

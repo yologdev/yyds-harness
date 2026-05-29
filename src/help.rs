@@ -2199,7 +2199,7 @@ mod tests {
                 assert!(
                     starts_with_slash,
                     "command_help(\"{name}\") should start with /{name}, got: {}",
-                    &text[..text.len().min(60)]
+                    crate::format::safe_truncate(text, 60)
                 );
             }
         }
