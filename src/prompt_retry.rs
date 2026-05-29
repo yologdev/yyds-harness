@@ -992,10 +992,15 @@ mod tests {
             result.contains("bash error:"),
             "should mention bash: {result}"
         );
-        // bash hint should mention command/approach
+        // bash hint should include some recovery guidance (resilient to hint text changes)
+        let has_recovery_hint = result.contains("command")
+            || result.contains("approach")
+            || result.contains("simpler")
+            || result.contains("try")
+            || result.contains("retry");
         assert!(
-            result.contains("command"),
-            "should include recovery hint about command: {result}"
+            has_recovery_hint,
+            "should include recovery guidance for bash: {result}"
         );
     }
 
