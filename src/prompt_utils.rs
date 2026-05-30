@@ -385,14 +385,15 @@ mod tests {
 
     #[test]
     fn test_write_output_file_some() {
-        let dir = std::env::temp_dir().join("yoyo_test_output");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("test_output.txt");
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_output")
+            .tempdir()
+            .unwrap();
+        let path = tmp_dir.path().join("test_output.txt");
         let path_str = path.to_string_lossy().to_string();
         write_output_file(&Some(path_str), "hello from yoyo");
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hello from yoyo");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

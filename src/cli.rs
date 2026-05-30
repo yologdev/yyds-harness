@@ -1974,9 +1974,11 @@ system_prompt = "You are a Go expert"
         assert_eq!(config.get("system_file").unwrap(), "prompt.txt");
 
         // Create a temp file and verify resolve_system_prompt reads it
-        let dir = std::env::temp_dir().join("yoyo_test_system_file");
-        let _ = std::fs::create_dir_all(&dir);
-        let prompt_path = dir.join("test_prompt.txt");
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_system_file")
+            .tempdir()
+            .unwrap();
+        let prompt_path = tmp_dir.path().join("test_prompt.txt");
         std::fs::write(&prompt_path, "You are a Python expert").unwrap();
 
         let result = resolve_system_prompt(
@@ -1986,17 +1988,16 @@ system_prompt = "You are a Go expert"
             None,
         );
         assert_eq!(result, "You are a Python expert");
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_config_system_file_overrides_system_prompt() {
         // When both are present in config, system_file wins
-        let dir = std::env::temp_dir().join("yoyo_test_sf_override");
-        let _ = std::fs::create_dir_all(&dir);
-        let prompt_path = dir.join("override_prompt.txt");
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_sf_override")
+            .tempdir()
+            .unwrap();
+        let prompt_path = tmp_dir.path().join("override_prompt.txt");
         std::fs::write(&prompt_path, "From file").unwrap();
 
         let result = resolve_system_prompt(
@@ -2006,8 +2007,6 @@ system_prompt = "You are a Go expert"
             Some("From config key".into()),
         );
         assert_eq!(result, "From file");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2025,9 +2024,11 @@ system_prompt = "You are a Go expert"
     #[test]
     fn test_cli_system_file_overrides_config() {
         // CLI --system-file content should override config file system_file
-        let dir = std::env::temp_dir().join("yoyo_test_cli_sf_override");
-        let _ = std::fs::create_dir_all(&dir);
-        let config_path = dir.join("config_prompt.txt");
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_cli_sf_override")
+            .tempdir()
+            .unwrap();
+        let config_path = tmp_dir.path().join("config_prompt.txt");
         std::fs::write(&config_path, "Config file content").unwrap();
 
         let result = resolve_system_prompt(
@@ -2037,8 +2038,6 @@ system_prompt = "You are a Go expert"
             Some("Config prompt text".into()),
         );
         assert_eq!(result, "CLI file content");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2051,9 +2050,11 @@ system_prompt = "You are a Go expert"
     #[test]
     fn test_cli_system_overrides_config_system_file() {
         // CLI --system should also override config system_file
-        let dir = std::env::temp_dir().join("yoyo_test_cli_sys_vs_config_file");
-        let _ = std::fs::create_dir_all(&dir);
-        let config_path = dir.join("config_prompt.txt");
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_cli_sys_vs_config_file")
+            .tempdir()
+            .unwrap();
+        let config_path = tmp_dir.path().join("config_prompt.txt");
         std::fs::write(&config_path, "Config file content").unwrap();
 
         let result = resolve_system_prompt(
@@ -2063,8 +2064,6 @@ system_prompt = "You are a Go expert"
             None,
         );
         assert_eq!(result, "CLI text wins");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
