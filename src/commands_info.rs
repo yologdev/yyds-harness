@@ -2215,23 +2215,24 @@ More text.
     #[test]
     fn test_compute_self_written_pct_not_in_git_repo() {
         // In a temp dir with no git repo, git ls-files should fail
-        let tmp = std::env::temp_dir().join("yoyo_test_no_git_sw");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp = tempfile::Builder::new()
+            .prefix("yoyo_test_no_git_sw_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp.path();
         std::fs::create_dir_all(tmp.join("src")).unwrap();
         std::fs::write(tmp.join("src/lib.rs"), "fn foo() {}\n").unwrap();
 
         // Run git ls-files in the temp dir — should fail (no .git)
         let output = std::process::Command::new("git")
             .args(["ls-files", "src/"])
-            .current_dir(&tmp)
+            .current_dir(tmp)
             .output()
             .unwrap();
         assert!(
             !output.status.success() || String::from_utf8_lossy(&output.stdout).trim().is_empty(),
             "git ls-files should fail or return nothing outside a git repo"
         );
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -2240,15 +2241,18 @@ More text.
         // We replicate compute_self_written_pct_inner's logic but with explicit
         // current_dir() calls, since set_current_dir is process-global and not
         // safe in parallel tests.
-        let tmp = std::env::temp_dir().join("yoyo_test_self_written");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_self_written_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path();
         std::fs::create_dir_all(tmp.join("src")).unwrap();
 
         // Init repo
         let run = |args: &[&str]| {
             std::process::Command::new("git")
                 .args(args)
-                .current_dir(&tmp)
+                .current_dir(tmp)
                 .output()
                 .unwrap()
         };
@@ -2269,7 +2273,7 @@ More text.
         // Run git blame in the temp repo
         let output = std::process::Command::new("git")
             .args(["blame", "--line-porcelain", "src/main.rs"])
-            .current_dir(&tmp)
+            .current_dir(tmp)
             .output()
             .unwrap();
         assert!(output.status.success(), "git blame should succeed");
@@ -2300,7 +2304,7 @@ More text.
 
         let output = std::process::Command::new("git")
             .args(["blame", "--line-porcelain", "src/main.rs"])
-            .current_dir(&tmp)
+            .current_dir(tmp)
             .output()
             .unwrap();
         assert!(output.status.success());
@@ -2321,8 +2325,6 @@ More text.
 
         let pct = (self_written as f64 / total as f64) * 100.0;
         assert!(pct < 100.0, "percentage should be less than 100%");
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // --- Context breakdown tests ---

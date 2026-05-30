@@ -1098,55 +1098,53 @@ mod tests {
         use yoagent::provider::AnthropicProvider;
 
         // Use a temp directory to avoid polluting the project
-        let tmp_dir = std::env::temp_dir().join("yoyo_test_autosave");
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_autosave_")
+            .tempdir()
+            .unwrap();
 
         // Create an agent with an empty conversation — should NOT save
         let agent = Agent::new(AnthropicProvider)
             .with_system_prompt("test")
             .with_model("test-model")
             .with_api_key("test-key");
-        auto_save_on_exit_in(&agent, &tmp_dir);
+        auto_save_on_exit_in(&agent, tmp_dir.path());
         assert!(
-            !tmp_dir.join(AUTO_SAVE_SESSION_PATH).exists(),
+            !tmp_dir.path().join(AUTO_SAVE_SESSION_PATH).exists(),
             "Should not save empty conversations"
         );
-
-        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]
     fn test_continue_session_path_prefers_auto_save() {
         // Create a temp directory with .yoyo/last-session.json
-        let tmp_dir = std::env::temp_dir().join("yoyo_test_continue_path");
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        std::fs::create_dir_all(tmp_dir.join(".yoyo")).unwrap();
-        std::fs::write(tmp_dir.join(".yoyo/last-session.json"), "[]").unwrap();
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_continue_path_")
+            .tempdir()
+            .unwrap();
+        std::fs::create_dir_all(tmp_dir.path().join(".yoyo")).unwrap();
+        std::fs::write(tmp_dir.path().join(".yoyo/last-session.json"), "[]").unwrap();
 
-        let path = continue_session_path_in(&tmp_dir);
+        let path = continue_session_path_in(tmp_dir.path());
         assert_eq!(
             path, AUTO_SAVE_SESSION_PATH,
             "Should prefer .yoyo/last-session.json when it exists"
         );
-
-        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]
     fn test_continue_session_path_falls_back_to_default() {
         // Create a temp directory WITHOUT .yoyo/last-session.json
-        let tmp_dir = std::env::temp_dir().join("yoyo_test_continue_fallback");
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_continue_fallback_")
+            .tempdir()
+            .unwrap();
 
-        let path = continue_session_path_in(&tmp_dir);
+        let path = continue_session_path_in(tmp_dir.path());
         assert_eq!(
             path, DEFAULT_SESSION_PATH,
             "Should fall back to yoyo-session.json when .yoyo/last-session.json doesn't exist"
         );
-
-        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     // ── /export tests ────────────────────────────────────────────────────
