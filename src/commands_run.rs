@@ -314,6 +314,11 @@ pub async fn handle_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serializes tests that read/write the global `LAST_FAILED_RUN` state
+    /// to prevent race conditions when tests run in parallel.
+    static FAILED_RUN_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_run_result_success() {
@@ -358,6 +363,7 @@ mod tests {
 
     #[test]
     fn test_last_failed_run_initially_none() {
+        let _guard = FAILED_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Clear any state from other tests
         clear_last_failed_run();
         assert!(get_last_failed_run().is_none());
@@ -365,6 +371,7 @@ mod tests {
 
     #[test]
     fn test_last_failed_run_store_and_retrieve() {
+        let _guard = FAILED_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let result = RunResult {
             exit_code: 1,
             stdout: "some output".to_string(),
@@ -386,6 +393,7 @@ mod tests {
 
     #[test]
     fn test_last_failed_run_cleared_on_success() {
+        let _guard = FAILED_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         set_last_failed_run(RunResult {
             exit_code: 1,
             stdout: String::new(),

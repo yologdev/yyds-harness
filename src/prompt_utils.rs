@@ -79,25 +79,64 @@ fn message_text(msg: &AgentMessage) -> String {
 
 /// Highlight all occurrences of `query` in `text` using BOLD ANSI codes (case-insensitive).
 /// Returns the text with matching substrings wrapped in BOLD..RESET.
+///
+/// Uses char-level comparison to avoid byte-offset mismatches between `text`
+/// and its lowercased form (which can differ in byte length for certain
+/// Unicode characters like Turkish İ → i̇).
 pub fn highlight_matches(text: &str, query: &str) -> String {
     if query.is_empty() {
         return text.to_string();
     }
-    let lower_text = text.to_lowercase();
     let lower_query = query.to_lowercase();
-    let mut result = String::with_capacity(text.len() + 32);
-    let mut last_end = 0;
+    let query_char_count = lower_query.chars().count();
 
-    for (match_start, _) in lower_text.match_indices(&lower_query) {
-        let match_end = match_start + query.len();
-        // Append text before this match (unmodified)
-        result.push_str(&text[last_end..match_start]);
-        // Append the matched portion with BOLD highlighting (preserving original case)
-        result.push_str(&format!("{BOLD}{}{RESET}", &text[match_start..match_end]));
-        last_end = match_end;
+    // Build char-index-to-byte-offset mapping for the original text
+    let char_starts: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    let lower_chars: Vec<char> = text.chars().flat_map(|c| c.to_lowercase()).collect();
+
+    // We need a mapping: for each char in lower_chars, which original char produced it?
+    // Since to_lowercase() can produce multiple chars from one original char, build
+    // a reverse map: lower_char_index → original_char_index.
+    let mut lower_to_orig: Vec<usize> = Vec::with_capacity(lower_chars.len());
+    for (orig_idx, ch) in text.chars().enumerate() {
+        let lc_count = ch.to_lowercase().count();
+        for _ in 0..lc_count {
+            lower_to_orig.push(orig_idx);
+        }
     }
-    // Append any remaining text after the last match
-    result.push_str(&text[last_end..]);
+
+    let lower_query_chars: Vec<char> = lower_query.chars().collect();
+    let mut result = String::with_capacity(text.len() + 32);
+    let mut last_orig_end: usize = 0; // byte offset in original text
+
+    let mut i = 0;
+    while i + query_char_count <= lower_chars.len() {
+        if lower_chars[i..i + query_char_count] == lower_query_chars[..] {
+            // Map back to original string byte boundaries
+            let orig_char_start = lower_to_orig[i];
+            let orig_char_end_exclusive = if i + query_char_count < lower_to_orig.len() {
+                lower_to_orig[i + query_char_count]
+            } else {
+                char_starts.len()
+            };
+            let byte_start = char_starts[orig_char_start];
+            let byte_end = if orig_char_end_exclusive < char_starts.len() {
+                char_starts[orig_char_end_exclusive]
+            } else {
+                text.len()
+            };
+
+            if byte_start >= last_orig_end {
+                result.push_str(&text[last_orig_end..byte_start]);
+                result.push_str(&format!("{BOLD}{}{RESET}", &text[byte_start..byte_end]));
+                last_orig_end = byte_end;
+            }
+            i += query_char_count;
+        } else {
+            i += 1;
+        }
+    }
+    result.push_str(&text[last_orig_end..]);
     result
 }
 
@@ -112,19 +151,38 @@ pub fn search_messages(messages: &[AgentMessage], query: &str) -> Vec<(usize, St
         if text.to_lowercase().contains(&query_lower) {
             let (role, _) = summarize_message(msg);
             // Find match context: show text around the first match
-            let lower = text.to_lowercase();
-            let match_pos = lower.find(&query_lower).unwrap_or(0);
-            let start = match_pos.saturating_sub(20);
-            // Get byte-safe boundaries
-            let start = text[..start]
-                .char_indices()
-                .last()
-                .map(|(idx, _)| idx)
+            // Use char-level search to avoid byte-offset mismatches between
+            // the original text and its lowercased form.
+            let lower_chars: Vec<char> = text.chars().flat_map(|c| c.to_lowercase()).collect();
+            let query_chars: Vec<char> = query_lower.chars().collect();
+            let char_starts: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+
+            // Build lower-char-index → original-char-index mapping
+            let mut lower_to_orig: Vec<usize> = Vec::with_capacity(lower_chars.len());
+            for (orig_idx, ch) in text.chars().enumerate() {
+                for _ in 0..ch.to_lowercase().count() {
+                    lower_to_orig.push(orig_idx);
+                }
+            }
+
+            // Find match position in lowered char array
+            let match_orig_char = (0..lower_chars.len())
+                .find(|&j| {
+                    j + query_chars.len() <= lower_chars.len()
+                        && lower_chars[j..j + query_chars.len()] == query_chars[..]
+                })
+                .map(|j| lower_to_orig[j])
                 .unwrap_or(0);
-            let end = text
-                .char_indices()
-                .map(|(idx, ch)| idx + ch.len_utf8())
-                .find(|&idx| idx >= match_pos + query.len() + 20)
+
+            // Context window: 20 chars before and after the match
+            let context_start_char = match_orig_char.saturating_sub(20);
+            let context_end_char =
+                (match_orig_char + query_chars.len() + 20).min(char_starts.len());
+
+            let start = char_starts.get(context_start_char).copied().unwrap_or(0);
+            let end = char_starts
+                .get(context_end_char)
+                .copied()
                 .unwrap_or(text.len());
             let snippet = &text[start..end];
             let prefix = if start > 0 { "…" } else { "" };
@@ -741,5 +799,32 @@ mod tests {
     #[test]
     fn test_extract_topic_phrase_empty() {
         assert_eq!(extract_topic_phrase(""), "");
+    }
+
+    #[test]
+    fn test_highlight_matches_multibyte_chars() {
+        // Chars where to_lowercase() may change byte length:
+        // Turkish İ (U+0130, 2 bytes) lowercases to "i\u{0307}" (3 bytes)
+        let text = "before_İ_after";
+        let result = highlight_matches(text, "after");
+        // Must not panic and must contain the match
+        assert!(result.contains("after"));
+        assert!(result.contains("before"));
+    }
+
+    #[test]
+    fn test_highlight_matches_multibyte_query_target() {
+        // Search for a string that appears after multi-byte lowering chars
+        let text = "İİİ_target_here";
+        let result = highlight_matches(text, "target");
+        assert!(result.contains("target"));
+    }
+
+    #[test]
+    fn test_highlight_matches_unicode_accented() {
+        let text = "café résumé café";
+        let result = highlight_matches(text, "café");
+        assert!(result.contains("café"));
+        assert!(result.contains("résumé"));
     }
 }
