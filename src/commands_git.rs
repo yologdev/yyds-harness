@@ -6,7 +6,9 @@ use crate::format::*;
 use crate::git::*;
 use crate::prompt::run_prompt;
 use crate::session::TurnHistory;
+use crate::symbols::{self, SymbolKind};
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use yoagent::agent::Agent;
 use yoagent::*;
@@ -171,6 +173,7 @@ pub struct DiffOptions {
     pub name_only: bool,
     pub stat_only: bool,
     pub explain: bool,
+    pub functions: bool,
     pub file: Option<String>,
 }
 
@@ -180,6 +183,7 @@ pub struct DiffOptions {
 /// - `/diff` — all changes (default)
 /// - `/diff --staged` or `/diff --cached` — staged only
 /// - `/diff --name-only` — filenames only
+/// - `/diff --functions` — semantic-level change summary (added/modified/removed symbols)
 /// - `/diff --explain` — AI-powered explanation of changes
 /// - `/diff <file>` — diff for a specific file
 /// - Combined: `/diff --staged --name-only src/main.rs`
@@ -190,6 +194,7 @@ pub fn parse_diff_args(input: &str) -> DiffOptions {
     let mut name_only = false;
     let mut stat_only = false;
     let mut explain = false;
+    let mut functions = false;
     let mut file = None;
 
     for part in parts {
@@ -198,6 +203,7 @@ pub fn parse_diff_args(input: &str) -> DiffOptions {
             "--name-only" => name_only = true,
             "--stat" => stat_only = true,
             "--explain" => explain = true,
+            "--functions" => functions = true,
             _ => file = Some(part.to_string()),
         }
     }
@@ -207,6 +213,7 @@ pub fn parse_diff_args(input: &str) -> DiffOptions {
         name_only,
         stat_only,
         explain,
+        functions,
         file,
     }
 }
@@ -315,6 +322,12 @@ pub fn handle_diff(input: &str) {
                         print!("{formatted}");
                     }
                 }
+                return;
+            }
+
+            // --functions: show semantic-level change summary
+            if opts.functions {
+                handle_diff_functions(&opts);
                 return;
             }
 
@@ -516,6 +529,218 @@ fn gather_diff_text(opts: &DiffOptions) -> Option<String> {
     }
 
     Some(diff_text)
+}
+
+/// The semantic status of a symbol when comparing two versions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SymbolChange {
+    Added,
+    Removed,
+    Modified,
+}
+
+/// A single symbol-level change entry.
+#[derive(Debug, Clone)]
+pub struct SymbolDiff {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub change: SymbolChange,
+}
+
+/// Compare old and new symbol lists, returning semantic diffs.
+///
+/// Match symbols by (name, kind) pair:
+/// - Present only in new → Added
+/// - Present only in old → Removed
+/// - Present in both but at a different line → Modified
+pub fn compare_symbols(
+    old_symbols: &[symbols::Symbol],
+    new_symbols: &[symbols::Symbol],
+) -> Vec<SymbolDiff> {
+    // Build maps from (name, kind_tag) → line for old and new
+    let old_map: HashMap<(&str, &SymbolKind), usize> = old_symbols
+        .iter()
+        .map(|s| ((s.name.as_str(), &s.kind), s.line))
+        .collect();
+    let new_map: HashMap<(&str, &SymbolKind), usize> = new_symbols
+        .iter()
+        .map(|s| ((s.name.as_str(), &s.kind), s.line))
+        .collect();
+
+    let mut diffs = Vec::new();
+
+    // Check new symbols: added or modified
+    for sym in new_symbols {
+        let key = (sym.name.as_str(), &sym.kind);
+        match old_map.get(&key) {
+            None => diffs.push(SymbolDiff {
+                name: sym.name.clone(),
+                kind: sym.kind.clone(),
+                change: SymbolChange::Added,
+            }),
+            Some(&old_line) if old_line != sym.line => diffs.push(SymbolDiff {
+                name: sym.name.clone(),
+                kind: sym.kind.clone(),
+                change: SymbolChange::Modified,
+            }),
+            Some(_) => {} // unchanged
+        }
+    }
+
+    // Check old symbols: removed
+    for sym in old_symbols {
+        let key = (sym.name.as_str(), &sym.kind);
+        if !new_map.contains_key(&key) {
+            diffs.push(SymbolDiff {
+                name: sym.name.clone(),
+                kind: sym.kind.clone(),
+                change: SymbolChange::Removed,
+            });
+        }
+    }
+
+    diffs
+}
+
+/// Format a `SymbolKind` as a short display label.
+fn symbol_kind_label(kind: &SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Function => "fn",
+        SymbolKind::Struct => "struct",
+        SymbolKind::Enum => "enum",
+        SymbolKind::Trait => "trait",
+        SymbolKind::Interface => "interface",
+        SymbolKind::Class => "class",
+        SymbolKind::Type => "type",
+        SymbolKind::Const => "const",
+        SymbolKind::Impl => "impl",
+        SymbolKind::Module => "mod",
+        SymbolKind::Macro => "macro",
+        SymbolKind::Namespace => "ns",
+    }
+}
+
+/// Handle `/diff --functions`: show semantic-level change summary.
+pub fn handle_diff_functions(opts: &DiffOptions) {
+    // Get the list of changed files
+    let mut args = vec!["diff", "--name-only"];
+    if opts.staged_only {
+        args.push("--cached");
+    }
+    let file_ref;
+    if let Some(ref f) = opts.file {
+        args.push("--");
+        file_ref = f.as_str();
+        args.push(file_ref);
+    }
+    let unstaged_names = run_git(&args).unwrap_or_default();
+
+    // Also get staged files if not in staged-only mode
+    let all_files: Vec<String> = if opts.staged_only {
+        unstaged_names
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.to_string())
+            .collect()
+    } else {
+        let mut staged_args = vec!["diff", "--name-only", "--cached"];
+        let staged_file_ref;
+        if let Some(ref f) = opts.file {
+            staged_args.push("--");
+            staged_file_ref = f.as_str();
+            staged_args.push(staged_file_ref);
+        }
+        let staged_names = run_git(&staged_args).unwrap_or_default();
+        let mut files: Vec<String> = unstaged_names
+            .lines()
+            .chain(staged_names.lines())
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.to_string())
+            .collect();
+        files.sort();
+        files.dedup();
+        files
+    };
+
+    if all_files.is_empty() {
+        println!("{DIM}  (no changed files){RESET}\n");
+        return;
+    }
+
+    let mut total_added = 0usize;
+    let mut total_modified = 0usize;
+    let mut total_removed = 0usize;
+    let mut files_with_changes = 0usize;
+    let mut output = String::new();
+
+    for file_path in &all_files {
+        // Skip files with unrecognized language
+        let language = match symbols::detect_language(file_path) {
+            Some(lang) => lang,
+            None => continue,
+        };
+
+        // Get current file content
+        let new_content: String = std::fs::read_to_string(file_path).unwrap_or_default();
+
+        // Get base (HEAD) version
+        let git_path = format!("HEAD:{file_path}");
+        let old_content = run_git(&["show", &git_path]).unwrap_or_default();
+
+        let old_symbols = symbols::extract_symbols(&old_content, language);
+        let new_symbols = symbols::extract_symbols(&new_content, language);
+        let diffs = compare_symbols(&old_symbols, &new_symbols);
+
+        if diffs.is_empty() {
+            continue;
+        }
+
+        files_with_changes += 1;
+        output.push_str(&format!("    {BOLD}{file_path}{RESET}\n"));
+
+        for d in &diffs {
+            let label = symbol_kind_label(&d.kind);
+            match d.change {
+                SymbolChange::Added => {
+                    total_added += 1;
+                    output.push_str(&format!(
+                        "      {GREEN}Added:    {RESET} {label} {GREEN}{}{RESET}\n",
+                        d.name
+                    ));
+                }
+                SymbolChange::Modified => {
+                    total_modified += 1;
+                    output.push_str(&format!(
+                        "      {YELLOW}Modified:{RESET} {label} {YELLOW}{}{RESET}\n",
+                        d.name
+                    ));
+                }
+                SymbolChange::Removed => {
+                    total_removed += 1;
+                    output.push_str(&format!(
+                        "      {RED}Removed: {RESET} {label} {RED}{}{RESET}\n",
+                        d.name
+                    ));
+                }
+            }
+        }
+    }
+
+    if files_with_changes == 0 {
+        println!("{DIM}  (no semantic changes detected){RESET}\n");
+        return;
+    }
+
+    println!("{DIM}  Semantic changes:{RESET}");
+    print!("{output}");
+    println!(
+        "\n  {DIM}{} file{}, {GREEN}{} added{DIM}, {YELLOW}{} modified{DIM}, {RED}{} removed{RESET}\n",
+        files_with_changes,
+        if files_with_changes == 1 { "" } else { "s" },
+        total_added,
+        total_modified,
+        total_removed,
+    );
 }
 
 /// Handle `/diff --explain`: send the diff to the AI for a natural-language explanation.
@@ -1953,6 +2178,168 @@ mod tests {
         assert!(opts.explain);
         assert!(!opts.staged_only);
         assert_eq!(opts.file, Some("src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_diff_args_functions() {
+        let opts = parse_diff_args("/diff --functions");
+        assert!(opts.functions);
+        assert!(!opts.staged_only);
+        assert!(!opts.name_only);
+        assert!(!opts.explain);
+        assert_eq!(opts.file, None);
+    }
+
+    #[test]
+    fn test_parse_diff_args_functions_staged() {
+        let opts = parse_diff_args("/diff --functions --staged");
+        assert!(opts.functions);
+        assert!(opts.staged_only);
+    }
+
+    #[test]
+    fn test_parse_diff_args_functions_with_file() {
+        let opts = parse_diff_args("/diff --functions src/main.rs");
+        assert!(opts.functions);
+        assert_eq!(opts.file, Some("src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn test_compare_symbols_added() {
+        use crate::symbols::{Symbol, SymbolKind};
+        let old = vec![];
+        let new = vec![Symbol {
+            name: "foo".to_string(),
+            kind: SymbolKind::Function,
+            is_public: true,
+            line: 1,
+        }];
+        let diffs = compare_symbols(&old, &new);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].name, "foo");
+        assert_eq!(diffs[0].change, SymbolChange::Added);
+    }
+
+    #[test]
+    fn test_compare_symbols_removed() {
+        use crate::symbols::{Symbol, SymbolKind};
+        let old = vec![Symbol {
+            name: "bar".to_string(),
+            kind: SymbolKind::Struct,
+            is_public: true,
+            line: 5,
+        }];
+        let new = vec![];
+        let diffs = compare_symbols(&old, &new);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].name, "bar");
+        assert_eq!(diffs[0].change, SymbolChange::Removed);
+    }
+
+    #[test]
+    fn test_compare_symbols_modified() {
+        use crate::symbols::{Symbol, SymbolKind};
+        let old = vec![Symbol {
+            name: "baz".to_string(),
+            kind: SymbolKind::Function,
+            is_public: true,
+            line: 10,
+        }];
+        let new = vec![Symbol {
+            name: "baz".to_string(),
+            kind: SymbolKind::Function,
+            is_public: true,
+            line: 20,
+        }];
+        let diffs = compare_symbols(&old, &new);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].name, "baz");
+        assert_eq!(diffs[0].change, SymbolChange::Modified);
+    }
+
+    #[test]
+    fn test_compare_symbols_unchanged() {
+        use crate::symbols::{Symbol, SymbolKind};
+        let old = vec![Symbol {
+            name: "unchanged".to_string(),
+            kind: SymbolKind::Function,
+            is_public: true,
+            line: 5,
+        }];
+        let new = vec![Symbol {
+            name: "unchanged".to_string(),
+            kind: SymbolKind::Function,
+            is_public: true,
+            line: 5,
+        }];
+        let diffs = compare_symbols(&old, &new);
+        assert!(diffs.is_empty());
+    }
+
+    #[test]
+    fn test_compare_symbols_mixed() {
+        use crate::symbols::{Symbol, SymbolKind};
+        let old = vec![
+            Symbol {
+                name: "kept".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            },
+            Symbol {
+                name: "removed_fn".to_string(),
+                kind: SymbolKind::Function,
+                is_public: false,
+                line: 10,
+            },
+            Symbol {
+                name: "moved_fn".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 20,
+            },
+        ];
+        let new = vec![
+            Symbol {
+                name: "kept".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            },
+            Symbol {
+                name: "moved_fn".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 30,
+            },
+            Symbol {
+                name: "new_struct".to_string(),
+                kind: SymbolKind::Struct,
+                is_public: true,
+                line: 40,
+            },
+        ];
+        let diffs = compare_symbols(&old, &new);
+        // moved_fn changed line: Modified, new_struct: Added, removed_fn: Removed
+        assert_eq!(diffs.len(), 3);
+        let modified: Vec<_> = diffs
+            .iter()
+            .filter(|d| d.change == SymbolChange::Modified)
+            .collect();
+        let added: Vec<_> = diffs
+            .iter()
+            .filter(|d| d.change == SymbolChange::Added)
+            .collect();
+        let removed: Vec<_> = diffs
+            .iter()
+            .filter(|d| d.change == SymbolChange::Removed)
+            .collect();
+        assert_eq!(modified.len(), 1);
+        assert_eq!(modified[0].name, "moved_fn");
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].name, "new_struct");
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].name, "removed_fn");
     }
 
     // ── PR tests (moved from commands.rs) ───────────────────────────────

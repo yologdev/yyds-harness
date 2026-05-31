@@ -221,7 +221,7 @@ static RE_SCALA_DEF: LazyLock<Regex> = LazyLock::new(|| {
 // ── /map — structural codebase understanding ────────────────────────────
 
 /// Kind of structural symbol extracted from source code.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SymbolKind {
     Function,
     Struct,
