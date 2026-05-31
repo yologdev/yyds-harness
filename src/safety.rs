@@ -86,6 +86,21 @@ pub fn analyze_bash_command(command: &str) -> Option<String> {
         return Some(reason);
     }
 
+    // 14. Environment variable destruction
+    if let Some(reason) = check_env_destruction(cmd) {
+        return Some(reason);
+    }
+
+    // 15. Crontab removal
+    if let Some(reason) = check_crontab_removal(cmd) {
+        return Some(reason);
+    }
+
+    // 16. Raw device writes
+    if let Some(reason) = check_raw_device_write(cmd) {
+        return Some(reason);
+    }
+
     None
 }
 
@@ -539,6 +554,135 @@ fn check_mv_system_paths(cmd: &str) -> Option<String> {
     None
 }
 
+/// Check for environment variable destruction (unsetting critical vars like PATH).
+fn check_env_destruction(cmd: &str) -> Option<String> {
+    let critical_vars = [
+        "PATH",
+        "HOME",
+        "USER",
+        "SHELL",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+    ];
+
+    for var in &critical_vars {
+        // unset PATH
+        let unset_pattern = format!("unset {var}");
+        if cmd.contains(&unset_pattern) {
+            return Some(format!(
+                "Environment destruction: 'unset {var}' removes a critical environment variable"
+            ));
+        }
+
+        // export PATH= (empty value)
+        let empty_export = format!("export {var}=");
+        if let Some(pos) = cmd.find(&empty_export) {
+            let after = &cmd[pos + empty_export.len()..];
+            // Check it's actually empty (next char is space, newline, semicolon, or end)
+            if after.is_empty()
+                || after.starts_with(' ')
+                || after.starts_with(';')
+                || after.starts_with('\n')
+                || after.starts_with('"')
+                    && after.len() >= 2
+                    && after.as_bytes().get(1) == Some(&b'"')
+            {
+                return Some(format!(
+                    "Environment destruction: setting {var} to empty can break the system"
+                ));
+            }
+        }
+    }
+
+    // LD_PRELOAD injection (setting LD_PRELOAD to load arbitrary libraries)
+    if (cmd.contains("LD_PRELOAD=") || cmd.contains("export LD_PRELOAD"))
+        && !cmd.contains("unset LD_PRELOAD")
+    {
+        if let Some(pos) = cmd.find("LD_PRELOAD=") {
+            let after = &cmd[pos + 11..];
+            // Only flag if there's a value (not empty/unset)
+            if !after.is_empty()
+                && !after.starts_with(' ')
+                && !after.starts_with(';')
+                && !after.starts_with('\n')
+            {
+                return Some(
+                    "LD_PRELOAD injection: can hijack dynamic linking for all processes".into(),
+                );
+            }
+        }
+    }
+
+    None
+}
+
+/// Check for crontab removal.
+fn check_crontab_removal(cmd: &str) -> Option<String> {
+    if cmd.contains("crontab") {
+        // crontab -r removes all cron jobs
+        if cmd.contains("-r") {
+            // Verify it's the -r flag, not part of a longer flag
+            let tokens: Vec<&str> = cmd.split_whitespace().collect();
+            for (i, token) in tokens.iter().enumerate() {
+                if *token == "crontab" || token.ends_with("crontab") {
+                    // Check subsequent tokens for -r
+                    for flag_token in &tokens[i + 1..] {
+                        if *flag_token == "-r" || *flag_token == "-ri" || *flag_token == "-ir" {
+                            return Some(
+                                "Crontab removal: 'crontab -r' deletes all scheduled jobs".into(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Check for writes to raw device files.
+fn check_raw_device_write(cmd: &str) -> Option<String> {
+    let device_patterns = [
+        "/dev/sda",
+        "/dev/sdb",
+        "/dev/sdc",
+        "/dev/vda",
+        "/dev/vdb",
+        "/dev/nvme",
+        "/dev/hda",
+        "/dev/hdb",
+        "/dev/mmcblk",
+        "/dev/xvda",
+    ];
+
+    // Check for redirection to raw devices: > /dev/sda
+    for dev in &device_patterns {
+        let overwrite_pattern = format!("> {dev}");
+        if let Some(pos) = cmd.find(&overwrite_pattern) {
+            // Make sure it's not >> (append — still dangerous but less common mistake)
+            if pos == 0 || cmd.as_bytes()[pos.wrapping_sub(1)] != b'>' {
+                return Some(format!(
+                    "Raw device write: redirecting output to '{dev}' can destroy disk data"
+                ));
+            }
+        }
+    }
+
+    // Check for dd writing to raw devices: dd ... of=/dev/sda
+    if cmd.contains("dd ") || cmd.starts_with("dd") {
+        for dev in &device_patterns {
+            let of_pattern = format!("of={dev}");
+            if cmd.contains(&of_pattern) {
+                return Some(format!(
+                    "Raw device write: 'dd' targeting '{dev}' can overwrite disk data"
+                ));
+            }
+        }
+    }
+
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -760,5 +904,45 @@ mod tests {
         // Safe: eval without internet fetcher
         assert!(analyze_bash_command("eval echo hello").is_none());
         assert!(analyze_bash_command("eval $(cat local_script.sh)").is_none());
+    }
+
+    #[test]
+    fn test_analyze_env_destruction() {
+        // Unsetting critical environment variables
+        assert!(analyze_bash_command("unset PATH").is_some());
+        assert!(analyze_bash_command("unset HOME").is_some());
+        assert!(analyze_bash_command("unset LD_LIBRARY_PATH").is_some());
+        // Setting PATH to empty
+        assert!(analyze_bash_command("export PATH=").is_some());
+        assert!(analyze_bash_command("export PATH=\"\"").is_some());
+        // Safe: normal exports
+        assert!(analyze_bash_command("export PATH=/usr/bin:$PATH").is_none());
+        assert!(analyze_bash_command("export MY_VAR=hello").is_none());
+        // LD_PRELOAD injection
+        assert!(analyze_bash_command("LD_PRELOAD=/tmp/evil.so ./app").is_some());
+        assert!(analyze_bash_command("export LD_PRELOAD=/tmp/evil.so").is_some());
+        // Safe: unsetting LD_PRELOAD is fine
+        assert!(analyze_bash_command("unset LD_PRELOAD").is_some()); // unset still flagged
+    }
+
+    #[test]
+    fn test_analyze_crontab_removal() {
+        assert!(analyze_bash_command("crontab -r").is_some());
+        assert!(analyze_bash_command("crontab -ri").is_some());
+        // Safe: listing or editing crontab
+        assert!(analyze_bash_command("crontab -l").is_none());
+        assert!(analyze_bash_command("crontab -e").is_none());
+    }
+
+    #[test]
+    fn test_analyze_raw_device_write() {
+        // Redirect to raw device
+        assert!(analyze_bash_command("echo '' > /dev/sda").is_some());
+        assert!(analyze_bash_command("cat /dev/zero > /dev/nvme0n1").is_some());
+        // dd writing to device
+        assert!(analyze_bash_command("dd if=/dev/zero of=/dev/sda bs=1M").is_some());
+        assert!(analyze_bash_command("dd if=image.iso of=/dev/sdb").is_some());
+        // Safe: reading from devices or writing to files
+        assert!(analyze_bash_command("cat /dev/null > /tmp/empty").is_none());
     }
 }

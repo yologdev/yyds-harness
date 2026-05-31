@@ -629,6 +629,8 @@ pub fn smart_truncate_for_context(content: &str, max_lines: usize) -> (String, b
     // 40% head, 20% tail — gives more context at the top (imports, types, structs)
     let head_count = (max_lines * 2) / 5;
     let tail_count = max_lines / 5;
+    // Guard: if max_lines is too small for meaningful head/tail split, just take head
+    let tail_count = tail_count.min(total.saturating_sub(head_count));
     let omitted = total - head_count - tail_count;
 
     let mut result = String::new();
@@ -640,10 +642,12 @@ pub fn smart_truncate_for_context(content: &str, max_lines: usize) -> (String, b
         "\n[... {} lines omitted ({} total) — use /add file:START-END for specific sections ...]\n\n",
         omitted, total
     ));
-    for (i, line) in lines[total - tail_count..].iter().enumerate() {
-        result.push_str(line);
-        if i < tail_count - 1 {
-            result.push('\n');
+    if tail_count > 0 {
+        for (i, line) in lines[total - tail_count..].iter().enumerate() {
+            result.push_str(line);
+            if i < tail_count - 1 {
+                result.push('\n');
+            }
         }
     }
 
