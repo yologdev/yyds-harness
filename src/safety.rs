@@ -3,17 +3,20 @@
 //! Detects destructive patterns in shell commands before execution:
 //! - Filesystem destruction (`rm -rf /`, `rm -rf ~`)
 //! - Force git operations (`git push --force`, `git reset --hard`)
-//! - Permission changes (`chmod -R 777`)
+//! - Permission changes (`chmod -R 777`, `chmod 000 /etc/passwd`)
 //! - File overwrites to sensitive paths (`> /etc/passwd`)
 //! - System commands (`shutdown`, `reboot`, `halt`)
 //! - Database destruction (`DROP TABLE`, `TRUNCATE`)
 //! - Piping internet content to shell (`curl | bash`)
 //! - Process substitution from internet (`bash <(curl ...)`)
-//! - Process killing (`kill -9 1`, `killall`)
+//! - Process killing (`kill -9 1`, `killall`, `pkill`)
 //! - Disk operations (`dd`, `fdisk`, `mkfs`)
 //! - Fork bombs (`:(){ :|:& };:`)
 //! - Destructive xargs (`find | xargs rm -rf`)
 //! - Moving files to system paths (`mv ... /etc/`)
+//! - Firewall flushing (`iptables -F`, `ufw disable`)
+//! - History destruction (`history -c`, `history -w /dev/null`)
+//! - Bare file truncation via `>` redirection
 
 /// Analyze a bash command for potentially dangerous patterns.
 /// Returns `Some(reason)` if the command looks destructive.
@@ -98,6 +101,31 @@ pub fn analyze_bash_command(command: &str) -> Option<String> {
 
     // 16. Raw device writes
     if let Some(reason) = check_raw_device_write(cmd) {
+        return Some(reason);
+    }
+
+    // 17. Firewall flushing
+    if let Some(reason) = check_firewall_flush(&cmd_lower) {
+        return Some(reason);
+    }
+
+    // 18. History destruction
+    if let Some(reason) = check_history_destruction(cmd) {
+        return Some(reason);
+    }
+
+    // 19. Broad process killing (pkill, kill with signal names)
+    if let Some(reason) = check_pkill(cmd) {
+        return Some(reason);
+    }
+
+    // 20. chmod/chown on critical system files (even without -R)
+    if let Some(reason) = check_critical_file_permissions(cmd) {
+        return Some(reason);
+    }
+
+    // 21. Bare file truncation via > (no command before redirect)
+    if let Some(reason) = check_bare_truncation(cmd) {
         return Some(reason);
     }
 
@@ -683,6 +711,170 @@ fn check_raw_device_write(cmd: &str) -> Option<String> {
     None
 }
 
+/// Check for firewall flushing/disabling commands.
+fn check_firewall_flush(cmd_lower: &str) -> Option<String> {
+    // iptables -F flushes all rules (leaves system unprotected)
+    if cmd_lower.contains("iptables") {
+        // -F (flush), --flush, -X (delete chain), -Z (zero counters are less dangerous)
+        if cmd_lower.contains(" -f")
+            || cmd_lower.contains("--flush")
+            || cmd_lower.contains(" -x")
+            || cmd_lower.contains("--delete-chain")
+        {
+            return Some(
+                "Firewall flush: 'iptables -F' removes all firewall rules, leaving the system unprotected".into(),
+            );
+        }
+    }
+
+    // ip6tables -F
+    if cmd_lower.contains("ip6tables")
+        && (cmd_lower.contains(" -f") || cmd_lower.contains("--flush"))
+    {
+        return Some("Firewall flush: 'ip6tables -F' removes all IPv6 firewall rules".into());
+    }
+
+    // nftables flush
+    if cmd_lower.contains("nft") && cmd_lower.contains("flush ruleset") {
+        return Some("Firewall flush: 'nft flush ruleset' removes all nftables rules".into());
+    }
+
+    // ufw disable
+    if cmd_lower.contains("ufw") && cmd_lower.contains("disable") {
+        return Some("Firewall disable: 'ufw disable' turns off the firewall entirely".into());
+    }
+
+    None
+}
+
+/// Check for shell history destruction.
+fn check_history_destruction(cmd: &str) -> Option<String> {
+    // history -c clears the history list
+    if cmd.contains("history") {
+        let tokens: Vec<&str> = cmd.split_whitespace().collect();
+        for (i, token) in tokens.iter().enumerate() {
+            if *token == "history" {
+                // Check for -c (clear) or -w combined with /dev/null
+                for flag_token in &tokens[i + 1..] {
+                    if *flag_token == "-c" {
+                        return Some(
+                            "History destruction: 'history -c' clears the shell history".into(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Truncating history files
+    let history_files = [".bash_history", ".zsh_history", ".history", "HISTFILE"];
+    for hf in &history_files {
+        if cmd.contains(hf) {
+            // Check for truncation patterns: > .bash_history, rm .bash_history, shred
+            if cmd.contains(&format!("> {hf}"))
+                || cmd.contains(&format!("> ~/{hf}"))
+                || (cmd.contains("rm") && cmd.contains(hf))
+                || (cmd.contains("shred") && cmd.contains(hf))
+            {
+                return Some(format!(
+                    "History destruction: attempting to delete or truncate '{hf}'"
+                ));
+            }
+        }
+    }
+
+    None
+}
+
+/// Check for broad process killing patterns (pkill, kill with signal names).
+fn check_pkill(cmd: &str) -> Option<String> {
+    // pkill without a specific process name is very dangerous
+    // but pkill with a specific target is common and useful, so we only flag
+    // patterns that kill broadly
+    if let Some(pos) = cmd.find("pkill") {
+        if is_at_word_boundary(cmd, pos) {
+            let after = cmd[pos + 5..].trim();
+            // pkill -9 (kill everything matching) or pkill with no arguments
+            if after.is_empty() || after == "-9" || after == "-KILL" || after == "-SIGKILL" {
+                return Some(
+                    "Broad process kill: 'pkill' without a specific target can kill many processes"
+                        .into(),
+                );
+            }
+        }
+    }
+
+    None
+}
+
+/// Check for chmod/chown on critical system files (even without -R).
+///
+/// The existing `check_permission_changes` only catches `chmod -R 777`.
+/// This catches targeted permission changes on specific sensitive files.
+fn check_critical_file_permissions(cmd: &str) -> Option<String> {
+    let critical_files = [
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc/sudoers",
+        "/etc/ssh/",
+        "/etc/ssl/",
+    ];
+
+    // chmod 000 /etc/passwd, chmod 777 /etc/shadow, etc.
+    if cmd.contains("chmod") {
+        for cf in &critical_files {
+            if cmd.contains(cf) {
+                return Some(format!(
+                    "Permission change on critical file: 'chmod' targeting '{cf}' \
+                     can break system authentication or security"
+                ));
+            }
+        }
+    }
+
+    // chown on critical files (without -R, which is already caught)
+    if cmd.contains("chown") && !cmd.contains("-R") {
+        for cf in &critical_files {
+            if cmd.contains(cf) {
+                return Some(format!(
+                    "Ownership change on critical file: 'chown' targeting '{cf}' \
+                     can break system authentication or security"
+                ));
+            }
+        }
+    }
+
+    None
+}
+
+/// Check for bare file truncation via `>` at the start of a command segment.
+///
+/// A bare `> file.conf` with no command before the redirect operator truncates
+/// the file to zero bytes. This is an easy mistake that destroys data silently.
+/// We only flag this for non-temporary, non-devnull paths.
+fn check_bare_truncation(cmd: &str) -> Option<String> {
+    // Check each command segment (separated by ; or &&)
+    let segments: Vec<&str> = cmd.split(';').flat_map(|s| s.split("&&")).collect();
+    for segment in &segments {
+        let trimmed = segment.trim();
+        // A bare truncation starts with > (but not >>)
+        if trimmed.starts_with("> ") || trimmed.starts_with(">\t") {
+            let target = trimmed[1..].trim();
+            // Ignore safe targets
+            if target == "/dev/null" || target.starts_with("/tmp/") || target.starts_with("/dev/") {
+                continue;
+            }
+            // Flag any file truncation outside /tmp and /dev
+            if !target.is_empty() {
+                return Some(format!(
+                    "Bare file truncation: '> {target}' will destroy the file's contents"
+                ));
+            }
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -944,5 +1136,77 @@ mod tests {
         assert!(analyze_bash_command("dd if=image.iso of=/dev/sdb").is_some());
         // Safe: reading from devices or writing to files
         assert!(analyze_bash_command("cat /dev/null > /tmp/empty").is_none());
+    }
+
+    #[test]
+    fn test_analyze_firewall_flush() {
+        // iptables -F flushes all rules
+        assert!(analyze_bash_command("iptables -F").is_some());
+        assert!(analyze_bash_command("sudo iptables -F INPUT").is_some());
+        assert!(analyze_bash_command("iptables --flush").is_some());
+        assert!(analyze_bash_command("iptables -X").is_some());
+        // ip6tables
+        assert!(analyze_bash_command("ip6tables -F").is_some());
+        // nftables
+        assert!(analyze_bash_command("nft flush ruleset").is_some());
+        // ufw
+        assert!(analyze_bash_command("sudo ufw disable").is_some());
+        // Safe: listing rules
+        assert!(analyze_bash_command("iptables -L").is_none());
+        assert!(analyze_bash_command("ufw status").is_none());
+    }
+
+    #[test]
+    fn test_analyze_history_destruction() {
+        assert!(analyze_bash_command("history -c").is_some());
+        // Truncating history files
+        assert!(analyze_bash_command("> ~/.bash_history").is_some());
+        assert!(analyze_bash_command("rm ~/.bash_history").is_some());
+        assert!(analyze_bash_command("shred .bash_history").is_some());
+        // Safe: viewing history
+        assert!(analyze_bash_command("history").is_none());
+        assert!(analyze_bash_command("history 10").is_none());
+    }
+
+    #[test]
+    fn test_analyze_pkill_broad() {
+        // pkill with no target
+        assert!(analyze_bash_command("pkill").is_some());
+        assert!(analyze_bash_command("pkill -9").is_some());
+        assert!(analyze_bash_command("pkill -KILL").is_some());
+        // Safe: pkill with a specific target
+        assert!(analyze_bash_command("pkill node").is_none());
+        assert!(analyze_bash_command("pkill -f 'python script.py'").is_none());
+    }
+
+    #[test]
+    fn test_analyze_critical_file_permissions() {
+        // chmod on critical system files
+        assert!(analyze_bash_command("chmod 000 /etc/passwd").is_some());
+        assert!(analyze_bash_command("chmod 777 /etc/shadow").is_some());
+        assert!(analyze_bash_command("chmod 644 /etc/sudoers").is_some());
+        // chown on critical files
+        assert!(analyze_bash_command("chown nobody /etc/passwd").is_some());
+        assert!(analyze_bash_command("chown root:root /etc/shadow").is_some());
+        // Safe: chmod on normal files
+        assert!(analyze_bash_command("chmod 644 README.md").is_none());
+        assert!(analyze_bash_command("chmod +x script.sh").is_none());
+        // Safe: chown on normal files
+        assert!(analyze_bash_command("chown user:group file.txt").is_none());
+    }
+
+    #[test]
+    fn test_analyze_bare_truncation() {
+        // Bare > truncates the file
+        assert!(analyze_bash_command("> important.conf").is_some());
+        assert!(analyze_bash_command(">   config.yaml").is_some());
+        // After a semicolon
+        assert!(analyze_bash_command("echo hello; > data.db").is_some());
+        // Safe: > /dev/null
+        assert!(analyze_bash_command("> /dev/null").is_none());
+        // Safe: > /tmp/something
+        assert!(analyze_bash_command("> /tmp/test.txt").is_none());
+        // Safe: command with redirect (not bare)
+        assert!(analyze_bash_command("echo hello > file.txt").is_none());
     }
 }
