@@ -547,6 +547,16 @@ pub fn truncate_tool_output(output: &str, max_chars: usize) -> String {
         return compressed;
     }
 
+    // Phase 2: If this looks like compiler output, use error-prioritized truncation.
+    // The agent needs to see actual errors/warnings to fix code — not just the head
+    // (which is often "Compiling..." lines) and tail (which is the summary).
+    if is_compiler_output(&lines) {
+        if let Some(result) = truncate_compiler_output(&lines, max_chars) {
+            return result;
+        }
+    }
+
+    // Phase 3: Default head/tail truncation for non-compiler output.
     let head = &lines[..TRUNCATION_HEAD_LINES];
     let tail = &lines[total_lines - TRUNCATION_TAIL_LINES..];
     let omitted = total_lines - TRUNCATION_HEAD_LINES - TRUNCATION_TAIL_LINES;
@@ -568,6 +578,205 @@ pub fn truncate_tool_output(output: &str, max_chars: usize) -> String {
     }
 
     result
+}
+
+/// Check whether the output looks like compiler/linter output by scanning
+/// for characteristic error/warning patterns.
+fn is_compiler_output(lines: &[&str]) -> bool {
+    let mut diagnostic_count = 0u32;
+    for line in lines.iter().take(500) {
+        if is_diagnostic_header(line) {
+            diagnostic_count += 1;
+            if diagnostic_count >= 2 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Returns true if a line looks like the start of a compiler diagnostic.
+/// Covers: Rust (`error[E0xxx]:`, `warning:`), TypeScript (`error TS`),
+/// GCC/Clang (`file:line:col: error:`), and Go (`file:line:col:`).
+fn is_diagnostic_header(line: &str) -> bool {
+    let t = line.trim();
+    // Rust: "error[E0308]: ...", "error: ...", "warning: ...", "warning[unused]: ..."
+    if t.starts_with("error[")
+        || t.starts_with("error: ")
+        || t.starts_with("warning[")
+        || t.starts_with("warning: ")
+    {
+        return true;
+    }
+    // GCC/Clang: "src/main.c:10:5: error:" or "src/main.c:10:5: warning:"
+    if (t.contains(": error:") || t.contains(": warning:")) && t.contains(':') {
+        // Heuristic: must have at least one digit (line number)
+        if t.chars().any(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    // TypeScript: "src/index.ts(5,3): error TS2322:"
+    if t.contains("error TS") && t.contains(':') {
+        return true;
+    }
+    false
+}
+
+/// Maximum number of diagnostic blocks to include in compiler-aware truncation.
+const MAX_DIAGNOSTIC_BLOCKS: usize = 20;
+
+/// Extract error/warning blocks from compiler output and build a truncated
+/// result that prioritizes diagnostics over noise.
+///
+/// Returns `None` if the extraction doesn't produce a meaningfully smaller result
+/// (in which case the caller falls through to default head/tail truncation).
+fn truncate_compiler_output(lines: &[&str], max_chars: usize) -> Option<String> {
+    // Identify diagnostic blocks: each block starts at a diagnostic header line
+    // and continues until the next diagnostic header or a blank line after code context.
+    let mut blocks: Vec<(usize, usize)> = Vec::new(); // (start_idx, end_idx exclusive)
+    let mut i = 0;
+
+    while i < lines.len() {
+        if is_diagnostic_header(lines[i]) {
+            let start = i;
+            i += 1;
+            // A diagnostic block includes:
+            // - The header line
+            // - Following context lines (source snippets, arrows, notes)
+            // - Stops at next diagnostic header, or after 2+ consecutive blank lines,
+            //   or after 30 lines (safety cap for very long diagnostics)
+            let mut consecutive_blanks = 0u32;
+            let block_line_cap = start + 30;
+            while i < lines.len() && i < block_line_cap {
+                if is_diagnostic_header(lines[i]) {
+                    break;
+                }
+                if lines[i].trim().is_empty() {
+                    consecutive_blanks += 1;
+                    if consecutive_blanks >= 2 {
+                        break;
+                    }
+                } else {
+                    consecutive_blanks = 0;
+                }
+                i += 1;
+            }
+            blocks.push((start, i));
+        } else {
+            i += 1;
+        }
+    }
+
+    if blocks.is_empty() {
+        return None;
+    }
+
+    // Separate errors from warnings — errors take priority
+    let mut error_blocks: Vec<(usize, usize)> = Vec::new();
+    let mut warning_blocks: Vec<(usize, usize)> = Vec::new();
+
+    for &(start, end) in &blocks {
+        let header = lines[start].trim();
+        if header.starts_with("error") || header.contains(": error:") || header.contains("error TS")
+        {
+            error_blocks.push((start, end));
+        } else {
+            warning_blocks.push((start, end));
+        }
+    }
+
+    // Build result: errors first, then warnings, capped by MAX_DIAGNOSTIC_BLOCKS
+    let mut selected: Vec<(usize, usize)> = Vec::new();
+    for block in &error_blocks {
+        if selected.len() >= MAX_DIAGNOSTIC_BLOCKS {
+            break;
+        }
+        selected.push(*block);
+    }
+    for block in &warning_blocks {
+        if selected.len() >= MAX_DIAGNOSTIC_BLOCKS {
+            break;
+        }
+        selected.push(*block);
+    }
+
+    // Also grab the last few lines (summary — e.g., "error: could not compile", "warning: N warnings emitted")
+    let summary_start = lines.len().saturating_sub(5);
+    let summary_lines: Vec<&str> = lines[summary_start..].to_vec();
+
+    // Build the output
+    let mut result = String::with_capacity(max_chars);
+
+    // Header: how many diagnostics total
+    let total_errors = error_blocks.len();
+    let total_warnings = warning_blocks.len();
+    let shown = selected.len();
+    let total_diags = total_errors + total_warnings;
+    let omitted_diags = total_diags.saturating_sub(shown);
+
+    result.push_str(&format!(
+        "[compiler output: {} {}, {} {} — showing {}",
+        total_errors,
+        pluralize(total_errors, "error", "errors"),
+        total_warnings,
+        pluralize(total_warnings, "warning", "warnings"),
+        shown,
+    ));
+    if omitted_diags > 0 {
+        result.push_str(&format!(", {} more omitted", omitted_diags,));
+    }
+    result.push_str("]\n\n");
+
+    // Emit selected diagnostic blocks
+    for (idx, &(start, end)) in selected.iter().enumerate() {
+        for line in &lines[start..end] {
+            result.push_str(line);
+            result.push('\n');
+        }
+        if idx < selected.len() - 1 {
+            result.push('\n');
+        }
+    }
+
+    // Emit summary
+    if !summary_lines.is_empty() {
+        result.push_str("\n---\n");
+        for line in &summary_lines {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+
+    // If our result is still over max_chars, truncate it with head/tail as fallback
+    if result.len() > max_chars {
+        let result_lines: Vec<&str> = result.lines().collect();
+        let total = result_lines.len();
+        if total <= TRUNCATION_HEAD_LINES + TRUNCATION_TAIL_LINES {
+            // Already short enough in lines, just return as-is
+            return Some(result);
+        }
+        let head = &result_lines[..TRUNCATION_HEAD_LINES];
+        let tail = &result_lines[total - TRUNCATION_TAIL_LINES..];
+        let omitted = total - TRUNCATION_HEAD_LINES - TRUNCATION_TAIL_LINES;
+        let mut truncated = String::with_capacity(max_chars);
+        for line in head {
+            truncated.push_str(line);
+            truncated.push('\n');
+        }
+        truncated.push_str(&format!(
+            "\n[... truncated {omitted} {} ...]\n\n",
+            pluralize(omitted, "line", "lines"),
+        ));
+        for (i, line) in tail.iter().enumerate() {
+            truncated.push_str(line);
+            if i < tail.len() - 1 {
+                truncated.push('\n');
+            }
+        }
+        return Some(truncated);
+    }
+
+    Some(result)
 }
 
 /// Format a summary line for a batch of tool executions within a single turn.
@@ -2067,5 +2276,207 @@ mod tests {
         let input = "\x1b[32m日本語\x1b[0m";
         let result = strip_ansi_codes(input);
         assert_eq!(result, "日本語");
+    }
+
+    // --- Tests for compiler-output-aware truncation ---
+
+    #[test]
+    fn test_is_diagnostic_header_rust_error() {
+        assert!(is_diagnostic_header("error[E0308]: mismatched types"));
+        assert!(is_diagnostic_header("error: cannot find value `x`"));
+    }
+
+    #[test]
+    fn test_is_diagnostic_header_rust_warning() {
+        assert!(is_diagnostic_header("warning: unused variable: `x`"));
+        assert!(is_diagnostic_header(
+            "warning[dead_code]: function is never used"
+        ));
+    }
+
+    #[test]
+    fn test_is_diagnostic_header_gcc_clang() {
+        assert!(is_diagnostic_header("src/main.c:10:5: error: expected ';'"));
+        assert!(is_diagnostic_header(
+            "lib.cpp:42:1: warning: unused variable"
+        ));
+    }
+
+    #[test]
+    fn test_is_diagnostic_header_typescript() {
+        assert!(is_diagnostic_header(
+            "src/index.ts(5,3): error TS2322: Type 'string' is not assignable"
+        ));
+    }
+
+    #[test]
+    fn test_is_diagnostic_header_non_diagnostic() {
+        assert!(!is_diagnostic_header("Compiling yoyo v0.1.0"));
+        assert!(!is_diagnostic_header("    --> src/main.rs:5:10"));
+        assert!(!is_diagnostic_header("running 3 tests"));
+        assert!(!is_diagnostic_header(""));
+    }
+
+    #[test]
+    fn test_is_compiler_output_with_multiple_errors() {
+        let lines = vec![
+            "Compiling yoyo v0.1.0",
+            "error[E0308]: mismatched types",
+            "  --> src/main.rs:5:10",
+            "error[E0425]: cannot find value `x`",
+            "  --> src/main.rs:8:5",
+        ];
+        assert!(is_compiler_output(&lines));
+    }
+
+    #[test]
+    fn test_is_compiler_output_single_error_not_enough() {
+        let lines = vec![
+            "Compiling yoyo v0.1.0",
+            "error[E0308]: mismatched types",
+            "  --> src/main.rs:5:10",
+        ];
+        // Needs at least 2 diagnostic headers
+        assert!(!is_compiler_output(&lines));
+    }
+
+    #[test]
+    fn test_is_compiler_output_non_compiler() {
+        let lines = vec![
+            "running 3 tests",
+            "test test_foo ... ok",
+            "test test_bar ... ok",
+            "test test_baz ... FAILED",
+        ];
+        assert!(!is_compiler_output(&lines));
+    }
+
+    #[test]
+    fn test_truncate_compiler_output_prioritizes_errors() {
+        // Build synthetic compiler output with errors and warnings
+        let mut lines_vec: Vec<String> = Vec::new();
+        lines_vec.push("Compiling example v0.1.0".to_string());
+        // Add some warnings first
+        for i in 0..5 {
+            lines_vec.push(format!("warning: unused variable `w{i}`"));
+            lines_vec.push(format!("  --> src/lib.rs:{i}:5"));
+            lines_vec.push(String::new());
+        }
+        // Add errors
+        for i in 0..3 {
+            lines_vec.push(format!("error[E030{i}]: some error {i}"));
+            lines_vec.push(format!("  --> src/main.rs:{}:10", i + 10));
+            lines_vec.push("   |".to_string());
+            lines_vec.push(format!("   | let x{i} = bad_code;"));
+            lines_vec.push(String::new());
+        }
+        lines_vec.push("error: aborting due to 3 previous errors".to_string());
+
+        let lines: Vec<&str> = lines_vec.iter().map(|s| s.as_str()).collect();
+        let result = truncate_compiler_output(&lines, 50_000).unwrap();
+
+        // Errors should appear before warnings
+        let error_pos = result.find("error[E030").unwrap();
+        let warning_pos = result.find("warning: unused").unwrap();
+        assert!(
+            error_pos < warning_pos,
+            "Errors should be listed before warnings in output"
+        );
+    }
+
+    #[test]
+    fn test_truncate_compiler_output_returns_none_for_no_diagnostics() {
+        let lines = vec!["Compiling example v0.1.0", "Finished dev profile"];
+        assert!(truncate_compiler_output(&lines, 50_000).is_none());
+    }
+
+    #[test]
+    fn test_truncate_compiler_output_includes_summary() {
+        let mut lines_vec: Vec<String> = Vec::new();
+        for i in 0..3 {
+            lines_vec.push(format!("error[E000{i}]: problem {i}"));
+            lines_vec.push(format!("  --> src/lib.rs:{i}:1"));
+            lines_vec.push(String::new());
+        }
+        lines_vec.push("error: aborting due to 3 previous errors".to_string());
+        lines_vec.push(
+            "For more information about this error, try `rustc --explain E0001`.".to_string(),
+        );
+
+        let lines: Vec<&str> = lines_vec.iter().map(|s| s.as_str()).collect();
+        let result = truncate_compiler_output(&lines, 50_000).unwrap();
+
+        // Should contain the summary section separator
+        assert!(result.contains("---"));
+        assert!(result.contains("aborting due to 3 previous errors"));
+    }
+
+    #[test]
+    fn test_truncate_compiler_output_header_shows_counts() {
+        let mut lines_vec: Vec<String> = Vec::new();
+        for i in 0..2 {
+            lines_vec.push(format!("error[E000{i}]: err {i}"));
+            lines_vec.push(String::new());
+        }
+        for i in 0..3 {
+            lines_vec.push(format!("warning: warn {i}"));
+            lines_vec.push(String::new());
+        }
+
+        let lines: Vec<&str> = lines_vec.iter().map(|s| s.as_str()).collect();
+        let result = truncate_compiler_output(&lines, 50_000).unwrap();
+
+        // Header should mention error and warning counts
+        assert!(result.contains("2 errors"));
+        assert!(result.contains("3 warnings"));
+    }
+
+    #[test]
+    fn test_truncate_tool_output_uses_compiler_aware_for_rust() {
+        // Build output that exceeds threshold even after compression.
+        // Use unique "Compiling" lines (different crate names) so compression
+        // doesn't collapse them, plus many error blocks.
+        let mut lines_vec: Vec<String> = Vec::new();
+        for i in 0..100 {
+            lines_vec.push(format!(
+                "   Compiling unique-crate-{i} v{}.{}.0 (/path/to/dep-{i})",
+                i / 10,
+                i % 10
+            ));
+        }
+        // Add enough error blocks to produce substantial output
+        for i in 0..30 {
+            lines_vec.push(format!(
+                "error[E0{:03}]: type mismatch in function number {i} with a long description",
+                300 + i
+            ));
+            lines_vec.push(format!("  --> src/module_{i}/main.rs:{}:5", i * 10 + 1));
+            lines_vec.push("   |".to_string());
+            lines_vec.push(format!(
+                "{} | fn bad_function_{i}(arg: SomeVeryLongTypeName) -> AnotherLongType {{",
+                i * 10 + 1
+            ));
+            lines_vec.push("   |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^".to_string());
+            lines_vec.push("   |".to_string());
+            lines_vec.push(format!("   = note: expected `TypeA` found `TypeB_{i}`"));
+            lines_vec.push(String::new());
+        }
+        lines_vec.push("error: aborting due to 30 previous errors".to_string());
+
+        let output = lines_vec.join("\n");
+        // Use a max_chars small enough to require truncation
+        let result = truncate_tool_output(&output, 3000);
+
+        // Should use compiler-aware truncation (shows errors, not just head/tail)
+        assert!(
+            result.contains("error[E0"),
+            "Should contain actual error diagnostics, got: {}",
+            &result[..result.len().min(500)]
+        );
+        assert!(
+            result.contains("[compiler output:"),
+            "Should contain compiler output header, got: {}",
+            &result[..result.len().min(500)]
+        );
     }
 }
