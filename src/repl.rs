@@ -685,6 +685,8 @@ fn print_startup_info(agent_config: &AgentConfig, repl_config: &ReplConfig) {
                 "{DIM}  👀 Auto-watch: `{cmd}` (disable with /watch off or auto_watch = false){RESET}\n"
             );
         }
+    } else if get_watch_command().is_none() && !agent_config.auto_watch {
+        crate::watch::hint_auto_watch_available();
     }
 }
 

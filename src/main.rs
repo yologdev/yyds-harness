@@ -225,6 +225,8 @@ async fn run_single_prompt(
                 eprintln!("{DIM}  👀 Auto-watch: `{cmd}` (disable with auto_watch = false){RESET}");
             }
         }
+    } else if get_watch_command().is_none() && !agent_config.auto_watch && !print_mode {
+        watch::hint_auto_watch_available();
     }
 
     let mut session_total = Usage::default();
@@ -431,6 +433,8 @@ async fn run_piped_mode(
                 eprintln!("{DIM}  👀 Auto-watch: `{cmd}` (disable with auto_watch = false){RESET}");
             }
         }
+    } else if get_watch_command().is_none() && !agent_config.auto_watch && !print_mode {
+        watch::hint_auto_watch_available();
     }
 
     let mut session_total = Usage::default();

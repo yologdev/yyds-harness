@@ -447,13 +447,14 @@ pub struct McpServerConfig {
 
 /// Check whether auto-watch is enabled in the config.
 ///
-/// Reads `auto_watch` from the given config map. Defaults to `true`
-/// when the key is absent — watch mode is on by default for detected
-/// projects so new users get Aider-style edit→test→fix automatically.
+/// Reads `auto_watch` from the given config map. Defaults to `false`
+/// when the key is absent — watch mode must be explicitly opted into
+/// via `auto_watch = true` in `.yoyo.toml`. This avoids surprising
+/// non-Rust users and local-model users with automatic test runs.
 pub fn parse_auto_watch_from_config(config: &std::collections::HashMap<String, String>) -> bool {
     match config.get("auto_watch").map(|v| v.as_str()) {
-        Some("false") | Some("0") | Some("no") | Some("off") => false,
-        _ => true, // default: enabled
+        Some("true") | Some("1") | Some("yes") | Some("on") => true,
+        _ => false, // default: disabled
     }
 }
 
@@ -1316,9 +1317,9 @@ env = { API_KEY = "secret" }
     }
 
     #[test]
-    fn auto_watch_defaults_to_true() {
+    fn auto_watch_defaults_to_false() {
         let config = std::collections::HashMap::new();
-        assert!(parse_auto_watch_from_config(&config));
+        assert!(!parse_auto_watch_from_config(&config));
     }
 
     #[test]

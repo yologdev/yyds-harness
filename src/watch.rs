@@ -1288,6 +1288,16 @@ pub fn auto_detect_watch_command() -> Option<String> {
     detect_watch_all_command()
 }
 
+/// Print a hint to stderr when a test runner is detected but auto-watch is disabled.
+/// Call this from startup paths when `auto_watch` is false.
+pub fn hint_auto_watch_available() {
+    if let Some(cmd) = auto_detect_watch_command() {
+        eprintln!(
+            "{DIM}  💡 Detected `{cmd}` — enable auto-watch with `auto_watch = true` in .yoyo.toml{RESET}"
+        );
+    }
+}
+
 /// Auto-detect a combined lint + test command for the current project.
 /// Returns both commands chained with `&&` so the first failure stops execution.
 /// Falls back to just the test command if no lint command is available,
