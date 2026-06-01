@@ -189,7 +189,13 @@ fn check_rm_destruction(cmd: &str) -> Option<String> {
 fn check_git_force(cmd: &str) -> Option<String> {
     // git push --force or git push -f (but NOT --force-with-lease which is safer)
     if cmd.contains("git") && cmd.contains("push") {
-        let has_force_flag = cmd.contains(" -f") || cmd.contains("--force");
+        // Check for -f as standalone flag, combined short flags (e.g. -uf), or --force
+        let has_force_flag = cmd.contains("--force") || {
+            cmd.split_whitespace().any(|token| {
+                // Match -f standalone or combined flags like -uf, -fu, etc.
+                token.starts_with('-') && !token.starts_with("--") && token.contains('f')
+            })
+        };
         let has_force_with_lease =
             cmd.contains("--force-with-lease") || cmd.contains("--force-if-includes");
         if has_force_flag && !has_force_with_lease {
@@ -860,8 +866,9 @@ fn check_bare_truncation(cmd: &str) -> Option<String> {
         // A bare truncation starts with > (but not >>)
         if trimmed.starts_with("> ") || trimmed.starts_with(">\t") {
             let target = trimmed[1..].trim();
-            // Ignore safe targets
-            if target == "/dev/null" || target.starts_with("/tmp/") || target.starts_with("/dev/") {
+            // Ignore safe targets (only /dev/null is safe — not other /dev/ paths
+            // like /dev/sda which are caught by check_raw_device_write too)
+            if target == "/dev/null" || target.starts_with("/tmp/") {
                 continue;
             }
             // Flag any file truncation outside /tmp and /dev
