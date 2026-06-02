@@ -800,7 +800,10 @@ mod tests {
         // After closing, normal text again
         let out5 = r.render_delta("normal\n");
         assert!(out5.contains("normal"));
-        assert!(!out5.contains(&format!("{DIM}")));
+        let rendered_dim = format!("{DIM}");
+        if !rendered_dim.is_empty() {
+            assert!(!out5.contains(&rendered_dim));
+        }
     }
 
     #[test]

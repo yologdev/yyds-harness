@@ -43,7 +43,11 @@ mod commands;
 mod commands_ast_grep;
 mod commands_bg;
 mod commands_config;
+mod commands_context;
+mod commands_deepseek;
 mod commands_dev;
+mod commands_eval;
+mod commands_evolve;
 mod commands_file;
 mod commands_fork;
 mod commands_git;
@@ -66,6 +70,7 @@ mod commands_session;
 mod commands_skill;
 mod commands_spawn;
 mod commands_stash;
+mod commands_state;
 mod commands_todo;
 mod commands_tree;
 mod commands_update;
@@ -73,9 +78,11 @@ mod commands_web;
 mod config;
 mod context;
 mod conversations;
+mod deepseek;
 mod dispatch;
 mod dispatch_sub;
 mod docs;
+mod eval_fixtures;
 mod format;
 mod git;
 mod help;
@@ -87,11 +94,13 @@ mod prompt_budget;
 mod prompt_retry;
 mod prompt_utils;
 mod providers;
+mod release;
 mod repl;
 mod rtk;
 mod safety;
 mod session;
 mod setup;
+mod state;
 mod symbols;
 mod sync_util;
 mod tool_wrappers;
@@ -132,8 +141,19 @@ fn build_json_output(
     is_error: bool,
     session_changes: &SessionChanges,
 ) -> String {
+    build_json_output_with_deepseek_policy(response, model, usage, is_error, session_changes, None)
+}
+
+fn build_json_output_with_deepseek_policy(
+    response: &PromptOutcome,
+    model: &str,
+    usage: &Usage,
+    is_error: bool,
+    session_changes: &SessionChanges,
+    deepseek_json: Option<&DeepSeekJsonPolicyReport>,
+) -> String {
     let cost_usd = estimate_cost(usage, model);
-    let json_obj = serde_json::json!({
+    let mut json_obj = serde_json::json!({
         "response": response.text,
         "model": model,
         "usage": {
@@ -144,13 +164,219 @@ fn build_json_output(
         "is_error": is_error,
         "session": session_changes.to_json_summary(),
     });
+    if let Some(report) = deepseek_json {
+        if let Some(obj) = json_obj.as_object_mut() {
+            obj.insert("deepseek_json".to_string(), report.to_json());
+        }
+    }
     serde_json::to_string(&json_obj).unwrap_or_else(|_| "{}".to_string())
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct DeepSeekJsonPolicyReport {
+    parsed: bool,
+    retry_used: bool,
+    value: Option<serde_json::Value>,
+    failure: Option<crate::deepseek::JsonOutputFailure>,
+    attempts: Vec<crate::deepseek::JsonOutputAttempt>,
+}
+
+impl DeepSeekJsonPolicyReport {
+    fn parsed(
+        value: serde_json::Value,
+        retry_used: bool,
+        attempts: Vec<crate::deepseek::JsonOutputAttempt>,
+    ) -> Self {
+        Self {
+            parsed: true,
+            retry_used,
+            value: Some(value),
+            failure: None,
+            attempts,
+        }
+    }
+
+    fn failed(failure: crate::deepseek::JsonOutputFailure) -> Self {
+        Self {
+            parsed: false,
+            retry_used: failure.attempts.len() > 1,
+            value: None,
+            attempts: failure.attempts.clone(),
+            failure: Some(failure),
+        }
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "parsed": self.parsed,
+            "retry_used": self.retry_used,
+            "value": self.value,
+            "attempts": self.attempts,
+            "failure": self.failure,
+        })
+    }
+}
+
+fn evaluate_deepseek_json_output_attempts(
+    first_output: &str,
+    retry_output: Option<&str>,
+    source: &str,
+    schema_name: Option<String>,
+) -> DeepSeekJsonPolicyReport {
+    let mut first_options = crate::deepseek::JsonOutputParseOptions::extraction(
+        source.to_string(),
+        schema_name.clone(),
+    );
+    first_options.retry_once_on_invalid_or_empty = false;
+    if let Ok(result) = crate::deepseek::parse_json_output_attempts([first_output], first_options) {
+        return DeepSeekJsonPolicyReport::parsed(result.value, result.retry_used, result.attempts);
+    }
+
+    let attempts = match retry_output {
+        Some(retry) => vec![first_output, retry],
+        None => vec![first_output],
+    };
+    let options =
+        crate::deepseek::JsonOutputParseOptions::extraction(source.to_string(), schema_name);
+    match crate::deepseek::parse_json_output_attempts(attempts, options) {
+        Ok(result) => {
+            DeepSeekJsonPolicyReport::parsed(result.value, result.retry_used, result.attempts)
+        }
+        Err(failure) => {
+            crate::deepseek::record_json_output_failure(&failure);
+            DeepSeekJsonPolicyReport::failed(failure)
+        }
+    }
+}
+
+fn maybe_record_deepseek_api_failure(
+    deepseek_native: bool,
+    provider: &str,
+    model: &str,
+    response: &PromptOutcome,
+    source: &str,
+) {
+    if !deepseek_native || provider != "deepseek" {
+        return;
+    }
+    let Some(error) = response.last_api_error.as_deref() else {
+        return;
+    };
+    crate::deepseek::record_deepseek_transport_failure(source, model, error);
+}
+
+async fn apply_deepseek_json_output_policy(
+    agent: &mut Agent,
+    original_prompt: &str,
+    response: PromptOutcome,
+    session_total: &mut Usage,
+    model: &str,
+    enabled: bool,
+    source: &str,
+) -> (PromptOutcome, Option<DeepSeekJsonPolicyReport>) {
+    if !enabled {
+        return (response, None);
+    }
+
+    let mut first_options =
+        crate::deepseek::JsonOutputParseOptions::extraction(source.to_string(), None);
+    first_options.retry_once_on_invalid_or_empty = false;
+    if let Ok(result) =
+        crate::deepseek::parse_json_output_attempts([response.text.as_str()], first_options)
+    {
+        return (
+            response,
+            Some(DeepSeekJsonPolicyReport::parsed(
+                result.value,
+                result.retry_used,
+                result.attempts,
+            )),
+        );
+    }
+
+    let retry_prompt = format!(
+        "{}\n\n{}",
+        original_prompt.trim(),
+        crate::deepseek::json_retry_instruction(None)
+    );
+    let retry_response = run_prompt(agent, &retry_prompt, session_total, model).await;
+    let report = evaluate_deepseek_json_output_attempts(
+        &response.text,
+        Some(&retry_response.text),
+        source,
+        None,
+    );
+    (retry_response, Some(report))
 }
 
 /// Handle `--prompt / -p` single-shot mode: run one prompt (optionally with an
 /// image), print the result (or write to `--output`), and return. Calls
 /// `std::process::exit` on fatal errors (bad image, API failure with no
 /// fallback).
+fn maybe_run_deepseek_fim_route_prompt(
+    prompt_text: &str,
+    response_json: &Option<String>,
+    wants_json_output: bool,
+    print_mode: bool,
+) -> bool {
+    let tracked_files = crate::git::run_git(&["ls-files"])
+        .ok()
+        .map(|raw| {
+            raw.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut genome = crate::deepseek::active_harness_genome();
+    genome.fim_policy.enabled = true;
+    let decision = crate::deepseek::route_fim_for_prompt(
+        crate::deepseek::FimRoutePromptOptions {
+            input: prompt_text.to_string(),
+            tracked_files,
+            max_tokens: 256,
+        },
+        &genome.fim_policy,
+    );
+    if !decision.use_fim {
+        return false;
+    }
+    crate::deepseek::record_fim_route_decision(
+        &decision,
+        "deepseek_prompt_fim_route",
+        prompt_text,
+        true,
+    );
+    if !print_mode {
+        eprintln!(
+            "{DIM}  DeepSeek FIM route: {}:{}-{} ({}){RESET}",
+            decision.file_path.as_deref().unwrap_or("-"),
+            decision.start_line.unwrap_or_default(),
+            decision.end_line.unwrap_or_default(),
+            decision.scope
+        );
+    }
+    let mut args = vec![
+        "yoyo".to_string(),
+        "deepseek".to_string(),
+        "fim-route".to_string(),
+        "--enable".to_string(),
+        "--execute".to_string(),
+        "--input".to_string(),
+        prompt_text.to_string(),
+    ];
+    if let Some(response) = response_json {
+        args.push("--response".to_string());
+        args.push(response.clone());
+    }
+    if wants_json_output {
+        args.push("--json".to_string());
+    }
+    crate::commands_deepseek::handle_deepseek_subcommand(&args);
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_single_prompt(
     agent_config: &mut AgentConfig,
@@ -161,7 +387,11 @@ async fn run_single_prompt(
     json_output: bool,
     output_format: cli::OutputFormat,
     print_mode: bool,
+    deepseek_native: bool,
+    deepseek_fim_route: bool,
+    deepseek_fim_response: &Option<String>,
 ) {
+    let wants_json_output = json_output || output_format == cli::OutputFormat::Json;
     // Stream-JSON mode: emit NDJSON events and return early
     if output_format == cli::OutputFormat::StreamJson {
         let mut session_total = Usage::default();
@@ -184,7 +414,7 @@ async fn run_single_prompt(
                 }
                 Err(e) => {
                     eprintln!("{RED}  error: {e}{RESET}");
-                    std::process::exit(1);
+                    exit_with_state(1);
                 }
             }
         } else {
@@ -197,7 +427,14 @@ async fn run_single_prompt(
             .await
         };
         if response.last_api_error.is_some() {
-            std::process::exit(1);
+            maybe_record_deepseek_api_failure(
+                deepseek_native,
+                &agent_config.provider,
+                &agent_config.model,
+                &response,
+                "single_prompt_stream_json_api_failure",
+            );
+            exit_with_state(1);
         }
         return;
     }
@@ -214,6 +451,20 @@ async fn run_single_prompt(
                 agent_config.model
             );
         }
+    }
+
+    if deepseek_native
+        && deepseek_fim_route
+        && image_path.is_none()
+        && output_path.is_none()
+        && maybe_run_deepseek_fim_route_prompt(
+            prompt_text.trim(),
+            deepseek_fim_response,
+            wants_json_output,
+            print_mode,
+        )
+    {
+        return;
     }
 
     // Auto-enable watch mode if a project type is detected and config allows it
@@ -249,6 +500,13 @@ async fn run_single_prompt(
                     &agent_config.model,
                 )
                 .await;
+                maybe_record_deepseek_api_failure(
+                    deepseek_native,
+                    &agent_config.provider,
+                    &agent_config.model,
+                    &initial,
+                    "single_prompt_image_api_failure",
+                );
                 // Fallback retry for multi-modal prompts
                 let retry_blocks = vec![
                     Content::Text {
@@ -268,7 +526,7 @@ async fn run_single_prompt(
                     format::maybe_ring_bell(prompt_start.elapsed());
                     if print_mode {
                         print!("{}", final_response.text);
-                    } else if json_output {
+                    } else if wants_json_output {
                         println!(
                             "{}",
                             build_json_output(
@@ -282,13 +540,13 @@ async fn run_single_prompt(
                     } else {
                         write_output_file(output_path, &final_response.text);
                     }
-                    std::process::exit(1);
+                    exit_with_state(1);
                 }
                 final_response
             }
             Err(e) => {
                 eprintln!("{RED}  error: {e}{RESET}");
-                std::process::exit(1);
+                exit_with_state(1);
             }
         }
     } else {
@@ -300,6 +558,13 @@ async fn run_single_prompt(
             &agent_config.model,
         )
         .await;
+        maybe_record_deepseek_api_failure(
+            deepseek_native,
+            &agent_config.provider,
+            &agent_config.model,
+            &initial,
+            "single_prompt_api_failure",
+        );
         // Fallback retry for text-only prompts
         let (final_response, should_exit_error) = try_fallback_prompt(
             agent_config,
@@ -313,7 +578,7 @@ async fn run_single_prompt(
             format::maybe_ring_bell(prompt_start.elapsed());
             if print_mode {
                 print!("{}", final_response.text);
-            } else if json_output {
+            } else if wants_json_output {
                 println!(
                     "{}",
                     build_json_output(
@@ -327,10 +592,23 @@ async fn run_single_prompt(
             } else {
                 write_output_file(output_path, &final_response.text);
             }
-            std::process::exit(1);
+            exit_with_state(1);
         }
         final_response
     };
+
+    let json_policy_enabled =
+        deepseek_native && wants_json_output && image_path.is_none() && !print_mode;
+    let (response, deepseek_json_report) = apply_deepseek_json_output_policy(
+        agent,
+        prompt_text.trim(),
+        response,
+        &mut session_total,
+        &agent_config.model,
+        json_policy_enabled,
+        "single_prompt_json_output",
+    )
+    .await;
 
     // Run watch command after prompt if active (auto lint/test loop)
     run_watch_after_prompt(
@@ -344,22 +622,23 @@ async fn run_single_prompt(
     format::maybe_ring_bell(prompt_start.elapsed());
     if print_mode {
         print!("{}", response.text);
-    } else if json_output {
+    } else if wants_json_output {
         println!(
             "{}",
-            build_json_output(
+            build_json_output_with_deepseek_policy(
                 &response,
                 &agent_config.model,
                 &session_total,
                 false,
-                &session_changes
+                &session_changes,
+                deepseek_json_report.as_ref(),
             )
         );
     } else {
         write_output_file(output_path, &response.text);
     }
     if CHECKPOINT_TRIGGERED.load(Ordering::SeqCst) {
-        std::process::exit(2);
+        exit_with_state(2);
     }
 }
 
@@ -373,6 +652,7 @@ fn looks_like_slash_command(input: &str) -> bool {
     matches!(input.trim_start().chars().next(), Some('/'))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_piped_mode(
     agent_config: &mut AgentConfig,
     agent: &mut Agent,
@@ -380,16 +660,20 @@ async fn run_piped_mode(
     json_output: bool,
     output_format: cli::OutputFormat,
     print_mode: bool,
+    deepseek_native: bool,
+    deepseek_fim_route: bool,
+    deepseek_fim_response: &Option<String>,
 ) {
+    let wants_json_output = json_output || output_format == cli::OutputFormat::Json;
     let mut input = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut input) {
         eprintln!("Error reading stdin: {e}");
-        std::process::exit(1);
+        exit_with_state(1);
     }
     let input = input.trim();
     if input.is_empty() {
         eprintln!("No input on stdin.");
-        std::process::exit(1);
+        exit_with_state(1);
     }
 
     // Piped mode can't dispatch slash commands (they need REPL state). If the
@@ -401,7 +685,7 @@ async fn run_piped_mode(
         eprintln!("    yoyo doctor                    # run a subcommand directly");
         eprintln!("    yoyo --prompt \"{input}\"        # send the literal text to the agent");
         eprintln!("    yoyo                           # interactive REPL");
-        std::process::exit(2);
+        exit_with_state(2);
     }
 
     // Stream-JSON mode: emit NDJSON events and return early
@@ -410,7 +694,14 @@ async fn run_piped_mode(
         let response =
             run_prompt_stream_json(agent, input, &mut session_total, &agent_config.model).await;
         if response.last_api_error.is_some() {
-            std::process::exit(1);
+            maybe_record_deepseek_api_failure(
+                deepseek_native,
+                &agent_config.provider,
+                &agent_config.model,
+                &response,
+                "piped_stream_json_api_failure",
+            );
+            exit_with_state(1);
         }
         return;
     }
@@ -420,6 +711,19 @@ async fn run_piped_mode(
             "{DIM}  yoyo (piped mode) — model: {}{RESET}",
             agent_config.model
         );
+    }
+
+    if deepseek_native
+        && deepseek_fim_route
+        && output_path.is_none()
+        && maybe_run_deepseek_fim_route_prompt(
+            input,
+            deepseek_fim_response,
+            wants_json_output,
+            print_mode,
+        )
+    {
+        return;
     }
 
     // Auto-enable watch mode if a project type is detected and config allows it
@@ -436,6 +740,13 @@ async fn run_piped_mode(
     let session_changes = SessionChanges::new();
     let prompt_start = Instant::now();
     let initial = run_prompt(agent, input, &mut session_total, &agent_config.model).await;
+    maybe_record_deepseek_api_failure(
+        deepseek_native,
+        &agent_config.provider,
+        &agent_config.model,
+        &initial,
+        "piped_api_failure",
+    );
     // Fallback retry for piped mode
     let (response, should_exit_error) = try_fallback_prompt(
         agent_config,
@@ -445,6 +756,20 @@ async fn run_piped_mode(
         initial,
     )
     .await;
+    let (response, deepseek_json_report) = if should_exit_error {
+        (response, None)
+    } else {
+        apply_deepseek_json_output_policy(
+            agent,
+            input,
+            response,
+            &mut session_total,
+            &agent_config.model,
+            deepseek_native && wants_json_output && !print_mode,
+            "piped_json_output",
+        )
+        .await
+    };
 
     // Run watch command after prompt if active (auto lint/test loop)
     if !should_exit_error {
@@ -460,25 +785,26 @@ async fn run_piped_mode(
     format::maybe_ring_bell(prompt_start.elapsed());
     if print_mode {
         print!("{}", response.text);
-    } else if json_output {
+    } else if wants_json_output {
         println!(
             "{}",
-            build_json_output(
+            build_json_output_with_deepseek_policy(
                 &response,
                 &agent_config.model,
                 &session_total,
                 should_exit_error,
                 &session_changes,
+                deepseek_json_report.as_ref(),
             )
         );
     } else {
         write_output_file(output_path, &response.text);
     }
     if should_exit_error {
-        std::process::exit(1);
+        exit_with_state(1);
     }
     if CHECKPOINT_TRIGGERED.load(Ordering::SeqCst) {
-        std::process::exit(2);
+        exit_with_state(2);
     }
 }
 
@@ -486,7 +812,8 @@ async fn run_piped_mode(
 /// any output.  Handles `--no-color`, `--no-bell`, `--no-notify`, and `--no-rtk`.
 fn apply_cli_flags(args: &[String]) {
     // Auto-disable color when stdout is not a terminal (piped output)
-    if args.iter().any(|a| a == "--no-color") || !io::stdout().is_terminal() {
+    let piped_stdout = !cfg!(test) && !io::stdout().is_terminal();
+    if args.iter().any(|a| a == "--no-color") || piped_stdout {
         disable_color();
     }
 
@@ -588,6 +915,12 @@ fn restore_session(agent: &mut Agent) {
     }
 }
 
+fn exit_with_state(code: i32) -> ! {
+    let status = if code == 0 { "completed" } else { "error" };
+    state::mark_run_completed(status);
+    std::process::exit(code);
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -601,6 +934,42 @@ async fn main() {
     if !apply_config_flags(&config) {
         return;
     }
+
+    if let Err(e) = state::init_global(
+        config.state.clone(),
+        serde_json::json!({
+            "provider": config.provider.clone(),
+            "model": config.model.clone(),
+            "state_adapter": crate::state::STATE_ADAPTER_NAME,
+            "state_adapter_mode": crate::state::STATE_ADAPTER_MODE,
+            "deepseek_native": config.deepseek_native,
+            "deepseek_request_meta": if config.deepseek_native {
+                Some(serde_json::to_value(crate::deepseek::DeepSeekRequestMeta::default()).unwrap_or_default())
+            } else {
+                None
+            },
+            "strict_schema_prototype": if config.deepseek_native {
+                Some(crate::deepseek::propose_harness_patch_schema())
+            } else {
+                None
+            },
+            "strict_schema_suite": if config.deepseek_native {
+                Some(crate::deepseek::strict_schema_suite())
+            } else {
+                None
+            },
+            "harness_genome": if config.deepseek_native {
+                Some(serde_json::to_value(crate::deepseek::active_harness_genome()).unwrap_or_default())
+            } else {
+                None
+            },
+            "binary": std::env::args().next().unwrap_or_else(|| "yoyo".to_string()),
+        }),
+    ) {
+        eprintln!("{RED}error:{RESET} failed to initialize state recorder: {e}");
+        exit_with_state(1);
+    }
+    let _run_completion = state::RunCompletionGuard::completed_on_drop();
 
     if config.no_tools {
         eprintln!(
@@ -620,6 +989,7 @@ async fn main() {
     let json_output = config.json_output;
     let output_format = config.output_format;
     let print_mode = config.print_mode;
+    let deepseek_native = config.deepseek_native;
     let is_interactive = io::stdin().is_terminal() && config.prompt_arg.is_none();
     let auto_approve = config.auto_approve || !is_interactive;
 
@@ -692,6 +1062,9 @@ async fn main() {
             json_output,
             output_format,
             print_mode,
+            deepseek_native,
+            config.deepseek_fim_route,
+            &config.deepseek_fim_response,
         )
         .await;
         return;
@@ -709,6 +1082,9 @@ async fn main() {
             json_output,
             output_format,
             print_mode,
+            deepseek_native,
+            config.deepseek_fim_route,
+            &config.deepseek_fim_response,
         )
         .await;
         return;
@@ -990,6 +1366,71 @@ mod tests {
         assert_eq!(parsed["is_error"], true);
         assert!(parsed["usage"].is_object());
         assert!(parsed["cost_usd"].is_number());
+    }
+
+    #[test]
+    fn deepseek_json_policy_parses_first_attempt() {
+        let report = evaluate_deepseek_json_output_attempts(
+            r#"{"answer":"ok"}"#,
+            None,
+            "test-json-output",
+            None,
+        );
+
+        assert!(report.parsed);
+        assert!(!report.retry_used);
+        assert_eq!(report.value.unwrap()["answer"], "ok");
+        assert_eq!(report.attempts.len(), 1);
+    }
+
+    #[test]
+    fn deepseek_json_policy_uses_retry_and_records_attempts() {
+        let report = evaluate_deepseek_json_output_attempts(
+            "not json",
+            Some(r#"{"answer":"retry-ok"}"#),
+            "test-json-output",
+            Some("summary".into()),
+        );
+
+        assert!(report.parsed);
+        assert!(report.retry_used);
+        assert_eq!(report.value.unwrap()["answer"], "retry-ok");
+        assert_eq!(report.attempts.len(), 2);
+    }
+
+    #[test]
+    fn deepseek_json_policy_metadata_in_json_output() {
+        let response = PromptOutcome {
+            text: r#"{"answer":"ok"}"#.to_string(),
+            last_tool_error: None,
+            last_tool_name: None,
+            was_overflow: false,
+            last_api_error: None,
+        };
+        let usage = Usage {
+            input: 10,
+            output: 5,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 15,
+        };
+        let report =
+            evaluate_deepseek_json_output_attempts(&response.text, None, "test-json-output", None);
+
+        let result = build_json_output_with_deepseek_policy(
+            &response,
+            "deepseek-v4-pro",
+            &usage,
+            false,
+            &SessionChanges::new(),
+            Some(&report),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(parsed["response"], r#"{"answer":"ok"}"#);
+        assert_eq!(parsed["deepseek_json"]["parsed"], true);
+        assert_eq!(parsed["deepseek_json"]["retry_used"], false);
+        assert_eq!(parsed["deepseek_json"]["value"]["answer"], "ok");
     }
 
     #[test]
@@ -1345,6 +1786,10 @@ mod tests {
             auto_watch: true,
             disallowed_tools: vec![],
             no_tools: false,
+            deepseek_native: false,
+            deepseek_fim_route: false,
+            deepseek_fim_response: None,
+            state: crate::state::StateConfig::default(),
         }
     }
 

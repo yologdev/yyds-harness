@@ -900,21 +900,24 @@ stash@{1}: On feature: def5678 wip stuff";
     fn test_format_stash_list_uses_ansi_colors() {
         let input = "stash@{0}: WIP on main: abc1234 fix tests";
         let result = format_stash_list(input);
-        // Should use YELLOW for stash ref
-        assert!(
-            result.contains("\x1b[33m"),
-            "Should use YELLOW ANSI code: {result}"
-        );
-        // Should use BOLD for message
-        assert!(
-            result.contains("\x1b[1m"),
-            "Should use BOLD ANSI code: {result}"
-        );
-        // Should use DIM for middle part
-        assert!(
-            result.contains("\x1b[2m"),
-            "Should use DIM ANSI code: {result}"
-        );
+        assert!(result.contains("stash@{0}"));
+        assert!(result.contains("fix tests"));
+        if format!("{}", crate::format::YELLOW).is_empty() {
+            assert!(!result.contains("\x1b["));
+        } else {
+            assert!(
+                result.contains("\x1b[33m"),
+                "Should use YELLOW ANSI code: {result}"
+            );
+            assert!(
+                result.contains("\x1b[1m"),
+                "Should use BOLD ANSI code: {result}"
+            );
+            assert!(
+                result.contains("\x1b[2m"),
+                "Should use DIM ANSI code: {result}"
+            );
+        }
     }
 
     #[test]
@@ -1086,48 +1089,66 @@ stash@{1}: On feature: def5678 wip stuff";
     fn colorize_diff_green_for_additions() {
         let diff = "+added line\n context\n";
         let result = colorize_diff(diff);
-        assert!(
-            result.contains("\x1b[32m+added line\x1b[0m"),
-            "Addition lines should be green: {result}"
-        );
+        if format!("{}", crate::format::GREEN).is_empty() {
+            assert!(result.contains("+added line"));
+        } else {
+            assert!(
+                result.contains("\x1b[32m+added line\x1b[0m"),
+                "Addition lines should be green: {result}"
+            );
+        }
     }
 
     #[test]
     fn colorize_diff_red_for_deletions() {
         let diff = "-removed line\n context\n";
         let result = colorize_diff(diff);
-        assert!(
-            result.contains("\x1b[31m-removed line\x1b[0m"),
-            "Deletion lines should be red: {result}"
-        );
+        if format!("{}", crate::format::RED).is_empty() {
+            assert!(result.contains("-removed line"));
+        } else {
+            assert!(
+                result.contains("\x1b[31m-removed line\x1b[0m"),
+                "Deletion lines should be red: {result}"
+            );
+        }
     }
 
     #[test]
     fn colorize_diff_cyan_for_hunk_headers() {
         let diff = "@@ -1,3 +1,4 @@\n context\n";
         let result = colorize_diff(diff);
-        assert!(
-            result.contains("\x1b[36m@@ -1,3 +1,4 @@\x1b[0m"),
-            "Hunk headers should be cyan: {result}"
-        );
+        if format!("{}", crate::format::CYAN).is_empty() {
+            assert!(result.contains("@@ -1,3 +1,4 @@"));
+        } else {
+            assert!(
+                result.contains("\x1b[36m@@ -1,3 +1,4 @@\x1b[0m"),
+                "Hunk headers should be cyan: {result}"
+            );
+        }
     }
 
     #[test]
     fn colorize_diff_bold_for_file_headers() {
         let diff = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n";
         let result = colorize_diff(diff);
-        assert!(
-            result.contains("\x1b[1mdiff --git a/foo.rs b/foo.rs\x1b[0m"),
-            "diff --git lines should be bold: {result}"
-        );
-        assert!(
-            result.contains("\x1b[1m--- a/foo.rs\x1b[0m"),
-            "--- lines should be bold: {result}"
-        );
-        assert!(
-            result.contains("\x1b[1m+++ b/foo.rs\x1b[0m"),
-            "+++ lines should be bold: {result}"
-        );
+        if format!("{}", crate::format::BOLD).is_empty() {
+            assert!(result.contains("diff --git a/foo.rs b/foo.rs"));
+            assert!(result.contains("--- a/foo.rs"));
+            assert!(result.contains("+++ b/foo.rs"));
+        } else {
+            assert!(
+                result.contains("\x1b[1mdiff --git a/foo.rs b/foo.rs\x1b[0m"),
+                "diff --git lines should be bold: {result}"
+            );
+            assert!(
+                result.contains("\x1b[1m--- a/foo.rs\x1b[0m"),
+                "--- lines should be bold: {result}"
+            );
+            assert!(
+                result.contains("\x1b[1m+++ b/foo.rs\x1b[0m"),
+                "+++ lines should be bold: {result}"
+            );
+        }
     }
 
     #[test]
@@ -1285,9 +1306,9 @@ stash@{1}: On feature: def5678 wip stuff";
     }
 
     #[test]
-    #[should_panic(expected = "SAFETY: run_git() called with destructive command")]
-    fn run_git_panics_on_destructive_from_project_root() {
-        // This should panic because we're in the project root during cargo test
-        let _ = run_git(&["revert", "HEAD", "--no-edit"]);
+    fn run_git_guard_blocks_destructive_from_project_root() {
+        let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let result = destructive_guard(&["revert", "HEAD", "--no-edit"], project_root);
+        assert_eq!(result, Some("revert"));
     }
 }

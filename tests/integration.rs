@@ -33,6 +33,26 @@ fn yoyo_cmd() -> Command {
     cmd
 }
 
+fn yoyo_ds_cmd() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_yoyo-ds"));
+    cmd.env_remove("ANTHROPIC_API_KEY");
+    cmd.env_remove("OPENAI_API_KEY");
+    cmd.env_remove("GOOGLE_API_KEY");
+    cmd.env_remove("API_KEY");
+    cmd.env_remove("GROQ_API_KEY");
+    cmd.env_remove("XAI_API_KEY");
+    cmd.env_remove("DEEPSEEK_API_KEY");
+    cmd.env_remove("OPENROUTER_API_KEY");
+    cmd.env_remove("MISTRAL_API_KEY");
+    cmd.env_remove("CEREBRAS_API_KEY");
+    cmd.env_remove("ZAI_API_KEY");
+    cmd.env("HOME", "/nonexistent-yoyo-test-home");
+    cmd.env_remove("XDG_CONFIG_HOME");
+    cmd.env_remove("XDG_DATA_HOME");
+    cmd.env_remove("NO_COLOR");
+    cmd
+}
+
 // ── --help ──────────────────────────────────────────────────────────
 
 #[test]
@@ -111,6 +131,22 @@ fn version_short_flag_prints_version_and_exits_zero() {
     assert!(
         stdout.starts_with("yoyo v"),
         "-V output should start with 'yoyo v': {stdout}"
+    );
+}
+
+#[test]
+fn yoyo_ds_alias_prints_version_and_exits_zero() {
+    let output = yoyo_ds_cmd()
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run yoyo-ds");
+
+    assert!(output.status.success(), "yoyo-ds --version should exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("yoyo v"),
+        "version output should preserve yoyo compatibility during bootstrap: {stdout}"
     );
 }
 

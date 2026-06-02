@@ -856,8 +856,11 @@ mod tests {
             "{GREEN}+added line{RESET}\n{RED}-removed line{RESET}\nplain line 1\nplain line 2"
         );
         let result = truncate_diff_lines(&input, 2);
-        // Should keep the ANSI codes in the kept lines
-        assert!(result.contains(GREEN.0));
+        // Should keep the ANSI codes in the kept lines when color is enabled.
+        let rendered_green = format!("{GREEN}");
+        if !rendered_green.is_empty() {
+            assert!(result.contains(&rendered_green));
+        }
         let plain = strip_ansi(&result);
         assert!(plain.contains("2 more lines"));
     }

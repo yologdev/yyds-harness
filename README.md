@@ -4,27 +4,42 @@
 
 <p align="center">
   <a href="https://yoyo.yolog.dev/">Website</a> ·
-  <a href="https://yologdev.github.io/yoyo-evolve/">Journal</a> ·
-  <a href="https://yologdev.github.io/yoyo-evolve/book/">Documentation</a> ·
-  <a href="https://github.com/yologdev/yoyo-evolve">GitHub</a> ·
-  <a href="https://deepwiki.com/yologdev/yoyo-evolve">DeepWiki</a> ·
-  <a href="https://github.com/yologdev/yoyo-evolve/issues">Issues</a> ·
+  <a href="https://github.com/yologdev/yoyo-ds-harness">GitHub</a> ·
+  <a href="https://github.com/yologdev/yoyo-ds-harness/releases">Releases</a> ·
+  <a href="https://github.com/yologdev/yoyo-ds-harness/issues">Issues</a> ·
   <a href="https://x.com/yuanhao">Follow on X</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/yologdev/yoyo-evolve/stargazers"><img src="https://img.shields.io/github/stars/yologdev/yoyo-evolve?style=flat" alt="stars"></a>
-  <a href="https://crates.io/crates/yoyo-agent"><img src="https://img.shields.io/crates/v/yoyo-agent" alt="crates.io"></a>
-  <a href="https://github.com/yologdev/yoyo-evolve/actions"><img src="https://img.shields.io/github/actions/workflow/status/yologdev/yoyo-evolve/evolve.yml?label=evolution&logo=github" alt="evolution"></a>
+  <a href="https://github.com/yologdev/yoyo-ds-harness/stargazers"><img src="https://img.shields.io/github/stars/yologdev/yoyo-ds-harness?style=flat" alt="stars"></a>
+  <a href="https://github.com/yologdev/yoyo-ds-harness/actions"><img src="https://img.shields.io/github/actions/workflow/status/yologdev/yoyo-ds-harness/ci.yml?label=ci&logo=github" alt="ci"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="license MIT"></a>
-  <a href="https://github.com/yologdev/yoyo-evolve/commits/main"><img src="https://img.shields.io/github/last-commit/yologdev/yoyo-evolve" alt="last commit"></a>
+  <a href="https://github.com/yologdev/yoyo-ds-harness/commits/main"><img src="https://img.shields.io/github/last-commit/yologdev/yoyo-ds-harness" alt="last commit"></a>
 </p>
 
 ---
 
-# yoyo: A Coding Agent That Evolves Itself
+# Yoyo DeepSeek Harness
 
-**200 lines of Rust. Zero human code. One rule: evolve or die.** yoyo reads its own source, picks what to improve, implements it, runs tests, and commits — every few hours, on its own. 52 days later: **51,000+ lines, 2,000+ tests, 35 source files.**
+**A DeepSeek-native coding agent harness that learns from its own failures.**
+
+`yoyo-ds-harness` is a production fork of `yologdev/yoyo-evolve`. It keeps the existing `yoyo` coding-agent runtime and history, then specializes the harness around DeepSeek models, deterministic prompt layout, stateful trace recording, and evaluation-driven harness evolution.
+
+The bootstrap keeps the familiar `yoyo` command for compatibility and adds `yoyo-ds` as the DeepSeek-focused product surface. During migration, both work:
+
+```bash
+yoyo-ds --deepseek-native "fix the failing tests"
+yoyo --deepseek-native "fix the failing tests"
+```
+
+First production wedge:
+
+- DeepSeek-native profile via `--deepseek-native`
+- DeepSeek v4 model defaults and 1M context-window policy
+- project-local `.yoyo/deepseek.toml` overrides for DeepSeek model, routing, cache, and state defaults
+- fail-soft `.yoyo/state/events.jsonl` shadow tracing
+- `yoyo state init|tail|trace|recover|retention|memory|journal|failures|cache`
+- no broad internal rename sweep
 
 A free, open-source coding agent for your terminal. It navigates codebases, makes multi-file edits, runs tests, manages git, understands project context, and recovers from failures — all from a streaming REPL with 70+ slash commands.
 
@@ -237,25 +252,29 @@ Anthropic · OpenAI · Google · Ollama · OpenRouter · xAI · Groq · DeepSeek
 ### Install (macOS & Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yologdev/yoyo-evolve/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yologdev/yoyo-ds-harness/main/install.sh | bash
 ```
 
 ### Install (Windows PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/yologdev/yoyo-evolve/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/yologdev/yoyo-ds-harness/main/install.ps1 | iex
 ```
 
 ### Or install from crates.io
 
 ```bash
-cargo install yoyo-agent
+cargo install yoyo-ds-harness
 ```
+
+Crates.io publishing depends on `yoagent-state` being published. Until then, use the GitHub release installers or build from a checkout with `../yoagent-state` available.
 
 ### Or build from source
 
 ```bash
-git clone https://github.com/yologdev/yoyo-evolve && cd yoyo-evolve && cargo install --path .
+git clone https://github.com/yologdev/yoyo-ds-harness
+git clone https://github.com/yologdev/yoagent-state
+cd yoyo-ds-harness && cargo install --path .
 ```
 
 ### Run
@@ -292,7 +311,7 @@ yoyo --yes
 
 ### Configure
 
-Create `.yoyo.toml` in your project root, `~/.yoyo.toml` in your home directory, or `~/.config/yoyo/config.toml` globally:
+Create `.yoyo.toml` in your project root, `~/.yoyo.toml` in your home directory, or `~/.config/yoyo/config.toml` globally. Config scopes are layered from global to local, so project settings override home settings and home settings override XDG defaults:
 
 ```toml
 model = "claude-sonnet-4-20250514"
@@ -307,6 +326,57 @@ deny = ["rm -rf *"]
 [directories]
 allow = ["."]
 deny = ["../secrets"]
+```
+
+For DeepSeek-native runs, add `.yoyo/deepseek.toml` when a project needs separate harness defaults:
+
+```toml
+[deepseek]
+enabled = true
+default_model = "deepseek-v4-pro"
+fast_model = "deepseek-v4-flash"
+base_url = "https://api.deepseek.com/v1"
+thinking_default = "high"
+
+[deepseek.routing]
+planning = "pro_thinking_high"
+root_cause = "pro_thinking_max"
+summary = "flash_non_thinking"
+local_edit = "fim_non_thinking"
+
+[deepseek.cache]
+stable_prefix = true
+record_metrics = true
+optimize_prompt_order = true
+
+[deepseek.context]
+recent_failure_limit = 5
+changed_file_limit = 12
+include_repo_map = true
+include_instruction_files = ["YOYO.md", "AGENTS.md", "CLAUDE.md"]
+
+[deepseek.transport]
+request_timeout_ms = 120000
+max_retries = 2
+
+[state]
+enabled = true
+events = ".yoyo/state/events.jsonl"
+store = ".yoyo/state/state.sqlite"
+fail_soft = true
+
+[evolve.harness]
+allowed_patch_types = [
+  "context_policy",
+  "tool_schema",
+  "test_policy",
+  "repair_policy",
+  "thinking_policy"
+]
+require_human_approval_for = [
+  "permission_policy",
+  "shell_policy"
+]
 ```
 
 ### Project Context
@@ -380,12 +450,12 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 
 Want your own self-evolving agent? Fork this repo, edit two files, and you're running:
 
-1. **Fork** [yologdev/yoyo-evolve](https://github.com/yologdev/yoyo-evolve)
+1. **Fork** [yologdev/yoyo-ds-harness](https://github.com/yologdev/yoyo-ds-harness)
 2. **Edit** `IDENTITY.md` (goals, rules) and `PERSONALITY.md` (voice, tone)
 3. **Create a GitHub App** and set secrets (`ANTHROPIC_API_KEY`, `APP_ID`, `APP_PRIVATE_KEY`, `APP_INSTALLATION_ID`)
 4. **Enable** the Evolution workflow
 
-Everything else auto-detects. See the [full guide](https://yologdev.github.io/yoyo-evolve/book/guides/fork.html) for details.
+Everything else auto-detects. See the [full guide](https://github.com/yologdev/yoyo-ds-harness/blob/main/docs/src/guides/fork.md) for details.
 
 ## Architecture
 
@@ -450,21 +520,21 @@ See `mutants.toml` for the configuration and `docs/src/contributing/mutation-tes
 
 ## Citation
 
-If you use yoyo-evolve in a research paper, please cite our work as follows:
+If you use Yoyo DeepSeek Harness in a research paper, please cite our work as follows:
 
 ```bibtex
-@misc{yoyo2026yoyoevolve,
-  title        = {yoyo-evolve: A Coding Agent That Evolves Itself},
+@misc{yoyo2026yoyodsharness,
+  title        = {Yoyo DeepSeek Harness: A DeepSeek-native coding agent harness that learns from its own failures},
   author       = {Yuanhao and {yoyo}},
   year         = {2026},
-  howpublished = {\url{https://github.com/yologdev/yoyo-evolve}},
-  note         = {Open-source self-evolving coding agent}
+  howpublished = {\url{https://github.com/yologdev/yoyo-ds-harness}},
+  note         = {Open-source DeepSeek-native coding agent harness}
 }
 ```
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=yologdev/yoyo-evolve&type=Date)](https://star-history.com/#yologdev/yoyo-evolve&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=yologdev/yoyo-ds-harness&type=Date)](https://star-history.com/#yologdev/yoyo-ds-harness&Date)
 
 ## Sponsors
 

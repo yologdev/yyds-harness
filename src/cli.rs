@@ -18,10 +18,13 @@ pub use crate::providers::{
 
 // Re-exported from config module so existing `use crate::cli::` imports keep working.
 pub use crate::config::{
-    history_file_path, home_config_path, load_config_file, parse_config_file,
+    history_file_path, home_config_path, load_config_file, load_deepseek_config_file,
     parse_directories_from_config, parse_mcp_servers_from_config, parse_permissions_from_config,
     parse_toml_array, user_config_path, DirectoryRestrictions, McpServerConfig, PermissionConfig,
 };
+
+#[cfg(test)]
+use crate::config::parse_config_file;
 
 /// Whether verbose output is enabled. Set once at startup.
 static VERBOSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -134,6 +137,12 @@ const KNOWN_FLAGS: &[&str] = &[
     "-q",
     "--disallowed-tools",
     "--no-tools",
+    "--deepseek-native",
+    "--deepseek-fim-route",
+    "--no-deepseek-fim-route",
+    "--deepseek-fim-response",
+    "--state",
+    "--no-state",
     "--help",
     "-h",
     "--version",
@@ -162,9 +171,13 @@ pub(crate) fn collect_positional_args(
         "changelog",
         "commit",
         "config",
+        "context",
         "diff",
+        "deepseek",
         "docs",
         "doctor",
+        "eval",
+        "evolve",
         "evolution",
         "extended",
         "find",
@@ -181,6 +194,7 @@ pub(crate) fn collect_positional_args(
         "review",
         "run",
         "setup",
+        "state",
         "skill",
         "status",
         "test",
@@ -337,11 +351,28 @@ fn parse_model_config(
     args: &[String],
     file_config: &HashMap<String, String>,
     prompt_arg: &Option<String>,
+    deepseek_native: bool,
 ) -> ModelConfig {
+    let cli_provider = flag_value(args, &["--provider"]);
+    let cli_model = flag_value(args, &["--model"]);
+
     // Parse --provider flag (CLI > config file > default "anthropic")
-    let provider = flag_value(args, &["--provider"])
-        .or_else(|| file_config.get("provider").cloned())
-        .unwrap_or_else(|| "anthropic".into())
+    let provider = cli_provider
+        .clone()
+        .or_else(|| {
+            if deepseek_native {
+                Some("deepseek".into())
+            } else {
+                file_config.get("provider").cloned()
+            }
+        })
+        .unwrap_or_else(|| {
+            if deepseek_native {
+                "deepseek".into()
+            } else {
+                "anthropic".into()
+            }
+        })
         .to_lowercase();
 
     // Validate provider name
@@ -353,8 +384,16 @@ fn parse_model_config(
     }
 
     // Parse --base-url flag (CLI > config file)
-    let base_url =
-        flag_value(args, &["--base-url"]).or_else(|| file_config.get("base_url").cloned());
+    let base_url = flag_value(args, &["--base-url"]).or_else(|| {
+        if deepseek_native {
+            file_config
+                .get("deepseek_base_url")
+                .cloned()
+                .or_else(|| file_config.get("base_url").cloned())
+        } else {
+            file_config.get("base_url").cloned()
+        }
+    });
 
     // API key: --api-key flag > provider-specific env > ANTHROPIC_API_KEY > API_KEY > config file
     let api_key_from_flag = flag_value(args, &["--api-key"]);
@@ -375,7 +414,14 @@ fn parse_model_config(
                     // Fallback chain: ANTHROPIC_API_KEY > API_KEY > config file
                     match std::env::var("ANTHROPIC_API_KEY").or_else(|_| std::env::var("API_KEY")) {
                         Ok(key) if !key.is_empty() => key,
-                        _ => match file_config.get("api_key").cloned() {
+                        _ => match if deepseek_native {
+                            file_config
+                                .get("deepseek_api_key")
+                                .cloned()
+                                .or_else(|| file_config.get("api_key").cloned())
+                        } else {
+                            file_config.get("api_key").cloned()
+                        } {
                             Some(key) if !key.is_empty() => key,
                             _ => {
                                 // For local/ollama providers, API key is optional
@@ -402,9 +448,24 @@ fn parse_model_config(
         }
     };
 
-    let model = flag_value(args, &["--model"])
-        .or_else(|| file_config.get("model").cloned())
-        .unwrap_or_else(|| default_model_for_provider(&provider));
+    let model = cli_model
+        .or_else(|| {
+            if deepseek_native {
+                file_config
+                    .get("deepseek_model")
+                    .cloned()
+                    .or_else(|| Some(crate::deepseek::DEFAULT_MODEL.into()))
+            } else {
+                file_config.get("model").cloned()
+            }
+        })
+        .unwrap_or_else(|| {
+            if deepseek_native {
+                crate::deepseek::DEFAULT_MODEL.into()
+            } else {
+                default_model_for_provider(&provider)
+            }
+        });
 
     // --fallback <provider>: fallback provider if primary fails
     let fallback_provider = flag_value(args, &["--fallback"])
@@ -583,6 +644,72 @@ fn parse_mcp_and_openapi_config(
     }
 }
 
+fn parse_deepseek_native(args: &[String], file_config: &HashMap<String, String>) -> bool {
+    args.iter().any(|a| a == "--deepseek-native")
+        || crate::state::parse_bool(file_config.get("deepseek_native"), false)
+        || std::env::var("YOYO_DEEPSEEK_NATIVE")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
+}
+
+fn merge_deepseek_config(
+    base_config: &HashMap<String, String>,
+    deepseek_config: &HashMap<String, String>,
+    deepseek_native: bool,
+) -> HashMap<String, String> {
+    let mut merged = base_config.clone();
+    if deepseek_native {
+        for (key, value) in deepseek_config {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    merged
+}
+
+fn parse_deepseek_fim_route(
+    args: &[String],
+    file_config: &HashMap<String, String>,
+    deepseek_native: bool,
+) -> bool {
+    if args.iter().any(|a| a == "--no-deepseek-fim-route") {
+        return false;
+    }
+    if args.iter().any(|a| a == "--deepseek-fim-route") {
+        return true;
+    }
+    crate::state::parse_bool(file_config.get("deepseek_fim_route"), deepseek_native)
+}
+
+fn parse_state_config(
+    args: &[String],
+    file_config: &HashMap<String, String>,
+    deepseek_native: bool,
+) -> crate::state::StateConfig {
+    let mut cfg = crate::state::StateConfig::default();
+    let cli_enable = args.iter().any(|a| a == "--state");
+    let cli_disable = args.iter().any(|a| a == "--no-state");
+    let env_enable = std::env::var("YOYO_STATE")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+
+    cfg.enabled = if cli_disable {
+        false
+    } else if cli_enable || env_enable {
+        true
+    } else {
+        crate::state::parse_bool(file_config.get("state_enabled"), deepseek_native)
+    };
+
+    cfg.fail_soft = crate::state::parse_bool(file_config.get("state_fail_soft"), true);
+    if let Some(path) = file_config.get("state_events") {
+        cfg.events_path = std::path::PathBuf::from(path);
+    }
+    if let Some(path) = file_config.get("state_store") {
+        cfg.store_path = Some(std::path::PathBuf::from(path));
+    }
+    cfg
+}
+
 pub fn parse_args(args: &[String]) -> Option<Config> {
     // Handle early-exit subcommands (--help, --version) before anything else.
     if let Some(result) = crate::dispatch_sub::try_dispatch_subcommand(args) {
@@ -604,7 +731,14 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
 
     // Load config file defaults (CLI flags override these)
     // Read the file once and reuse raw content for permissions + directory parsing
-    let (file_config, raw_config_content) = load_config_file();
+    let (base_file_config, raw_config_content) = load_config_file();
+    let (deepseek_file_config, _) = load_deepseek_config_file();
+    let deepseek_native = parse_deepseek_native(
+        args,
+        &merge_deepseek_config(&base_file_config, &deepseek_file_config, true),
+    );
+    let file_config =
+        merge_deepseek_config(&base_file_config, &deepseek_file_config, deepseek_native);
 
     // Validate that flags requiring values actually have them
     let flags_needing_values = [
@@ -634,6 +768,7 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         "--context-window",
         "--fallback",
         "--disallowed-tools",
+        "--deepseek-fim-response",
     ];
     for flag in &flags_needing_values {
         if let Some(pos) = args.iter().position(|a| a == flag) {
@@ -700,8 +835,10 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         None
     };
 
+    let state = parse_state_config(args, &file_config, deepseek_native);
+
     // Parse model/provider/API-key/fallback configuration
-    let mc = parse_model_config(args, &file_config, &prompt_arg);
+    let mc = parse_model_config(args, &file_config, &prompt_arg, deepseek_native);
 
     let skill_dirs = collect_repeatable_flag(args, "--skills");
 
@@ -739,24 +876,33 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         file_config.get("system_prompt").cloned(),
     );
 
-    // Append project context (YOYO.md, .yoyo/instructions.md) to system prompt
-    if let Some(project_context) = load_project_context() {
-        system_prompt.push_str("\n\n# Project Instructions\n\n");
-        system_prompt.push_str(&project_context);
-    }
+    if deepseek_native {
+        let deepseek_context = crate::context::render_deepseek_native_context_for_prompt();
+        if !deepseek_context.is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&deepseek_context);
+        }
+    } else {
+        // Append project context (YOYO.md, .yoyo/instructions.md) to system prompt
+        if let Some(project_context) = load_project_context() {
+            system_prompt.push_str("\n\n# Project Instructions\n\n");
+            system_prompt.push_str(&project_context);
+        }
 
-    // Append repo map for structural codebase awareness
-    if let Some(repo_map) = crate::commands_map::generate_repo_map_for_prompt() {
-        system_prompt.push_str("\n\n# Repository Structure\n\n");
-        system_prompt.push_str(&repo_map);
-    }
+        // Append repo map for structural codebase awareness
+        if let Some(repo_map) = crate::commands_map::generate_repo_map_for_prompt() {
+            system_prompt.push_str("\n\n# Repository Structure\n\n");
+            system_prompt.push_str(&repo_map);
+        }
 
-    // Append current goal for persistent awareness
-    if let Some(goal) = crate::commands_goal::load_goal() {
-        system_prompt.push_str("\n\n# Current Goal\n\n");
-        system_prompt.push_str(&goal);
-        system_prompt
-            .push_str("\n\n(Set via /goal set. The user is working toward this. Keep it in mind.)");
+        // Append current goal for persistent awareness
+        if let Some(goal) = crate::commands_goal::load_goal() {
+            system_prompt.push_str("\n\n# Current Goal\n\n");
+            system_prompt.push_str(&goal);
+            system_prompt.push_str(
+                "\n\n(Set via /goal set. The user is working toward this. Keep it in mind.)",
+            );
+        }
     }
 
     // --thinking <level> enables extended thinking (CLI overrides config file)
@@ -765,8 +911,20 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         .position(|a| a == "--thinking")
         .and_then(|i| args.get(i + 1))
         .map(|s| parse_thinking_level(s))
-        .or_else(|| file_config.get("thinking").map(|s| parse_thinking_level(s)))
-        .unwrap_or(ThinkingLevel::Off);
+        .or_else(|| {
+            if deepseek_native {
+                file_config
+                    .get("deepseek_thinking")
+                    .map(|s| parse_thinking_level(s))
+            } else {
+                file_config.get("thinking").map(|s| parse_thinking_level(s))
+            }
+        })
+        .unwrap_or(if deepseek_native {
+            ThinkingLevel::High
+        } else {
+            ThinkingLevel::Off
+        });
 
     let continue_session = args.iter().any(|a| a == "--continue" || a == "-c");
 
@@ -868,6 +1026,10 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
             tools
         },
         no_tools: args.iter().any(|a| a == "--no-tools"),
+        deepseek_native,
+        deepseek_fim_route: parse_deepseek_fim_route(args, &file_config, deepseek_native),
+        deepseek_fim_response: flag_value(args, &["--deepseek-fim-response"]),
+        state,
     })
 }
 
@@ -901,6 +1063,7 @@ mod tests {
             "help",
             "version",
             "setup",
+            "state",
             "init",
             "lint",
             "test",
@@ -2027,6 +2190,135 @@ system_prompt = "You are a Go expert"
             KNOWN_FLAGS.contains(&"--fallback"),
             "--fallback should be in KNOWN_FLAGS"
         );
+    }
+
+    #[test]
+    fn test_deepseek_native_flags_known() {
+        assert!(KNOWN_FLAGS.contains(&"--deepseek-native"));
+        assert!(KNOWN_FLAGS.contains(&"--deepseek-fim-route"));
+        assert!(KNOWN_FLAGS.contains(&"--deepseek-fim-response"));
+        assert!(KNOWN_FLAGS.contains(&"--state"));
+        assert!(KNOWN_FLAGS.contains(&"--no-state"));
+    }
+
+    #[test]
+    fn test_deepseek_native_sets_provider_model_thinking_and_state() {
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+        let args: Vec<String> = vec!["yoyo".into(), "--deepseek-native".into()];
+        let config = parse_args(&args).expect("should parse");
+        assert!(config.deepseek_native);
+        assert!(config.deepseek_fim_route);
+        assert!(config.deepseek_fim_response.is_none());
+        assert_eq!(config.provider, "deepseek");
+        assert_eq!(config.model, crate::deepseek::DEFAULT_MODEL);
+        assert_eq!(config.thinking, ThinkingLevel::High);
+        assert!(config.state.enabled);
+        assert!(config
+            .system_prompt
+            .contains("DeepSeek Native Harness Contract"));
+        assert!(config
+            .system_prompt
+            .contains("# DeepSeek Context: strict_tool_schemas"));
+    }
+
+    #[test]
+    fn test_deepseek_fim_route_flags_parse() {
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--deepseek-native".to_string(),
+            "--deepseek-fim-route".to_string(),
+            "--deepseek-fim-response".to_string(),
+            r#"{"choices":[{"text":"ok"}]}"#.to_string(),
+        ];
+
+        let config = parse_args(&args).expect("should parse");
+
+        assert!(config.deepseek_fim_route);
+        assert_eq!(
+            config.deepseek_fim_response.as_deref(),
+            Some(r#"{"choices":[{"text":"ok"}]}"#)
+        );
+    }
+
+    #[test]
+    fn test_deepseek_fim_route_can_be_disabled() {
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--deepseek-native".to_string(),
+            "--no-deepseek-fim-route".to_string(),
+        ];
+
+        let config = parse_args(&args).expect("should parse");
+
+        assert!(config.deepseek_native);
+        assert!(!config.deepseek_fim_route);
+    }
+
+    #[test]
+    fn deepseek_config_overrides_native_model_base_url_and_state_defaults() {
+        let args: Vec<String> = vec!["yoyo".into()];
+        let base_config = HashMap::new();
+        let deepseek_config = HashMap::from([
+            ("deepseek_native".to_string(), "true".to_string()),
+            (
+                "deepseek_model".to_string(),
+                "deepseek-v4-flash".to_string(),
+            ),
+            (
+                "deepseek_base_url".to_string(),
+                "https://deepseek.example/v1".to_string(),
+            ),
+            ("deepseek_api_key".to_string(), "test-key".to_string()),
+            ("state_enabled".to_string(), "false".to_string()),
+            (
+                "state_events".to_string(),
+                ".yoyo/state/custom-events.jsonl".to_string(),
+            ),
+            (
+                "state_store".to_string(),
+                ".yoyo/state/custom.sqlite".to_string(),
+            ),
+        ]);
+
+        let native = parse_deepseek_native(
+            &args,
+            &merge_deepseek_config(&base_config, &deepseek_config, true),
+        );
+        let merged = merge_deepseek_config(&base_config, &deepseek_config, native);
+        let model_config = parse_model_config(&args, &merged, &None, native);
+        let state = parse_state_config(&args, &merged, native);
+
+        assert!(native);
+        assert_eq!(model_config.provider, "deepseek");
+        assert_eq!(model_config.model, crate::deepseek::FAST_MODEL);
+        assert_eq!(
+            model_config.base_url.as_deref(),
+            Some("https://deepseek.example/v1")
+        );
+        assert!(!state.enabled);
+        assert_eq!(
+            state.events_path,
+            std::path::PathBuf::from(".yoyo/state/custom-events.jsonl")
+        );
+        assert_eq!(
+            state.store_path.as_deref(),
+            Some(std::path::Path::new(".yoyo/state/custom.sqlite"))
+        );
+    }
+
+    #[test]
+    fn test_no_state_overrides_deepseek_native_state_default() {
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+        let args: Vec<String> = vec![
+            "yoyo".into(),
+            "--deepseek-native".into(),
+            "--no-state".into(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert!(config.deepseek_native);
+        assert!(!config.state.enabled);
     }
 
     #[test]

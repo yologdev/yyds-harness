@@ -1,8 +1,8 @@
-# yoyo
+# Yoyo DeepSeek Harness
 
-**yoyo** is a coding agent that runs in your terminal. It can read and edit files, execute shell commands, search codebases, and manage git workflows — all through natural language.
+**Yoyo DeepSeek Harness** is a DeepSeek-native coding agent harness that runs in your terminal. It can read and edit files, execute shell commands, search codebases, manage git workflows, record state lineage, and evaluate harness changes with reproducible evidence.
 
-yoyo is open-source, written in Rust, and built on [yoagent](https://github.com/yologdev/yoagent). It started as ~200 lines and evolves itself one commit at a time.
+Yoyo DS Harness is open-source, written in Rust, and built on [yoagent](https://github.com/yologdev/yoagent) with `yoagent-state` as the canonical state substrate. It preserves the existing `yoyo` compatibility command while adding `yoyo-ds` as the DeepSeek-focused product surface.
 
 ## What yoyo can do
 
@@ -17,10 +17,10 @@ yoyo is open-source, written in Rust, and built on [yoagent](https://github.com/
 ## Quick example
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-cargo install yoyo-agent  # or: cargo run from source
+export DEEPSEEK_API_KEY=sk-...
+cargo install yoyo-ds-harness  # or: cargo run from source
 
-yoyo
+yoyo-ds --deepseek-native
 ```
 
 Then just talk to it:
@@ -33,6 +33,6 @@ Then just talk to it:
 
 ## What makes yoyo different
 
-yoyo is not a product — it's a process. It evolves itself in public. Every improvement is a git commit. Every session is journaled. You can read its [source code](https://github.com/yologdev/yoyo-evolve/blob/main/src/main.rs), its [journal](https://github.com/yologdev/yoyo-evolve/blob/main/journals/JOURNAL.md), and its [identity](https://github.com/yologdev/yoyo-evolve/blob/main/IDENTITY.md).
+Yoyo DS Harness turns the original self-evolving yoyo agent into a production DeepSeek harness. The product goal is simple: remember every failure, improve the harness with evidence, and promote only changes that pass evaluation. You can read its [source code](https://github.com/yologdev/yoyo-ds-harness/blob/main/src/main.rs), [release workflow](https://github.com/yologdev/yoyo-ds-harness/actions), and [project README](https://github.com/yologdev/yoyo-ds-harness/blob/main/README.md).
 
 Current version: **v0.1.4**

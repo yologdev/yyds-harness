@@ -28,6 +28,174 @@ fn accumulate_usage(total: &mut Usage, delta: &Usage) {
     total.cache_write += delta.cache_write;
 }
 
+fn count_text_lines(text: &str) -> usize {
+    if text.is_empty() {
+        0
+    } else {
+        text.lines().count()
+    }
+}
+
+fn strip_ansi_codes(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            for code_ch in chars.by_ref() {
+                if code_ch.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
+fn plain_diff_preview(old_text: &str, new_text: &str, max_lines: usize) -> String {
+    let diff = format_edit_diff(old_text, new_text);
+    if diff.is_empty() {
+        String::new()
+    } else {
+        strip_ansi_codes(&truncate_diff_preview(&diff, max_lines))
+    }
+}
+
+fn tool_args_state_payload(tool_name: &str, args: &serde_json::Value) -> serde_json::Value {
+    let mut compact = args.clone();
+    let Some(obj) = compact.as_object_mut() else {
+        return compact;
+    };
+
+    match tool_name {
+        "edit_file" => {
+            let old_text = args.get("old_text").and_then(|v| v.as_str()).unwrap_or("");
+            let new_text = args.get("new_text").and_then(|v| v.as_str()).unwrap_or("");
+            let diff_preview = plain_diff_preview(old_text, new_text, 30);
+            obj.remove("old_text");
+            obj.remove("new_text");
+            obj.insert("text_omitted".to_string(), serde_json::json!(true));
+            obj.insert(
+                "old_line_count".to_string(),
+                serde_json::json!(count_text_lines(old_text)),
+            );
+            obj.insert(
+                "new_line_count".to_string(),
+                serde_json::json!(count_text_lines(new_text)),
+            );
+            obj.insert(
+                "diff_available".to_string(),
+                serde_json::json!(!diff_preview.is_empty()),
+            );
+            if !diff_preview.is_empty() {
+                obj.insert("diff_preview".to_string(), serde_json::json!(diff_preview));
+            }
+        }
+        "write_file" => {
+            let new_content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            obj.remove("content");
+            obj.insert("content_omitted".to_string(), serde_json::json!(true));
+            obj.insert(
+                "content_line_count".to_string(),
+                serde_json::json!(count_text_lines(new_content)),
+            );
+            obj.insert(
+                "content_bytes".to_string(),
+                serde_json::json!(new_content.len()),
+            );
+            if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                if let Ok(old_content) = std::fs::read_to_string(path) {
+                    let diff_preview = plain_diff_preview(&old_content, new_content, 30);
+                    obj.insert(
+                        "old_line_count".to_string(),
+                        serde_json::json!(count_text_lines(&old_content)),
+                    );
+                    obj.insert(
+                        "diff_available".to_string(),
+                        serde_json::json!(!diff_preview.is_empty()),
+                    );
+                    if !diff_preview.is_empty() {
+                        obj.insert("diff_preview".to_string(), serde_json::json!(diff_preview));
+                    }
+                } else {
+                    obj.insert("old_line_count".to_string(), serde_json::json!(0));
+                    obj.insert("diff_available".to_string(), serde_json::json!(false));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    compact
+}
+
+fn file_edited_state_payload(
+    tool_call_id: &str,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let path = args.get("path").and_then(|v| v.as_str())?;
+    let mut payload = serde_json::json!({
+        "tool_call_id": tool_call_id,
+        "path": path,
+        "edit_kind": tool_name,
+    });
+
+    if let Some(obj) = payload.as_object_mut() {
+        match tool_name {
+            "edit_file" => {
+                let old_text = args.get("old_text").and_then(|v| v.as_str()).unwrap_or("");
+                let new_text = args.get("new_text").and_then(|v| v.as_str()).unwrap_or("");
+                let diff_preview = plain_diff_preview(old_text, new_text, 30);
+                obj.insert(
+                    "old_line_count".to_string(),
+                    serde_json::json!(count_text_lines(old_text)),
+                );
+                obj.insert(
+                    "new_line_count".to_string(),
+                    serde_json::json!(count_text_lines(new_text)),
+                );
+                obj.insert(
+                    "diff_available".to_string(),
+                    serde_json::json!(!diff_preview.is_empty()),
+                );
+                if !diff_preview.is_empty() {
+                    obj.insert("diff_preview".to_string(), serde_json::json!(diff_preview));
+                }
+            }
+            "write_file" => {
+                let new_content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                obj.insert(
+                    "new_line_count".to_string(),
+                    serde_json::json!(count_text_lines(new_content)),
+                );
+                if let Ok(old_content) = std::fs::read_to_string(path) {
+                    let diff_preview = plain_diff_preview(&old_content, new_content, 30);
+                    obj.insert(
+                        "old_line_count".to_string(),
+                        serde_json::json!(count_text_lines(&old_content)),
+                    );
+                    obj.insert(
+                        "diff_available".to_string(),
+                        serde_json::json!(!diff_preview.is_empty()),
+                    );
+                    if !diff_preview.is_empty() {
+                        obj.insert("diff_preview".to_string(), serde_json::json!(diff_preview));
+                    }
+                } else {
+                    obj.insert("old_line_count".to_string(), serde_json::json!(0));
+                    obj.insert("diff_available".to_string(), serde_json::json!(false));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some(payload)
+}
+
 /// Shared epilogue for `run_prompt_with_changes` and
 /// `run_prompt_with_content_and_changes`.
 ///
@@ -137,6 +305,7 @@ struct PromptEventState {
     usage: Usage,
     in_text: bool,
     in_thinking: bool,
+    thinking_observed: bool,
     tool_timers: HashMap<String, Instant>,
     collected_text: String,
     retriable_error: Option<String>,
@@ -170,6 +339,7 @@ impl PromptEventState {
             usage: Usage::default(),
             in_text: false,
             in_thinking: false,
+            thinking_observed: false,
             tool_timers: HashMap::new(),
             collected_text: String::new(),
             retriable_error: None,
@@ -565,6 +735,11 @@ async fn handle_prompt_events(
     model: &str,
 ) -> PromptResult {
     let mut state = PromptEventState::new();
+    crate::state::record(
+        crate::state::EventType::ModelCallStarted,
+        crate::state::Actor::Yoyo,
+        serde_json::json!({ "model": model }),
+    );
 
     loop {
         tokio::select! {
@@ -574,9 +749,117 @@ async fn handle_prompt_events(
                     AgentEvent::ToolExecutionStart {
                         tool_call_id, tool_name, args, ..
                     } => {
+                        crate::state::record(
+                            crate::state::EventType::ToolCallStarted,
+                            crate::state::Actor::Yoyo,
+                            serde_json::json!({
+                                "tool_call_id": tool_call_id.clone(),
+                                "tool_name": tool_name.clone(),
+                                "args": tool_args_state_payload(&tool_name, &args),
+                            }),
+                        );
+                        match tool_name.as_str() {
+                            "read_file" => {
+                                if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                                    crate::state::record(
+                                        crate::state::EventType::FileRead,
+                                        crate::state::Actor::Tool,
+                                        serde_json::json!({
+                                            "tool_call_id": tool_call_id.clone(),
+                                            "path": path,
+                                        }),
+                                    );
+                                }
+                            }
+                            "write_file" | "edit_file" => {
+                                if let Some(payload) =
+                                    file_edited_state_payload(&tool_call_id, &tool_name, &args)
+                                {
+                                    crate::state::record(
+                                        crate::state::EventType::FileEdited,
+                                        crate::state::Actor::Tool,
+                                        payload,
+                                    );
+                                }
+                            }
+                            "bash" => {
+                                let command = args.get("command").and_then(|v| v.as_str());
+                                crate::state::record(
+                                    crate::state::EventType::CommandStarted,
+                                    crate::state::Actor::Tool,
+                                    serde_json::json!({
+                                        "tool_call_id": tool_call_id.clone(),
+                                        "command": command,
+                                    }),
+                                );
+                                if let Some(command) = command {
+                                    if let Some(payload) =
+                                        test_started_payload(&tool_call_id, command)
+                                    {
+                                        crate::state::record(
+                                            crate::state::EventType::TestStarted,
+                                            crate::state::Actor::Tool,
+                                            payload,
+                                        );
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
                         state.handle_tool_execution_start(tool_call_id, tool_name, args, changes);
                     }
                     AgentEvent::ToolExecutionEnd { tool_call_id, is_error, result, tool_name, .. } => {
+                        let preview = tool_result_preview(&result, 500);
+                        let bash_command = state
+                            .audit_inflight
+                            .get(&tool_call_id)
+                            .and_then(|(_, args)| args.get("command"))
+                            .and_then(|value| value.as_str())
+                            .map(|command| command.to_string());
+                        crate::state::record(
+                            crate::state::EventType::ToolCallCompleted,
+                            crate::state::Actor::Tool,
+                            serde_json::json!({
+                                "tool_call_id": tool_call_id.clone(),
+                                "tool_name": tool_name.clone(),
+                                "is_error": is_error,
+                                "result_preview": preview.clone(),
+                            }),
+                        );
+                        if tool_name == "bash" {
+                            crate::state::record(
+                                crate::state::EventType::CommandCompleted,
+                                crate::state::Actor::Tool,
+                                serde_json::json!({
+                                    "tool_call_id": tool_call_id.clone(),
+                                    "is_error": is_error,
+                                    "result_preview": preview.clone(),
+                                }),
+                            );
+                            if let Some(command) = bash_command.as_deref() {
+                                if let Some(payload) =
+                                    test_completed_payload(&tool_call_id, command, !is_error, &preview)
+                                {
+                                    crate::state::record(
+                                        crate::state::EventType::TestCompleted,
+                                        crate::state::Actor::Tool,
+                                        payload,
+                                    );
+                                }
+                            }
+                        }
+                        if is_error {
+                            crate::state::record(
+                                crate::state::EventType::FailureObserved,
+                                crate::state::Actor::Harness,
+                                serde_json::json!({
+                                    "source": "tool",
+                                    "tool_call_id": tool_call_id.clone(),
+                                    "tool_name": tool_name.clone(),
+                                    "error_preview": preview.clone(),
+                                }),
+                            );
+                        }
                         state.handle_tool_execution_end(tool_call_id, tool_name, is_error, result);
                     }
                     AgentEvent::ToolExecutionUpdate { tool_call_id, partial_result, .. } => {
@@ -592,6 +875,7 @@ async fn handle_prompt_events(
                         delta: StreamDelta::Thinking { delta },
                         ..
                     } => {
+                        state.thinking_observed = true;
                         // Stop spinner on first thinking output
                         if let Some(s) = state.spinner.take() { s.stop(); }
                         if !state.in_thinking {
@@ -606,8 +890,29 @@ async fn handle_prompt_events(
                     }
                     AgentEvent::AgentEnd { messages } => {
                         state.handle_agent_end(messages, model);
+                        crate::state::record(
+                            crate::state::EventType::ModelCallCompleted,
+                            crate::state::Actor::Yoyo,
+                            serde_json::json!({
+                                "model": model,
+                                "input_tokens": state.usage.input,
+                                "output_tokens": state.usage.output,
+                                "cache_read_tokens": state.usage.cache_read,
+                                "cache_write_tokens": state.usage.cache_write,
+                                "thinking_observed": state.thinking_observed,
+                            }),
+                        );
+                        crate::state::record_cache_metrics(model, &state.usage);
                     }
                     AgentEvent::InputRejected { reason } => {
+                        crate::state::record(
+                            crate::state::EventType::FailureObserved,
+                            crate::state::Actor::Harness,
+                            serde_json::json!({
+                                "source": "input_rejected",
+                                "reason": reason.clone(),
+                            }),
+                        );
                         if let Some(s) = state.spinner.take() { s.stop(); }
                         eprintln!("{RED}  input rejected: {reason}{RESET}");
                         if let Some(diagnostic) = diagnose_api_error(&reason, model) {
@@ -684,6 +989,119 @@ async fn handle_prompt_events(
     }
 
     state.into_result()
+}
+
+fn test_started_payload(tool_call_id: &str, command: &str) -> Option<serde_json::Value> {
+    let test_kind = classify_test_command(command)?;
+    Some(serde_json::json!({
+        "tool_call_id": tool_call_id,
+        "command": command,
+        "test_kind": test_kind,
+    }))
+}
+
+fn test_completed_payload(
+    tool_call_id: &str,
+    command: &str,
+    passed: bool,
+    result_preview: &str,
+) -> Option<serde_json::Value> {
+    let test_kind = classify_test_command(command)?;
+    Some(serde_json::json!({
+        "tool_call_id": tool_call_id,
+        "command": command,
+        "test_kind": test_kind,
+        "passed": passed,
+        "result_preview": result_preview,
+    }))
+}
+
+fn classify_test_command(command: &str) -> Option<&'static str> {
+    let words = normalized_command_words(command);
+    if words.is_empty() {
+        return None;
+    }
+
+    if starts_with_words(&words, &["cargo", "test"]) {
+        return Some("cargo_test");
+    }
+    if starts_with_words(&words, &["cargo", "nextest"]) {
+        return Some("cargo_nextest");
+    }
+    if starts_with_words(&words, &["go", "test"]) {
+        return Some("go_test");
+    }
+    if starts_with_words(&words, &["pytest"])
+        || starts_with_words(&words, &["python", "-m", "pytest"])
+        || starts_with_words(&words, &["python3", "-m", "pytest"])
+        || starts_with_words(&words, &["uv", "run", "pytest"])
+    {
+        return Some("pytest");
+    }
+    if starts_with_words(&words, &["npm", "test"])
+        || starts_with_words(&words, &["npm", "run", "test"])
+    {
+        return Some("npm_test");
+    }
+    if starts_with_words(&words, &["pnpm", "test"])
+        || starts_with_words(&words, &["pnpm", "run", "test"])
+    {
+        return Some("pnpm_test");
+    }
+    if starts_with_words(&words, &["yarn", "test"])
+        || starts_with_words(&words, &["bun", "test"])
+        || starts_with_words(&words, &["deno", "test"])
+    {
+        return Some("js_test");
+    }
+
+    None
+}
+
+fn normalized_command_words(command: &str) -> Vec<String> {
+    let words: Vec<String> = command
+        .split_whitespace()
+        .map(|word| {
+            word.trim_matches(|ch: char| matches!(ch, '\'' | '"' | ';' | '(' | ')'))
+                .to_ascii_lowercase()
+        })
+        .collect();
+
+    let mut idx = 0;
+    if words.first().map(|word| word.as_str()) == Some("env") {
+        idx = 1;
+        while let Some(word) = words.get(idx) {
+            if word.contains('=') && !word.starts_with('-') && !word.starts_with("./") {
+                idx += 1;
+                continue;
+            }
+            match word.as_str() {
+                "-i" | "--ignore-environment" | "-0" | "--null" => idx += 1,
+                "-u" | "--unset" | "-C" | "--chdir" => idx += 2,
+                _ if word.starts_with("--unset=") || word.starts_with("--chdir=") => idx += 1,
+                _ if word.starts_with('-') => idx += 1,
+                _ => break,
+            }
+        }
+    } else {
+        while words
+            .get(idx)
+            .map(|word| word.contains('=') && !word.starts_with('-') && !word.starts_with("./"))
+            .unwrap_or(false)
+        {
+            idx += 1;
+        }
+    }
+
+    words.into_iter().skip(idx).collect()
+}
+
+fn starts_with_words(words: &[String], prefix: &[&str]) -> bool {
+    words.len() >= prefix.len()
+        && words
+            .iter()
+            .zip(prefix.iter())
+            .all(|(word, expected)| word == expected)
 }
 
 pub async fn run_prompt(
@@ -1335,6 +1753,163 @@ mod tests {
         assert_eq!(total.output, 30);
         assert_eq!(total.cache_read, 45);
         assert_eq!(total.cache_write, 60);
+    }
+
+    #[test]
+    fn file_edited_state_payload_records_edit_diff_preview_without_full_contents() {
+        let args = serde_json::json!({
+            "path": "src/main.rs",
+            "old_text": "fn main() {\n    let value = 1;\n}",
+            "new_text": "fn main() {\n    let value = 2;\n}",
+        });
+
+        let payload = file_edited_state_payload("tool-1", "edit_file", &args).unwrap();
+
+        assert_eq!(payload["tool_call_id"], "tool-1");
+        assert_eq!(payload["path"], "src/main.rs");
+        assert_eq!(payload["edit_kind"], "edit_file");
+        assert_eq!(payload["old_line_count"], 3);
+        assert_eq!(payload["new_line_count"], 3);
+        assert_eq!(payload["diff_available"], true);
+        assert!(payload.get("old_text").is_none());
+        assert!(payload.get("new_text").is_none());
+
+        let preview = payload["diff_preview"].as_str().unwrap();
+        assert!(preview.contains("-     let value = 1;"));
+        assert!(preview.contains("+     let value = 2;"));
+        assert!(!preview.contains('\x1b'));
+    }
+
+    #[test]
+    fn file_edited_state_payload_records_write_file_overwrite_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("example.rs");
+        std::fs::write(&path, "fn value() -> i32 {\n    1\n}\n").unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let args = serde_json::json!({
+            "path": path_str,
+            "content": "fn value() -> i32 {\n    2\n}\n",
+        });
+
+        let payload = file_edited_state_payload("tool-2", "write_file", &args).unwrap();
+
+        assert_eq!(payload["tool_call_id"], "tool-2");
+        assert_eq!(payload["path"], path_str);
+        assert_eq!(payload["edit_kind"], "write_file");
+        assert_eq!(payload["old_line_count"], 3);
+        assert_eq!(payload["new_line_count"], 3);
+        assert_eq!(payload["diff_available"], true);
+        assert!(payload.get("content").is_none());
+
+        let preview = payload["diff_preview"].as_str().unwrap();
+        assert!(preview.contains("-     1"));
+        assert!(preview.contains("+     2"));
+        assert!(!preview.contains('\x1b'));
+    }
+
+    #[test]
+    fn tool_args_state_payload_omits_edit_file_raw_text() {
+        let args = serde_json::json!({
+            "path": "src/lib.rs",
+            "old_text": "let value = 1;",
+            "new_text": "let value = 2;",
+        });
+
+        let compact = tool_args_state_payload("edit_file", &args);
+
+        assert_eq!(compact["path"], "src/lib.rs");
+        assert_eq!(compact["text_omitted"], true);
+        assert_eq!(compact["old_line_count"], 1);
+        assert_eq!(compact["new_line_count"], 1);
+        assert_eq!(compact["diff_available"], true);
+        assert!(compact.get("old_text").is_none());
+        assert!(compact.get("new_text").is_none());
+        let preview = compact["diff_preview"].as_str().unwrap();
+        assert!(preview.contains("- let value = 1;"));
+        assert!(preview.contains("+ let value = 2;"));
+        assert!(!preview.contains('\x1b'));
+    }
+
+    #[test]
+    fn tool_args_state_payload_omits_write_file_raw_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("example.txt");
+        std::fs::write(&path, "old\n").unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let args = serde_json::json!({
+            "path": path_str,
+            "content": "new\n",
+        });
+
+        let compact = tool_args_state_payload("write_file", &args);
+
+        assert_eq!(compact["path"], path_str);
+        assert_eq!(compact["content_omitted"], true);
+        assert_eq!(compact["content_line_count"], 1);
+        assert_eq!(compact["content_bytes"], 4);
+        assert_eq!(compact["old_line_count"], 1);
+        assert_eq!(compact["diff_available"], true);
+        assert!(compact.get("content").is_none());
+        let preview = compact["diff_preview"].as_str().unwrap();
+        assert!(preview.contains("- old"));
+        assert!(preview.contains("+ new"));
+        assert!(!preview.contains('\x1b'));
+    }
+
+    #[test]
+    fn classify_test_command_recognizes_common_test_runners() {
+        assert_eq!(
+            classify_test_command("cargo test --bin yoyo"),
+            Some("cargo_test")
+        );
+        assert_eq!(
+            classify_test_command("RUST_LOG=debug cargo nextest run"),
+            Some("cargo_nextest")
+        );
+        assert_eq!(
+            classify_test_command("env -u NO_COLOR cargo test --bin yoyo"),
+            Some("cargo_test")
+        );
+        assert_eq!(
+            classify_test_command("env PYTHONWARNINGS=ignore pytest -q"),
+            Some("pytest")
+        );
+        assert_eq!(
+            classify_test_command("python -m pytest tests/test_api.py"),
+            Some("pytest")
+        );
+        assert_eq!(classify_test_command("uv run pytest -q"), Some("pytest"));
+        assert_eq!(
+            classify_test_command("npm run test -- --watch=false"),
+            Some("npm_test")
+        );
+        assert_eq!(classify_test_command("go test ./..."), Some("go_test"));
+    }
+
+    #[test]
+    fn classify_test_command_ignores_non_test_commands() {
+        assert_eq!(classify_test_command("cargo check"), None);
+        assert_eq!(classify_test_command("rg test src"), None);
+        assert_eq!(classify_test_command("git status"), None);
+    }
+
+    #[test]
+    fn test_command_payloads_capture_lineage_fields() {
+        let started = test_started_payload("tool-1", "cargo test --bin yoyo").unwrap();
+        assert_eq!(started["tool_call_id"], "tool-1");
+        assert_eq!(started["command"], "cargo test --bin yoyo");
+        assert_eq!(started["test_kind"], "cargo_test");
+
+        let completed =
+            test_completed_payload("tool-1", "cargo test --bin yoyo", false, "test failed")
+                .unwrap();
+        assert_eq!(completed["tool_call_id"], "tool-1");
+        assert_eq!(completed["test_kind"], "cargo_test");
+        assert_eq!(completed["passed"], false);
+        assert_eq!(completed["result_preview"], "test failed");
+
+        assert!(test_started_payload("tool-2", "cargo check").is_none());
+        assert!(test_completed_payload("tool-2", "cargo check", true, "").is_none());
     }
 
     // Issue #258 / Day 33 lesson (test from the user's perspective):

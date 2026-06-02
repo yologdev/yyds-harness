@@ -8,28 +8,29 @@
 ## Install from crates.io
 
 ```bash
-cargo install yoyo-agent
+cargo install yoyo-ds-harness
 ```
 
-This installs the binary as `yoyo` in your PATH.
+This installs `yoyo-ds` and keeps `yoyo` as a compatibility alias once `yoagent-state` is published. Until then, use GitHub release binaries or build from source with `../yoagent-state` available.
 
 ## Install from source
 
 ```bash
-git clone https://github.com/yologdev/yoyo-evolve.git
-cd yoyo-evolve
+git clone https://github.com/yologdev/yoyo-ds-harness.git
+git clone https://github.com/yologdev/yoagent-state.git
+cd yoyo-ds-harness
 cargo build --release
 ```
 
-The binary will be at `target/release/yoyo`.
+The binaries will be at `target/release/yoyo-ds` and `target/release/yoyo`.
 
 ## Run directly with Cargo
 
 If you just want to try it:
 
 ```bash
-cd yoyo-evolve
-ANTHROPIC_API_KEY=sk-ant-... cargo run
+cd yoyo-ds-harness
+DEEPSEEK_API_KEY=sk-... cargo run --bin yoyo-ds -- --deepseek-native
 ```
 
 ## Providers
@@ -95,11 +96,11 @@ If no key is found via any method (and the provider requires one), yoyo will exi
 
 ## Config file
 
-yoyo supports a TOML-style config file so you don't have to pass flags every time. Config files are checked in this order (first found wins):
+yoyo supports a TOML-style config file so you don't have to pass flags every time. Config files are layered in this order, with later scopes overriding earlier scalar keys:
 
-1. `.yoyo.toml` in the current directory (project-level)
+1. `~/.config/yoyo/config.toml` (XDG user-level)
 2. `~/.yoyo.toml` (home directory shorthand)
-3. `~/.config/yoyo/config.toml` (XDG user-level)
+3. `.yoyo.toml` in the current directory (project-level)
 
 **Example `.yoyo.toml`:**
 

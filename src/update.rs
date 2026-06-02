@@ -28,13 +28,9 @@ pub fn version_is_newer(current: &str, latest: &str) -> bool {
 ///
 /// `current_version` is the running binary's version (e.g. `cli::VERSION`).
 pub fn check_for_update(current_version: &str) -> Option<String> {
+    let releases_api_url = crate::release::releases_api_url();
     let output = std::process::Command::new("curl")
-        .args([
-            "-sf",
-            "--max-time",
-            "3",
-            "https://api.github.com/repos/yologdev/yoyo-evolve/releases/latest",
-        ])
+        .args(["-sf", "--max-time", "3", releases_api_url.as_str()])
         .output()
         .ok()?;
 

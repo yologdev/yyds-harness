@@ -115,7 +115,6 @@ fn resolve_path(path: &str) -> String {
         return canonical.to_string_lossy().to_string();
     }
 
-    // Manual normalization for non-existent paths
     let p = std::path::Path::new(path);
     let absolute = if p.is_absolute() {
         p.to_path_buf()
@@ -125,9 +124,38 @@ fn resolve_path(path: &str) -> String {
             .join(p)
     };
 
+    // For non-existent paths, canonicalize the nearest existing ancestor and
+    // then append the missing suffix. This preserves symlink resolution for
+    // checks like `/etc/missing` on macOS where `/etc` points at `/private/etc`.
+    let absolute = normalize_pathbuf(absolute);
+    let mut existing = absolute.as_path();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        if let Some(name) = existing.file_name() {
+            missing.push(name.to_os_string());
+        }
+        match existing.parent() {
+            Some(parent) => existing = parent,
+            None => break,
+        }
+    }
+    if existing.exists() {
+        if let Ok(mut canonical) = std::fs::canonicalize(existing) {
+            for component in missing.iter().rev() {
+                canonical.push(component);
+            }
+            return normalize_pathbuf(canonical).to_string_lossy().to_string();
+        }
+    }
+
+    // Manual normalization fallback
+    absolute.to_string_lossy().to_string()
+}
+
+fn normalize_pathbuf(path: std::path::PathBuf) -> std::path::PathBuf {
     // Normalize components: resolve `.` and `..`
     let mut components = Vec::new();
-    for component in absolute.components() {
+    for component in path.components() {
         match component {
             std::path::Component::ParentDir => {
                 components.pop();
@@ -136,8 +164,7 @@ fn resolve_path(path: &str) -> String {
             other => components.push(other),
         }
     }
-    let normalized: std::path::PathBuf = components.iter().collect();
-    normalized.to_string_lossy().to_string()
+    components.iter().collect()
 }
 
 /// Check if `path` is under (or equal to) `dir`.
@@ -809,11 +836,14 @@ use std::collections::HashMap;
 
 use crate::format::{is_quiet, DIM, RESET};
 
-/// Config file search paths, checked in order (first found wins).
-/// - `.yoyo.toml` (project-level)
-/// - `~/.yoyo.toml` (home-level shorthand)
+/// Config file scopes, loaded from broadest to narrowest:
 /// - `~/.config/yoyo/config.toml` (XDG user-level)
+/// - `~/.yoyo.toml` (home-level shorthand)
+/// - `.yoyo.toml` (project-level)
+///
+/// Later scopes override earlier scalar keys.
 const CONFIG_FILE_NAMES: &[&str] = &[".yoyo.toml"];
+const DEEPSEEK_CONFIG_FILE_NAME: &str = ".yoyo/deepseek.toml";
 
 /// XDG user-level config path: `~/.config/yoyo/config.toml`.
 pub fn user_config_path() -> Option<std::path::PathBuf> {
@@ -825,6 +855,11 @@ pub fn home_config_path() -> Option<std::path::PathBuf> {
     std::env::var("HOME")
         .ok()
         .map(|h| std::path::PathBuf::from(h).join(".yoyo.toml"))
+}
+
+/// Project-local DeepSeek-native config path.
+pub fn deepseek_config_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(DEEPSEEK_CONFIG_FILE_NAME)
 }
 
 /// Best-effort XDG config dir (~/.config on Linux/macOS).
@@ -894,39 +929,172 @@ pub fn parse_config_file(content: &str) -> HashMap<String, String> {
     map
 }
 
-/// Load config from file, checking project-level, home-level, then user-level paths.
-/// The search order: `.yoyo.toml` (project) → `~/.yoyo.toml` (home) → XDG config dir.
-/// Prints the loaded path to stderr (unless quiet mode).
-/// Returns `(HashMap, raw_content)` or `(empty HashMap, empty string)` if no config found.
-pub fn load_config_file() -> (HashMap<String, String>, String) {
-    // Check project-level config first
-    for name in CONFIG_FILE_NAMES {
-        if let Ok(content) = std::fs::read_to_string(name) {
-            if !is_quiet() {
-                eprintln!("{DIM}  config: {name}{RESET}");
-            }
-            return (parse_config_file(&content), content);
+/// Parse `.yoyo/deepseek.toml` into the same flat key space used by CLI config.
+///
+/// This intentionally supports only simple scalar key/value pairs and section
+/// headers. It keeps DeepSeek-specific configuration separate from generic
+/// `.yoyo.toml`, while still reusing the existing CLI precedence pipeline.
+pub fn parse_deepseek_config_file(content: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let mut section = String::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            section = trimmed[1..trimmed.len() - 1].trim().to_ascii_lowercase();
+            continue;
+        }
+        let Some((raw_key, raw_value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = raw_key.trim();
+        let value = strip_toml_scalar(raw_value.trim());
+        if let Some(mapped_key) = map_deepseek_config_key(&section, key) {
+            map.insert(mapped_key.to_string(), value);
         }
     }
-    // Check ~/.yoyo.toml (home directory shorthand)
-    if let Some(path) = home_config_path() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if !is_quiet() {
-                eprintln!("{DIM}  config: {}{RESET}", path.display());
-            }
-            return (parse_config_file(&content), content);
-        }
+
+    map
+}
+
+fn map_deepseek_config_key<'a>(section: &str, key: &'a str) -> Option<&'a str> {
+    match section {
+        "" | "deepseek" => match key {
+            "enabled" | "native" | "deepseek_native" => Some("deepseek_native"),
+            "default_model" | "model" => Some("deepseek_model"),
+            "fast_model" => Some("deepseek_fast_model"),
+            "base_url" => Some("deepseek_base_url"),
+            "api_key" => Some("deepseek_api_key"),
+            "thinking_default" | "thinking" | "reasoning_effort" => Some("deepseek_thinking"),
+            "max_tokens" => Some("max_tokens"),
+            "context_window" => Some("context_window"),
+            _ => None,
+        },
+        "state" => match key {
+            "enabled" => Some("state_enabled"),
+            "events" => Some("state_events"),
+            "fail_soft" => Some("state_fail_soft"),
+            "store" => Some("state_store"),
+            _ => None,
+        },
+        "deepseek.cache" => match key {
+            "record_metrics" => Some("deepseek_cache_record_metrics"),
+            "stable_prefix" => Some("deepseek_cache_stable_prefix"),
+            "optimize_prompt_order" => Some("deepseek_cache_optimize_prompt_order"),
+            _ => None,
+        },
+        "deepseek.context" => match key {
+            "recent_failure_limit" => Some("deepseek_context_recent_failure_limit"),
+            "changed_file_limit" => Some("deepseek_context_changed_file_limit"),
+            "include_repo_map" => Some("deepseek_context_include_repo_map"),
+            "include_instruction_files" => Some("deepseek_context_include_instruction_files"),
+            _ => None,
+        },
+        "deepseek.routing" => match key {
+            "planning" => Some("deepseek_routing_planning"),
+            "root_cause" => Some("deepseek_routing_root_cause"),
+            "summary" => Some("deepseek_routing_summary"),
+            "local_edit" => Some("deepseek_routing_local_edit"),
+            _ => None,
+        },
+        "deepseek.transport" => match key {
+            "request_timeout_ms" => Some("deepseek_transport_request_timeout_ms"),
+            "max_retries" => Some("deepseek_transport_max_retries"),
+            _ => None,
+        },
+        "evolve.harness" => match key {
+            "enabled" => Some("evolve_harness_enabled"),
+            "allowed_patch_types" => Some("evolve_harness_allowed_patch_types"),
+            "require_human_approval_for" => Some("evolve_harness_require_human_approval_for"),
+            _ => None,
+        },
+        _ => None,
     }
-    // Check user-level config (XDG)
-    if let Some(path) = user_config_path() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if !is_quiet() {
-                eprintln!("{DIM}  config: {}{RESET}", path.display());
-            }
-            return (parse_config_file(&content), content);
-        }
+}
+
+fn strip_toml_scalar(value: &str) -> String {
+    let value = value
+        .split_once(" #")
+        .map(|(before_comment, _)| before_comment.trim())
+        .unwrap_or(value)
+        .trim();
+    if (value.starts_with('"') && value.ends_with('"'))
+        || (value.starts_with('\'') && value.ends_with('\''))
+    {
+        value[1..value.len() - 1].to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// Load project-local DeepSeek config, if present.
+pub fn load_deepseek_config_file() -> (HashMap<String, String>, String) {
+    let path = deepseek_config_path();
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        return (parse_deepseek_config_file(&content), content);
     }
     (HashMap::new(), String::new())
+}
+
+fn config_scope_paths() -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = user_config_path() {
+        paths.push(path);
+    }
+    if let Some(path) = home_config_path() {
+        paths.push(path);
+    }
+    for name in CONFIG_FILE_NAMES {
+        paths.push(std::path::PathBuf::from(name));
+    }
+    paths
+}
+
+fn merge_config_layer(
+    merged: &mut HashMap<String, String>,
+    raw: &mut String,
+    content: &str,
+    path: &std::path::Path,
+) {
+    merged.extend(parse_config_file(content));
+    raw.push_str("\n# source: ");
+    raw.push_str(&path.display().to_string());
+    raw.push('\n');
+    raw.push_str(content);
+    if !content.ends_with('\n') {
+        raw.push('\n');
+    }
+}
+
+/// Load layered config files.
+///
+/// Scalar key precedence is XDG → home → project, with project-local
+/// `.yoyo.toml` winning. The returned raw content is concatenated in that same
+/// order so section parsers can layer permissions, directories, hooks, and MCP
+/// snippets without a separate config model.
+pub fn load_config_file() -> (HashMap<String, String>, String) {
+    let mut merged = HashMap::new();
+    let mut raw = String::new();
+    let mut loaded_paths = Vec::new();
+
+    for path in config_scope_paths() {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if !is_quiet() {
+                eprintln!("{DIM}  config: {}{RESET}", path.display());
+            }
+            merge_config_layer(&mut merged, &mut raw, &content, &path);
+            loaded_paths.push(path);
+        }
+    }
+
+    if loaded_paths.is_empty() {
+        (HashMap::new(), String::new())
+    } else {
+        (merged, raw)
+    }
 }
 
 #[cfg(test)]
@@ -1031,7 +1199,12 @@ env = { API_KEY = "secret" }
     #[test]
     fn test_config_module_resolve_path_normalizes_parent_dir() {
         let resolved = resolve_path("/tmp/a/../b");
-        assert_eq!(resolved, "/tmp/b");
+        let expected = std::fs::canonicalize("/tmp")
+            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
+            .join("b")
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(resolved, expected);
     }
 
     #[test]
@@ -1414,6 +1587,89 @@ thinking = "high"
     }
 
     #[test]
+    fn deepseek_config_parser_maps_sections_to_cli_keys() {
+        let content = r#"
+[deepseek]
+enabled = true
+default_model = "deepseek-v4-flash"
+base_url = "https://deepseek.example/v1"
+thinking_default = "max"
+
+[state]
+enabled = false
+events = ".yoyo/state/custom.jsonl"
+fail_soft = true
+
+[deepseek.cache]
+stable_prefix = true
+
+[deepseek.context]
+recent_failure_limit = 8
+changed_file_limit = 21
+include_repo_map = false
+include_instruction_files = ["YOYO.md", "AGENTS.md"]
+
+[deepseek.transport]
+request_timeout_ms = 45000
+max_retries = 4
+
+[evolve.harness]
+allowed_patch_types = ["context_policy", "repair_policy"]
+require_human_approval_for = ["permission_policy", "shell_policy"]
+"#;
+
+        let config = parse_deepseek_config_file(content);
+
+        assert_eq!(config.get("deepseek_native").unwrap(), "true");
+        assert_eq!(config.get("deepseek_model").unwrap(), "deepseek-v4-flash");
+        assert_eq!(
+            config.get("deepseek_base_url").unwrap(),
+            "https://deepseek.example/v1"
+        );
+        assert_eq!(config.get("deepseek_thinking").unwrap(), "max");
+        assert_eq!(config.get("state_enabled").unwrap(), "false");
+        assert_eq!(
+            config.get("state_events").unwrap(),
+            ".yoyo/state/custom.jsonl"
+        );
+        assert_eq!(config.get("state_fail_soft").unwrap(), "true");
+        assert_eq!(config.get("deepseek_cache_stable_prefix").unwrap(), "true");
+        assert_eq!(
+            config.get("deepseek_context_recent_failure_limit").unwrap(),
+            "8"
+        );
+        assert_eq!(
+            config.get("deepseek_context_changed_file_limit").unwrap(),
+            "21"
+        );
+        assert_eq!(
+            config.get("deepseek_context_include_repo_map").unwrap(),
+            "false"
+        );
+        assert_eq!(
+            config
+                .get("deepseek_context_include_instruction_files")
+                .unwrap(),
+            "[\"YOYO.md\", \"AGENTS.md\"]"
+        );
+        assert_eq!(
+            config.get("deepseek_transport_request_timeout_ms").unwrap(),
+            "45000"
+        );
+        assert_eq!(config.get("deepseek_transport_max_retries").unwrap(), "4");
+        assert_eq!(
+            config.get("evolve_harness_allowed_patch_types").unwrap(),
+            "[\"context_policy\", \"repair_policy\"]"
+        );
+        assert_eq!(
+            config
+                .get("evolve_harness_require_human_approval_for")
+                .unwrap(),
+            "[\"permission_policy\", \"shell_policy\"]"
+        );
+    }
+
+    #[test]
     fn test_parse_config_file_mcp_array() {
         let content = r#"
 model = "claude-sonnet-4-20250514"
@@ -1484,12 +1740,7 @@ mcp = ["npx open-websearch@latest", "npx @mcp/server-filesystem /tmp"]
     #[test]
     fn test_config_precedence_project_over_home() {
         // If both project-level .yoyo.toml and ~/.yoyo.toml exist,
-        // the project-level config should be found first.
-        // We verify this by checking the search order logic:
-        // CONFIG_FILE_NAMES is checked before home_config_path().
-        //
-        // Since load_config_file() checks project-level first, and both files
-        // would parse correctly, we verify the ordering is as documented.
+        // the project-level config should override overlapping scalar keys.
         let project_content = "model = \"project-model\"";
         let home_content = "model = \"home-model\"";
 
@@ -1498,15 +1749,11 @@ mcp = ["npx open-websearch@latest", "npx @mcp/server-filesystem /tmp"]
 
         assert_eq!(project_config.get("model").unwrap(), "project-model");
         assert_eq!(home_config.get("model").unwrap(), "home-model");
-
-        // The search order is documented: project > home > XDG
-        // This test verifies both configs parse independently.
-        // The actual precedence is enforced by the early-return in load_config_file().
     }
 
     #[test]
     fn test_config_search_order_documented() {
-        // Verify the documented search order: project (.yoyo.toml), home (~/.yoyo.toml), XDG
+        // Verify the documented scope order: XDG, home, project.
         // CONFIG_FILE_NAMES contains the project-level name
         assert_eq!(CONFIG_FILE_NAMES, &[".yoyo.toml"]);
 
@@ -1530,6 +1777,67 @@ mcp = ["npx open-websearch@latest", "npx @mcp/server-filesystem /tmp"]
         if let Some(h) = original_home {
             std::env::set_var("HOME", h);
         }
+    }
+
+    #[test]
+    fn layered_config_merges_xdg_home_and_project_scopes() {
+        let mut merged = HashMap::new();
+        let mut raw = String::new();
+
+        merge_config_layer(
+            &mut merged,
+            &mut raw,
+            r#"
+model = "xdg-model"
+provider = "anthropic"
+
+[permissions]
+deny = ["rm -rf *"]
+"#,
+            std::path::Path::new("/xdg/config.toml"),
+        );
+        merge_config_layer(
+            &mut merged,
+            &mut raw,
+            r#"
+model = "home-model"
+api_key = "sk-home"
+
+[permissions]
+allow = ["git *"]
+"#,
+            std::path::Path::new("/home/.yoyo.toml"),
+        );
+        merge_config_layer(
+            &mut merged,
+            &mut raw,
+            r#"
+model = "project-model"
+state_enabled = true
+"#,
+            std::path::Path::new(".yoyo.toml"),
+        );
+
+        assert_eq!(
+            merged.get("model").map(String::as_str),
+            Some("project-model")
+        );
+        assert_eq!(
+            merged.get("provider").map(String::as_str),
+            Some("anthropic")
+        );
+        assert_eq!(merged.get("api_key").map(String::as_str), Some("sk-home"));
+        assert_eq!(
+            merged.get("state_enabled").map(String::as_str),
+            Some("true")
+        );
+
+        let permissions = parse_permissions_from_config(&raw);
+        assert_eq!(permissions.allow, vec!["git *"]);
+        assert_eq!(permissions.deny, vec!["rm -rf *"]);
+        assert!(raw.contains("# source: /xdg/config.toml"));
+        assert!(raw.contains("# source: /home/.yoyo.toml"));
+        assert!(raw.contains("# source: .yoyo.toml"));
     }
 
     #[test]

@@ -405,11 +405,157 @@ pub fn format_edit_diff_preview(params: &serde_json::Value) -> String {
     }
 }
 
+/// Generate a colored diff preview for a `write_file` operation by comparing the
+/// current file contents, when present, to the requested replacement content.
+pub fn format_write_file_diff_preview(params: &serde_json::Value) -> String {
+    let Some(path) = params.get("path").and_then(|v| v.as_str()) else {
+        return String::new();
+    };
+    let new_text = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    let old_text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return format!(
+                "{YELLOW}  ⚠ Could not read existing file for diff preview: {e}{RESET}"
+            );
+        }
+    };
+
+    if old_text == new_text {
+        return String::new();
+    }
+    let diff = crate::format::format_edit_diff(&old_text, new_text);
+    if diff.is_empty() {
+        return diff;
+    }
+    let total_input_lines = old_text.lines().count() + new_text.lines().count();
+    if total_input_lines > EDIT_DIFF_MAX_LINES {
+        crate::format::truncate_diff_preview(&diff, 20)
+    } else {
+        diff
+    }
+}
+
+/// Generate a pre-approval preview for `rename_symbol` using the same
+/// word-boundary match renderer as the interactive `/rename` command.
+pub fn format_rename_symbol_diff_preview(params: &serde_json::Value) -> String {
+    let Some(old_name) = params.get("old_name").and_then(|v| v.as_str()) else {
+        return String::new();
+    };
+    let Some(new_name) = params.get("new_name").and_then(|v| v.as_str()) else {
+        return String::new();
+    };
+    if old_name.is_empty() || new_name.is_empty() || old_name == new_name {
+        return String::new();
+    }
+
+    let mut matches = crate::commands_rename::find_rename_matches(old_name);
+    if let Some(scope) = params.get("path").and_then(|v| v.as_str()) {
+        matches.retain(|candidate| candidate.file.starts_with(scope));
+    }
+    format_rename_symbol_diff_preview_from_matches(old_name, new_name, &matches)
+}
+
+fn format_rename_symbol_diff_preview_from_matches(
+    old_name: &str,
+    new_name: &str,
+    matches: &[crate::commands_rename::RenameMatch],
+) -> String {
+    let preview = crate::commands_rename::format_rename_preview(matches, old_name, new_name);
+    crate::format::truncate_diff_preview(&preview, 80)
+}
+
+fn show_diff_preview(diff_preview: Option<&str>) {
+    if let Some(diff) = diff_preview {
+        if !diff.is_empty() {
+            eprintln!("{}", diff);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileApprovalRequest {
+    path: String,
+    risk_label: &'static str,
+}
+
+impl FileApprovalRequest {
+    fn is_critical(&self) -> bool {
+        self.risk_label == "critical"
+    }
+}
+
+fn file_approval_request(path: &str) -> FileApprovalRequest {
+    FileApprovalRequest {
+        path: path.to_string(),
+        risk_label: if is_sensitive_file_target(path) {
+            "critical"
+        } else {
+            "medium"
+        },
+    }
+}
+
+fn file_allows_noninteractive_policy(request: &FileApprovalRequest) -> bool {
+    !request.is_critical()
+}
+
+fn file_approval_response(request: &FileApprovalRequest, response: &str) -> (bool, &'static str) {
+    let response = response.trim().to_lowercase();
+    let approved = if request.is_critical() {
+        matches!(response.as_str(), "y" | "yes")
+    } else {
+        matches!(response.as_str(), "y" | "yes" | "a" | "always")
+    };
+    let approval_mode = if request.is_critical() && approved {
+        "single_critical"
+    } else if matches!(response.as_str(), "a" | "always") && approved {
+        "always"
+    } else if approved {
+        "single"
+    } else {
+        "denied"
+    };
+    (approved, approval_mode)
+}
+
+fn is_sensitive_file_target(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .any(|segment| {
+            matches!(
+                segment,
+                ".env"
+                    | ".envrc"
+                    | ".npmrc"
+                    | ".pypirc"
+                    | ".netrc"
+                    | "credentials"
+                    | "credentials.json"
+                    | "secrets"
+                    | "secrets.json"
+                    | "id_rsa"
+                    | "id_ed25519"
+                    | "known_hosts"
+            ) || segment.ends_with(".pem")
+                || segment.ends_with(".key")
+                || segment.ends_with(".p12")
+                || segment.ends_with(".pfx")
+                || segment.contains("secret")
+                || segment.contains("credential")
+                || segment.contains("private_key")
+                || segment.contains("api_key")
+                || segment.contains("token")
+        })
+}
+
 /// Prompt the user to confirm a file operation, optionally showing a diff preview.
 ///
 /// When `diff_preview` is `Some(text)`, the colored diff is printed to stderr
-/// before the interactive confirmation prompt. The diff is NOT shown for
-/// auto-approved or permission-approved operations.
+/// before interactive, auto-approved, or permission-approved decisions.
 pub fn confirm_file_operation(
     description: &str,
     path: &str,
@@ -417,51 +563,85 @@ pub fn confirm_file_operation(
     permissions: &cli::PermissionConfig,
     diff_preview: Option<&str>,
 ) -> bool {
-    // If user previously chose "always", skip the prompt
-    if always_approved.load(Ordering::Relaxed) {
+    let request = file_approval_request(path);
+
+    // If user previously chose "always", skip the prompt for medium-risk file
+    // operations only. Critical targets still need a fresh per-operation decision.
+    if file_allows_noninteractive_policy(&request) && always_approved.load(Ordering::Relaxed) {
+        show_diff_preview(diff_preview);
         eprintln!(
             "{GREEN}  ✓ Auto-approved: {RESET}{}",
             truncate_with_ellipsis(description, 120)
+        );
+        record_tool_policy_decision(
+            "file_operation",
+            description,
+            path,
+            true,
+            "session_always",
+            request.risk_label,
         );
         return true;
     }
     // Check permission patterns against the file path
     if let Some(allowed) = permissions.check(path) {
-        if allowed {
-            eprintln!(
-                "{GREEN}  ✓ Permitted: {RESET}{}",
-                truncate_with_ellipsis(description, 120)
-            );
-            return true;
-        } else {
+        if !allowed {
             eprintln!(
                 "{RED}  ✗ Denied by permission rule: {RESET}{}",
                 truncate_with_ellipsis(description, 120)
             );
+            record_tool_policy_decision(
+                "file_operation",
+                description,
+                path,
+                false,
+                "permission_deny",
+                request.risk_label,
+            );
             return false;
+        }
+        if file_allows_noninteractive_policy(&request) {
+            show_diff_preview(diff_preview);
+            eprintln!(
+                "{GREEN}  ✓ Permitted: {RESET}{}",
+                truncate_with_ellipsis(description, 120)
+            );
+            record_tool_policy_decision(
+                "file_operation",
+                description,
+                path,
+                true,
+                "permission_allow",
+                request.risk_label,
+            );
+            return true;
         }
     }
     use std::io::BufRead;
     // Show the diff preview before the confirmation prompt (if available)
-    if let Some(diff) = diff_preview {
-        if !diff.is_empty() {
-            eprintln!("{}", diff);
-        }
-    }
+    show_diff_preview(diff_preview);
+    record_tool_approval_requested("file_operation", description, path, request.risk_label);
     // Show the operation and ask for approval
-    eprint!(
-        "{YELLOW}  ⚠ Allow {RESET}{}{YELLOW} ? {RESET}({GREEN}y{RESET}/{RED}n{RESET}/{GREEN}a{RESET}lways) ",
-        truncate_with_ellipsis(description, 120)
-    );
+    if request.is_critical() {
+        eprint!(
+            "{YELLOW}  ⚠ Allow critical file operation: {RESET}{}{YELLOW} ? {RESET}({GREEN}y{RESET}/{RED}n{RESET}) ",
+            truncate_with_ellipsis(description, 120)
+        );
+    } else {
+        eprint!(
+            "{YELLOW}  ⚠ Allow {RESET}{}{YELLOW} ? {RESET}({GREEN}y{RESET}/{RED}n{RESET}/{GREEN}a{RESET}lways) ",
+            truncate_with_ellipsis(description, 120)
+        );
+    }
     io::stderr().flush().ok();
     let mut response = String::new();
     let stdin = io::stdin();
     if stdin.lock().read_line(&mut response).is_err() {
         return false;
     }
-    let response = response.trim().to_lowercase();
-    let approved = matches!(response.as_str(), "y" | "yes" | "a" | "always");
-    if matches!(response.as_str(), "a" | "always") {
+    let (approved, approval_mode) = file_approval_response(&request, &response);
+    record_tool_approval_received("file_operation", description, path, approved, approval_mode);
+    if file_allows_noninteractive_policy(&request) && approval_mode == "always" {
         always_approved.store(true, Ordering::Relaxed);
         eprintln!(
             "{GREEN}  ✓ All subsequent operations will be auto-approved this session.{RESET}"
@@ -470,6 +650,129 @@ pub fn confirm_file_operation(
         offer_persist_file_pattern(path);
     }
     approved
+}
+
+pub(crate) fn tool_approval_requested_payload(
+    action_kind: &str,
+    description: &str,
+    target: &str,
+    risk_label: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "approval_scope": "tool_execution",
+        "action_kind": action_kind,
+        "description": description,
+        "target": target,
+        "risk_label": risk_label,
+        "reason": tool_approval_request_reason(action_kind, risk_label),
+    })
+}
+
+pub(crate) fn tool_approval_received_payload(
+    action_kind: &str,
+    description: &str,
+    target: &str,
+    approved: bool,
+    approval_mode: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "approval_scope": "tool_execution",
+        "action_kind": action_kind,
+        "description": description,
+        "target": target,
+        "approved": approved,
+        "approval_mode": approval_mode,
+        "reason": tool_approval_received_reason(action_kind, approved, approval_mode),
+    })
+}
+
+pub(crate) fn tool_policy_decision_payload(
+    action_kind: &str,
+    description: &str,
+    target: &str,
+    approved: bool,
+    decision_source: &str,
+    risk_label: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "decision_type": "tool_permission_policy",
+        "approval_scope": "tool_execution",
+        "action_kind": action_kind,
+        "description": description,
+        "target": target,
+        "approved": approved,
+        "decision_source": decision_source,
+        "risk_label": risk_label,
+        "reason": tool_policy_decision_reason(action_kind, approved, decision_source, risk_label),
+    })
+}
+
+fn tool_approval_request_reason(action_kind: &str, risk_label: &str) -> String {
+    format!("human approval required for {risk_label}-risk {action_kind}")
+}
+
+fn tool_approval_received_reason(action_kind: &str, approved: bool, approval_mode: &str) -> String {
+    let decision = if approved { "approved" } else { "denied" };
+    format!("user {decision} {action_kind} request with {approval_mode} approval mode")
+}
+
+fn tool_policy_decision_reason(
+    action_kind: &str,
+    approved: bool,
+    decision_source: &str,
+    risk_label: &str,
+) -> String {
+    let decision = if approved { "allowed" } else { "denied" };
+    format!("{decision} {risk_label}-risk {action_kind} via {decision_source}")
+}
+
+pub(crate) fn record_tool_approval_requested(
+    action_kind: &str,
+    description: &str,
+    target: &str,
+    risk_label: &str,
+) {
+    crate::state::record(
+        crate::state::EventType::HumanApprovalRequested,
+        crate::state::Actor::Harness,
+        tool_approval_requested_payload(action_kind, description, target, risk_label),
+    );
+}
+
+pub(crate) fn record_tool_approval_received(
+    action_kind: &str,
+    description: &str,
+    target: &str,
+    approved: bool,
+    approval_mode: &str,
+) {
+    crate::state::record(
+        crate::state::EventType::HumanApprovalReceived,
+        crate::state::Actor::User,
+        tool_approval_received_payload(action_kind, description, target, approved, approval_mode),
+    );
+}
+
+pub(crate) fn record_tool_policy_decision(
+    action_kind: &str,
+    description: &str,
+    target: &str,
+    approved: bool,
+    decision_source: &str,
+    risk_label: &str,
+) {
+    crate::state::record(
+        crate::state::EventType::DecisionRecorded,
+        crate::state::Actor::Harness,
+        tool_policy_decision_payload(
+            action_kind,
+            description,
+            target,
+            approved,
+            decision_source,
+            risk_label,
+        ),
+    );
 }
 
 #[async_trait::async_trait]
@@ -502,16 +805,16 @@ impl AgentTool for ConfirmTool {
             .unwrap_or("<unknown>");
         let description = describe_file_operation(tool_name, &params);
 
-        // Generate a diff preview for edit_file operations
-        let diff_preview = if tool_name == "edit_file" {
-            let preview = format_edit_diff_preview(&params);
-            if preview.is_empty() {
-                None
-            } else {
-                Some(preview)
+        let diff_preview = match tool_name {
+            "edit_file" => {
+                Some(format_edit_diff_preview(&params)).filter(|preview| !preview.is_empty())
             }
-        } else {
-            None
+            "write_file" => {
+                Some(format_write_file_diff_preview(&params)).filter(|preview| !preview.is_empty())
+            }
+            "rename_symbol" => Some(format_rename_symbol_diff_preview(&params))
+                .filter(|preview| !preview.is_empty()),
+            _ => None,
         };
 
         if !confirm_file_operation(
@@ -1193,7 +1496,207 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_write_file_diff_preview_existing_file_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.txt");
+        std::fs::write(&path, "old=true\nkeep=yes\n").unwrap();
+        let params = serde_json::json!({
+            "path": path,
+            "content": "old=false\nkeep=yes\n"
+        });
+
+        let preview = format_write_file_diff_preview(&params);
+
+        assert!(
+            preview.contains("- old=true"),
+            "Should show removed existing content: {preview}"
+        );
+        assert!(
+            preview.contains("+ old=false"),
+            "Should show replacement content: {preview}"
+        );
+    }
+
+    #[test]
+    fn test_write_file_diff_preview_new_file_addition() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.txt");
+        let params = serde_json::json!({
+            "path": path,
+            "content": "created=true\n"
+        });
+
+        let preview = format_write_file_diff_preview(&params);
+
+        assert!(
+            preview.contains("+ created=true"),
+            "Should show new file additions: {preview}"
+        );
+        assert!(
+            !preview.contains("- "),
+            "New file preview should not show removals: {preview}"
+        );
+    }
+
+    #[test]
+    fn test_write_file_diff_preview_identical_content_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("same.txt");
+        std::fs::write(&path, "same\n").unwrap();
+        let params = serde_json::json!({
+            "path": path,
+            "content": "same\n"
+        });
+
+        let preview = format_write_file_diff_preview(&params);
+
+        assert!(preview.is_empty(), "Identical content should not show diff");
+    }
+
+    #[test]
+    fn test_rename_symbol_diff_preview_from_matches_before_approval() {
+        let matches = vec![crate::commands_rename::RenameMatch {
+            file: "src/main.rs".to_string(),
+            line_num: 12,
+            line_text: "let old_name = call(old_name);".to_string(),
+            column: 4,
+        }];
+
+        let preview =
+            format_rename_symbol_diff_preview_from_matches("old_name", "new_name", &matches);
+
+        assert!(
+            preview.contains("src/main.rs"),
+            "Should show affected file: {preview}"
+        );
+        assert!(
+            preview.contains("old_name"),
+            "Should show old symbol: {preview}"
+        );
+        assert!(
+            preview.contains("new_name"),
+            "Should show new symbol: {preview}"
+        );
+        assert!(preview.contains("1 match"), "Should summarize matches");
+    }
+
+    #[test]
+    fn test_rename_symbol_diff_preview_missing_args_is_empty() {
+        let params = serde_json::json!({
+            "old_name": "old_name"
+        });
+
+        let preview = format_rename_symbol_diff_preview(&params);
+
+        assert!(preview.is_empty(), "Missing new_name should not preview");
+    }
+
     // === confirm_file_operation tests ===
+
+    #[test]
+    fn tool_approval_payloads_capture_execution_scope() {
+        let requested = tool_approval_requested_payload(
+            "bash_command",
+            "bash: cargo test",
+            "cargo test",
+            "high",
+        );
+        assert_eq!(requested["approval_scope"], "tool_execution");
+        assert_eq!(requested["action_kind"], "bash_command");
+        assert_eq!(requested["target"], "cargo test");
+        assert_eq!(requested["risk_label"], "high");
+        assert_eq!(
+            requested["reason"],
+            "human approval required for high-risk bash_command"
+        );
+
+        let received = tool_approval_received_payload(
+            "file_operation",
+            "write: src/main.rs",
+            "src/main.rs",
+            true,
+            "always",
+        );
+        assert_eq!(received["approval_scope"], "tool_execution");
+        assert_eq!(received["action_kind"], "file_operation");
+        assert_eq!(received["approved"], true);
+        assert_eq!(received["approval_mode"], "always");
+        assert_eq!(
+            received["reason"],
+            "user approved file_operation request with always approval mode"
+        );
+    }
+
+    #[test]
+    fn tool_policy_decision_payload_captures_noninteractive_decisions() {
+        let allowed = tool_policy_decision_payload(
+            "file_operation",
+            "write: README.md (10 lines)",
+            "README.md",
+            true,
+            "permission_allow",
+            "medium",
+        );
+        assert_eq!(allowed["decision_type"], "tool_permission_policy");
+        assert_eq!(allowed["approval_scope"], "tool_execution");
+        assert_eq!(allowed["action_kind"], "file_operation");
+        assert_eq!(allowed["approved"], true);
+        assert_eq!(allowed["decision_source"], "permission_allow");
+        assert_eq!(allowed["risk_label"], "medium");
+        assert_eq!(
+            allowed["reason"],
+            "allowed medium-risk file_operation via permission_allow"
+        );
+
+        let denied = tool_policy_decision_payload(
+            "file_operation",
+            "write: secrets.key (1 line)",
+            "secrets.key",
+            false,
+            "permission_deny",
+            "medium",
+        );
+        assert_eq!(denied["approved"], false);
+        assert_eq!(denied["decision_source"], "permission_deny");
+        assert_eq!(denied["target"], "secrets.key");
+
+        let bash = tool_policy_decision_payload(
+            "bash_command",
+            "bash: cargo test",
+            "cargo test",
+            true,
+            "session_always",
+            "high",
+        );
+        assert_eq!(bash["action_kind"], "bash_command");
+        assert_eq!(bash["decision_source"], "session_always");
+        assert_eq!(bash["risk_label"], "high");
+        assert_eq!(
+            bash["reason"],
+            "allowed high-risk bash_command via session_always"
+        );
+    }
+
+    #[test]
+    fn critical_file_operations_disable_noninteractive_shortcuts() {
+        let request = file_approval_request(".env");
+
+        assert!(request.is_critical());
+        assert!(!file_allows_noninteractive_policy(&request));
+
+        let (approved, approval_mode) = file_approval_response(&request, "always");
+        assert!(!approved);
+        assert_eq!(approval_mode, "denied");
+
+        let (approved, approval_mode) = file_approval_response(&request, "yes");
+        assert!(approved);
+        assert_eq!(approval_mode, "single_critical");
+
+        let ordinary = file_approval_request("src/main.rs");
+        assert_eq!(ordinary.risk_label, "medium");
+        assert!(file_allows_noninteractive_policy(&ordinary));
+    }
 
     #[test]
     fn test_confirm_file_operation_auto_approved_flag() {

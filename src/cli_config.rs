@@ -97,6 +97,10 @@ pub struct Config {
     pub auto_watch: bool,
     pub disallowed_tools: Vec<String>,
     pub no_tools: bool,
+    pub deepseek_native: bool,
+    pub deepseek_fim_route: bool,
+    pub deepseek_fim_response: Option<String>,
+    pub state: crate::state::StateConfig,
 }
 
 #[cfg(test)]

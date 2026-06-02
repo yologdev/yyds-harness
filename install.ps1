@@ -1,7 +1,8 @@
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 
-$Repo = "yologdev/yoyo-evolve"
+$Repo = "yologdev/yoyo-ds-harness"
+$ArchivePrefix = "yoyo-ds-harness"
 $InstallDir = Join-Path $env:USERPROFILE ".yoyo\bin"
 
 function Main {
@@ -28,19 +29,19 @@ function Main {
         $Version = $Release.tag_name
     } catch {
         Write-Host "Error: failed to fetch release info from GitHub API."
-        Write-Host "You may be rate-limited. Try: cargo install yoyo-agent"
+        Write-Host "You may be rate-limited. Try building from source instead."
         exit 1
     }
 
     if (-not $Version) {
         Write-Host "Error: could not determine latest release version."
-        Write-Host "Try: cargo install yoyo-agent"
+        Write-Host "Try building from source instead."
         exit 1
     }
 
-    Write-Host "Installing yoyo $Version..."
+    Write-Host "Installing Yoyo DS Harness $Version..."
 
-    $Archive = "yoyo-$Version-$Target.zip"
+    $Archive = "$ArchivePrefix-$Version-$Target.zip"
     $Url = "https://github.com/$Repo/releases/download/$Version/$Archive"
     $ChecksumUrl = "$Url.sha256"
 
@@ -54,7 +55,7 @@ function Main {
             Invoke-WebRequest -Uri $Url -OutFile (Join-Path $TmpDir $Archive) -UseBasicParsing
         } catch {
             Write-Host "Error: failed to download $Archive"
-            Write-Host "The release may not exist yet. Try: cargo install yoyo-agent"
+            Write-Host "The release may not exist yet. Try building from source instead."
             exit 1
         }
 
@@ -91,14 +92,15 @@ function Main {
             Expand-Archive -Path (Join-Path $TmpDir $Archive) -DestinationPath $TmpDir -Force
         } catch {
             Write-Host "Error: failed to extract $Archive. The download may be corrupted."
-            Write-Host "Try: cargo install yoyo-agent"
+            Write-Host "Try building from source instead."
             exit 1
         }
 
-        # Find the binary
-        $Binary = Get-ChildItem -Path $TmpDir -Filter "yoyo.exe" -Recurse | Select-Object -First 1
-        if (-not $Binary) {
-            Write-Host "Error: binary 'yoyo.exe' not found in archive."
+        # Find the binaries
+        $PrimaryBinary = Get-ChildItem -Path $TmpDir -Filter "yoyo-ds.exe" -Recurse | Select-Object -First 1
+        $CompatBinary = Get-ChildItem -Path $TmpDir -Filter "yoyo.exe" -Recurse | Select-Object -First 1
+        if (-not $PrimaryBinary -or -not $CompatBinary) {
+            Write-Host "Error: binaries 'yoyo-ds.exe' and 'yoyo.exe' not found in archive."
             Write-Host "Please report this: https://github.com/$Repo/issues"
             exit 1
         }
@@ -106,14 +108,16 @@ function Main {
         # Install
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
         try {
-            Copy-Item -Path $Binary.FullName -Destination (Join-Path $InstallDir "yoyo.exe") -Force
+            Copy-Item -Path $PrimaryBinary.FullName -Destination (Join-Path $InstallDir "yoyo-ds.exe") -Force
+            Copy-Item -Path $CompatBinary.FullName -Destination (Join-Path $InstallDir "yoyo.exe") -Force
         } catch {
-            Write-Host "Error: could not install yoyo.exe to $InstallDir"
+            Write-Host "Error: could not install Yoyo DS Harness binaries to $InstallDir"
             Write-Host "If yoyo is currently running, close it and try again."
             exit 1
         }
 
-        Write-Host "Installed yoyo to $InstallDir\yoyo.exe"
+        Write-Host "Installed yoyo-ds to $InstallDir\yoyo-ds.exe"
+        Write-Host "Installed yoyo compatibility alias to $InstallDir\yoyo.exe"
 
         # Check PATH
         $UserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
@@ -133,7 +137,7 @@ function Main {
             }
         }
 
-        Write-Host "Run 'yoyo --help' to get started."
+        Write-Host "Run 'yoyo-ds --help' to get started."
     } finally {
         Remove-Item -Path $TmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -141,12 +145,9 @@ function Main {
 
 function Invoke-CargoFallback {
     if (Get-Command cargo -ErrorAction SilentlyContinue) {
-        Write-Host "Installing via cargo..."
-        cargo install yoyo-agent
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "Error: cargo install failed."
-            exit 1
-        }
+        Write-Host "Building from source requires the sibling yoagent-state checkout until it is published."
+        Write-Host "Clone $Repo and ../yoagent-state, then run: cargo install --path ."
+        exit 1
     } else {
         Write-Host "Error: cargo is not installed. Install Rust first: https://rustup.rs"
         exit 1

@@ -1662,8 +1662,8 @@ mod tests {
         let cwd = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let name = detect_project_name(&cwd);
         assert_eq!(
-            name, "yoyo-agent",
-            "Should detect project name 'yoyo-agent' from Cargo.toml"
+            name, "yoyo-ds-harness",
+            "Should detect project name 'yoyo-ds-harness' from Cargo.toml"
         );
     }
 

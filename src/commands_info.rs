@@ -1257,13 +1257,17 @@ const DISCOVERY_TIPS: &[&str] = &[
 
 /// Generate context-sensitive tips based on the current project and session state.
 pub fn generate_tips() -> Vec<String> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    generate_tips_for_dir(&cwd)
+}
+
+fn generate_tips_for_dir(cwd: &std::path::Path) -> Vec<String> {
     use crate::commands_goal::load_goal;
     use crate::commands_project::{detect_project_type, ProjectType};
     use crate::watch::get_watch_command;
 
     let mut tips: Vec<String> = Vec::new();
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let project = detect_project_type(&cwd);
+    let project = detect_project_type(cwd);
 
     // --- Project-type tips ---
     match project {
@@ -2442,9 +2446,13 @@ More text.
 
     #[test]
     fn test_generate_tips_includes_rust_hints() {
-        // We're running inside a Rust project (Cargo.toml exists),
-        // so we should see Rust-specific tips.
-        let tips = generate_tips();
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .unwrap();
+        let tips = generate_tips_for_dir(dir.path());
         let has_rust_tip = tips
             .iter()
             .any(|t| t.contains("cargo test") || t.contains("clippy"));
@@ -2456,8 +2464,14 @@ More text.
 
     #[test]
     fn test_generate_tips_includes_git_hint() {
-        // We're running in a git repo, so git tip should appear.
-        let tips = generate_tips();
+        let dir = tempfile::TempDir::new().unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .arg("init")
+            .output()
+            .unwrap();
+        let tips = generate_tips_for_dir(dir.path());
         let has_git_tip = tips.iter().any(|t| t.contains("/diff --stat"));
         assert!(
             has_git_tip,

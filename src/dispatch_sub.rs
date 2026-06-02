@@ -109,6 +109,22 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 crate::setup::run_setup_wizard();
                 return Some(None);
             }
+            "state" => {
+                crate::commands_state::handle_state_subcommand(args);
+                return Some(None);
+            }
+            "deepseek" => {
+                crate::commands_deepseek::handle_deepseek_subcommand(args);
+                return Some(None);
+            }
+            "eval" => {
+                crate::commands_eval::handle_eval_subcommand(args);
+                return Some(None);
+            }
+            "evolve" => {
+                crate::commands_evolve::handle_evolve_subcommand(args);
+                return Some(None);
+            }
             "init" => {
                 crate::commands_project::handle_init();
                 return Some(None);
@@ -150,6 +166,10 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
             "commit" => {
                 let input = quote_args_as_command(args);
                 crate::commands_git::handle_commit(&input);
+                return Some(None);
+            }
+            "context" => {
+                crate::commands_context::handle_context_subcommand(args);
                 return Some(None);
             }
             "review" => {
