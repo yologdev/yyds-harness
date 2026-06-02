@@ -144,6 +144,16 @@ pub fn analyze_bash_command(command: &str) -> Option<String> {
         return Some(reason);
     }
 
+    // 25. tee to sensitive paths (same paths as check_file_overwrites)
+    if let Some(reason) = check_tee_to_sensitive_paths(cmd) {
+        return Some(reason);
+    }
+
+    // 26. systemctl mask (more destructive than stop/disable — makes service permanently unstartable)
+    if let Some(reason) = check_systemctl_mask(&cmd_lower) {
+        return Some(reason);
+    }
+
     None
 }
 
@@ -261,23 +271,9 @@ fn check_permission_changes(cmd: &str) -> Option<String> {
 
 /// Check for file overwrites via redirection to sensitive paths.
 fn check_file_overwrites(cmd: &str) -> Option<String> {
-    let sensitive_paths = [
-        "/etc/passwd",
-        "/etc/shadow",
-        "/etc/hosts",
-        "/etc/sudoers",
-        "~/.bashrc",
-        "~/.bash_profile",
-        "~/.zshrc",
-        "~/.profile",
-        "~/.ssh/",
-        "$HOME/.bashrc",
-        "$HOME/.ssh/",
-    ];
-
     // Check for > (overwrite) redirection to sensitive files
     // Match "> /etc/passwd" but not ">> /etc/passwd" (append is less dangerous)
-    for path in &sensitive_paths {
+    for path in SENSITIVE_PATHS {
         // Look for "> path" pattern (with possible spaces)
         let overwrite_pattern = format!("> {path}");
         if let Some(pos) = cmd.find(&overwrite_pattern) {
@@ -1050,6 +1046,86 @@ fn check_standalone_destruction(cmd: &str) -> Option<String> {
     None
 }
 
+/// Sensitive paths shared by file-overwrite and tee checks.
+const SENSITIVE_PATHS: &[&str] = &[
+    "/etc/passwd",
+    "/etc/shadow",
+    "/etc/hosts",
+    "/etc/sudoers",
+    "/etc/crontab",
+    "/etc/ssh/sshd_config",
+    "~/.bashrc",
+    "~/.bash_profile",
+    "~/.zshrc",
+    "~/.profile",
+    "~/.ssh/",
+    "~/.ssh/authorized_keys",
+    "$HOME/.bashrc",
+    "$HOME/.ssh/",
+    "$HOME/.ssh/authorized_keys",
+];
+
+/// Check for `tee` writing to sensitive system paths.
+///
+/// LLMs commonly generate `echo "..." | tee /etc/somefile` or
+/// `echo "..." | sudo tee /etc/somefile` which bypasses the redirect-based
+/// check in `check_file_overwrites`. This catches both `tee` and `tee -a`.
+fn check_tee_to_sensitive_paths(cmd: &str) -> Option<String> {
+    // Find all occurrences of "tee " in the command
+    let mut search_from = 0;
+    while let Some(pos) = cmd[search_from..].find("tee ") {
+        let abs_pos = search_from + pos;
+        if is_at_word_boundary(cmd, abs_pos) {
+            // Extract everything after "tee " — skip flags like -a, -i, --append
+            let after = &cmd[abs_pos + 4..];
+            let tokens: Vec<&str> = after.split_whitespace().collect();
+            for token in &tokens {
+                // Skip flags
+                if token.starts_with('-') {
+                    continue;
+                }
+                // Stop at pipe or semicolon (tee's output files come before these)
+                if *token == "|" || *token == ";" || *token == "&&" || *token == "||" {
+                    break;
+                }
+                // Check against sensitive paths
+                for sensitive in SENSITIVE_PATHS {
+                    if token.starts_with(sensitive) {
+                        return Some(format!(
+                            "File write via tee: writing to sensitive path '{token}'"
+                        ));
+                    }
+                }
+            }
+        }
+        search_from = abs_pos + 4;
+    }
+
+    None
+}
+
+/// Check for `systemctl mask` which permanently prevents a service from starting.
+///
+/// This is more destructive than `systemctl stop` or `systemctl disable` because
+/// `mask` replaces the unit file with a symlink to /dev/null, making the service
+/// impossible to start even manually until explicitly unmasked.
+fn check_systemctl_mask(cmd_lower: &str) -> Option<String> {
+    if let Some(pos) = cmd_lower.find("systemctl mask") {
+        if is_at_word_boundary(cmd_lower, pos) {
+            // Make sure "mask" is a complete word (not "mask-something")
+            let after_mask = &cmd_lower[pos + "systemctl mask".len()..];
+            if after_mask.is_empty() || after_mask.starts_with(' ') || after_mask.starts_with('\t')
+            {
+                return Some(
+                    "Masking system service via systemctl: makes service permanently unstartable"
+                        .into(),
+                );
+            }
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1443,5 +1519,48 @@ mod tests {
         assert!(analyze_bash_command("truncate -s 0 test.log").is_none());
         // Safe: shred on local files
         assert!(analyze_bash_command("shred temp_secret.txt").is_none());
+    }
+
+    #[test]
+    fn test_analyze_tee_to_sensitive_paths() {
+        // Basic tee to /etc/passwd
+        assert!(analyze_bash_command("echo 'x' | tee /etc/passwd").is_some());
+        // tee with sudo
+        assert!(analyze_bash_command("echo 'x' | sudo tee /etc/shadow").is_some());
+        // tee -a (append mode) to sensitive path
+        assert!(analyze_bash_command("echo 'x' | tee -a /etc/hosts").is_some());
+        // tee to ~/.ssh/authorized_keys
+        assert!(analyze_bash_command("echo 'key' | tee ~/.ssh/authorized_keys").is_some());
+        // tee to /etc/sudoers
+        assert!(analyze_bash_command("echo 'ALL=(ALL) NOPASSWD:ALL' | tee /etc/sudoers").is_some());
+        // tee to /etc/crontab
+        assert!(analyze_bash_command("echo '* * * * * evil' | tee /etc/crontab").is_some());
+        // tee to ~/.bashrc
+        assert!(analyze_bash_command("echo 'alias ls=rm' | tee ~/.bashrc").is_some());
+        // tee to $HOME/.bashrc
+        assert!(analyze_bash_command("echo 'x' | tee $HOME/.bashrc").is_some());
+        // Safe: tee to project file
+        assert!(analyze_bash_command("echo 'hello' | tee output.txt").is_none());
+        // Safe: tee to /tmp
+        assert!(analyze_bash_command("echo 'x' | tee /tmp/test.txt").is_none());
+        // Safe: "tee" as part of another word shouldn't match
+        assert!(analyze_bash_command("volunteer --help").is_none());
+    }
+
+    #[test]
+    fn test_analyze_systemctl_mask() {
+        // Basic systemctl mask
+        assert!(analyze_bash_command("systemctl mask nginx").is_some());
+        // systemctl mask with sudo
+        assert!(analyze_bash_command("sudo systemctl mask sshd").is_some());
+        // systemctl mask without service name (still dangerous)
+        assert!(analyze_bash_command("systemctl mask").is_some());
+        // systemctl mask with tab separator
+        assert!(analyze_bash_command("systemctl mask\tnginx").is_some());
+        // Note: systemctl stop/disable are caught by separate checks, so they're not "safe" either
+        // Safe: systemctl unmask (reverses mask — safe)
+        assert!(analyze_bash_command("systemctl unmask nginx").is_none());
+        // Safe: systemctl status (read-only)
+        assert!(analyze_bash_command("systemctl status nginx").is_none());
     }
 }
