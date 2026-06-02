@@ -12,7 +12,7 @@ is still unproved or intentionally outside the bootstrap PR.
 - Rust package: `yoyo-ds-harness`.
 - Bootstrap PR: <https://github.com/yologdev/yyds-harness/pull/1>.
 - Branch: `deepseek-native-bootstrap`.
-- Latest implementation commit at audit time: `8c020bc`.
+- Latest PR commit before this audit update: `b5c4831`.
 - PR state: open and mergeable against `main`.
 - GitHub checks: none reported in this environment.
 
@@ -53,6 +53,18 @@ is still unproved or intentionally outside the bootstrap PR.
   - `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke`
   - `test ! -e .yoyo`
   - `git -C /Users/yuanhao/Dev/yoagent-state status --short`
+- Local release packaging dry run passed on 2026-06-02 for
+  `aarch64-apple-darwin`:
+  - `cargo build --release --bins`
+  - `target/release/yoyo --version` ->
+    `yoyo v0.1.13 (b5c4831 2026-06-02) macos-aarch64`
+  - `target/release/yoyo-ds --version` ->
+    `yoyo v0.1.13 (b5c4831 2026-06-02) macos-aarch64`
+  - archive:
+    `/private/tmp/yyds-release-dry-run/yyds-harness-dry-run-aarch64-apple-darwin.tar.gz`
+  - archive contents: `yoyo`, `yoyo-ds`
+  - sha256:
+    `5a8da88194ca120c775828dfebd9c6eb2e6dc9b3e6ace6eab0e714b3246d6d51`
 
 ## Not Yet Proved
 
@@ -75,9 +87,10 @@ is still unproved or intentionally outside the bootstrap PR.
 - Positive harness improvement promotion. The isolated dogfood lifecycle proved
   proposed -> applied -> evaluated -> rolled back -> rejected, but did not prove
   promotion of an improving patch.
-- Public release readiness. The repository is intentionally private for MVP;
-  public badges, release workflows, crates.io publishing, and public docs should
-  be rechecked when the repo is made public.
+- Public release readiness. The repository is intentionally private for MVP; the
+  local release packaging path has been exercised, but GitHub release workflows,
+  public badges, crates.io publishing, and public docs should be rechecked when
+  the repo is made public.
 
 ## Production Readiness Gate
 
@@ -90,8 +103,8 @@ current evidence:
   line.
 - At least one positive harness patch is proposed, evaluated, compared, and
   promoted with state evidence from an isolated worktree.
-- Release packaging is exercised on GitHub Actions or an equivalent release dry
-  run.
+- GitHub release workflow or public-release dry run passes when the repo is
+  ready to publish.
 - Secrets/redaction and source-provenance scans pass on the release candidate.
 - A short dogfooding report confirms the agent can complete a small real coding
   task with DeepSeek-native mode.
