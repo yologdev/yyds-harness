@@ -2337,9 +2337,19 @@ fn build_release_gate_report_with_policy(
     let passed = eval.status == EvalStatus::Passed && eval.failed == 0;
     let last_eval_git_dirty = eval_reproducibility_manifest(&eval)
         .and_then(|manifest| manifest.get("git_dirty")?.as_bool());
-    let (last_eval_fixture_task_count, last_eval_fixture_command_count) =
-        eval_fixture_suite_counts(&eval);
-    let last_eval_fixture_risk_labels = eval_fixture_suite_risk_labels(&eval);
+    let fixture_evidence_eval = if eval_has_fixture_suite_metadata(&eval) {
+        Some((last_eval_ms, eval.clone()))
+    } else {
+        latest_release_fixture_evidence_eval(events, suite, max_age_ms, now_ms)
+    };
+    let (last_eval_fixture_task_count, last_eval_fixture_command_count) = fixture_evidence_eval
+        .as_ref()
+        .map(|(_, eval)| eval_fixture_suite_counts(eval))
+        .unwrap_or((None, None));
+    let last_eval_fixture_risk_labels = fixture_evidence_eval
+        .as_ref()
+        .map(|(_, eval)| eval_fixture_suite_risk_labels(eval))
+        .unwrap_or_default();
     let last_eval_model_route_tasks = eval_model_route_tasks(&eval);
     let (last_eval_mutation_scope_failures, last_eval_unexpected_changed_files) =
         eval_fixture_agent_mutation_scope_counts(&eval);
@@ -2562,6 +2572,13 @@ fn eval_fixture_suite_counts(eval: &EvalResult) -> (Option<u64>, Option<u64>) {
     )
 }
 
+fn eval_has_fixture_suite_metadata(eval: &EvalResult) -> bool {
+    let (task_count, command_count) = eval_fixture_suite_counts(eval);
+    task_count.is_some()
+        || command_count.is_some()
+        || !eval_fixture_suite_risk_labels(eval).is_empty()
+}
+
 fn eval_fixture_suite_risk_labels(eval: &EvalResult) -> BTreeMap<String, u64> {
     eval.metrics
         .get("fixture_suite")
@@ -2779,6 +2796,49 @@ fn latest_eval_for_suite(events: &[Value], suite: &str) -> Option<(u128, EvalRes
             } else {
                 None
             }
+        })
+        .max_by_key(|(timestamp, _)| *timestamp)
+}
+
+fn latest_release_fixture_evidence_eval(
+    events: &[Value],
+    suite: &str,
+    max_age_ms: u128,
+    now_ms: u128,
+) -> Option<(u128, EvalResult)> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let payload = event.get("payload")?;
+            let eval = serde_json::from_value::<EvalResult>(payload.clone()).ok()?;
+            if !(eval.suite == suite
+                || eval.suite == format!("fixtures:{suite}")
+                || eval.suite == format!("fixture-attempts:{suite}"))
+            {
+                return None;
+            }
+            if !eval_has_fixture_suite_metadata(&eval) {
+                return None;
+            }
+            if eval.status != EvalStatus::Passed || eval.failed != 0 {
+                return None;
+            }
+            if eval_reproducibility_manifest(&eval)
+                .and_then(|manifest| manifest.get("git_dirty")?.as_bool())
+                == Some(true)
+            {
+                return None;
+            }
+            let timestamp = eval.created_at_ms.max(
+                event
+                    .get("timestamp_ms")
+                    .and_then(value_as_u128)
+                    .unwrap_or_default(),
+            );
+            if now_ms.saturating_sub(timestamp) > max_age_ms {
+                return None;
+            }
+            Some((timestamp, eval))
         })
         .max_by_key(|(timestamp, _)| *timestamp)
 }
@@ -4897,6 +4957,80 @@ mod tests {
         assert!(format_release_gate_report(&report)
             .contains("model routes:  memory_compression=1, root_cause=3"));
         assert!(format_release_gate_report(&report).contains("source="));
+    }
+
+    #[test]
+    fn release_gate_combines_required_gate_eval_with_fixture_evidence_eval() {
+        let mut fixture_eval = build_eval_result(
+            "fixtures:local-smoke",
+            "genome-v1",
+            None,
+            &[gate("fixture", true)],
+            10,
+        );
+        fixture_eval.eval_id = "eval-fixtures".into();
+        fixture_eval.created_at_ms = 10_000;
+        fixture_eval.metrics["fixture_suite"] = json!({
+            "task_count": 240,
+            "command_count": 480,
+            "risk_labels": {
+                "high": 4,
+                "low": 120,
+                "medium": 116
+            }
+        });
+        fixture_eval.metrics["reproducibility"] = json!({
+            "git_dirty": false,
+            "commands": ["cargo test fixture"]
+        });
+        let mut gate_eval = build_eval_result(
+            "local-smoke",
+            "genome-v1",
+            None,
+            &required_gate_results(true),
+            10,
+        );
+        gate_eval.eval_id = "eval-gates".into();
+        gate_eval.created_at_ms = 20_000;
+        let events = vec![
+            json!({
+                "event_id": "evt-fixtures",
+                "event_type": "PatchEvaluated",
+                "timestamp_ms": 10_000,
+                "payload": fixture_eval,
+            }),
+            json!({
+                "event_id": "evt-gates",
+                "event_type": "PatchEvaluated",
+                "timestamp_ms": 20_000,
+                "payload": gate_eval,
+            }),
+        ];
+
+        let report = build_release_gate_report_with_policy(
+            &events,
+            "local-smoke",
+            1,
+            20_000 + 3_000_000,
+            ReleaseGatePolicy {
+                require_protocol: false,
+                min_fixture_tasks: Some(200),
+                min_fixture_commands: Some(300),
+                min_fixture_risk_labels: BTreeMap::from([
+                    ("high".to_string(), 1),
+                    ("medium".to_string(), 1),
+                    ("low".to_string(), 1),
+                ]),
+            },
+        );
+
+        assert!(report.ready);
+        assert_eq!(report.last_eval_id.as_deref(), Some("eval-gates"));
+        assert_eq!(report.last_eval_fixture_task_count, Some(240));
+        assert_eq!(report.last_eval_fixture_command_count, Some(480));
+        assert_eq!(report.last_eval_fixture_risk_labels["high"], 4);
+        assert!(report.fixture_breadth_satisfied);
+        assert!(report.fixture_risk_satisfied);
     }
 
     #[test]

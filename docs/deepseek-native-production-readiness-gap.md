@@ -12,7 +12,7 @@ is still unproved or intentionally outside the bootstrap PR.
 - Rust package: `yoyo-ds-harness`.
 - Bootstrap PR: <https://github.com/yologdev/yyds-harness/pull/1>.
 - Branch: `deepseek-native-bootstrap`.
-- Latest PR commit before this audit update: `b5c4831`.
+- Latest PR commit before this audit update: `50eb72a`.
 - PR state: open and mergeable against `main`.
 - GitHub checks: none reported in this environment.
 
@@ -65,6 +65,20 @@ is still unproved or intentionally outside the bootstrap PR.
   - archive contents: `yoyo`, `yoyo-ds`
   - sha256:
     `5a8da88194ca120c775828dfebd9c6eb2e6dc9b3e6ace6eab0e714b3246d6d51`
+- Local isolated release-gate evidence passed on 2026-06-02 after fixing the
+  gate to combine fresh required-gate eval evidence with fresh fixture-suite
+  breadth/risk evidence:
+  - clean fixture eval: `eval-1780416426848-14601`
+  - required-gate eval: `eval-1780416476818-20845`
+  - release-gate command:
+    `yoyo eval release-gate --suite local-smoke --max-age-hours 24 --min-fixture-tasks 200 --min-fixture-commands 300 --min-fixture-low-risk 1 --min-fixture-medium-risk 1 --min-fixture-high-risk 1 --record --json --fail`
+  - release-gate decision: `ready=true`
+  - fixture breadth: 368 tasks, 920 commands
+  - fixture risk labels: high=34, medium=146, low=188
+  - required gates: present and passed
+  - source provenance audit: passed, 534 files scanned, 0 findings
+  - evidence state path:
+    `/private/tmp/yyds-release-gate.LUDs2f/evidence/events.jsonl`
 
 ## Not Yet Proved
 
@@ -88,9 +102,9 @@ is still unproved or intentionally outside the bootstrap PR.
   proposed -> applied -> evaluated -> rolled back -> rejected, but did not prove
   promotion of an improving patch.
 - Public release readiness. The repository is intentionally private for MVP; the
-  local release packaging path has been exercised, but GitHub release workflows,
-  public badges, crates.io publishing, and public docs should be rechecked when
-  the repo is made public.
+  local release packaging path and isolated release-gate path have been
+  exercised, but GitHub release workflows, public badges, crates.io publishing,
+  and public docs should be rechecked when the repo is made public.
 
 ## Production Readiness Gate
 
@@ -103,8 +117,8 @@ current evidence:
   line.
 - At least one positive harness patch is proposed, evaluated, compared, and
   promoted with state evidence from an isolated worktree.
-- GitHub release workflow or public-release dry run passes when the repo is
-  ready to publish.
-- Secrets/redaction and source-provenance scans pass on the release candidate.
+- GitHub release workflow passes when the repo is ready to publish.
+- Secrets/redaction and source-provenance scans pass on the exact public release
+  candidate.
 - A short dogfooding report confirms the agent can complete a small real coding
   task with DeepSeek-native mode.
