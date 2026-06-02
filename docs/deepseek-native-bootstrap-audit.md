@@ -8,6 +8,10 @@ to the current bootstrap worktree. It is intentionally scoped: the first
 finish line is the plan's first 30-day bootstrap, not every later production
 roadmap item.
 
+Repository note: the original plan used `yologdev/yoyo-ds-harness`; the active
+private MVP repository is `yologdev/yyds-harness`. The Rust package remains
+`yoyo-ds-harness`.
+
 ## Completion Line
 
 Bootstrap is done when the repo can be reviewed as a DeepSeek-native harness
@@ -39,6 +43,8 @@ Evidence:
 - `git remote -v` shows `origin` as `yologdev/yyds-harness` and `upstream`
   as `yologdev/yoyo-evolve`.
 - Current branch is `deepseek-native-bootstrap`.
+- Bootstrap PR is open as <https://github.com/yologdev/yyds-harness/pull/1>
+  against `main`.
 - `git -C /Users/yuanhao/Dev/yoagent-state status --short` is clean.
 
 Important boundary:
@@ -161,10 +167,10 @@ The bootstrap branch should stop feature growth and close only these items:
      is not present in the environment.
 
 2. Produce a reviewable commit/PR boundary.
-   - Current status: achieved as bootstrap checkpoint commit `9e7fae0`.
-   - The checkpoint uses a single broad bootstrap commit with this audit,
-     `docs/deepseek-native-baseline.md`, and
-     `docs/deepseek-native-bootstrap-review.md`.
+   - Current status: achieved. Bootstrap PR:
+     <https://github.com/yologdev/yyds-harness/pull/1>.
+   - The branch uses a broad bootstrap commit plus follow-up audit/repo-rename
+     commits.
 
 3. Run the final bootstrap gate set on the exact review tree.
    - `cargo fmt --check`
@@ -173,13 +179,13 @@ The bootstrap branch should stop feature growth and close only these items:
    - `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke`
    - `test ! -e .yoyo`
    - `git -C /Users/yuanhao/Dev/yoagent-state status --short`
-   - Current status: achieved on commit `9e7fae0` on 2026-06-02 except the live
+   - Current status: achieved on commit `8c020bc` on 2026-06-02 except the live
      DeepSeek smoke, which is recorded above as a credential-dependent manual
      smoke.
 
 ## Latest Local Gate Run
 
-Status: passed on commit `9e7fae0` with live-smoke waiver.
+Status: passed on commit `8c020bc` with live-smoke waiver.
 
 Commands run on 2026-06-02:
 
@@ -196,6 +202,18 @@ Commands run on 2026-06-02:
 - `git -C /Users/yuanhao/Dev/yoagent-state status --short`
 - `git status --short`
 
+Private repository/PR evidence:
+
+- `git push -u origin deepseek-native-bootstrap` pushed the branch to
+  `git@github.com:yologdev/yyds-harness.git`.
+- `git push origin main` pushed the PR base branch.
+- `gh pr view 1 --repo yologdev/yyds-harness` reports PR #1 as open,
+  mergeable, `deepseek-native-bootstrap` -> `main`.
+- `gh pr checks 1 --repo yologdev/yyds-harness` currently reports no checks.
+  `gh workflow list --repo yologdev/yyds-harness --all` also returned no
+  workflows in this environment, so GitHub Actions enablement/default-branch
+  settings need owner/admin verification.
+
 Live DeepSeek end-to-end smoke:
 
 - Not run in this environment because `DEEPSEEK_API_KEY` is missing.
@@ -208,3 +226,6 @@ requires it. The current architecture is aligned with the plan: yoyo acts,
 `yoagent-state` remembers and explains, and harness evolution is gated by eval
 and promotion evidence. The next engineering work should be closure, not more
 surface area.
+
+For the broader plan-level production gap ledger, see
+`docs/deepseek-native-production-readiness-gap.md`.

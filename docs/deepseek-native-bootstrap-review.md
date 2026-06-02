@@ -2,10 +2,15 @@
 
 Date: 2026-06-02
 
-This is the review boundary for bootstrap checkpoint commit `9e7fae0` on the
+This is the review boundary for bootstrap PR
+<https://github.com/yologdev/yyds-harness/pull/1> on the
 `deepseek-native-bootstrap` branch. It turns the broad production-plan work into
 a reviewable bootstrap PR without claiming that every later roadmap phase is
 finished.
+
+Repository note: the plan originally used `yologdev/yoyo-ds-harness`; the active
+private MVP repository is `yologdev/yyds-harness`. The Rust package remains
+`yoyo-ds-harness`.
 
 ## Intended PR Scope
 
@@ -61,7 +66,7 @@ Exclude from this bootstrap PR:
 
 ## Gate Status
 
-Latest local gate run: passed on commit `9e7fae0` on 2026-06-02.
+Latest local gate run: passed on commit `8c020bc` on 2026-06-02.
 
 - `cargo fmt --check`
 - `cargo test`
@@ -100,10 +105,9 @@ DEEPSEEK_API_KEY=... cargo run --bin yoyo-ds -- --deepseek-native "<small task>"
 
 ## Remaining Actions
 
-Before opening or merging a PR:
+Before merging PR #1:
 
-1. Push `deepseek-native-bootstrap` or split `9e7fae0` only if review requires
-   smaller commits.
-2. Run the live DeepSeek smoke when credentials are available.
-3. Open the bootstrap PR with the live-smoke result or an explicit pre-release
-   waiver.
+1. Run the live DeepSeek smoke when credentials are available.
+2. Confirm GitHub Actions/default-branch settings for the private repo. The PR
+   is open and mergeable, but no GitHub checks are currently reported.
+3. Merge with the live-smoke result or an explicit pre-release waiver.
