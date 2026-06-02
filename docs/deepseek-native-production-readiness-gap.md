@@ -31,6 +31,21 @@ is still unproved or intentionally outside the bootstrap PR.
 - Local eval fixtures, comparison/reporting, release gates, harness patch
   lifecycle commands, promotion/rejection decisions, and rollback surfaces
   exist for bootstrap use.
+- A local isolated harness lifecycle dogfood run completed on 2026-06-02:
+  - patch id: `patch-1780408949061-80074`
+  - proposed event: `event_667c161162114767a77e3dc7871885f7`
+  - applied event: `event_441fe2af9a2d48ea8b270b859831ce33`
+  - eval id: `eval-1780409081139-80229`
+  - evaluated event: `event_0d888e0a85b74df7aace5c96a7197ec2`
+  - rollback event: `event_00ba03ba9d1b46fa86dd9dd7b420ec78`
+  - rejected event: `event_80b76381d43942439bf9573cfdb1cefd`
+  - rejection decision event: `event_704920a65eed4a9189431ad0eae96f38`
+  - `yoyo state lineage patch-1780408949061-80074` and
+    `yoyo state why patch-1780408949061-80074` both reconstructed the
+    lifecycle from the isolated worktree state log.
+  - The candidate eval failed, so the patch was rolled back and rejected rather
+    than promoted. This proves rejection/rollback lineage, not positive
+    promotion.
 - Local gate set passed on the PR tree:
   - `cargo fmt --check`
   - `cargo test`
@@ -57,6 +72,9 @@ is still unproved or intentionally outside the bootstrap PR.
   issues, automated memory synthesis, state-backed journal generation, and
   regression replay before releases are represented by bootstrap surfaces and
   fixtures, not proven production loops.
+- Positive harness improvement promotion. The isolated dogfood lifecycle proved
+  proposed -> applied -> evaluated -> rolled back -> rejected, but did not prove
+  promotion of an improving patch.
 - Public release readiness. The repository is intentionally private for MVP;
   public badges, release workflows, crates.io publishing, and public docs should
   be rechecked when the repo is made public.
@@ -70,8 +88,8 @@ current evidence:
 - PR checks or equivalent CI evidence pass on the exact merge candidate.
 - Repo default branch and branch protection match the intended `main` production
   line.
-- At least one real harness patch is proposed, evaluated, compared, and either
-  promoted or rejected with state evidence from an isolated worktree.
+- At least one positive harness patch is proposed, evaluated, compared, and
+  promoted with state evidence from an isolated worktree.
 - Release packaging is exercised on GitHub Actions or an equivalent release dry
   run.
 - Secrets/redaction and source-provenance scans pass on the release candidate.
