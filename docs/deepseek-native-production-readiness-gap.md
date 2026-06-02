@@ -12,7 +12,7 @@ is still unproved or intentionally outside the bootstrap PR.
 - Rust package: `yoyo-ds-harness`.
 - Bootstrap PR: <https://github.com/yologdev/yyds-harness/pull/1>.
 - Branch: `deepseek-native-bootstrap`.
-- Latest PR commit before this audit update: `50eb72a`.
+- Latest PR commit before this audit update: `b19bf1d`.
 - PR state: open and mergeable against `main`.
 - GitHub checks: none reported in this environment.
 
@@ -79,6 +79,27 @@ is still unproved or intentionally outside the bootstrap PR.
   - source provenance audit: passed, 534 files scanned, 0 findings
   - evidence state path:
     `/private/tmp/yyds-release-gate.LUDs2f/evidence/events.jsonl`
+- Local isolated positive harness promotion passed on 2026-06-02:
+  - patch id: `patch-1780418088821-33322`
+  - proposed event: `event_70ebf88c62fa458a84e78bf92d2bbcaa`
+  - risk score event: `event_8a0c29cf4a1f4a00812b5744a9178abe`
+  - applied event: `event_a0ab82ff60d044f5bc786514c84076b7`
+  - baseline eval: `eval-1780418067397-27824`
+  - candidate eval: `eval-1780425443688-42416`
+  - evaluated event: `event_4820af0730f34af5b94d46fc4e5bd10b`
+  - comparison event: `event_ecb461c2965943f6b7f54002f6d3e7df`
+  - promoted event: `event_336ef78245f14982aac4f52ea777283c`
+  - promotion decision event: `event_3a3f0874719e4ebe840aa504d91f5403`
+  - promotion criterion: `duration_reduced_no_regression`, forced=`false`
+  - both baseline and candidate passed `local-smoke` with 4 passed gates, 0
+    failed gates, clean git state, and required gate evidence.
+  - `yoyo state lineage patch-1780418088821-33322` reconstructed the lifecycle
+    as proposed -> risk-scored -> applied -> evaluated -> eligible -> promoted.
+  - `yoyo state why patch-1780418088821-33322` reported base commit `b19bf1d`,
+    `context_policy` kind, `low` risk, the required-gate eval plan, expected
+    effect, and rollback plan.
+  - evidence state path:
+    `/private/tmp/yyds-positive-promotion.Qe6kBZ/evidence/events.jsonl`
 
 ## Not Yet Proved
 
@@ -98,13 +119,11 @@ is still unproved or intentionally outside the bootstrap PR.
   issues, automated memory synthesis, state-backed journal generation, and
   regression replay before releases are represented by bootstrap surfaces and
   fixtures, not proven production loops.
-- Positive harness improvement promotion. The isolated dogfood lifecycle proved
-  proposed -> applied -> evaluated -> rolled back -> rejected, but did not prove
-  promotion of an improving patch.
 - Public release readiness. The repository is intentionally private for MVP; the
   local release packaging path and isolated release-gate path have been
-  exercised, but GitHub release workflows, public badges, crates.io publishing,
-  and public docs should be rechecked when the repo is made public.
+  exercised, and a positive promotion path has been proven locally, but GitHub
+  release workflows, public badges, crates.io publishing, and public docs should
+  be rechecked when the repo is made public.
 
 ## Production Readiness Gate
 
@@ -115,8 +134,6 @@ current evidence:
 - PR checks or equivalent CI evidence pass on the exact merge candidate.
 - Repo default branch and branch protection match the intended `main` production
   line.
-- At least one positive harness patch is proposed, evaluated, compared, and
-  promoted with state evidence from an isolated worktree.
 - GitHub release workflow passes when the repo is ready to publish.
 - Secrets/redaction and source-provenance scans pass on the exact public release
   candidate.
