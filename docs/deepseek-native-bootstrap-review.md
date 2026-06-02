@@ -2,9 +2,10 @@
 
 Date: 2026-06-02
 
-This is the review boundary for the current `deepseek-native-bootstrap` worktree.
-It turns the broad production-plan work into a reviewable bootstrap PR without
-claiming that every later roadmap phase is finished.
+This is the review boundary for bootstrap checkpoint commit `9e7fae0` on the
+`deepseek-native-bootstrap` branch. It turns the broad production-plan work into
+a reviewable bootstrap PR without claiming that every later roadmap phase is
+finished.
 
 ## Intended PR Scope
 
@@ -60,11 +61,12 @@ Exclude from this bootstrap PR:
 
 ## Gate Status
 
-Latest local gate run: passed on 2026-06-02.
+Latest local gate run: passed on commit `9e7fae0` on 2026-06-02.
 
 - `cargo fmt --check`
 - `cargo test`
-  - unit tests: 3741 passed, 1 ignored
+  - `yoyo` unit tests: 3741 passed, 1 ignored
+  - `yoyo-ds` unit tests: 3741 passed, 1 ignored
   - integration tests: 89 passed, 1 ignored
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke`
@@ -72,6 +74,7 @@ Latest local gate run: passed on 2026-06-02.
   - tasks: 368
 - `test ! -e .yoyo`
 - `git -C /Users/yuanhao/Dev/yoagent-state status --short`
+- `git status --short`
 
 Known waiver:
 
@@ -99,7 +102,8 @@ DEEPSEEK_API_KEY=... cargo run --bin yoyo-ds -- --deepseek-native "<small task>"
 
 Before opening or merging a PR:
 
-1. Choose the commit strategy: grouped commits as above, or one bootstrap commit.
-2. Stage only bootstrap-owned files.
-3. Re-run the local gate set after staging or committing.
-4. Run the live DeepSeek smoke when credentials are available.
+1. Push `deepseek-native-bootstrap` or split `9e7fae0` only if review requires
+   smaller commits.
+2. Run the live DeepSeek smoke when credentials are available.
+3. Open the bootstrap PR with the live-smoke result or an explicit pre-release
+   waiver.

@@ -161,9 +161,10 @@ The bootstrap branch should stop feature growth and close only these items:
      is not present in the environment.
 
 2. Produce a reviewable commit/PR boundary.
-   - Current worktree is broad and dirty by design from the bootstrap work.
-   - Before review, group changes into a small number of commits or a single
-     bootstrap PR with this audit and `docs/deepseek-native-baseline.md`.
+   - Current status: achieved as bootstrap checkpoint commit `9e7fae0`.
+   - The checkpoint uses a single broad bootstrap commit with this audit,
+     `docs/deepseek-native-baseline.md`, and
+     `docs/deepseek-native-bootstrap-review.md`.
 
 3. Run the final bootstrap gate set on the exact review tree.
    - `cargo fmt --check`
@@ -172,18 +173,20 @@ The bootstrap branch should stop feature growth and close only these items:
    - `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke`
    - `test ! -e .yoyo`
    - `git -C /Users/yuanhao/Dev/yoagent-state status --short`
-   - Current status: local gates passed on 2026-06-02 except the live DeepSeek
-     smoke, which is recorded above as a credential-dependent manual smoke.
+   - Current status: achieved on commit `9e7fae0` on 2026-06-02 except the live
+     DeepSeek smoke, which is recorded above as a credential-dependent manual
+     smoke.
 
 ## Latest Local Gate Run
 
-Status: passed with live-smoke waiver.
+Status: passed on commit `9e7fae0` with live-smoke waiver.
 
 Commands run on 2026-06-02:
 
 - `cargo fmt --check`
 - `cargo test`
-  - unit tests: 3741 passed, 1 ignored
+  - `yoyo` unit tests: 3741 passed, 1 ignored
+  - `yoyo-ds` unit tests: 3741 passed, 1 ignored
   - integration tests: 89 passed, 1 ignored
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke`
@@ -191,6 +194,7 @@ Commands run on 2026-06-02:
   - tasks: 368
 - `test ! -e .yoyo`
 - `git -C /Users/yuanhao/Dev/yoagent-state status --short`
+- `git status --short`
 
 Live DeepSeek end-to-end smoke:
 
