@@ -15,7 +15,7 @@ A coding agent that:
 
 ### 1. Fork the repo
 
-Fork [yologdev/yoyo-ds-harness](https://github.com/yologdev/yoyo-ds-harness) on GitHub.
+Fork [yologdev/yyds-harness](https://github.com/yologdev/yyds-harness) on GitHub.
 
 ### 2. Edit your agent's identity
 
@@ -135,7 +135,7 @@ The sponsor system auto-detects your GitHub Sponsors. No configuration needed â€
 
 ## The `/update` Command
 
-The yoyo binary's `/update` command checks for releases from `yologdev/yoyo-ds-harness`, not your fork. This is expected behavior. As a fork maintainer, rebuild from source after pulling changes:
+The yoyo binary's `/update` command checks for releases from `yologdev/yyds-harness`, not your fork. This is expected behavior. As a fork maintainer, rebuild from source after pulling changes:
 
 ```bash
 cargo build --release

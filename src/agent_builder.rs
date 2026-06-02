@@ -22,7 +22,7 @@ use crate::prompt::{run_prompt, run_prompt_with_content, PromptOutcome};
 use crate::prompt_budget::is_audit_enabled;
 use crate::tools::{build_sub_agent_tool, build_tools};
 
-pub(crate) const YOYO_DS_REPO_URL: &str = "https://github.com/yologdev/yoyo-ds-harness";
+pub(crate) const YOYO_DS_REPO_URL: &str = "https://github.com/yologdev/yyds-harness";
 pub(crate) const YOYO_DS_CLIENT_TITLE: &str = "Yoyo DS Harness";
 
 /// Return the User-Agent header value for yoyo.

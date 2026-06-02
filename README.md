@@ -4,17 +4,17 @@
 
 <p align="center">
   <a href="https://yoyo.yolog.dev/">Website</a> ·
-  <a href="https://github.com/yologdev/yoyo-ds-harness">GitHub</a> ·
-  <a href="https://github.com/yologdev/yoyo-ds-harness/releases">Releases</a> ·
-  <a href="https://github.com/yologdev/yoyo-ds-harness/issues">Issues</a> ·
+  <a href="https://github.com/yologdev/yyds-harness">GitHub</a> ·
+  <a href="https://github.com/yologdev/yyds-harness/releases">Releases</a> ·
+  <a href="https://github.com/yologdev/yyds-harness/issues">Issues</a> ·
   <a href="https://x.com/yuanhao">Follow on X</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/yologdev/yoyo-ds-harness/stargazers"><img src="https://img.shields.io/github/stars/yologdev/yoyo-ds-harness?style=flat" alt="stars"></a>
-  <a href="https://github.com/yologdev/yoyo-ds-harness/actions"><img src="https://img.shields.io/github/actions/workflow/status/yologdev/yoyo-ds-harness/ci.yml?label=ci&logo=github" alt="ci"></a>
+  <a href="https://github.com/yologdev/yyds-harness/stargazers"><img src="https://img.shields.io/github/stars/yologdev/yyds-harness?style=flat" alt="stars"></a>
+  <a href="https://github.com/yologdev/yyds-harness/actions"><img src="https://img.shields.io/github/actions/workflow/status/yologdev/yyds-harness/ci.yml?label=ci&logo=github" alt="ci"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="license MIT"></a>
-  <a href="https://github.com/yologdev/yoyo-ds-harness/commits/main"><img src="https://img.shields.io/github/last-commit/yologdev/yoyo-ds-harness" alt="last commit"></a>
+  <a href="https://github.com/yologdev/yyds-harness/commits/main"><img src="https://img.shields.io/github/last-commit/yologdev/yyds-harness" alt="last commit"></a>
 </p>
 
 ---
@@ -23,7 +23,7 @@
 
 **A DeepSeek-native coding agent harness that learns from its own failures.**
 
-`yoyo-ds-harness` is a production fork of `yologdev/yoyo-evolve`. It keeps the existing `yoyo` coding-agent runtime and history, then specializes the harness around DeepSeek models, deterministic prompt layout, stateful trace recording, and evaluation-driven harness evolution.
+`yyds-harness` is a production fork of `yologdev/yoyo-evolve`. It keeps the existing `yoyo` coding-agent runtime and history, then specializes the harness around DeepSeek models, deterministic prompt layout, stateful trace recording, and evaluation-driven harness evolution.
 
 The bootstrap keeps the familiar `yoyo` command for compatibility and adds `yoyo-ds` as the DeepSeek-focused product surface. During migration, both work:
 
@@ -252,13 +252,13 @@ Anthropic · OpenAI · Google · Ollama · OpenRouter · xAI · Groq · DeepSeek
 ### Install (macOS & Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yologdev/yoyo-ds-harness/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yologdev/yyds-harness/main/install.sh | bash
 ```
 
 ### Install (Windows PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/yologdev/yoyo-ds-harness/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/yologdev/yyds-harness/main/install.ps1 | iex
 ```
 
 ### Or install from crates.io
@@ -272,9 +272,9 @@ Crates.io publishing depends on `yoagent-state` being published. Until then, use
 ### Or build from source
 
 ```bash
-git clone https://github.com/yologdev/yoyo-ds-harness
+git clone https://github.com/yologdev/yyds-harness
 git clone https://github.com/yologdev/yoagent-state
-cd yoyo-ds-harness && cargo install --path .
+cd yyds-harness && cargo install --path .
 ```
 
 ### Run
@@ -450,12 +450,12 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 
 Want your own self-evolving agent? Fork this repo, edit two files, and you're running:
 
-1. **Fork** [yologdev/yoyo-ds-harness](https://github.com/yologdev/yoyo-ds-harness)
+1. **Fork** [yologdev/yyds-harness](https://github.com/yologdev/yyds-harness)
 2. **Edit** `IDENTITY.md` (goals, rules) and `PERSONALITY.md` (voice, tone)
 3. **Create a GitHub App** and set secrets (`ANTHROPIC_API_KEY`, `APP_ID`, `APP_PRIVATE_KEY`, `APP_INSTALLATION_ID`)
 4. **Enable** the Evolution workflow
 
-Everything else auto-detects. See the [full guide](https://github.com/yologdev/yoyo-ds-harness/blob/main/docs/src/guides/fork.md) for details.
+Everything else auto-detects. See the [full guide](https://github.com/yologdev/yyds-harness/blob/main/docs/src/guides/fork.md) for details.
 
 ## Architecture
 
@@ -527,14 +527,14 @@ If you use Yoyo DeepSeek Harness in a research paper, please cite our work as fo
   title        = {Yoyo DeepSeek Harness: A DeepSeek-native coding agent harness that learns from its own failures},
   author       = {Yuanhao and {yoyo}},
   year         = {2026},
-  howpublished = {\url{https://github.com/yologdev/yoyo-ds-harness}},
+  howpublished = {\url{https://github.com/yologdev/yyds-harness}},
   note         = {Open-source DeepSeek-native coding agent harness}
 }
 ```
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=yologdev/yoyo-ds-harness&type=Date)](https://star-history.com/#yologdev/yoyo-ds-harness&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=yologdev/yyds-harness&type=Date)](https://star-history.com/#yologdev/yyds-harness&Date)
 
 ## Sponsors
 

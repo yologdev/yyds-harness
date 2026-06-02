@@ -16,9 +16,9 @@ This installs `yoyo-ds` and keeps `yoyo` as a compatibility alias once `yoagent-
 ## Install from source
 
 ```bash
-git clone https://github.com/yologdev/yoyo-ds-harness.git
+git clone https://github.com/yologdev/yyds-harness.git
 git clone https://github.com/yologdev/yoagent-state.git
-cd yoyo-ds-harness
+cd yyds-harness
 cargo build --release
 ```
 
@@ -29,7 +29,7 @@ The binaries will be at `target/release/yoyo-ds` and `target/release/yoyo`.
 If you just want to try it:
 
 ```bash
-cd yoyo-ds-harness
+cd yyds-harness
 DEEPSEEK_API_KEY=sk-... cargo run --bin yoyo-ds -- --deepseek-native
 ```
 

@@ -3,8 +3,8 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-pub const RELEASE_REPO: &str = "yologdev/yoyo-ds-harness";
-pub const RELEASE_ARCHIVE_PREFIX: &str = "yoyo-ds-harness";
+pub const RELEASE_REPO: &str = "yologdev/yyds-harness";
+pub const RELEASE_ARCHIVE_PREFIX: &str = "yyds-harness";
 pub const PRIMARY_BINARY: &str = "yoyo-ds";
 pub const COMPAT_BINARY: &str = "yoyo";
 pub const SOURCE_PROVENANCE_POLICY_VERSION: u32 = 1;
@@ -275,20 +275,20 @@ mod tests {
     fn release_asset_names_include_product_prefix_tag_and_target() {
         assert_eq!(
             platform_asset_name("linux", "x86_64", "v0.1.13").as_deref(),
-            Some("yoyo-ds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz")
+            Some("yyds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz")
         );
         assert_eq!(
             platform_asset_name("windows", "x86_64", "v0.1.13").as_deref(),
-            Some("yoyo-ds-harness-v0.1.13-x86_64-pc-windows-msvc.zip")
+            Some("yyds-harness-v0.1.13-x86_64-pc-windows-msvc.zip")
         );
     }
 
     #[test]
     fn release_urls_point_at_yoyo_ds_harness() {
-        assert_eq!(RELEASE_REPO, "yologdev/yoyo-ds-harness");
-        assert!(releases_api_url().contains("yoyo-ds-harness"));
-        assert!(manual_install_command(false).contains("yoyo-ds-harness"));
-        assert!(manual_install_command(true).contains("yoyo-ds-harness"));
+        assert_eq!(RELEASE_REPO, "yologdev/yyds-harness");
+        assert!(releases_api_url().contains("yyds-harness"));
+        assert!(manual_install_command(false).contains("yyds-harness"));
+        assert!(manual_install_command(true).contains("yyds-harness"));
     }
 
     #[test]
@@ -298,9 +298,9 @@ mod tests {
 
         assert!(readme.contains("@misc{yoyo2026yoyodsharness"));
         assert!(readme.contains("Yoyo DeepSeek Harness:"));
-        assert!(readme.contains("github.com/yologdev/yoyo-ds-harness"));
-        assert!(readme.contains("repos=yologdev/yoyo-ds-harness"));
-        assert!(readme.contains("star-history.com/#yologdev/yoyo-ds-harness&Date"));
+        assert!(readme.contains("github.com/yologdev/yyds-harness"));
+        assert!(readme.contains("repos=yologdev/yyds-harness"));
+        assert!(readme.contains("star-history.com/#yologdev/yyds-harness&Date"));
         assert!(!readme.contains("@misc{yoyo2026yoyoevolve"));
         assert!(!readme.contains("github.com/yologdev/yoyo-evolve},"));
         assert!(!readme.contains("repos=yologdev/yoyo-evolve&type=Date"));
@@ -315,23 +315,22 @@ mod tests {
         let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
 
         assert!(book.contains("Yoyo DeepSeek Harness documentation"));
-        assert!(
-            book.contains("git-repository-url = \"https://github.com/yologdev/yoyo-ds-harness\"")
-        );
+        assert!(book.contains("git-repository-url = \"https://github.com/yologdev/yyds-harness\""));
         assert!(!book.contains("yoyo-evolve"));
 
         assert!(introduction.contains("# Yoyo DeepSeek Harness"));
         assert!(introduction.contains("cargo install yoyo-ds-harness"));
         assert!(introduction.contains("yoyo-ds --deepseek-native"));
-        assert!(introduction.contains("github.com/yologdev/yoyo-ds-harness"));
+        assert!(introduction.contains("github.com/yologdev/yyds-harness"));
         assert!(!introduction.contains("github.com/yologdev/yoyo-evolve"));
 
         assert!(fork_guide.contains("Fork Yoyo DeepSeek Harness"));
-        assert!(fork_guide.contains("github.com/yologdev/yoyo-ds-harness"));
+        assert!(fork_guide.contains("github.com/yologdev/yyds-harness"));
         assert!(!fork_guide.contains("github.com/yologdev/yoyo-evolve"));
 
-        assert!(readme
-            .contains("[yologdev/yoyo-ds-harness](https://github.com/yologdev/yoyo-ds-harness)"));
+        assert!(
+            readme.contains("[yologdev/yyds-harness](https://github.com/yologdev/yyds-harness)")
+        );
         assert!(readme.contains("docs/src/guides/fork.md"));
         assert!(!readme.contains("yologdev.github.io/yoyo-evolve/book/guides/fork.html"));
     }

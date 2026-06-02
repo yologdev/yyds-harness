@@ -1,8 +1,8 @@
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 
-$Repo = "yologdev/yoyo-ds-harness"
-$ArchivePrefix = "yoyo-ds-harness"
+$Repo = "yologdev/yyds-harness"
+$ArchivePrefix = "yyds-harness"
 $InstallDir = Join-Path $env:USERPROFILE ".yoyo\bin"
 
 function Main {

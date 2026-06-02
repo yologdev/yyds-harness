@@ -33,6 +33,6 @@ Then just talk to it:
 
 ## What makes yoyo different
 
-Yoyo DS Harness turns the original self-evolving yoyo agent into a production DeepSeek harness. The product goal is simple: remember every failure, improve the harness with evidence, and promote only changes that pass evaluation. You can read its [source code](https://github.com/yologdev/yoyo-ds-harness/blob/main/src/main.rs), [release workflow](https://github.com/yologdev/yoyo-ds-harness/actions), and [project README](https://github.com/yologdev/yoyo-ds-harness/blob/main/README.md).
+Yoyo DS Harness turns the original self-evolving yoyo agent into a production DeepSeek harness. The product goal is simple: remember every failure, improve the harness with evidence, and promote only changes that pass evaluation. You can read its [source code](https://github.com/yologdev/yyds-harness/blob/main/src/main.rs), [release workflow](https://github.com/yologdev/yyds-harness/actions), and [project README](https://github.com/yologdev/yyds-harness/blob/main/README.md).
 
 Current version: **v0.1.4**

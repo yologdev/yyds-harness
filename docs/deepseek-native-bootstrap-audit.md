@@ -36,7 +36,7 @@ Evidence:
 - `Cargo.toml` defines both `yoyo` and `yoyo-ds` binaries.
 - `Cargo.toml` consumes `yoagent = "0.8.3"` with `openapi` support.
 - `Cargo.toml` consumes `yoagent-state = { path = "../yoagent-state" }`.
-- `git remote -v` shows `origin` as `yologdev/yoyo-ds-harness` and `upstream`
+- `git remote -v` shows `origin` as `yologdev/yyds-harness` and `upstream`
   as `yologdev/yoyo-evolve`.
 - Current branch is `deepseek-native-bootstrap`.
 - `git -C /Users/yuanhao/Dev/yoagent-state status --short` is clean.

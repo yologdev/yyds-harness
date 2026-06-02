@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-REPO="yologdev/yoyo-ds-harness"
-ARCHIVE_PREFIX="yoyo-ds-harness"
+REPO="yologdev/yyds-harness"
+ARCHIVE_PREFIX="yyds-harness"
 INSTALL_DIR="$HOME/.yoyo/bin"
 
 main() {

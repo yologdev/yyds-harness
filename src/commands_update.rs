@@ -337,7 +337,7 @@ mod tests {
         let name = crate::release::platform_asset_name("linux", "x86_64", "v0.1.13");
         assert_eq!(
             name.as_deref(),
-            Some("yoyo-ds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz")
+            Some("yyds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz")
         );
     }
 
@@ -346,7 +346,7 @@ mod tests {
         let name = crate::release::platform_asset_name("macos", "x86_64", "v0.1.13");
         assert_eq!(
             name.as_deref(),
-            Some("yoyo-ds-harness-v0.1.13-x86_64-apple-darwin.tar.gz")
+            Some("yyds-harness-v0.1.13-x86_64-apple-darwin.tar.gz")
         );
     }
 
@@ -355,7 +355,7 @@ mod tests {
         let name = crate::release::platform_asset_name("macos", "aarch64", "v0.1.13");
         assert_eq!(
             name.as_deref(),
-            Some("yoyo-ds-harness-v0.1.13-aarch64-apple-darwin.tar.gz")
+            Some("yyds-harness-v0.1.13-aarch64-apple-darwin.tar.gz")
         );
     }
 
@@ -364,7 +364,7 @@ mod tests {
         let name = crate::release::platform_asset_name("windows", "x86_64", "v0.1.13");
         assert_eq!(
             name.as_deref(),
-            Some("yoyo-ds-harness-v0.1.13-x86_64-pc-windows-msvc.zip")
+            Some("yyds-harness-v0.1.13-x86_64-pc-windows-msvc.zip")
         );
     }
 
@@ -552,17 +552,17 @@ mod tests {
         let asset_name = crate::release::platform_asset_name("linux", "x86_64", "v0.1.13").unwrap();
         let assets = vec![serde_json::json!({
             "name": asset_name,
-            "browser_download_url": "https://example.com/yoyo-ds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz"
+            "browser_download_url": "https://example.com/yyds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz"
         })];
 
         let url = find_asset_url(
             &assets,
-            "yoyo-ds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz",
+            "yyds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz",
         );
 
         assert_eq!(
             url.as_deref(),
-            Some("https://example.com/yoyo-ds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz")
+            Some("https://example.com/yyds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz")
         );
     }
 
