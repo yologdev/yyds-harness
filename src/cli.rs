@@ -142,6 +142,7 @@ const KNOWN_FLAGS: &[&str] = &[
     "--print",
     "--quiet",
     "-q",
+    "--allowed-tools",
     "--disallowed-tools",
     "--no-tools",
     "--lite",
@@ -908,6 +909,12 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         print_system_prompt: of.print_system_prompt,
         print_mode: of.print_mode,
         auto_watch: crate::config::parse_auto_watch_from_config(&file_config),
+        allowed_tools: collect_repeatable_flag(args, "--allowed-tools")
+            .iter()
+            .flat_map(|v| v.split(','))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
         disallowed_tools: {
             let no_tools = args.iter().any(|a| a == "--no-tools");
             let user_disallowed: Vec<String> = collect_repeatable_flag(args, "--disallowed-tools")
@@ -936,6 +943,14 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         no_tools: args.iter().any(|a| a == "--no-tools"),
         lite,
     });
+
+    // Conflict check: --allowed-tools and --disallowed-tools are mutually exclusive
+    if let Some(ref config) = result {
+        if !config.allowed_tools.is_empty() && !config.disallowed_tools.is_empty() {
+            eprintln!("{RED}error:{RESET} Cannot use both --allowed-tools and --disallowed-tools");
+            return None;
+        }
+    }
 
     // Auto-lite detection: when context window ≤16K, automatically enable lite mode
     // (but don't override any explicit user choices)
@@ -3051,5 +3066,50 @@ command = "server-two"
         assert!(validate_config_value("lite", "false").is_ok());
         // Invalid values
         assert!(validate_config_value("lite", "banana").is_err());
+    }
+
+    #[test]
+    fn test_allowed_tools_single() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--allowed-tools".to_string(),
+            "read_file".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert_eq!(config.allowed_tools, vec!["read_file".to_string()]);
+    }
+
+    #[test]
+    fn test_allowed_tools_comma_separated() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--allowed-tools".to_string(),
+            "read_file,search".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert_eq!(
+            config.allowed_tools,
+            vec!["read_file".to_string(), "search".to_string(),]
+        );
+    }
+
+    #[test]
+    fn test_allowed_and_disallowed_conflict() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--allowed-tools".to_string(),
+            "read_file".to_string(),
+            "--disallowed-tools".to_string(),
+            "bash".to_string(),
+        ];
+        // Should return None because both flags are mutually exclusive
+        let result = parse_args(&args);
+        assert!(
+            result.is_none(),
+            "parse_args should return None when both --allowed-tools and --disallowed-tools are provided"
+        );
     }
 }

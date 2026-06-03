@@ -132,6 +132,8 @@ fn build_json_output(
     usage: &Usage,
     is_error: bool,
     session_changes: &SessionChanges,
+    duration: std::time::Duration,
+    num_turns: usize,
 ) -> String {
     let cost_usd = estimate_cost(usage, model);
     let json_obj = serde_json::json!({
@@ -140,12 +142,25 @@ fn build_json_output(
         "usage": {
             "input_tokens": usage.input,
             "output_tokens": usage.output,
+            "cache_read_input_tokens": usage.cache_read,
+            "cache_creation_input_tokens": usage.cache_write,
         },
         "cost_usd": cost_usd,
+        "duration_ms": duration.as_millis() as u64,
+        "num_turns": num_turns,
         "is_error": is_error,
         "session": session_changes.to_json_summary(),
     });
     serde_json::to_string(&json_obj).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Count the number of assistant turns in the agent's message history.
+fn count_assistant_turns(agent: &Agent) -> usize {
+    agent
+        .messages()
+        .iter()
+        .filter(|m| matches!(m.as_llm(), Some(yoagent::Message::Assistant { .. })))
+        .count()
 }
 
 /// Handle `--prompt / -p` single-shot mode: run one prompt (optionally with an
@@ -280,6 +295,8 @@ async fn run_single_prompt(
                                 &session_total,
                                 true,
                                 &session_changes,
+                                prompt_start.elapsed(),
+                                count_assistant_turns(agent),
                             )
                         );
                     } else {
@@ -324,7 +341,9 @@ async fn run_single_prompt(
                         &agent_config.model,
                         &session_total,
                         true,
-                        &session_changes
+                        &session_changes,
+                        prompt_start.elapsed(),
+                        count_assistant_turns(agent),
                     )
                 );
             } else {
@@ -355,7 +374,9 @@ async fn run_single_prompt(
                 &agent_config.model,
                 &session_total,
                 false,
-                &session_changes
+                &session_changes,
+                prompt_start.elapsed(),
+                count_assistant_turns(agent),
             )
         );
     } else {
@@ -474,6 +495,8 @@ async fn run_piped_mode(
                 &session_total,
                 should_exit_error,
                 &session_changes,
+                prompt_start.elapsed(),
+                count_assistant_turns(agent),
             )
         );
     } else {
@@ -649,6 +672,7 @@ async fn main() {
         fallback_provider: config.fallback_provider,
         fallback_model: config.fallback_model,
         auto_watch: config.auto_watch,
+        allowed_tools: config.allowed_tools,
         disallowed_tools: config.disallowed_tools,
         no_tools: config.no_tools,
         lite: config.lite,
@@ -922,6 +946,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -950,6 +975,8 @@ mod tests {
             &usage,
             false,
             &SessionChanges::new(),
+            std::time::Duration::from_millis(1234),
+            3,
         );
 
         // Must be valid JSON
@@ -963,7 +990,11 @@ mod tests {
         assert!(parsed["usage"].is_object());
         assert_eq!(parsed["usage"]["input_tokens"], 100);
         assert_eq!(parsed["usage"]["output_tokens"], 50);
+        assert_eq!(parsed["usage"]["cache_read_input_tokens"], 0);
+        assert_eq!(parsed["usage"]["cache_creation_input_tokens"], 0);
         assert!(parsed["cost_usd"].is_number());
+        assert_eq!(parsed["duration_ms"], 1234);
+        assert_eq!(parsed["num_turns"], 3);
     }
 
     #[test]
@@ -988,6 +1019,8 @@ mod tests {
             &usage,
             true,
             &SessionChanges::new(),
+            std::time::Duration::from_millis(1234),
+            3,
         );
 
         let parsed: serde_json::Value = serde_json::from_str(&result)
@@ -997,6 +1030,10 @@ mod tests {
         assert_eq!(parsed["is_error"], true);
         assert!(parsed["usage"].is_object());
         assert!(parsed["cost_usd"].is_number());
+        assert_eq!(parsed["duration_ms"], 1234);
+        assert_eq!(parsed["num_turns"], 3);
+        assert_eq!(parsed["usage"]["cache_read_input_tokens"], 0);
+        assert_eq!(parsed["usage"]["cache_creation_input_tokens"], 0);
     }
 
     #[test]
@@ -1074,6 +1111,8 @@ mod tests {
             &usage,
             false,
             &SessionChanges::new(),
+            std::time::Duration::from_millis(1234),
+            3,
         );
         let parsed: serde_json::Value =
             serde_json::from_str(&result).expect("empty text should produce valid JSON");
@@ -1104,6 +1143,8 @@ mod tests {
             &usage,
             false,
             &SessionChanges::new(),
+            std::time::Duration::from_millis(1234),
+            3,
         );
         let parsed: serde_json::Value =
             serde_json::from_str(&result).expect("special chars should produce valid JSON");
@@ -1130,15 +1171,23 @@ mod tests {
             cache_write: 0,
             total_tokens: 2,
         };
-        let result = build_json_output(&response, "m", &usage, false, &SessionChanges::new());
+        let result = build_json_output(
+            &response,
+            "m",
+            &usage,
+            false,
+            &SessionChanges::new(),
+            std::time::Duration::from_millis(1234),
+            3,
+        );
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         let obj = parsed.as_object().unwrap();
 
-        // Exactly 6 top-level keys
+        // Exactly 8 top-level keys
         assert_eq!(
             obj.len(),
-            6,
-            "expected 6 top-level keys, got {:?}",
+            8,
+            "expected 8 top-level keys, got {:?}",
             obj.keys().collect::<Vec<_>>()
         );
         assert!(obj.contains_key("response"));
@@ -1147,12 +1196,16 @@ mod tests {
         assert!(obj.contains_key("cost_usd"));
         assert!(obj.contains_key("is_error"));
         assert!(obj.contains_key("session"));
+        assert!(obj.contains_key("duration_ms"));
+        assert!(obj.contains_key("num_turns"));
 
-        // usage sub-object has exactly 2 keys
+        // usage sub-object has exactly 4 keys
         let usage_obj = parsed["usage"].as_object().unwrap();
-        assert_eq!(usage_obj.len(), 2);
+        assert_eq!(usage_obj.len(), 4);
         assert!(usage_obj.contains_key("input_tokens"));
         assert!(usage_obj.contains_key("output_tokens"));
+        assert!(usage_obj.contains_key("cache_read_input_tokens"));
+        assert!(usage_obj.contains_key("cache_creation_input_tokens"));
     }
 
     #[test]
@@ -1177,6 +1230,8 @@ mod tests {
             &usage,
             false,
             &SessionChanges::new(),
+            std::time::Duration::from_millis(1234),
+            3,
         );
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         let cost = parsed["cost_usd"].as_f64().unwrap();
@@ -1206,6 +1261,8 @@ mod tests {
             &usage,
             false,
             &SessionChanges::new(),
+            std::time::Duration::from_millis(1234),
+            3,
         );
         let parsed: serde_json::Value =
             serde_json::from_str(&result).expect("unknown model should still produce valid JSON");
@@ -1232,7 +1289,15 @@ mod tests {
         changes.record("src/main.rs", session::ChangeKind::Write);
         changes.record("src/cli.rs", session::ChangeKind::Edit);
 
-        let result = build_json_output(&response, "test-model", &usage, false, &changes);
+        let result = build_json_output(
+            &response,
+            "test-model",
+            &usage,
+            false,
+            &changes,
+            std::time::Duration::from_millis(1234),
+            3,
+        );
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         // session key must exist
@@ -1268,7 +1333,15 @@ mod tests {
         };
         let changes = SessionChanges::new();
 
-        let result = build_json_output(&response, "test-model", &usage, false, &changes);
+        let result = build_json_output(
+            &response,
+            "test-model",
+            &usage,
+            false,
+            &changes,
+            std::time::Duration::from_millis(1234),
+            3,
+        );
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         assert_eq!(parsed["session"]["files_changed"], 0);
@@ -1350,6 +1423,7 @@ mod tests {
             print_system_prompt: false,
             print_mode: false,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,

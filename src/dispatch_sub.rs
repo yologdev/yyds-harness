@@ -480,6 +480,7 @@ fn run_review_subcommand(args: &[String], review_arg: &str) -> i32 {
         fallback_provider: None,
         fallback_model: None,
         auto_watch: false,
+        allowed_tools: vec![],
         disallowed_tools: vec![],
         no_tools: false,
         lite: false,

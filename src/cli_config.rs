@@ -113,6 +113,7 @@ pub struct Config {
     pub print_system_prompt: bool,
     pub print_mode: bool,
     pub auto_watch: bool,
+    pub allowed_tools: Vec<String>,
     pub disallowed_tools: Vec<String>,
     pub no_tools: bool,
     pub lite: bool,

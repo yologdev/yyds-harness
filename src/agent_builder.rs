@@ -406,6 +406,7 @@ pub struct AgentConfig {
     pub fallback_provider: Option<String>,
     pub fallback_model: Option<String>,
     pub auto_watch: bool,
+    pub allowed_tools: Vec<String>,
     pub disallowed_tools: Vec<String>,
     pub no_tools: bool,
     pub lite: bool,
@@ -450,6 +451,15 @@ impl AgentConfig {
                 is_audit_enabled(),
                 self.shell_hooks.clone(),
             );
+
+            // Filter to only allowed tools (--allowed-tools whitelist)
+            if !self.allowed_tools.is_empty() {
+                tools.retain(|t| self.allowed_tools.contains(&t.name().to_string()));
+                eprintln!(
+                    "{DIM}  🔒 Allowed tools: {}{RESET}",
+                    self.allowed_tools.join(", ")
+                );
+            }
 
             // Filter out disallowed tools (--disallowed-tools flag or --lite)
             if !self.disallowed_tools.is_empty() {
@@ -712,6 +722,7 @@ impl AgentConfig {
             fallback_provider: self.fallback_provider.clone(),
             fallback_model: self.fallback_model.clone(),
             auto_watch: self.auto_watch,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -851,6 +862,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -881,6 +893,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -922,6 +935,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -957,6 +971,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -992,6 +1007,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -1026,6 +1042,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -1060,6 +1077,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -1150,6 +1168,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -1185,6 +1204,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -1354,6 +1374,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -1441,6 +1462,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -1501,6 +1523,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -1535,6 +1558,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -1632,6 +1656,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -1668,6 +1693,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -1699,6 +1725,7 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
             lite: false,
@@ -2063,5 +2090,70 @@ mod tests {
             };
             let _agent = config.build_agent();
         }
+    }
+
+    #[test]
+    fn test_allowed_tools_filters_to_whitelist() {
+        // Test the allowed_tools filtering logic: build the full tool list,
+        // then apply the same retain() filter that build_agent uses. Verify
+        // that only whitelisted tools survive.
+        use crate::tools::build_tools;
+
+        let mut tools = build_tools(
+            true,
+            &cli::PermissionConfig::default(),
+            &cli::DirectoryRestrictions::default(),
+            8000,
+            false,
+            vec![],
+        );
+
+        let all_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+        // Sanity: the full tool list should have bash, write_file, etc.
+        assert!(
+            all_names.contains(&"bash".to_string()),
+            "full tool list should contain bash: {all_names:?}"
+        );
+        assert!(
+            all_names.contains(&"write_file".to_string()),
+            "full tool list should contain write_file: {all_names:?}"
+        );
+
+        // Apply the same allowed_tools filter as build_agent
+        let allowed = ["read_file".to_string(), "search".to_string()];
+        tools.retain(|t| allowed.contains(&t.name().to_string()));
+
+        let filtered_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+
+        // Whitelisted tools must be present
+        assert!(
+            filtered_names.contains(&"read_file".to_string()),
+            "read_file should survive allowed_tools filter: {filtered_names:?}"
+        );
+        assert!(
+            filtered_names.contains(&"search".to_string()),
+            "search should survive allowed_tools filter: {filtered_names:?}"
+        );
+
+        // Non-whitelisted tools must be absent
+        assert!(
+            !filtered_names.contains(&"bash".to_string()),
+            "bash should NOT survive allowed_tools filter: {filtered_names:?}"
+        );
+        assert!(
+            !filtered_names.contains(&"write_file".to_string()),
+            "write_file should NOT survive allowed_tools filter: {filtered_names:?}"
+        );
+        assert!(
+            !filtered_names.contains(&"edit_file".to_string()),
+            "edit_file should NOT survive allowed_tools filter: {filtered_names:?}"
+        );
+
+        // Only the 2 whitelisted tools should remain
+        assert_eq!(
+            filtered_names.len(),
+            2,
+            "exactly 2 tools should survive: {filtered_names:?}"
+        );
     }
 }
