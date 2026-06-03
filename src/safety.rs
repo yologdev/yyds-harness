@@ -166,6 +166,27 @@ fn is_at_word_boundary(s: &str, pos: usize) -> bool {
     matches!(prev, Some(b' ' | b'\t' | b'\n' | b';' | b'|' | b'&' | b'('))
 }
 
+/// Check if the end of a matched pattern is at a word boundary.
+/// Returns true if the character after the pattern is a separator or end-of-string.
+/// This prevents "halt" from matching inside "halting" or "reboot" inside "rebooting".
+fn is_at_word_boundary_end(s: &str, end_pos: usize) -> bool {
+    if end_pos >= s.len() {
+        return true;
+    }
+    let next = s.as_bytes().get(end_pos);
+    matches!(
+        next,
+        Some(b' ' | b'\t' | b'\n' | b';' | b'|' | b'&' | b')' | b'"' | b'\'')
+    )
+}
+
+/// Check both start and end word boundaries for a pattern match.
+/// Use this for commands that are also common English words (halt, shutdown, reboot, etc.)
+/// to avoid false positives when they appear as substrings of longer words.
+fn is_whole_word(s: &str, pos: usize, pattern_len: usize) -> bool {
+    is_at_word_boundary(s, pos) && is_at_word_boundary_end(s, pos + pattern_len)
+}
+
 /// Check for rm -rf with dangerous target paths.
 fn check_rm_destruction(cmd: &str) -> Option<String> {
     // Find all occurrences of "rm " in the command
@@ -308,7 +329,11 @@ fn check_system_commands(cmd_lower: &str) -> Option<String> {
 
     for (pattern, reason) in &system_cmds {
         if let Some(pos) = cmd_lower.find(pattern) {
-            if is_at_word_boundary(cmd_lower, pos) {
+            // Use whole-word matching for single-word commands that are also
+            // common English words (halt, shutdown, reboot, poweroff).
+            // Multi-word patterns like "init 0" and "systemctl stop" already
+            // have natural end boundaries (the space + next word).
+            if is_whole_word(cmd_lower, pos, pattern.len()) {
                 return Some((*reason).into());
             }
         }
