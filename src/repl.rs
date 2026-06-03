@@ -1249,42 +1249,45 @@ fn extract_step_number(line: &str) -> Option<u32> {
 fn step_x_of_y_incomplete(text: &str) -> Option<bool> {
     // Search for patterns like "step 2 of 5", "step 3/7", "step 1 of 4 complete"
     let mut found = false;
-    let mut i = 0;
-    let bytes = text.as_bytes();
-    while i + 5 < bytes.len() {
-        // Look for "step "
-        if i + 5 <= bytes.len() && &text[i..i + 5] == "step " {
-            let after_step = &text[i + 5..];
-            // Parse X
-            let x_digits: String = after_step
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            if !x_digits.is_empty() {
-                if let Ok(x) = x_digits.parse::<u32>() {
-                    let rest = &after_step[x_digits.len()..];
-                    // Look for " of " or "/"
-                    let y_str = if let Some(r) = rest.strip_prefix(" of ") {
-                        Some(r)
-                    } else {
-                        rest.strip_prefix('/')
-                    };
-                    if let Some(y_rest) = y_str {
-                        let y_digits: String =
-                            y_rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                        if !y_digits.is_empty() {
-                            if let Ok(y) = y_digits.parse::<u32>() {
-                                if x < y {
-                                    return Some(true);
-                                }
-                                found = true;
+    let mut search_from = 0;
+    while search_from < text.len() {
+        // Use str::find which is UTF-8 safe and returns valid char boundaries
+        let Some(pos) = text[search_from..].find("step ") else {
+            break;
+        };
+        let abs_pos = search_from + pos;
+        let after_step = &text[abs_pos + 5..]; // "step " is 5 ASCII bytes, always safe
+                                               // Parse X
+        let x_digits: String = after_step
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if !x_digits.is_empty() {
+            if let Ok(x) = x_digits.parse::<u32>() {
+                let rest = &after_step[x_digits.len()..]; // ASCII digits, len == byte count
+                                                          // Look for " of " or "/"
+                let y_str = if let Some(r) = rest.strip_prefix(" of ") {
+                    Some(r)
+                } else {
+                    rest.strip_prefix('/')
+                };
+                if let Some(y_rest) = y_str {
+                    let y_digits: String =
+                        y_rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    if !y_digits.is_empty() {
+                        if let Ok(y) = y_digits.parse::<u32>() {
+                            if x < y {
+                                return Some(true);
                             }
+                            found = true;
                         }
                     }
                 }
             }
         }
-        i += 1;
+        // Advance past this "step " match. Move forward by at least 1 char to avoid
+        // infinite loop on the same position.
+        search_from = abs_pos + 1;
     }
     if found {
         Some(false) // Found step X of Y but X >= Y
@@ -1924,6 +1927,29 @@ mod tests {
         assert_eq!(step_x_of_y_incomplete("step 5 of 5"), Some(false));
         assert_eq!(step_x_of_y_incomplete("step 7 of 5"), Some(false));
         assert_eq!(step_x_of_y_incomplete("no steps here"), None);
+    }
+
+    #[test]
+    fn test_step_x_of_y_incomplete_non_ascii() {
+        // LLM output routinely contains em-dashes, smart quotes, emoji, etc.
+        // These are multi-byte UTF-8 characters. Byte-level iteration would
+        // panic when indexing lands inside a multi-byte char boundary.
+        assert_eq!(
+            step_x_of_y_incomplete("here's — step 2 of 5 remaining"),
+            Some(true)
+        );
+        assert_eq!(
+            step_x_of_y_incomplete("✓ done — step 5 of 5 complete"),
+            Some(false)
+        );
+        assert_eq!(
+            step_x_of_y_incomplete("→ step 3/7: update the \u{201C}config\u{201D}"),
+            Some(true)
+        );
+        // Pure non-ASCII with no step pattern
+        assert_eq!(step_x_of_y_incomplete("全部完成 — 没有更多步骤"), None);
+        // Emoji right before "step"
+        assert_eq!(step_x_of_y_incomplete("🔧step 1 of 3"), Some(true));
     }
 
     #[test]
