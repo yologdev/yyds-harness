@@ -1,8 +1,8 @@
 # Yoyo DeepSeek Harness
 
-**Yoyo DeepSeek Harness** is a DeepSeek-native coding agent harness that runs in your terminal. It can read and edit files, execute shell commands, search codebases, manage git workflows, record state lineage, and evaluate harness changes with reproducible evidence.
+**Yoyo DeepSeek Harness** is a DeepSeek-native coding agent harness that runs in your terminal. It can read and edit files, execute shell commands, search codebases, manage git workflows, and evaluate harness changes with reproducible evidence.
 
-Yoyo DS Harness is open-source, written in Rust, and built on [yoagent](https://github.com/yologdev/yoagent) with `yoagent-state` as the canonical state substrate. It preserves the existing `yoyo` compatibility command while adding `yoyo-ds` as the DeepSeek-focused product surface.
+Yoyo DS Harness is open-source, written in Rust, and built on [yoagent](https://github.com/yologdev/yoagent). Internal harness evolution uses `yoagent-state` as its evidence substrate, while the user-facing `yoyo` and `yoyo-ds` commands stay focused on the coding-agent runtime.
 
 ## What yoyo can do
 

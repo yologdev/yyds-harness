@@ -141,8 +141,6 @@ const KNOWN_FLAGS: &[&str] = &[
     "--deepseek-fim-route",
     "--no-deepseek-fim-route",
     "--deepseek-fim-response",
-    "--state",
-    "--no-state",
     "--help",
     "-h",
     "--version",
@@ -681,24 +679,17 @@ fn parse_deepseek_fim_route(
 }
 
 fn parse_state_config(
-    args: &[String],
+    _args: &[String],
     file_config: &HashMap<String, String>,
-    deepseek_native: bool,
+    _deepseek_native: bool,
 ) -> crate::state::StateConfig {
     let mut cfg = crate::state::StateConfig::default();
-    let cli_enable = args.iter().any(|a| a == "--state");
-    let cli_disable = args.iter().any(|a| a == "--no-state");
     let env_enable = std::env::var("YOYO_STATE")
         .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false);
 
-    cfg.enabled = if cli_disable {
-        false
-    } else if cli_enable || env_enable {
-        true
-    } else {
-        crate::state::parse_bool(file_config.get("state_enabled"), deepseek_native)
-    };
+    cfg.enabled = crate::state::harness_internal_enabled()
+        && (env_enable || crate::state::parse_bool(file_config.get("state_enabled"), false));
 
     cfg.fail_soft = crate::state::parse_bool(file_config.get("state_fail_soft"), true);
     if let Some(path) = file_config.get("state_events") {
@@ -2197,13 +2188,15 @@ system_prompt = "You are a Go expert"
         assert!(KNOWN_FLAGS.contains(&"--deepseek-native"));
         assert!(KNOWN_FLAGS.contains(&"--deepseek-fim-route"));
         assert!(KNOWN_FLAGS.contains(&"--deepseek-fim-response"));
-        assert!(KNOWN_FLAGS.contains(&"--state"));
-        assert!(KNOWN_FLAGS.contains(&"--no-state"));
+        assert!(!KNOWN_FLAGS.contains(&"--state"));
+        assert!(!KNOWN_FLAGS.contains(&"--no-state"));
     }
 
     #[test]
-    fn test_deepseek_native_sets_provider_model_thinking_and_state() {
+    fn test_deepseek_native_sets_provider_model_thinking_without_public_state() {
         std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+        std::env::remove_var("YOYO_HARNESS_INTERNAL");
+        std::env::remove_var("YOYO_STATE");
         let args: Vec<String> = vec!["yoyo".into(), "--deepseek-native".into()];
         let config = parse_args(&args).expect("should parse");
         assert!(config.deepseek_native);
@@ -2212,7 +2205,7 @@ system_prompt = "You are a Go expert"
         assert_eq!(config.provider, "deepseek");
         assert_eq!(config.model, crate::deepseek::DEFAULT_MODEL);
         assert_eq!(config.thinking, ThinkingLevel::High);
-        assert!(config.state.enabled);
+        assert!(!config.state.enabled);
         assert!(config
             .system_prompt
             .contains("DeepSeek Native Harness Contract"));
@@ -2309,16 +2302,16 @@ system_prompt = "You are a Go expert"
     }
 
     #[test]
-    fn test_no_state_overrides_deepseek_native_state_default() {
+    fn test_harness_internal_state_env_enables_state() {
         std::env::set_var("DEEPSEEK_API_KEY", "test-key");
-        let args: Vec<String> = vec![
-            "yoyo".into(),
-            "--deepseek-native".into(),
-            "--no-state".into(),
-        ];
+        std::env::set_var("YOYO_HARNESS_INTERNAL", "1");
+        std::env::set_var("YOYO_STATE", "1");
+        let args: Vec<String> = vec!["yoyo".into(), "--deepseek-native".into()];
         let config = parse_args(&args).expect("should parse");
         assert!(config.deepseek_native);
-        assert!(!config.state.enabled);
+        assert!(config.state.enabled);
+        std::env::remove_var("YOYO_HARNESS_INTERNAL");
+        std::env::remove_var("YOYO_STATE");
     }
 
     #[test]

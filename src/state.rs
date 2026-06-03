@@ -2940,6 +2940,12 @@ pub fn parse_bool(value: Option<&String>, default: bool) -> bool {
     }
 }
 
+pub fn harness_internal_enabled() -> bool {
+    std::env::var("YOYO_HARNESS_INTERNAL")
+        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
 fn now_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

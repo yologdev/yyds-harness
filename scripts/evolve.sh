@@ -259,9 +259,14 @@ echo ""
 # These streams are pushed to the audit-log branch at session end (see Step 7c2).
 # skill-evolve mines them for refine/create/retire/scoring signals.
 export YOYO_AUDIT=1
+export YOYO_HARNESS_INTERNAL=1
+export YOYO_STATE=1
 SESSION_STAGING=".yoyo/session_staging"
 rm -rf "$SESSION_STAGING"
 mkdir -p "$SESSION_STAGING/transcripts"
+mkdir -p .yoyo/state
+: > .yoyo/state/events.jsonl
+rm -f .yoyo/state/state.sqlite .yoyo/state/events.sqlite 2>/dev/null || true
 # Track session-level outcome flags (read by Step 7c2 to populate outcome.json).
 SESSION_BUILD_OK="false"
 SESSION_TEST_OK="false"
@@ -1949,6 +1954,19 @@ if [ -d "$SESSION_STAGING" ]; then
     if [ -f .yoyo/audit.jsonl ]; then
         cp .yoyo/audit.jsonl "$SESSION_STAGING/audit.jsonl"
         : > .yoyo/audit.jsonl
+    fi
+
+    # Persist harness gnome state as compact evidence. Raw code changes remain
+    # referenced by patch/commit/PR metadata, not embedded in the state summary.
+    if [ -f .yoyo/state/events.jsonl ]; then
+        mkdir -p "$SESSION_STAGING/state"
+        cp .yoyo/state/events.jsonl "$SESSION_STAGING/state/events.jsonl" 2>/dev/null || true
+        cp .yoyo/state/state.sqlite "$SESSION_STAGING/state/state.sqlite" 2>/dev/null || true
+        if ! python3 scripts/summarize_state_gnomes.py \
+            --events .yoyo/state/events.jsonl \
+            --output "$SESSION_STAGING/state/summary.json"; then
+            echo "  WARNING: state gnome summary write failed — continuing session-end cleanup anyway" >&2
+        fi
     fi
 
     # Write outcome.json (pass values via env to avoid heredoc quoting hazards).

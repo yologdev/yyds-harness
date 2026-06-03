@@ -23,7 +23,7 @@
 
 **A DeepSeek-native coding agent harness that learns from its own failures.**
 
-`yyds-harness` is a production fork of `yologdev/yoyo-evolve`. It keeps the existing `yoyo` coding-agent runtime and history, then specializes the harness around DeepSeek models, deterministic prompt layout, stateful trace recording, and evaluation-driven harness evolution.
+`yyds-harness` is a production fork of `yologdev/yoyo-evolve`. It keeps the existing `yoyo` coding-agent runtime and history, then specializes the harness around DeepSeek models, deterministic prompt layout, and evaluation-driven harness evolution.
 
 The bootstrap keeps the familiar `yoyo` command for compatibility and adds `yoyo-ds` as the DeepSeek-focused product surface. During migration, both work:
 
@@ -36,9 +36,8 @@ First production wedge:
 
 - DeepSeek-native profile via `--deepseek-native`
 - DeepSeek v4 model defaults and 1M context-window policy
-- project-local `.yoyo/deepseek.toml` overrides for DeepSeek model, routing, cache, and state defaults
-- fail-soft `.yoyo/state/events.jsonl` shadow tracing
-- `yoyo state init|tail|trace|recover|retention|memory|journal|failures|cache`
+- project-local `.yoyo/deepseek.toml` overrides for DeepSeek model, routing, cache, and context defaults
+- internal audit-log evidence for DeepSeek harness evolution
 - no broad internal rename sweep
 
 A free, open-source coding agent for your terminal. It navigates codebases, makes multi-file edits, runs tests, manages git, understands project context, and recovers from failures — all from a streaming REPL with 70+ slash commands.
@@ -359,12 +358,6 @@ include_instruction_files = ["YOYO.md", "AGENTS.md", "CLAUDE.md"]
 request_timeout_ms = 120000
 max_retries = 2
 
-[state]
-enabled = true
-events = ".yoyo/state/events.jsonl"
-store = ".yoyo/state/state.sqlite"
-fail_soft = true
-
 [evolve.harness]
 allowed_patch_types = [
   "context_policy",
@@ -484,6 +477,7 @@ tests/
 docs/                   mdbook source (book.toml + src/)
 site/                   gitignored build output (built by CI Pages workflow)
   index.html            Journey homepage (built by build_site.py)
+  evolution/            Static harness evolution dashboard
   book/                 mdbook output
 scripts/
   evolve.sh             Evolution pipeline (plan → implement → respond)
@@ -493,6 +487,8 @@ scripts/
   yoyo_context.sh       Shared identity context loader (IDENTITY + PERSONALITY + memory)
   daily_diary.sh        Blog post generator from journal/commits/learnings
   build_site.py         Journey website generator
+  summarize_state_gnomes.py  Audit-log state gnome summarizer
+  build_evolution_dashboard.py  Static evolution dashboard generator
 memory/
   learnings.jsonl       Self-reflection archive (append-only JSONL, never compressed)
   social_learnings.jsonl  Social insight archive (append-only JSONL)

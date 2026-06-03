@@ -152,10 +152,6 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
-        "  --state / --no-state  Enable or disable yoagent-state-backed shadow recording"
-    );
-    let _ = writeln!(
-        s,
         "  --verbose, -v     Show debug info (API errors, request details)"
     );
     let _ = writeln!(
@@ -243,19 +239,11 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
-        "  state             Inspect state traces (init, tail, trace, migrate, recover, retention, memory, journal, export, import, evals, patches, why, lineage, failures, cache)"
-    );
-    let _ = writeln!(
-        s,
         "  deepseek          Inspect DeepSeek-native config/protocol (doctor, genome, models, schemas, schema-check, test-thinking, prefix-check, cache-report)"
     );
     let _ = writeln!(
         s,
         "  eval              Run, schedule, replay, gate, and inspect local harness evaluations and benchmark fixtures"
-    );
-    let _ = writeln!(
-        s,
-        "  evolve            Manage harness patch lifecycle (propose, apply, rollback, eval, promote, reject)"
     );
     let _ = writeln!(
         s,

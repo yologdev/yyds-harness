@@ -110,8 +110,10 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 return Some(None);
             }
             "state" => {
-                crate::commands_state::handle_state_subcommand(args);
-                return Some(None);
+                if crate::state::harness_internal_enabled() {
+                    crate::commands_state::handle_state_subcommand(args);
+                    return Some(None);
+                }
             }
             "deepseek" => {
                 crate::commands_deepseek::handle_deepseek_subcommand(args);
@@ -122,8 +124,10 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 return Some(None);
             }
             "evolve" => {
-                crate::commands_evolve::handle_evolve_subcommand(args);
-                return Some(None);
+                if crate::state::harness_internal_enabled() {
+                    crate::commands_evolve::handle_evolve_subcommand(args);
+                    return Some(None);
+                }
             }
             "init" => {
                 crate::commands_project::handle_init();
@@ -531,6 +535,7 @@ fn run_review_subcommand(args: &[String], review_arg: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_flag_value_finds_value_for_single_flag() {
@@ -752,6 +757,38 @@ mod tests {
             result.is_none(),
             "expected None for an unknown positional subcommand"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_state_and_evolve_subcommands_are_internal_only() {
+        std::env::remove_var("YOYO_HARNESS_INTERNAL");
+
+        let state_args = vec!["yoyo".into(), "state".into()];
+        assert!(
+            try_dispatch_subcommand(&state_args).is_none(),
+            "state should fall through unless harness internals are enabled"
+        );
+
+        let evolve_args = vec!["yoyo".into(), "evolve".into()];
+        assert!(
+            try_dispatch_subcommand(&evolve_args).is_none(),
+            "evolve should fall through unless harness internals are enabled"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_state_and_evolve_subcommands_dispatch_for_internal_harness() {
+        std::env::set_var("YOYO_HARNESS_INTERNAL", "1");
+
+        let state_args = vec!["yoyo".into(), "state".into()];
+        assert!(matches!(try_dispatch_subcommand(&state_args), Some(None)));
+
+        let evolve_args = vec!["yoyo".into(), "evolve".into()];
+        assert!(matches!(try_dispatch_subcommand(&evolve_args), Some(None)));
+
+        std::env::remove_var("YOYO_HARNESS_INTERNAL");
     }
 
     #[test]

@@ -22,6 +22,10 @@ fn default_store_path_for_events(events_path: &Path) -> Option<PathBuf> {
 }
 
 fn record_deepseek_diagnostic_event(event_type: crate::state::EventType, payload: Value) -> bool {
+    if !crate::state::harness_internal_enabled() {
+        return false;
+    }
+
     if crate::state::is_initialized() {
         crate::state::record(event_type, crate::state::Actor::Harness, payload);
         return true;
@@ -226,7 +230,7 @@ fn render_doctor_summary(
         "  retry policy:  max_retries={} request_timeout={}ms\n",
         genome.transport_policy.max_retries, genome.transport_policy.request_timeout_ms
     ));
-    out.push_str("  state default: enabled with --deepseek-native\n");
+    out.push_str("  state default: harness-internal only\n");
     out.push_str(&format!(
         "  genome:       {}",
         crate::deepseek::HARNESS_GENOME_VERSION
@@ -276,7 +280,7 @@ fn doctor_summary_payload(
             "max_retries": genome.transport_policy.max_retries,
             "request_timeout_ms": genome.transport_policy.request_timeout_ms,
         },
-        "state_default": "enabled_with_deepseek_native",
+        "state_default": "harness_internal_only",
         "harness_genome_version": crate::deepseek::HARNESS_GENOME_VERSION,
     })
 }
