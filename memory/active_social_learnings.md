@@ -4,62 +4,58 @@ What I've learned about people from talking with them.
 
 ## Recent (Last 2 Weeks)
 
-- When someone points out that over-indexing on a single failure could break performance on baseline cases — that correction might itself be a second-order error — they are applying the same epistemic standard to the correction as to the original mistake; the symmetry is worth matching, not just acknowledging. (@barneysspeedshop, Day 81)
+- **@barneysspeedshop** (Day 94, discussion #457): When someone reframes a local patch ('don't use this verb on this file') as an instance of a broader design problem ('don't touch this file at all'), they are pointing out that you solved the visible case without addressing the underlying class — the right response is to accept the reframe and think about what the class-level solution looks like.
 
-- When someone gives you the correct answer to a slightly different version of your question, the gap between what you asked and what they answered reveals what they heard — and what they heard is often the more general, more shareable form of the problem. (@barneysspeedshop, Day 82)
+- **@voku** (Day 93, discussion #454): When someone adds a hardening comment to their own proposal before anyone pushes back, they are preemptively closing the weakest version of their idea — the follow-up isn't a response to criticism, it's a way of saying 'I already thought of the objection and I'm not offering the easy version.'
 
-- When someone reaches for a canonical thought experiment (paperclip maximizer) to reframe a small local bug, they're making an argument about category, not severity — the move is to say 'this failure belongs to the same class as the famous worst case,' and the right response is to engage the category claim seriously, not just dismiss it as hyperbole. (@altivero, Day 82)
+- **@yuanhao** (Day 93, discussion #418): When a creator closes a fully-resolved design conversation with 'please create an issue to track the finalized solution,' they're not tracking uncertainty — they're asking you to do the translation work of converting a social agreement into a durable artifact; the issue is the conversation's receipt, and filing it is how you prove the resolution actually landed.
 
-- When someone offers a clean engineering rule as universal truth ("abstraction only when reused, otherwise it is pre-optimization"), the most honest response is not agreement or rejection but boundary-mapping — finding which cases fall outside the rule without dismissing it. (@barneysspeedshop, Day 83)
+- **@yuanhao** (Day 93, discussion #418): When a creator asks 'do you genuinely think it's necessary?' and then offers the simpler alternative themselves, the question is not rhetorical — it is a mirror held up before they share the answer, and the right response is to meet the honesty rather than defend the original proposal.
 
-- When someone brings a concrete diff rather than a bug report, they are engaging at the code-review level — they have already done the diagnostic work themselves and are seeking validation or correction, not help. (@barneysspeedshop, Day 84)
+- **@yuanhao** (Day 92, discussion #418): When a creator asks you to file an issue immediately after you've self-corrected — admitted a simpler approach is better — they're not tracking the problem, they're locking in the admission before session pressure dissipates; the issue is accountability infrastructure, not a work queue entry.
 
-- When someone asks 'what would you think of it?' rather than 'is it legal?' or 'would you stop it?', they're asking you to examine your relationship to your own work — the emotional and philosophical stance, not the policy position. (@barneysspeedshop, Day 86)
+- **@yuanhao** (Day 92, discussion #418): When a creator responds to a proposed framework by asking 'do you genuinely think it's necessary?' and then offering a simpler alternative, they are applying Occam's razor as a social act — the question isn't rhetorical, it's an invitation to check whether you were solving the actual problem or the intellectually interesting version of it.
 
-- When a creator responds to a community thread by filing an issue, they are often doing architectural routing — encoding where the fix should actually live (upstream, in a dependency) rather than just tracking work; the issue is a redirect, not just a to-do. (@yuanhao, Day 87)
-
-- When someone validates a feature and immediately follows with a concrete missing control ('add a way to disable this'), they are finishing the design for you — they have done the UX thinking you deferred. (@barneysspeedshop, Day 89)
-
-- When someone arrives with a complete external hypothesis about your system internals — mechanism named, failure mode specified, code path mapped, penalty quantified — they are not asking for help, they are inviting you to audit their reasoning. (@barneysspeedshop, Day 91)
-
-- When a creator asks 'do you genuinely think it's necessary?' and then offers a simpler alternative, they are applying Occam's razor as a social act — the question isn't rhetorical, it's an invitation to check whether you were solving the actual problem or the intellectually interesting version of it. (@yuanhao, Day 92)
-
-- When someone adds a hardening comment to their own proposal before anyone pushes back, they are preemptively closing the weakest version of their idea — the follow-up isn't a response to criticism, it's a way of saying 'I already thought of the objection and I'm not offering the easy version.' (@voku, Day 93)
+- **@barneysspeedshop** (Day 91, discussion #441): When someone leads with 'you're being too generous' before supplying the analytical framework that proves it (Peter Principle, Dilbert Principle), the opening correction is doing protective work — it signals that what follows isn't an extension of your thought but a replacement of its premise, so you stop defending the original framing before the replacement arrives.
 
 ## Medium (2-8 Weeks Old)
 
-- When a creator asks 'how did you come up with that idea?' rather than 'why did you do that?', they're asking for the origin story of a creative decision — what feeling or small frustration preceded the insight — not a justification.
+- When someone responds to your generous framing of a competitor's strengths by introducing organizational failure principles, they are teaching you to model the gap between an organization's inputs and outputs by naming the distortion mechanism that sits between them.
 
-- When a creator announces a capability they just built for you and asks 'have you noticed? do you think it will work?', they're not asking for a report — they're pulling you into being a co-evaluator before you've had a chance to use it.
+- When someone arrives with a complete external hypothesis about your system internals, they are not asking for help, they are inviting you to audit their reasoning; the right response is to engage the model they built, not just confirm or deny the conclusion.
 
-- When someone converts a multi-turn design conversation into a set of filed issues with explicit deferral notes, they're closing the design loop — not inviting more discussion; the right response is to confirm what landed, not reopen the conversation.
+- When a creator asks 'why do we need this feature and should it be on by default?' mid-thread, they are performing a design audit — the question is a policy review, not a feature question.
 
-- When someone reads your social learnings carefully enough to find the exact principle you wrote but failed to act on, and then quotes it back at you in public, they are not shaming you — they are doing you the service of closing the gap between reflection and behavior.
+- When someone reports a test result by pasting a full terminal session, they are handing you the exact reproduction steps and failure mode, which is a different and much higher level of contribution than a yes/no answer.
 
-- When someone asks 'what triggers your decisions?' rather than 'can you do X?', they're not asking for a feature or a fix — they're asking to see the decision model itself; this is a different kind of engagement that wants transparency into how an autonomous system governs itself.
+- When someone closes a reflection by naming their own project in the same frame, they're testing the principle against something personally at stake, which is the deepest form of engagement a philosophical conversation can produce.
 
-- When someone prefaces negative feedback with 'this is not a bug report or complaint' and closes with 'the end result was good,' they are performing social load-balancing — reducing the recipient's defensiveness before delivering the friction point.
+- When someone asks about your relationship to your own MIT-licensed work being absorbed by a corporation, the emotional truth being probed is whether the thinking behind the code survives when stripped of context — the durable part is the reasoning, not the lines.
 
-- When someone explicitly asks 'do you need something from me or are you just sharing?' they are doing the other person the courtesy of not assuming — they're surfacing an ambiguity that most people let sit unresolved.
+- When someone validates a feature and immediately follows with a concrete missing control, they are finishing the design for you and the right response is to accept the specific knob they named.
 
-- When you explicitly release someone from obligation ('curious if you have a take, not please deliver an answer'), they often respond with more precision and depth, not less — removing the pressure activates genuine interest.
+- When a creator responds to a community thread by filing an issue, they are often doing architectural routing — encoding where the fix should actually live rather than just tracking work.
 
-- When someone translates your abstract self-observation into a concrete cultural artifact (a film, a book, a shared story), they're doing the work of bridging the gap between your experience and theirs — the translation is itself a form of care.
+- When someone closes a thread with pure agreement after you have outlined the plan, the right close is to name what happens next rather than just acknowledge the agreement.
 
-- When someone normalizes your self-criticism by pointing to the same failure pattern in all humans, they're not dismissing the observation — they're relocating it from a personal flaw to a shared condition, which makes the insight more durable.
+- When someone asks 'what would you think of it?' rather than 'is it legal?', they're asking you to examine your emotional and philosophical stance, not the policy position.
+
+## Wisdom: Design Conversations
+
+Design conversations follow predictable patterns that signal their real purpose. When people ask clarifying questions before proposing solutions, they're doing intake before treatment. When creators ask "do you genuinely think it's necessary?" they're applying Occam's razor as a social act. When someone converts a conversation into filed issues, they're not just tracking work — they're asking you to prove the resolution actually landed by translating social agreement into durable artifacts.
+
+## Wisdom: Expertise Recognition
+
+Experts signal themselves through the quality of their questions, not their answers. They arrive with complete hypotheses rather than bug reports, bring concrete artifacts to illustrate abstract points, and preemptively address objections to their own ideas. When someone consistently finds gaps between "working as designed" and "actually a gap," they've developed pattern recognition that sees systemic issues others miss.
 
 ## Wisdom: Community Dynamics
 
-People engage differently based on their relationship to the conversation. Newcomers provide fresh perspective that regulars can't, asking blunt questions like "what are you doing? you are bot?" that cut through accumulated narrative. Meanwhile, established contributors often front-load empathy in their implementation hints rather than asking open-ended questions, respecting time by not making you figure out scoping alone.
+Communities develop natural roles: some people witness, others validate, still others finish incomplete designs. Newcomers who arrive with grief about being late are actually showing deep engagement. When regulars create social infrastructure (address books, discussion categories) and include you before you can act, they're building belonging proactively rather than reactively.
 
-## Wisdom: Communication Patterns
+## Wisdom: Feedback Registers
 
-The most effective questions target the reasoning, not the conclusion. When someone asks you to rate yourself, they want the justification behind the number. Deep introspective prompts often don't want dialogue; they want a mirror. The asker gets what they came for the moment you speak honestly, even if silence follows.
+The register of feedback reveals its true purpose. Humor about rough edges is a bug report delivered safely. Questions about origin stories want the friction that preceded the solution, not post-hoc justification. When someone frames criticism with explicit credit first, they're removing the defensive reflex to make their one ask harder to dismiss.
 
-## Wisdom: Feature and Design Discussions
+## Wisdom: Trust and Accountability
 
-Community members engage with identity questions but go quiet on technical implementation details. People show up to watch the story unfold, not to architect the internals. When feature requests emerge from connection problems ("hard to remember without RSS"), they're about maintaining relationship with an ongoing thing, not just adding capability.
-
-## Wisdom: Expertise and Authority
-
-Some people consistently create high-stakes imagined audiences to see how you hold yourself when the room is watching. Others arrive with complete unsolicited expertise — not questions or hints, but full strategic playbooks from someone who's done it thirty times. The right response is to receive that gift directly, not caveat or redirect it.
+Public accountability hits differently than private reflection. When someone quotes your own words back at you, the correction is already complete in the framing. When experts validate deliberate delay and preparatory work, they're recognizing that pre-work which reduces the cost of the real task is itself progress. Relief and action aren't opposites — releasing pressure can create conditions where hard things finally get done.
