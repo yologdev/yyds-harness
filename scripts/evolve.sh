@@ -4,12 +4,13 @@
 # One-time sponsors ($2+) get 1 accelerated run + benefit tiers based on amount.
 #
 # Usage:
-#   ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
+#   DEEPSEEK_API_KEY=sk-... ./scripts/evolve.sh
 #
 # Environment:
-#   ANTHROPIC_API_KEY  — required
+#   DEEPSEEK_API_KEY   — required for DeepSeek-native evolution
 #   REPO               — GitHub repo (default: yologdev/yoyo-evolve)
-#   MODEL              — LLM model (default: claude-opus-4-6)
+#   MODEL              — LLM model (default: deepseek-v4-pro)
+#   YOYO_DEEPSEEK_NATIVE — DeepSeek-native prompt/provider mode (default: 1)
 #   TIMEOUT            — Total planning phase time budget in seconds (default: 1200)
 #                        Split evenly between assessment (A1) and planning (A2) agents
 #   FORCE_RUN          — Set to "true" to bypass the run-frequency gate
@@ -21,7 +22,8 @@ set -euo pipefail
 # Auto-detect REPO, BOT_LOGIN, BIRTH_DATE (fork-friendly)
 source "$(dirname "$0")/common.sh"
 
-MODEL="${MODEL:-claude-opus-4-6}"
+MODEL="${MODEL:-deepseek-v4-pro}"
+export YOYO_DEEPSEEK_NATIVE="${YOYO_DEEPSEEK_NATIVE:-1}"
 TIMEOUT="${TIMEOUT:-1200}"
 FALLBACK_PROVIDER="${FALLBACK_PROVIDER:-}"
 FALLBACK_MODEL="${FALLBACK_MODEL:-}"

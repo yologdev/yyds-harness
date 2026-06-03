@@ -9,11 +9,12 @@
 # Auto-commits and pushes any change the meta-skill produced; reverts on build break.
 #
 # Usage (CI or local):
-#   ANTHROPIC_API_KEY=sk-... ./scripts/skill_evolve.sh
+#   DEEPSEEK_API_KEY=sk-... ./scripts/skill_evolve.sh
 #
 # Environment:
-#   ANTHROPIC_API_KEY            — required
-#   MODEL                        — LLM model (default: claude-opus-4-6)
+#   DEEPSEEK_API_KEY             — required for DeepSeek-native skill evolution
+#   MODEL                        — LLM model (default: deepseek-v4-pro)
+#   YOYO_DEEPSEEK_NATIVE         — DeepSeek-native prompt/provider mode (default: 1)
 #   SKILL_EVOLVE_THRESHOLD       — sessions required before a cycle runs (default: 5)
 #   SKILL_EVOLVE_COOLDOWN_SECS   — minimum seconds between cycles (default: 86400)
 #   SKILL_EVOLVE_TIMEOUT         — agent wall-clock budget seconds (default: 1500)
@@ -27,7 +28,8 @@ set -euo pipefail
 
 source "$(dirname "$0")/common.sh"
 
-MODEL="${MODEL:-claude-opus-4-6}"
+MODEL="${MODEL:-deepseek-v4-pro}"
+export YOYO_DEEPSEEK_NATIVE="${YOYO_DEEPSEEK_NATIVE:-1}"
 THRESHOLD="${SKILL_EVOLVE_THRESHOLD:-5}"
 COOLDOWN="${SKILL_EVOLVE_COOLDOWN_SECS:-86400}"
 TIMEOUT="${SKILL_EVOLVE_TIMEOUT:-1500}"
