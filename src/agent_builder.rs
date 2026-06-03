@@ -22,6 +22,9 @@ use crate::prompt::{run_prompt, run_prompt_with_content, PromptOutcome};
 use crate::prompt_budget::is_audit_enabled;
 use crate::tools::{build_sub_agent_tool, build_tools};
 
+pub(crate) const YOYO_DS_REPO_URL: &str = "https://github.com/yologdev/yyds-harness";
+pub(crate) const YOYO_DS_CLIENT_TITLE: &str = "Yoyo DS Harness";
+
 /// Return the User-Agent header value for yoyo.
 pub(crate) fn yoyo_user_agent() -> String {
     format!("yoyo/{}", env!("CARGO_PKG_VERSION"))
@@ -249,13 +252,12 @@ pub(crate) fn insert_client_headers(config: &mut ModelConfig) {
         .headers
         .insert("User-Agent".to_string(), yoyo_user_agent());
     if config.provider == "openrouter" {
-        config.headers.insert(
-            "HTTP-Referer".to_string(),
-            "https://github.com/yologdev/yoyo-evolve".to_string(),
-        );
         config
             .headers
-            .insert("X-Title".to_string(), "yoyo".to_string());
+            .insert("HTTP-Referer".to_string(), YOYO_DS_REPO_URL.to_string());
+        config
+            .headers
+            .insert("X-Title".to_string(), YOYO_DS_CLIENT_TITLE.to_string());
     }
 }
 
@@ -306,12 +308,10 @@ pub fn create_model_config(provider: &str, model: &str, base_url: Option<&str>) 
             config
         }
         "deepseek" => {
-            let mut config = ModelConfig::openai(model, model);
-            config.provider = "deepseek".into();
+            let mut config = ModelConfig::deepseek(model, model);
             config.base_url = base_url
-                .unwrap_or("https://api.deepseek.com/v1")
+                .unwrap_or(crate::deepseek::DEFAULT_BASE_URL)
                 .to_string();
-            config.compat = Some(OpenAiCompat::deepseek());
             config
         }
         "mistral" => {
@@ -1208,12 +1208,12 @@ mod tests {
         );
         assert_eq!(
             config.headers.get("HTTP-Referer").unwrap(),
-            "https://github.com/yologdev/yoyo-evolve",
+            YOYO_DS_REPO_URL,
             "OpenRouter config should have HTTP-Referer header"
         );
         assert_eq!(
             config.headers.get("X-Title").unwrap(),
-            "yoyo",
+            YOYO_DS_CLIENT_TITLE,
             "OpenRouter config should have X-Title header"
         );
     }
@@ -1226,6 +1226,42 @@ mod tests {
             config.headers.get("User-Agent").unwrap(),
             &yoyo_user_agent(),
             "Google config should have User-Agent header"
+        );
+    }
+
+    #[test]
+    fn test_create_model_config_deepseek_native_protocol_flags() {
+        let config = create_model_config("deepseek", crate::deepseek::DEFAULT_MODEL, None);
+        assert_eq!(config.provider, "deepseek");
+        assert_eq!(config.base_url, crate::deepseek::DEFAULT_BASE_URL);
+        assert!(config.reasoning, "DeepSeek native models should reason");
+        assert_eq!(
+            config.context_window,
+            crate::deepseek::CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(config.max_tokens, crate::deepseek::MAX_OUTPUT_TOKENS);
+
+        let compat = config.compat.as_ref().expect("DeepSeek compat flags");
+        assert!(
+            compat.supports_reasoning_effort,
+            "DeepSeek thinking must emit reasoning_effort"
+        );
+        assert!(
+            compat.supports_thinking_control,
+            "DeepSeek thinking must emit the native thinking control object"
+        );
+        assert!(
+            compat.supports_usage_in_streaming,
+            "DeepSeek streaming should request usage for cache metrics"
+        );
+        assert_eq!(
+            compat.max_tokens_field,
+            yoagent::provider::model::MaxTokensField::MaxTokens
+        );
+        assert_eq!(
+            config.headers.get("User-Agent").unwrap(),
+            &yoyo_user_agent(),
+            "DeepSeek config should have yoyo client identity headers"
         );
     }
 

@@ -56,6 +56,7 @@ pub(crate) enum CommandRoute {
     LintFix,
     Lint,
     Fix,
+    Fim,
     Security,
     History,
     Search,
@@ -221,6 +222,7 @@ fn route_command_prefix(input: &str) -> CommandRoute {
             "add" => CommandRoute::Add,
             "docs" => CommandRoute::Docs,
             "find" => CommandRoute::Find,
+            "fim" => CommandRoute::Fim,
             "grep" => CommandRoute::Grep,
             "rename" => CommandRoute::Rename,
             "extract" => CommandRoute::Extract,
@@ -613,6 +615,10 @@ pub(crate) async fn dispatch_command(ctx: &mut DispatchContext<'_>) -> CommandRe
             {
                 *ctx.last_input = Some(fix_prompt);
             }
+            CommandResult::Continue
+        }
+        CommandRoute::Fim => {
+            crate::commands_deepseek::handle_fim_slash_command(ctx.input);
             CommandResult::Continue
         }
         CommandRoute::History => {
@@ -1568,6 +1574,10 @@ mod tests {
             ("/add src/lib.rs", CommandRoute::Add),
             ("/docs api", CommandRoute::Docs),
             ("/find *.toml", CommandRoute::Find),
+            (
+                "/fim --file src/lib.rs --start 1 --end 2",
+                CommandRoute::Fim,
+            ),
             ("/grep TODO", CommandRoute::Grep),
             ("/rename old_fn new_fn", CommandRoute::Rename),
             ("/extract fn my_helper", CommandRoute::Extract),

@@ -63,6 +63,14 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "  --deepseek-native  Use DeepSeek-native defaults, prompt layout, FIM routing, and shadow state"
+    );
+    let _ = writeln!(
+        s,
+        "  --no-deepseek-fim-route  Disable guarded DeepSeek FIM routing for prompt/piped local edits"
+    );
+    let _ = writeln!(
+        s,
         "  --base-url <url>  Custom API endpoint (e.g., http://localhost:11434/v1)"
     );
     let _ = writeln!(
@@ -223,7 +231,19 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "  context           Preview DeepSeek-native context layout (preview, explain)"
+    );
+    let _ = writeln!(
+        s,
         "  doctor            Diagnose yoyo setup (config, API key, provider, tool availability)"
+    );
+    let _ = writeln!(
+        s,
+        "  deepseek          Inspect DeepSeek-native config/protocol (doctor, genome, models, schemas, schema-check, test-thinking, prefix-check, cache-report)"
+    );
+    let _ = writeln!(
+        s,
+        "  eval              Run, schedule, replay, gate, and inspect local harness evaluations and benchmark fixtures"
     );
     let _ = writeln!(
         s,
@@ -387,6 +407,10 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(
         s,
         "    /todo [subcmd]     Track tasks (add/done/wip/remove/clear)"
+    );
+    let _ = writeln!(
+        s,
+        "    /fim <args>        DeepSeek FIM completion for local edits"
     );
     let _ = writeln!(
         s,
@@ -749,6 +773,9 @@ pub fn help_text() -> String {
     out.push_str("  /bg <sub>          Manage background shell processes (run/list/output/kill)\n");
     out.push_str("  /docs <crate> [item] Look up docs.rs documentation for a Rust crate\n");
     out.push_str("  /find <pattern>    Fuzzy-search project files by name\n");
+    out.push_str(
+        "  /fim <args>        DeepSeek FIM completion for local edits (same args as fim-complete)\n",
+    );
     out.push_str("  /grep <pattern> [path] Search file contents directly (no AI, instant)\n");
     out.push_str("  /rename <old> <new> Cross-file symbol renaming with word boundaries\n");
     out.push_str("  /extract <sym> <src> <dst> Move a symbol (fn/struct/enum/type/const/...) to another file\n");
@@ -919,6 +946,7 @@ mod tests {
             "/run",
             "/docs",
             "/find",
+            "/fim",
             "/index",
             "/tree",
             "/model",
@@ -1032,6 +1060,7 @@ mod tests {
             "/run",
             "/docs",
             "/find",
+            "/fim",
             "/index",
             "/tree",
         ] {
@@ -1518,7 +1547,7 @@ mod tests {
         // Commands added in recent evolution days
         let recent = [
             "/spawn", "/retry", "/bg", "/review", "/map", "/grep", "/blame", "/outline", "/fork",
-            "/watch", "/apply", "/open", "/goal", "/skill", "/doctor",
+            "/watch", "/apply", "/open", "/goal", "/skill", "/doctor", "/fim",
         ];
         for cmd in &recent {
             assert!(

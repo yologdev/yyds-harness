@@ -186,9 +186,11 @@ impl AgentTool for StreamingBashTool {
                 }
                 // User confirmed the dangerous command — skip the normal confirm below
                 // by proceeding directly to execution
+            } else {
+                return Err(ToolError::Failed(format!(
+                    "Command requires explicit approval: {warning}"
+                )));
             }
-            // If no confirm_fn (piped mode), log warning but allow
-            // (the deny_patterns still block the truly catastrophic ones)
         } else {
             // No safety warning — check normal confirmation callback
             if let Some(ref confirm) = self.confirm_fn {
@@ -677,6 +679,69 @@ pub fn simplify_command_pattern(cmd: &str) -> String {
     format!("{base}*")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BashApprovalRequest {
+    command: String,
+    prompt_text: String,
+    risk_label: &'static str,
+    warning: Option<String>,
+}
+
+impl BashApprovalRequest {
+    fn is_critical(&self) -> bool {
+        self.risk_label == "critical"
+    }
+}
+
+fn bash_approval_request(input: &str) -> BashApprovalRequest {
+    if let Some((warning, command)) = input.split_once("\nCommand: ") {
+        let command = command.trim();
+        let warning = warning
+            .trim()
+            .trim_start_matches(|ch: char| !ch.is_ascii_alphanumeric())
+            .trim()
+            .to_string();
+        if !command.is_empty() && !warning.is_empty() {
+            return BashApprovalRequest {
+                command: command.to_string(),
+                prompt_text: command.to_string(),
+                risk_label: "critical",
+                warning: Some(warning),
+            };
+        }
+    }
+
+    BashApprovalRequest {
+        command: input.to_string(),
+        prompt_text: input.to_string(),
+        risk_label: "high",
+        warning: None,
+    }
+}
+
+fn bash_allows_noninteractive_policy(request: &BashApprovalRequest) -> bool {
+    !request.is_critical()
+}
+
+fn bash_approval_response(request: &BashApprovalRequest, response: &str) -> (bool, &'static str) {
+    let response = response.trim().to_lowercase();
+    let approved = if request.is_critical() {
+        matches!(response.as_str(), "y" | "yes")
+    } else {
+        matches!(response.as_str(), "y" | "yes" | "a" | "always")
+    };
+    let approval_mode = if request.is_critical() && approved {
+        "single_critical"
+    } else if matches!(response.as_str(), "a" | "always") && approved {
+        "always"
+    } else if approved {
+        "single"
+    } else {
+        "denied"
+    };
+    (approved, approval_mode)
+}
+
 /// Track which patterns we've already offered to save this session,
 /// so we don't repeatedly ask for the same base pattern.
 fn already_offered_persistence(pattern: &str) -> bool {
@@ -737,6 +802,9 @@ pub fn build_tools(
 ) -> Vec<Box<dyn AgentTool>> {
     // Shared flag: when any tool gets "always", all tools skip prompts
     let always_approved = Arc::new(AtomicBool::new(false));
+    if auto_approve {
+        always_approved.store(true, Ordering::Relaxed);
+    }
 
     let bash = if auto_approve {
         StreamingBashTool::default()
@@ -744,84 +812,130 @@ pub fn build_tools(
         let flag = Arc::clone(&always_approved);
         let perms = permissions.clone();
         StreamingBashTool::default().with_confirm(move |cmd: &str| {
-            // If user previously chose "always", skip the prompt
-            if flag.load(Ordering::Relaxed) {
+            let request = bash_approval_request(cmd);
+            let command = request.command.as_str();
+            let description = format!("bash: {command}");
+
+            // If user previously chose "always", skip the prompt for high-risk
+            // commands only. Critical commands still require explicit approval.
+            if bash_allows_noninteractive_policy(&request) && flag.load(Ordering::Relaxed) {
                 eprintln!(
                     "{GREEN}  ✓ Auto-approved: {RESET}{}",
-                    truncate_with_ellipsis(cmd, 120)
+                    truncate_with_ellipsis(command, 120)
+                );
+                crate::tool_wrappers::record_tool_policy_decision(
+                    "bash_command",
+                    &description,
+                    command,
+                    true,
+                    "session_always",
+                    request.risk_label,
                 );
                 return true;
             }
-            // Check permission patterns before prompting
-            if let Some(allowed) = perms.check(cmd) {
-                if allowed {
-                    eprintln!(
-                        "{GREEN}  ✓ Permitted: {RESET}{}",
-                        truncate_with_ellipsis(cmd, 120)
-                    );
-                    return true;
-                } else {
-                    eprintln!(
-                        "{RED}  ✗ Denied by permission rule: {RESET}{}",
-                        truncate_with_ellipsis(cmd, 120)
-                    );
-                    return false;
+
+            // Permission policy can handle high-risk commands. Critical commands
+            // always require a fresh human decision for this specific command.
+            if bash_allows_noninteractive_policy(&request) {
+                if let Some(allowed) = perms.check(command) {
+                    if allowed {
+                        eprintln!(
+                            "{GREEN}  ✓ Permitted: {RESET}{}",
+                            truncate_with_ellipsis(command, 120)
+                        );
+                        crate::tool_wrappers::record_tool_policy_decision(
+                            "bash_command",
+                            &description,
+                            command,
+                            true,
+                            "permission_allow",
+                            request.risk_label,
+                        );
+                        return true;
+                    } else {
+                        eprintln!(
+                            "{RED}  ✗ Denied by permission rule: {RESET}{}",
+                            truncate_with_ellipsis(command, 120)
+                        );
+                        crate::tool_wrappers::record_tool_policy_decision(
+                            "bash_command",
+                            &description,
+                            command,
+                            false,
+                            "permission_deny",
+                            request.risk_label,
+                        );
+                        return false;
+                    }
                 }
             }
             use std::io::BufRead;
-            // Show the command and ask for approval
-            eprint!(
-                "{YELLOW}  ⚠ Allow: {RESET}{}{YELLOW} ? {RESET}({GREEN}y{RESET}/{RED}n{RESET}/{GREEN}a{RESET}lways) ",
-                truncate_with_ellipsis(cmd, 120)
+            crate::tool_wrappers::record_tool_approval_requested(
+                "bash_command",
+                &description,
+                command,
+                request.risk_label,
             );
+            if let Some(warning) = &request.warning {
+                eprintln!(
+                    "{YELLOW}  ⚠ Critical command requires explicit approval: {RESET}{}",
+                    truncate_with_ellipsis(warning, 120)
+                );
+            }
+            if request.is_critical() {
+                eprint!(
+                    "{YELLOW}  ⚠ Allow critical command: {RESET}{}{YELLOW} ? {RESET}({GREEN}y{RESET}/{RED}n{RESET}) ",
+                    truncate_with_ellipsis(&request.prompt_text, 120)
+                );
+            } else {
+                eprint!(
+                    "{YELLOW}  ⚠ Allow: {RESET}{}{YELLOW} ? {RESET}({GREEN}y{RESET}/{RED}n{RESET}/{GREEN}a{RESET}lways) ",
+                    truncate_with_ellipsis(&request.prompt_text, 120)
+                );
+            }
             io::stderr().flush().ok();
             let mut response = String::new();
             let stdin = io::stdin();
             if stdin.lock().read_line(&mut response).is_err() {
                 return false;
             }
-            let response = response.trim().to_lowercase();
-            let approved = matches!(response.as_str(), "y" | "yes" | "a" | "always");
-            if matches!(response.as_str(), "a" | "always") {
+            let (approved, approval_mode) = bash_approval_response(&request, &response);
+            crate::tool_wrappers::record_tool_approval_received(
+                "bash_command",
+                &description,
+                command,
+                approved,
+                approval_mode,
+            );
+            if bash_allows_noninteractive_policy(&request) && approval_mode == "always" {
                 flag.store(true, Ordering::Relaxed);
                 eprintln!(
                     "{GREEN}  ✓ All subsequent operations will be auto-approved this session.{RESET}"
                 );
                 // Offer to persist this pattern to .yoyo.toml
-                offer_persist_pattern(cmd);
+                offer_persist_pattern(command);
             }
             approved
         })
     };
 
     // Build write_file and edit_file with optional confirmation prompts
-    let write_tool: Box<dyn AgentTool> = if auto_approve {
-        maybe_guard(Box::new(WriteFileTool::new()), dir_restrictions)
-    } else {
-        maybe_guard(
-            maybe_confirm(
-                Box::new(WriteFileTool::new()),
-                &always_approved,
-                permissions,
-            ),
-            dir_restrictions,
-        )
-    };
-    let edit_tool: Box<dyn AgentTool> = if auto_approve {
-        maybe_guard(Box::new(EditFileTool::new()), dir_restrictions)
-    } else {
-        maybe_guard(
-            maybe_confirm(Box::new(EditFileTool::new()), &always_approved, permissions),
-            dir_restrictions,
-        )
-    };
+    let write_tool: Box<dyn AgentTool> = maybe_guard(
+        maybe_confirm(
+            Box::new(WriteFileTool::new()),
+            &always_approved,
+            permissions,
+        ),
+        dir_restrictions,
+    );
+    let edit_tool: Box<dyn AgentTool> = maybe_guard(
+        maybe_confirm(Box::new(EditFileTool::new()), &always_approved, permissions),
+        dir_restrictions,
+    );
 
     // Build rename_symbol tool with optional confirmation (it writes files)
-    let rename_tool: Box<dyn AgentTool> = if auto_approve {
-        Box::new(RenameSymbolTool)
-    } else {
-        maybe_confirm(Box::new(RenameSymbolTool), &always_approved, permissions)
-    };
+    let rename_tool: Box<dyn AgentTool> =
+        maybe_confirm(Box::new(RenameSymbolTool), &always_approved, permissions);
 
     // Shared failure tracker for recovery hints — counts per-tool failures
     // so hints escalate from diagnostic to alternative suggestions.
@@ -1132,7 +1246,8 @@ mod tests {
 
     #[test]
     fn test_build_tools_auto_approve_skips_confirmation() {
-        // When auto_approve is true, tools should not have ConfirmTool wrappers
+        // Auto-approve preserves canonical tool names even though write-capable
+        // tools still pass through the critical-file approval guard.
         let perms = cli::PermissionConfig::default();
         let dirs = cli::DirectoryRestrictions::default();
         let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
@@ -1257,6 +1372,32 @@ mod tests {
             }
             _ => panic!("Expected text content"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_streaming_bash_requires_explicit_approval_for_dangerous_commands() {
+        let tool = StreamingBashTool::default();
+        let ctx = test_tool_context(None);
+        let params = serde_json::json!({"command": "echo 'DROP TABLE users'"});
+        let result = tool.execute(params, ctx).await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("requires explicit approval"));
+    }
+
+    #[tokio::test]
+    async fn test_streaming_bash_allows_confirmed_dangerous_commands() {
+        let tool = StreamingBashTool::default().with_confirm(|cmd: &str| {
+            cmd.contains("Database destruction") && cmd.contains("DROP TABLE users")
+        });
+        let ctx = test_tool_context(None);
+        let params = serde_json::json!({"command": "echo 'DROP TABLE users'"});
+        let result = tool.execute(params, ctx).await;
+
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -2434,6 +2575,53 @@ mod tests {
     #[test]
     fn test_simplify_command_pattern_empty() {
         assert_eq!(simplify_command_pattern(""), "*");
+    }
+
+    #[test]
+    fn bash_approval_request_marks_safety_warning_as_critical() {
+        let request = bash_approval_request(
+            "⚠️  Database destruction: DROP TABLE detected\nCommand: echo 'DROP TABLE users'",
+        );
+
+        assert!(request.is_critical());
+        assert_eq!(request.command, "echo 'DROP TABLE users'");
+        assert_eq!(request.prompt_text, "echo 'DROP TABLE users'");
+        assert_eq!(request.risk_label, "critical");
+        assert!(request
+            .warning
+            .as_deref()
+            .unwrap()
+            .contains("Database destruction"));
+    }
+
+    #[test]
+    fn bash_approval_request_keeps_normal_commands_high_risk() {
+        let request = bash_approval_request("cargo test --bin yoyo");
+
+        assert!(!request.is_critical());
+        assert_eq!(request.command, "cargo test --bin yoyo");
+        assert_eq!(request.risk_label, "high");
+        assert!(request.warning.is_none());
+    }
+
+    #[test]
+    fn critical_bash_approval_disables_always_and_policy_shortcuts() {
+        let critical = bash_approval_request(
+            "⚠️  Force push detected: 'git push --force' can overwrite remote history\nCommand: git push --force",
+        );
+        let normal = bash_approval_request("cargo test");
+
+        assert!(!bash_allows_noninteractive_policy(&critical));
+        assert!(bash_allows_noninteractive_policy(&normal));
+        assert_eq!(
+            bash_approval_response(&critical, "always"),
+            (false, "denied")
+        );
+        assert_eq!(
+            bash_approval_response(&critical, "yes"),
+            (true, "single_critical")
+        );
+        assert_eq!(bash_approval_response(&normal, "always"), (true, "always"));
     }
 
     // -----------------------------------------------------------------------

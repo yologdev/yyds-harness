@@ -572,6 +572,7 @@ async fn handle_post_prompt(mut ctx: PostPromptContext<'_>) {
                 let msg = generate_commit_message(&diff);
                 let (ok, output) = run_git_commit(&msg);
                 if ok {
+                    crate::commands_git::record_commit_created(&msg, "auto_commit", &output);
                     eprintln!("{GREEN}  ✓ Auto-committed: {}{RESET}", output.trim());
                 } else {
                     eprintln!("{DIM}  (auto-commit failed: {}){RESET}", output.trim());
@@ -643,7 +644,8 @@ fn print_startup_info(agent_config: &AgentConfig, repl_config: &ReplConfig) {
     // Show update notification if a newer version is available
     if let Some(ref latest) = repl_config.update_available {
         println!(
-            "  {YELLOW}⬆ Update available: v{latest} (you have v{VERSION}) — https://github.com/yologdev/yoyo-evolve/releases{RESET}\n"
+            "  {YELLOW}⬆ Update available: v{latest} (you have v{VERSION}) — {}{RESET}\n",
+            crate::release::releases_page_url()
         );
     }
 

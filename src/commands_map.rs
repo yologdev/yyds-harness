@@ -733,11 +733,14 @@ mod tests {
             }],
         }];
         let output = format_repo_map_colored(&entries);
-        // Should contain ANSI escape codes (ESC = \x1b)
-        assert!(
-            output.contains('\x1b'),
-            "colored output should contain ANSI escape codes"
-        );
+        if format!("{}", crate::format::GREEN).is_empty() {
+            assert!(!output.contains('\x1b'));
+        } else {
+            assert!(
+                output.contains('\x1b'),
+                "colored output should contain ANSI escape codes"
+            );
+        }
         assert!(output.contains("src/main.rs"), "should contain file path");
         assert!(output.contains("run"), "should contain symbol name");
         assert!(output.contains("42 lines"), "should contain line count");

@@ -18,6 +18,14 @@ pub const KNOWN_PROVIDERS: &[&str] = &[
     "custom",
 ];
 
+const DEEPSEEK_KNOWN_MODELS: &[&str] = &[
+    crate::deepseek::DeepSeekModel::V4Pro.as_str(),
+    crate::deepseek::DeepSeekModel::V4Flash.as_str(),
+    "deepseek-chat",
+    "deepseek-reasoner",
+    "deepseek-r2",
+];
+
 /// Get the environment variable name that holds the API key for a provider.
 pub fn provider_api_key_env(provider: &str) -> Option<&'static str> {
     match provider {
@@ -83,7 +91,7 @@ pub fn known_models_for_provider(provider: &str) -> &'static [&'static str] {
             "mixtral-8x7b-32768",
         ],
         "xai" => &["grok-4", "grok-4-mini", "grok-3", "grok-3-mini", "grok-2"],
-        "deepseek" => &["deepseek-chat", "deepseek-reasoner", "deepseek-r2"],
+        "deepseek" => DEEPSEEK_KNOWN_MODELS,
         "mistral" => &[
             "mistral-large-latest",
             "mistral-small-latest",
@@ -123,7 +131,7 @@ pub fn default_model_for_provider(provider: &str) -> String {
         "ollama" => "llama3.2".into(),
         "xai" => "grok-4".into(),
         "groq" => "llama-3.3-70b-versatile".into(),
-        "deepseek" => "deepseek-chat".into(),
+        "deepseek" => crate::deepseek::DeepSeekModel::V4Pro.as_str().into(),
         "mistral" => "mistral-large-latest".into(),
         "cerebras" => "llama-3.3-70b".into(),
         "zai" => "glm-4-plus".into(),

@@ -8,7 +8,7 @@ pub fn handle_update() -> Result<(), String> {
     // Check if running from cargo (development mode)
     if is_cargo_dev_build() {
         println!(
-            "{}You're running a development build. Use `cargo install yoyo-agent` to update, \
+            "{}You're running a development build. Use the GitHub release installer to update, \
              or build from source with `cargo build --release`.{}",
             YELLOW, RESET
         );
@@ -19,11 +19,8 @@ pub fn handle_update() -> Result<(), String> {
     let latest_release = match fetch_latest_release() {
         Ok(release) => release,
         Err(e) => {
-            let install_cmd = if std::env::consts::OS == "windows" {
-                "irm https://raw.githubusercontent.com/yologdev/yoyo-evolve/main/install.ps1 | iex"
-            } else {
-                "curl -fsSL https://raw.githubusercontent.com/yologdev/yoyo-evolve/main/install.sh | bash"
-            };
+            let install_cmd =
+                crate::release::manual_install_command(std::env::consts::OS == "windows");
             return Err(format!(
                 "Failed to check for updates: {}. Try manual install:\n  {}",
                 e, install_cmd
@@ -55,7 +52,7 @@ pub fn handle_update() -> Result<(), String> {
 
     // Step 2: Detect platform and find the right asset
     let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
-    let asset_name = match platform_asset_name(os, arch) {
+    let asset_name = match crate::release::platform_asset_name(os, arch, tag_name) {
         Some(name) => name,
         None => {
             return Err(format!("Unsupported platform: {} {}", os, arch));
@@ -68,14 +65,10 @@ pub fn handle_update() -> Result<(), String> {
         .and_then(|v| v.as_array())
         .unwrap_or(&empty_assets);
 
-    let download_url = match find_asset_url(assets, asset_name) {
+    let download_url = match find_asset_url(assets, &asset_name) {
         Some(url) => url,
         None => {
-            let install_cmd = if os == "windows" {
-                "irm https://raw.githubusercontent.com/yologdev/yoyo-evolve/main/install.ps1 | iex"
-            } else {
-                "curl -fsSL https://raw.githubusercontent.com/yologdev/yoyo-evolve/main/install.sh | bash"
-            };
+            let install_cmd = crate::release::manual_install_command(os == "windows");
             return Err(format!(
                 "No pre-built binary available for your platform ({} {}). Please install manually:\n  {}",
                 os, arch, install_cmd
@@ -113,11 +106,7 @@ pub fn handle_update() -> Result<(), String> {
     match download_file(&download_url, &temp_path) {
         Ok(_) => (),
         Err(e) => {
-            let install_cmd = if os == "windows" {
-                "irm https://raw.githubusercontent.com/yologdev/yoyo-evolve/main/install.ps1 | iex"
-            } else {
-                "curl -fsSL https://raw.githubusercontent.com/yologdev/yoyo-evolve/main/install.sh | bash"
-            };
+            let install_cmd = crate::release::manual_install_command(os == "windows");
             return Err(format!(
                 "Download failed: {}. Please try manual install:\n  {}",
                 e, install_cmd
@@ -185,18 +174,6 @@ pub fn handle_update() -> Result<(), String> {
     }
 }
 
-/// Map OS/ARCH to the expected GitHub release asset name.
-/// Returns None for unsupported platforms.
-fn platform_asset_name(os: &str, arch: &str) -> Option<&'static str> {
-    match (os, arch) {
-        ("linux", "x86_64") => Some("yoyo-x86_64-unknown-linux-gnu.tar.gz"),
-        ("macos", "x86_64") => Some("yoyo-x86_64-apple-darwin.tar.gz"),
-        ("macos", "aarch64") => Some("yoyo-aarch64-apple-darwin.tar.gz"),
-        ("windows", "x86_64") => Some("yoyo-x86_64-pc-windows-msvc.zip"),
-        _ => None,
-    }
-}
-
 /// Check if we're running from a cargo build directory (development mode).
 fn is_cargo_dev_build() -> bool {
     std::env::current_exe()
@@ -213,6 +190,7 @@ fn is_cargo_dev_build() -> bool {
 
 /// Fetch the latest release from GitHub API
 fn fetch_latest_release() -> Result<serde_json::Value, String> {
+    let releases_api_url = crate::release::releases_api_url();
     let output = std::process::Command::new("curl")
         .args([
             "-sf",
@@ -220,7 +198,7 @@ fn fetch_latest_release() -> Result<serde_json::Value, String> {
             "10",
             "--max-time",
             "30",
-            "https://api.github.com/repos/yologdev/yoyo-evolve/releases/latest",
+            releases_api_url.as_str(),
         ])
         .output()
         .map_err(|e| format!("Failed to run curl: {}", e))?;
@@ -294,40 +272,60 @@ fn extract_archive(archive_path: &str, extract_dir: &str) -> Result<String, Stri
         return Err("Unsupported archive format".to_string());
     }
 
-    // Find the yoyo binary in the extracted directory
-    let entries = std::fs::read_dir(extract_dir)
-        .map_err(|e| format!("Failed to read extract directory: {}", e))?;
+    let preferred = preferred_extracted_binary_names();
+    find_extracted_binary(std::path::Path::new(extract_dir), &preferred)
+        .ok_or_else(|| "Could not find yoyo or yoyo-ds binary in extracted archive".to_string())
+        .map(|path| path.to_string_lossy().to_string())
+}
 
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
-        let path = entry.path();
-
-        if path.is_file() {
-            if let Some(filename) = path.file_name().and_then(|name| name.to_str()) {
-                if filename == "yoyo" {
-                    return Ok(path.to_string_lossy().to_string());
-                }
-            }
+fn preferred_extracted_binary_names() -> Vec<String> {
+    let mut names = Vec::new();
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(name) = current_exe.file_name().and_then(|name| name.to_str()) {
+            names.push(name.to_string());
         }
     }
+    for name in crate::release::packaged_binary_names(std::env::consts::OS == "windows") {
+        if !names.iter().any(|existing| existing == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
 
-    // If not found at root, check subdirectories (common for tar.gz structure)
-    let entries = std::fs::read_dir(extract_dir)
-        .map_err(|e| format!("Failed to read extract directory: {}", e))?;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+fn find_extracted_binary(
+    dir: &std::path::Path,
+    preferred_names: &[String],
+) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
         let path = entry.path();
-
         if path.is_dir() {
-            let binary_path = path.join("yoyo");
-            if binary_path.exists() {
-                return Ok(binary_path.to_string_lossy().to_string());
-            }
+            dirs.push(path);
+        } else if path.is_file() {
+            files.push(path);
         }
     }
 
-    Err("Could not find yoyo binary in extracted archive".to_string())
+    for wanted in preferred_names {
+        if let Some(path) = files.iter().find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name == wanted)
+                .unwrap_or(false)
+        }) {
+            return Some(path.clone());
+        }
+    }
+
+    for subdir in dirs {
+        if let Some(path) = find_extracted_binary(&subdir, preferred_names) {
+            return Some(path);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -336,33 +334,45 @@ mod tests {
 
     #[test]
     fn update_platform_linux_x86_64() {
-        let name = platform_asset_name("linux", "x86_64");
-        assert_eq!(name, Some("yoyo-x86_64-unknown-linux-gnu.tar.gz"));
+        let name = crate::release::platform_asset_name("linux", "x86_64", "v0.1.13");
+        assert_eq!(
+            name.as_deref(),
+            Some("yyds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz")
+        );
     }
 
     #[test]
     fn update_platform_macos_intel() {
-        let name = platform_asset_name("macos", "x86_64");
-        assert_eq!(name, Some("yoyo-x86_64-apple-darwin.tar.gz"));
+        let name = crate::release::platform_asset_name("macos", "x86_64", "v0.1.13");
+        assert_eq!(
+            name.as_deref(),
+            Some("yyds-harness-v0.1.13-x86_64-apple-darwin.tar.gz")
+        );
     }
 
     #[test]
     fn update_platform_macos_arm() {
-        let name = platform_asset_name("macos", "aarch64");
-        assert_eq!(name, Some("yoyo-aarch64-apple-darwin.tar.gz"));
+        let name = crate::release::platform_asset_name("macos", "aarch64", "v0.1.13");
+        assert_eq!(
+            name.as_deref(),
+            Some("yyds-harness-v0.1.13-aarch64-apple-darwin.tar.gz")
+        );
     }
 
     #[test]
     fn update_platform_windows() {
-        let name = platform_asset_name("windows", "x86_64");
-        assert_eq!(name, Some("yoyo-x86_64-pc-windows-msvc.zip"));
+        let name = crate::release::platform_asset_name("windows", "x86_64", "v0.1.13");
+        assert_eq!(
+            name.as_deref(),
+            Some("yyds-harness-v0.1.13-x86_64-pc-windows-msvc.zip")
+        );
     }
 
     #[test]
     fn update_platform_unsupported() {
-        assert!(platform_asset_name("freebsd", "x86_64").is_none());
-        assert!(platform_asset_name("linux", "arm").is_none());
-        assert!(platform_asset_name("windows", "aarch64").is_none());
+        assert!(crate::release::platform_asset_name("freebsd", "x86_64", "v0.1.13").is_none());
+        assert!(crate::release::platform_asset_name("linux", "arm", "v0.1.13").is_none());
+        assert!(crate::release::platform_asset_name("windows", "aarch64", "v0.1.13").is_none());
     }
 
     #[test]
@@ -424,17 +434,17 @@ mod tests {
 
     #[test]
     fn update_platform_empty_strings() {
-        assert!(platform_asset_name("", "").is_none());
-        assert!(platform_asset_name("linux", "").is_none());
-        assert!(platform_asset_name("", "x86_64").is_none());
+        assert!(crate::release::platform_asset_name("", "", "v0.1.13").is_none());
+        assert!(crate::release::platform_asset_name("linux", "", "v0.1.13").is_none());
+        assert!(crate::release::platform_asset_name("", "x86_64", "v0.1.13").is_none());
     }
 
     #[test]
     fn update_platform_case_sensitivity() {
         // platform_asset_name should be case-sensitive (OS constants are lowercase)
-        assert!(platform_asset_name("Linux", "x86_64").is_none());
-        assert!(platform_asset_name("MACOS", "aarch64").is_none());
-        assert!(platform_asset_name("Windows", "x86_64").is_none());
+        assert!(crate::release::platform_asset_name("Linux", "x86_64", "v0.1.13").is_none());
+        assert!(crate::release::platform_asset_name("MACOS", "aarch64", "v0.1.13").is_none());
+        assert!(crate::release::platform_asset_name("Windows", "x86_64", "v0.1.13").is_none());
     }
 
     #[test]
@@ -448,7 +458,7 @@ mod tests {
         ];
         for (os, arch) in &supported {
             assert!(
-                platform_asset_name(os, arch).is_some(),
+                crate::release::platform_asset_name(os, arch, "v0.1.13").is_some(),
                 "Expected Some for ({}, {})",
                 os,
                 arch
@@ -461,7 +471,7 @@ mod tests {
         // Linux and macOS should produce .tar.gz, Windows should produce .zip
         for os in &["linux", "macos"] {
             for arch in &["x86_64", "aarch64"] {
-                if let Some(name) = platform_asset_name(os, arch) {
+                if let Some(name) = crate::release::platform_asset_name(os, arch, "v0.1.13") {
                     assert!(
                         name.ends_with(".tar.gz"),
                         "Expected .tar.gz for {} {}, got {}",
@@ -472,7 +482,7 @@ mod tests {
                 }
             }
         }
-        if let Some(name) = platform_asset_name("windows", "x86_64") {
+        if let Some(name) = crate::release::platform_asset_name("windows", "x86_64", "v0.1.13") {
             assert!(
                 name.ends_with(".zip"),
                 "Expected .zip for windows, got {}",
@@ -538,6 +548,25 @@ mod tests {
     }
 
     #[test]
+    fn update_find_asset_url_matches_yoyo_ds_release_archive() {
+        let asset_name = crate::release::platform_asset_name("linux", "x86_64", "v0.1.13").unwrap();
+        let assets = vec![serde_json::json!({
+            "name": asset_name,
+            "browser_download_url": "https://example.com/yyds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz"
+        })];
+
+        let url = find_asset_url(
+            &assets,
+            "yyds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz",
+        );
+
+        assert_eq!(
+            url.as_deref(),
+            Some("https://example.com/yyds-harness-v0.1.13-x86_64-unknown-linux-gnu.tar.gz")
+        );
+    }
+
+    #[test]
     fn update_extract_archive_nonexistent_file() {
         let tmp = std::env::temp_dir().join("yoyo-test-extract-nofile");
         let result = extract_archive(
@@ -593,8 +622,8 @@ mod tests {
                 assert!(result.is_err());
                 let err = result.unwrap_err();
                 assert!(
-                    err.contains("Could not find yoyo binary"),
-                    "Expected 'Could not find yoyo binary', got: {}",
+                    err.contains("Could not find yoyo or yoyo-ds binary"),
+                    "Expected missing binary error, got: {}",
                     err
                 );
             }
@@ -635,6 +664,45 @@ mod tests {
                 assert!(
                     binary_path.contains("yoyo"),
                     "Binary path should contain 'yoyo': {}",
+                    binary_path
+                );
+            }
+        }
+
+        let _ = std::fs::remove_file(&tar_path);
+        let _ = std::fs::remove_dir_all(&src_dir);
+        let _ = std::fs::remove_dir_all(&extract_dir);
+    }
+
+    #[test]
+    fn update_extract_archive_finds_yoyo_ds_binary_at_root() {
+        let test_id = "yoyo-test-root-yoyo-ds-binary";
+        let src_dir = std::env::temp_dir().join(format!("{}-src", test_id));
+        let tar_path = std::env::temp_dir().join(format!("{}.tar.gz", test_id));
+        let extract_dir = std::env::temp_dir().join(format!("{}-out", test_id));
+
+        let _ = std::fs::create_dir_all(&src_dir);
+        std::fs::write(src_dir.join("yoyo-ds"), b"#!/bin/sh\necho hello").unwrap();
+
+        let status = std::process::Command::new("tar")
+            .args([
+                "czf",
+                tar_path.to_str().unwrap(),
+                "-C",
+                src_dir.to_str().unwrap(),
+                "yoyo-ds",
+            ])
+            .status();
+
+        if let Ok(s) = status {
+            if s.success() {
+                let result =
+                    extract_archive(tar_path.to_str().unwrap(), extract_dir.to_str().unwrap());
+                assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+                let binary_path = result.unwrap();
+                assert!(
+                    binary_path.contains("yoyo-ds"),
+                    "Binary path should contain 'yoyo-ds': {}",
                     binary_path
                 );
             }

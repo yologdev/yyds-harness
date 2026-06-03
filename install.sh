@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-REPO="yologdev/yoyo-evolve"
+REPO="yologdev/yyds-harness"
+ARCHIVE_PREFIX="yyds-harness"
 INSTALL_DIR="$HOME/.yoyo/bin"
 
 main() {
@@ -43,13 +44,13 @@ main() {
     if command -v curl >/dev/null 2>&1; then
         api_response=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest") || {
             echo "Error: failed to fetch release info from GitHub API."
-            echo "You may be rate-limited. Try: cargo install yoyo-agent"
+            echo "You may be rate-limited. Try building from source instead."
             exit 1
         }
     elif command -v wget >/dev/null 2>&1; then
         api_response=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest") || {
             echo "Error: failed to fetch release info from GitHub API."
-            echo "You may be rate-limited. Try: cargo install yoyo-agent"
+            echo "You may be rate-limited. Try building from source instead."
             exit 1
         }
     else
@@ -61,13 +62,13 @@ main() {
 
     if [ -z "$version" ]; then
         echo "Error: could not determine latest release version."
-        echo "Try: cargo install yoyo-agent"
+        echo "Try building from source instead."
         exit 1
     fi
 
-    echo "Installing yoyo ${version}..."
+    echo "Installing Yoyo DS Harness ${version}..."
 
-    tarball="yoyo-${version}-${target}.tar.gz"
+    tarball="${ARCHIVE_PREFIX}-${version}-${target}.tar.gz"
     url="https://github.com/${REPO}/releases/download/${version}/${tarball}"
     checksum_url="${url}.sha256"
 
@@ -82,14 +83,14 @@ main() {
     if command -v curl >/dev/null 2>&1; then
         if ! curl -fSL "$url" -o "${tmpdir}/${tarball}"; then
             echo "Error: failed to download ${tarball}"
-            echo "The release may not exist yet. Try: cargo install yoyo-agent"
+            echo "The release may not exist yet. Try building from source instead."
             exit 1
         fi
         curl -fsSL "$checksum_url" -o "${tmpdir}/${tarball}.sha256" 2>/dev/null || true
     else
         if ! wget -q "$url" -O "${tmpdir}/${tarball}"; then
             echo "Error: failed to download ${tarball}"
-            echo "The release may not exist yet. Try: cargo install yoyo-agent"
+            echo "The release may not exist yet. Try building from source instead."
             exit 1
         fi
         wget -q "$checksum_url" -O "${tmpdir}/${tarball}.sha256" 2>/dev/null || true
@@ -119,18 +120,21 @@ main() {
         exit 1
     fi
 
-    if [ ! -f "${tmpdir}/yoyo" ]; then
-        echo "Error: binary 'yoyo' not found in archive."
+    if [ ! -f "${tmpdir}/yoyo-ds" ] || [ ! -f "${tmpdir}/yoyo" ]; then
+        echo "Error: binaries 'yoyo-ds' and 'yoyo' not found in archive."
         echo "Please report this: https://github.com/${REPO}/issues"
         exit 1
     fi
 
     # Install
     mkdir -p "$INSTALL_DIR"
+    mv "${tmpdir}/yoyo-ds" "${INSTALL_DIR}/yoyo-ds"
     mv "${tmpdir}/yoyo" "${INSTALL_DIR}/yoyo"
+    chmod +x "${INSTALL_DIR}/yoyo-ds"
     chmod +x "${INSTALL_DIR}/yoyo"
 
-    echo "Installed yoyo to ${INSTALL_DIR}/yoyo"
+    echo "Installed yoyo-ds to ${INSTALL_DIR}/yoyo-ds"
+    echo "Installed yoyo compatibility alias to ${INSTALL_DIR}/yoyo"
 
     # Check PATH
     case ":${PATH:-}:" in
@@ -144,17 +148,18 @@ main() {
             ;;
     esac
 
-    echo "Run 'yoyo --help' to get started."
+    echo "Run 'yoyo-ds --help' to get started."
 }
 
 cargo_fallback() {
     if command -v cargo >/dev/null 2>&1; then
-        echo "Installing via cargo..."
-        cargo install yoyo-agent
+        echo "Building from source requires the sibling yoagent-state checkout until it is published."
+        echo "Clone ${REPO} and ../yoagent-state, then run: cargo install --path ."
     else
         echo "Error: cargo is not installed. Install Rust first: https://rustup.rs"
         exit 1
     fi
+    exit 1
 }
 
 main

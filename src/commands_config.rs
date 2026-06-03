@@ -306,41 +306,27 @@ pub fn handle_config(cfg: &ConfigDisplay<'_>) {
 // a runtime mirror and `/config show` stays a file-introspection
 // tool. They're complementary, not redundant.
 
-/// Detect which on-disk config file (if any) would be loaded by
-/// `cli::load_config_file()`, using the same precedence order:
-/// 1. `./.yoyo.toml` (project-level)
-/// 2. `~/.yoyo.toml` (home shorthand)
-/// 3. `~/.config/yoyo/config.toml` (XDG user-level)
-///
-/// Returns the path to the first file that exists, or `None` if no
-/// config file is present in any location. This is a read-only
-/// introspection helper — it never reads or parses the file itself,
-/// it just tells you which path would be chosen.
-///
-/// Kept as a separate function (rather than calling `load_config_file`
-/// directly) because the existing loader is private to `cli.rs` and
-/// this path-only view is all `/config show` needs. The loader path
-/// and this one are unit-tested together indirectly via
-/// `test_config_file_path_precedence` below.
-fn detect_loaded_config_path() -> Option<std::path::PathBuf> {
-    // Project-level: ./.yoyo.toml
-    let project = std::path::PathBuf::from(".yoyo.toml");
-    if project.exists() {
-        return Some(project);
+/// Detect which on-disk config files (if any) would be loaded by
+/// `config::load_config_file()`, using broad-to-local scope order.
+fn detect_loaded_config_paths() -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(path) = crate::config::user_config_path() {
+        if path.exists() {
+            paths.push(path);
+        }
     }
-    // Home shorthand: ~/.yoyo.toml
     if let Some(path) = crate::cli::home_config_path() {
         if path.exists() {
-            return Some(path);
+            paths.push(path);
         }
     }
-    // XDG user-level: ~/.config/yoyo/config.toml
-    if let Some(path) = crate::cli::user_config_path() {
-        if path.exists() {
-            return Some(path);
-        }
+    let project = std::path::PathBuf::from(".yoyo.toml");
+    if project.exists() {
+        paths.push(project);
     }
-    None
+
+    paths
 }
 
 /// Return `true` if a config key looks like a secret and its value
@@ -368,21 +354,36 @@ fn is_secret_key(key: &str) -> bool {
 /// and easy to diff across sessions. An empty HashMap with no path
 /// is the "no config loaded, running on defaults" case and produces
 /// a friendly one-liner rather than an empty block.
+#[cfg(test)]
 pub fn format_config_output(
     config: &std::collections::HashMap<String, String>,
     path: Option<&std::path::Path>,
 ) -> String {
+    let paths = path
+        .map(|path| vec![path.to_path_buf()])
+        .unwrap_or_default();
+    format_config_output_with_paths(config, &paths)
+}
+
+pub fn format_config_output_with_paths(
+    config: &std::collections::HashMap<String, String>,
+    paths: &[std::path::PathBuf],
+) -> String {
     let mut out = String::new();
-    match path {
-        Some(p) => {
-            out.push_str(&format!("Loaded config: {}\n", p.display()));
-        }
-        None => {
+    match paths {
+        [] => {
             out.push_str("No config file loaded — using defaults.\n");
-            // Still dump whatever was passed in (for completeness),
-            // but if the map is also empty we're done.
             if config.is_empty() {
                 return out;
+            }
+        }
+        [single] => {
+            out.push_str(&format!("Loaded config: {}\n", single.display()));
+        }
+        many => {
+            out.push_str("Loaded config scopes:\n");
+            for path in many {
+                out.push_str(&format!("  - {}\n", path.display()));
             }
         }
     }
@@ -420,31 +421,18 @@ pub fn format_config_output(
     out
 }
 
-/// Handler for `/config show`: prints which config file was loaded
-/// (if any) and the merged key-value pairs it contributed.
+/// Handler for `/config show`: prints which config scopes were loaded
+/// (if any) and the merged key-value pairs they contributed.
 ///
 /// This is the user-facing surface; all formatting logic lives in
 /// `format_config_output` so it can be unit-tested without touching
-/// the filesystem. This handler's only jobs are (1) detect the path,
-/// (2) read+parse the file via the existing `cli::parse_config_file`
-/// helper, and (3) println the result inside the dim block the rest
-/// of the `/config` family uses.
+/// the filesystem. This handler's only jobs are detect the loaded scopes,
+/// read the same merged config as runtime, and print the result inside the dim
+/// block the rest of the `/config` family uses.
 pub fn handle_config_show() {
-    let path = detect_loaded_config_path();
-    let config = match path.as_ref() {
-        Some(p) => match std::fs::read_to_string(p) {
-            Ok(content) => crate::cli::parse_config_file(&content),
-            Err(e) => {
-                println!(
-                    "{RED}  Failed to read config file {}: {e}{RESET}",
-                    p.display()
-                );
-                return;
-            }
-        },
-        None => std::collections::HashMap::new(),
-    };
-    let output = format_config_output(&config, path.as_deref());
+    let paths = detect_loaded_config_paths();
+    let (config, _) = crate::config::load_config_file();
+    let output = format_config_output_with_paths(&config, &paths);
     print!("{DIM}{output}{RESET}");
 }
 
@@ -699,15 +687,8 @@ pub fn handle_config_get(input: &str) {
         return;
     }
 
-    // Read from the detected config file
-    let path = detect_loaded_config_path();
-    let config = match path.as_ref() {
-        Some(p) => match std::fs::read_to_string(p) {
-            Ok(content) => crate::cli::parse_config_file(&content),
-            Err(_) => std::collections::HashMap::new(),
-        },
-        None => std::collections::HashMap::new(),
-    };
+    let paths = detect_loaded_config_paths();
+    let (config, _) = crate::config::load_config_file();
 
     match config.get(key) {
         Some(value) => {
@@ -716,10 +697,11 @@ pub fn handle_config_get(input: &str) {
             } else {
                 value.clone()
             };
-            let source = path
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "defaults".to_string());
+            let source = if paths.is_empty() {
+                "defaults".to_string()
+            } else {
+                "layered config".to_string()
+            };
             println!("{DIM}  {key} = {display}  ({source}){RESET}");
         }
         None => {
@@ -1049,6 +1031,25 @@ mod tests {
             !out.contains("Loaded config:"),
             "should not claim a config was loaded:\n{out}"
         );
+    }
+
+    #[test]
+    fn test_format_config_shows_layered_scopes() {
+        let mut config = HashMap::new();
+        config.insert("model".to_string(), "project-model".to_string());
+
+        let paths = vec![
+            PathBuf::from("/home/user/.config/yoyo/config.toml"),
+            PathBuf::from("/home/user/.yoyo.toml"),
+            PathBuf::from(".yoyo.toml"),
+        ];
+        let out = format_config_output_with_paths(&config, &paths);
+
+        assert!(out.contains("Loaded config scopes:"));
+        assert!(out.contains("/home/user/.config/yoyo/config.toml"));
+        assert!(out.contains("/home/user/.yoyo.toml"));
+        assert!(out.contains(".yoyo.toml"));
+        assert!(out.contains("project-model"));
     }
 
     #[test]

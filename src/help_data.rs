@@ -165,6 +165,15 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /find main\n\
              \x20 /find test",
         ),
+        "fim" => Some(
+            "/fim <args> — DeepSeek FIM completion for local edits\n\n\
+             Runs the same checked path as `yoyo deepseek fim-complete` from inside\n\
+             the REPL. Use `--response JSON` for deterministic replay, or set\n\
+             DEEPSEEK_API_KEY for a live beta FIM completion.\n\n\
+             Examples:\n\
+             \x20 /fim --prompt 'fn main() {' --suffix '}' --response '{\"choices\":[{\"text\":\"println!(\\\"ok\\\");\"}]}' --json\n\
+             \x20 /fim --file src/lib.rs --start 10 --end 12 --max-tokens 256 --apply --verify 'cargo check'",
+        ),
         "fork" => Some(
             "/fork — Conversation branching\n\n\
              Usage:\n\
@@ -1208,6 +1217,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "extended" => Some("Run the agent autonomously on a long task"),
         "extract" => Some("Extract a function/block to a new file"),
         "find" => Some("Find files by name pattern"),
+        "fim" => Some("Run DeepSeek FIM completion for local edits"),
         "fix" => Some("Auto-fix build/lint errors"),
         "forget" => Some("Remove a saved memory"),
         "fork" => Some("Branch conversations and switch between them"),

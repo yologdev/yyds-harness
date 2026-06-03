@@ -964,12 +964,15 @@ mod tests {
     fn test_colorize_blame_line_typical() {
         let line = "abc1234f (John Doe  2024-01-15 10:30:00 +0000  42) fn main() {";
         let colored = colorize_blame_line(line);
-        // Should contain ANSI codes
-        assert!(colored.contains("\x1b["));
         // Should still contain the original content
         assert!(colored.contains("John Doe"));
         assert!(colored.contains("fn main()"));
         assert!(colored.contains("abc1234f"));
+        if format!("{}", crate::format::YELLOW).is_empty() {
+            assert!(!colored.contains("\x1b["));
+        } else {
+            assert!(colored.contains("\x1b["));
+        }
     }
 
     #[test]
@@ -985,9 +988,12 @@ mod tests {
         let colored = colorize_blame(input);
         let lines: Vec<&str> = colored.lines().collect();
         assert_eq!(lines.len(), 2);
-        // Both lines should have ANSI codes
-        assert!(lines[0].contains("\x1b["));
-        assert!(lines[1].contains("\x1b["));
+        assert!(lines[0].contains("Alice"));
+        assert!(lines[1].contains("Bob"));
+        if !format!("{}", crate::format::YELLOW).is_empty() {
+            assert!(lines[0].contains("\x1b["));
+            assert!(lines[1].contains("\x1b["));
+        }
     }
 
     #[test]

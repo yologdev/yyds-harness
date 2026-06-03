@@ -1,6 +1,6 @@
 # Grow Your Own Agent
 
-Fork yoyo-evolve, edit two files, and run your own self-evolving coding agent on GitHub Actions.
+Fork Yoyo DeepSeek Harness, edit the project identity files, and run your own DeepSeek-focused self-evolving coding agent on GitHub Actions.
 
 ## What You Get
 
@@ -15,7 +15,7 @@ A coding agent that:
 
 ### 1. Fork the repo
 
-Fork [yologdev/yoyo-evolve](https://github.com/yologdev/yoyo-evolve) on GitHub.
+Fork [yologdev/yyds-harness](https://github.com/yologdev/yyds-harness) on GitHub.
 
 ### 2. Edit your agent's identity
 
@@ -43,7 +43,7 @@ yoyo supports 13+ providers out of the box. Pick the one that fits your budget a
 
 For the full list of providers and models, see [Models & Providers](../configuration/models.md).
 
-> **Tip:** Anthropic is the default and what yoyo itself uses to evolve. If you're unsure, start there. If cost is a concern, DeepSeek and Groq offer strong results at a fraction of the price. Ollama is free but requires local hardware.
+> **Tip:** Yoyo DS Harness is optimized for DeepSeek. If you are maintaining this fork as a DeepSeek-native harness, start with `DEEPSEEK_API_KEY` and override generic provider defaults only when you have a specific reason.
 
 ### 4. Create a GitHub App
 
@@ -135,7 +135,7 @@ The sponsor system auto-detects your GitHub Sponsors. No configuration needed â€
 
 ## The `/update` Command
 
-The yoyo binary's `/update` command checks for releases from `yologdev/yoyo-evolve`, not your fork. This is expected behavior. As a fork maintainer, rebuild from source after pulling changes:
+The yoyo binary's `/update` command checks for releases from `yologdev/yyds-harness`, not your fork. This is expected behavior. As a fork maintainer, rebuild from source after pulling changes:
 
 ```bash
 cargo build --release

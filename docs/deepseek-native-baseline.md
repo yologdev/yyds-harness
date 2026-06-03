@@ -1,0 +1,375 @@
+# DeepSeek Native Baseline
+
+This is the bootstrap inventory for `deepseek-native-bootstrap`.
+
+## Implemented
+
+- Repository identity moved to `yyds-harness` while preserving `yoyo` compatibility.
+- README citation and star-history metadata point at `yologdev/yyds-harness`.
+- OpenRouter client attribution headers point at the Yoyo DS Harness repo/product identity.
+- mdBook metadata, introduction, fork guide, and README fork guide links point at the Yoyo DS Harness product/repo identity.
+- `yoyo-ds` binary alias added; both binaries use the existing runtime.
+- `--deepseek-native` profile added.
+- `.yoyo/deepseek.toml` project config added for DeepSeek-native defaults:
+  - `[deepseek] enabled/default_model/fast_model/base_url/thinking_default`
+  - `[deepseek.routing] planning/root_cause/summary/local_edit`
+  - `[deepseek.cache] stable_prefix/record_metrics/optimize_prompt_order`
+  - `[deepseek.context] recent_failure_limit/changed_file_limit/include_repo_map`
+  - `[deepseek.transport] request_timeout_ms/max_retries`
+  - `[evolve.harness] allowed_patch_types/require_human_approval_for`
+  - `[state] enabled/events/store/fail_soft`
+- DeepSeek-native profile selects:
+  - provider: `deepseek`
+  - default model: `deepseek-v4-pro`
+  - fast model constant: `deepseek-v4-flash`
+  - thinking: `high`
+  - native DeepSeek `thinking` control object through released `yoagent` 0.8.3
+  - OpenAI-compatible `reasoning_effort` enabled for DeepSeek requests
+  - context window policy: `1_000_000` tokens
+  - max output policy: `384_000` tokens
+- DeepSeek protocol scaffolding added:
+  - released `yoagent` 0.8.3 provider behavior for DeepSeek thinking control, cache-hit/cache-miss parsing, 1M context, and 384K output defaults
+  - DeepSeek agent model configuration consumes `yoagent::provider::ModelConfig::deepseek` and only layers yoyo-specific `/v1` endpoint and client identity headers on top
+  - `DeepSeekModel`
+  - `ThinkingMode`
+  - `ThinkingEffort`
+  - `DeepSeekUsage`
+  - DeepSeek transport policy with timeout, retry budget, bounded backoff, and error classification decisions
+  - DeepSeek-native prompt and piped main-loop API failures are classified into compact `FailureObserved` state events when `yoagent` surfaces an exhausted provider error
+  - JSON output chat request builder/probe that emits DeepSeek `response_format: {"type":"json_object"}` with thinking disabled for deterministic extraction
+  - chat prefix completion beta request builder for assistant prefill diagnostics
+  - FIM completion request builder for local non-thinking edits
+  - FIM file-range request builder that derives prefix/suffix from a target file and line range
+  - FIM edit-plan builder that converts an approved single-file completion into a checked unified diff
+  - typed `DeepSeekHarnessGenome` constrained mutation surface
+  - typed `HarnessPatch` lifecycle payload
+  - strict tool schema helper
+  - strict schema suite for `plan_task`, `request_context`, `inspect_file`, `propose_edit`, `record_failure`, `propose_harness_patch`, and `record_eval_result`
+  - strict tool-argument validator with bounded repair decisions and `ToolSchemaFailure` state events
+  - strict tool-call chat request builder/probe that emits DeepSeek `tools`, `tool_choice`, `thinking`, and `reasoning_effort` fields while rejecting duplicate selected schemas for protocol regression coverage
+- `yoagent-state`-backed shadow state layer added:
+  - local path dependency on `~/Dev/yoagent-state` until it is released as a package
+  - canonical `yoagent_state::Event` JSONL records with yoyo run/trace metadata under payload `_yoyo`
+  - canonical JSONL appends go through `yoagent_state::JsonlEventStore`; yoyo only keeps adapter-owned redaction, metadata mapping, compatibility reads, and SQLite projection
+  - run/trace IDs
+  - fail-soft append writer
+  - central telemetry secret redaction before JSONL append and SQLite projection
+  - model/tool/file/command/failure/cache events
+  - `FileEdited` events record compact line-count and diff-preview metadata while file-edit `ToolCallStarted` state args omit raw write/edit text
+  - fail-soft SQLite projection at `.yoyo/state/state.sqlite`
+  - SQLite projection migration ledger with schema versioning
+  - first-class SQLite projection tables for failures, hypotheses, decisions, patches, evals, cache metrics, and relations
+  - graph relation projection for run, trace, task, model call, tool call, parent, causal evidence, hypothesis, decision, patch lifecycle, patch-addressed evidence, eval freshness, failure, memory candidate, file reference, issue intake, harness version, context policy, prompt version/layout, tool schema, commit, and branch links
+  - bounded shortest-path queries through projected graph relations
+- State CLI added:
+  - `yoyo state init`
+  - `yoyo state tail`
+    - tail output summarizes common run, model, tool, file, command, test, failure, cache, context, patch, and decision events without dumping raw JSON by default
+  - `yoyo state trace <run-id|trace-id>` now reconstructs a summarized ordered timeline with event-type counts and terminal run status
+  - `yoyo state project --rebuild`
+  - `yoyo state migrate`
+  - `yoyo state recover [--output PATH] [--replace]`
+  - imported and recovered JSONL is normalized through the yoyo state adapter redactor before canonical events or SQLite projections are written
+    - recovery replacement backups are redacted normalized JSONL rather than raw copies
+  - `yoyo state retention [--days N] [--archive PATH] [--prune]`
+    - retention archives are normalized through the same redactor, so legacy raw event payloads do not leak into portable archive artifacts
+    - retention prune backups are redacted normalized JSONL rather than raw copies
+  - `yoyo state memory synthesize [--output PATH] [--record]`
+    - memory synthesis can emit review-required `MemoryProposed` events for durable candidates without mutating project memory
+  - `yoyo state memory list [--status proposed|promoted|rejected]`
+  - `yoyo state memory promote <candidate-id> [--reason TEXT]`
+  - `yoyo state memory reject <candidate-id> [--reason TEXT]`
+    - memory promotion/rejection records `MemoryPromoted` / `MemoryRejected` lineage without automatically writing `.yoyo/memory.json`
+  - `yoyo state journal generate [--output PATH]`
+  - `yoyo state export <path>`
+    - exports normalize and redact legacy raw event payloads before writing portable JSONL
+  - `yoyo state import <path> [--replace]`
+  - `yoyo state graph <event-id|patch-id|eval-id|commit> [--depth N] [--to TARGET]`
+  - `yoyo state graph summary <event-id|patch-id|eval-id|commit> [--depth N] [--json]`
+    - graph summaries report compact relation counts by depth, relation type, destination kind, and node kind as human text or machine-readable JSON for analytical triage
+  - `yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]`
+    - graph clusters group bounded first-hop relation neighborhoods as human text or machine-readable JSON for compact impact triage
+  - `yoyo state graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]`
+    - graph impact reports summarize reachable patches, evals, decisions, files, evidence, positive signals, and risk signals from the projected lineage graph as human text or machine-readable JSON
+  - `yoyo state graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]`
+    - graph signal reports separate reachable positive validation paths from risk paths as human text or machine-readable JSON for focused promotion and rollback triage
+  - `yoyo state graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph evidence reports show evidence-bearing relations with depth, relation counts, timestamps, and the state event that projected each edge as human text or machine-readable JSON
+  - `yoyo state graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph file reports show reachable file references with relation counts, timestamps, and the state event that projected each file edge as human text or machine-readable JSON
+  - `yoyo state graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph eval reports show reachable eval relations enriched with suite, status, score, patch metadata, and fixture suite task/command counts from the SQLite projection as human text or machine-readable JSON
+  - `yoyo state graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph patch reports show reachable patch relations enriched with lifecycle status, kind, risk, base harness/state version, base commit, and rollback-plan step-count metadata from the SQLite projection as human text or machine-readable JSON
+  - `yoyo state graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph decision reports show reachable decision relations enriched with decision type, outcome, status, patch, eval, release fixture-breadth gate, promotion fixture/model-route comparison, and release audit metadata from the SQLite projection as human text or machine-readable JSON
+  - `yoyo state graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph hypothesis reports show reachable cause, support, and contradiction relations enriched with summary, confidence, status, failure, and run metadata from the SQLite projection as human text or machine-readable JSON
+  - `yoyo state graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph version reports show reachable active and base harness versions with linked patches, evals, suites, statuses, runs, and relation provenance as human text or machine-readable JSON
+  - `yoyo state graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph run reports show reachable run IDs, trace IDs, eval task IDs, event statuses, event-type counts, and run/task relation provenance as human text or machine-readable JSON
+  - `yoyo state graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph artifact reports show reachable eval artifact URIs, linked evals and patches, reproducibility mode, fixture agent command source, fixture suite task/command counts, replay command, dirty-worktree evidence, and relation provenance as human text or machine-readable JSON
+  - `yoyo state graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph model reports show reachable model-call relations enriched with model, thinking mode, reasoning effort, token, cache-read, and cache-write metadata from the SQLite projection as human text or machine-readable JSON
+  - `yoyo state graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph tool reports show reachable tool-call relations enriched with tool name, status, argument preview, result preview, and run metadata from the SQLite projection as human text or machine-readable JSON
+  - `yoyo state graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph command reports show reachable command execution events enriched with command preview, status, result preview, and run metadata from the SQLite projection as human text or machine-readable JSON
+  - `yoyo state graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph test reports show reachable test execution events enriched with test kind, command preview, status, result preview, and run metadata from the SQLite projection as human text or machine-readable JSON
+  - `yoyo state graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph commit reports show reachable commit, branch, revert, and modified-file metadata from projected commit and revert events as human text or machine-readable JSON
+  - `yoyo state graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph memory reports show reachable memory candidates, proposal/promotion/rejection status, source, summary, reason, proposal lineage, and evidence links from projected memory lifecycle events as human text or machine-readable JSON
+  - `yoyo state graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph issue reports show reachable improvement issue intake, linked harness patches, intake source/kind, summary, details, risk, status, and relation provenance from projected issue nodes as human text or machine-readable JSON
+  - `yoyo state graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph cache reports show reachable DeepSeek cache metric events enriched with model, hit-token, miss-token, ratio, and timestamp metadata from the SQLite projection as human text or machine-readable JSON
+  - `yoyo state graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph failure reports show reachable failure events enriched with class, owner, retryability, source, run, and signal metadata from the SQLite projection as human text or machine-readable JSON
+  - `yoyo state graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph policy reports show reachable context policy, prompt layout, context block, and strict tool schema relations with event metadata from the SQLite projection as human text or machine-readable JSON
+  - `yoyo state graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph protocol reports isolate reachable DeepSeek protocol-check coverage, linked evals, release/promotion decisions, supporting events, and protocol relation provenance from the SQLite projection as human text or machine-readable JSON
+  - `yoyo state graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]`
+    - graph timeline reports order reachable projected relations by the state event timestamp that created the edge as human text or machine-readable JSON
+  - `yoyo state graph hotspots [--limit N] [--json]`
+    - graph hotspot reports rank highly connected projected lineage nodes as human text or machine-readable JSON with degree, direction, and relation-count evidence
+  - `yoyo state policies --recent [--limit N]`
+    - recent policy reports expose active context policy, prompt layout, context blocks, strict schema name, and strict schema version without requiring manual graph traversal
+  - `yoyo state fixes --recent [--class CLASS] [--limit N]`
+    - failure-fix reports map classified failure evidence to promoted harness patches and eval evidence
+  - `yoyo state rollbacks --recent [--limit N] [--json]`
+    - rollback reports surface failed patch evals, affected harness versions, rollback plans, and completed revert events as human text or machine-readable JSON
+  - `yoyo state evals [--harness-version VERSION] [--patch-id PATCH]`
+    - state eval history shows compact pass/fail counts, fixture suite composition, dirty-worktree reproducibility evidence, fixture agent command source, and failure event IDs alongside harness, patch, suite, score, status, and artifact links
+  - `yoyo state patches [--status STATUS]`
+    - patch lists include latest status, kind, risk, base harness version, state schema version, base git commit, intent, and lifecycle event count
+  - `yoyo state patches show <patch-id>`
+    - patch detail reports lift base harness/state versions, evidence links, expected effects, string or step-list eval plans, rollback plan, eval outcomes, and promotion/rejection decisions above the raw payload
+  - `yoyo state why <event-id|last-failure|patch-id|commit|run-id>`
+    - failure explanations include active context, related hypotheses, similar historical failures, candidate patches, eval/promotion evidence, release fixture-breadth gate evidence, and compact promotion metric deltas when present
+    - failure explanations include compact next-action commands for replay, patch proposal, patch evaluation, rollback review, release-gate reruns with fixture-breadth policy flags, or promotion comparison when supported by available state evidence
+    - commit explanations include branch, modified files, and related revert lineage when present
+  - `yoyo state lineage <event-id|patch-id|commit>`
+    - commit lineage connects commit and revert events by `commit` / `reverted_commit` identifiers without requiring SQLite graph traversal
+  - `yoyo state failures --recent`
+    - recent failures include `class`, `owner`, and `retryable` taxonomy fields for context misses, permissions, transport, eval, FIM, tool execution, JSON output, and tool-schema failures
+    - tool approval and noninteractive permission-policy state payloads include explicit reason text alongside scope, target, risk, and decision source
+    - write/edit/rename file approval paths show a diff preview before interactive, session-wide, or allow-listed mutation approval
+    - noninteractive file and bash permission decisions record `DecisionRecorded` events for session-wide always approval, permission allow, and permission deny paths
+    - sensitive file operations against env files, credential files, key material, and secret/token-named paths are critical and require a fresh per-operation approval instead of session-wide always approval or permission allow-list shortcuts
+    - critical bash safety warnings bypass session-wide always approval and permission allow-list shortcuts; they require a fresh per-command approval
+  - `yoyo state cache --recent`
+- DeepSeek CLI diagnostics added:
+  - `yoyo deepseek doctor [--json]`
+    - doctor output reports the active configured DeepSeek primary model, fast model, provider base URL, context policy, retry policy, native thinking-control support, reasoning-effort support, and stream-usage support; `--json` emits the same readiness evidence for CI and release scripts
+  - `yoyo deepseek genome [--json]`
+    - human genome output surfaces active context failure breadth, changed-file breadth, and repo-map inclusion alongside routing, cache, transport, schema, FIM, reasoning, and human-gate policy
+  - `yoyo deepseek route <task> [--json]`
+  - `yoyo deepseek models`
+  - `yoyo deepseek schemas [--json]`
+  - `yoyo deepseek schema-check --name SCHEMA --arguments JSON [--attempt N] [--record] [--json]`
+  - `yoyo deepseek test-tool-call [--record] [--json]`
+    - JSON output includes a strict tool-call request probe with selected strict tools and DeepSeek thinking controls; `--record` appends compact pass evidence without storing the full prompt or request payload, and state why plus graph evidence, impact, policy, and signal reports show schema validation lineage
+  - `yoyo deepseek test-thinking [--messages JSON] [--record] [--json]`
+    - `--record` appends compact pass/fail protocol evidence even when JSON output is requested, preserving reasoning-content presence counts without persisting raw reasoning text
+    - recorded pass evidence is visible through state why plus graph evidence, impact, policy, and signal reports as thinking protocol lineage
+  - `yoyo deepseek stream-check [--sse TEXT] [--record] [--json]`
+    - `--record` appends compact streaming pass evidence with content, reasoning, tool-call, finish, and token counts without persisting raw streamed text; state why plus graph evidence, impact, policy, and signal reports show streaming protocol lineage
+  - `yoyo deepseek transport-check [--status N] [--error TEXT] [--attempt N] [--record] [--json]`
+    - `--record` appends compact transport-policy pass evidence, and state why plus graph evidence, impact, policy, and signal reports show retry classification lineage
+  - `yoyo deepseek json-check --input TEXT [--retry-input TEXT] [--schema NAME] [--record] [--json]`
+    - JSON mode diagnostics include a request probe showing the DeepSeek chat payload with `response_format` and deterministic extraction instructions, `--record` persists compact pass or failure evidence even with `--json`, state why reports explain recorded JSON-output pass evidence, and graph signals, evidence, impact, and policy reports show schema-backed JSON-output validation paths
+  - `yoyo deepseek prefix-check --prompt TEXT --prefix TEXT [--model MODEL] [--max-tokens N] [--json]`
+  - `yoyo deepseek fim-check (--prompt TEXT [--suffix TEXT] | --file PATH --start N --end N) [--scope SCOPE] [--max-tokens N] [--json]`
+  - `yoyo deepseek fim-route --input TEXT [--max-tokens N] [--enable] [--execute] [--response JSON] [--apply] [--verify CMD] [--json]`
+    - FIM route diagnostics classify ordinary prompts through the FIM policy and only produce a `fim-complete --file --start --end` command for explicit single-file line-range edits
+    - `--execute` delegates accepted routes to the existing `fim-complete` path, so live calls, deterministic response replay, apply gates, and verification hooks stay centralized
+    - single-shot and piped DeepSeek-native prompt runs use this guarded route by default for explicit safe single-file line-range edits before falling back to the normal agent loop; `--no-deepseek-fim-route` disables it
+    - accepted prompt-mode FIM routes and explicit `fim-route --record` diagnostics append `DecisionRecorded` state events with compact route, target, scope, command, and prompt-preview metadata
+  - `yoyo deepseek fim-complete (--prompt TEXT [--suffix TEXT] | --file PATH --start N --end N) [--scope SCOPE] [--max-tokens N] [--response JSON] [--apply] [--verify CMD] [--json]`
+    - FIM completion can use a supplied response for deterministic replay or call the DeepSeek beta completions endpoint with `DEEPSEEK_API_KEY`, then feed file-range output through the safe edit-plan/apply path
+    - FIM file-range request generation, prompt routing, and edit planning reject security-sensitive targets such as env files, credential files, key material, and secret/token-named paths
+    - live FIM invocation is covered by local mock HTTP protocol tests for bearer auth, request payload shape, completion parsing, and retryable error classification
+    - live FIM invocation honors the DeepSeek transport retry budget for retryable status/network failures before surfacing the final classified error
+  - `yoyo deepseek fim-parse --response JSON`
+  - `yoyo deepseek fim-apply --file PATH --start N --end N --completion TEXT [--scope SCOPE] [--apply] [--verify CMD] [--json]`
+  - `yoyo deepseek cache-report [--json]`
+    - cache reports aggregate recorded DeepSeek cache hit/miss token metrics and per-model breakdowns as human text or machine-readable JSON for CI and release checks
+- Interactive DeepSeek FIM command added:
+  - `/fim (--prompt TEXT [--suffix TEXT] | --file PATH --start N --end N) [--scope SCOPE] [--max-tokens N] [--response JSON] [--apply] [--verify CMD] [--json]`
+  - `/fim` reuses `yoyo deepseek fim-complete` so interactive local edits follow the same request validation, deterministic replay, live invocation, safe edit-plan, apply, verify, and state recording path as the shell command
+- Eval CLI added:
+  - `yoyo eval run [--suite local-smoke] [--patch-id PATCH] [--harness-version VERSION] [--worktree PATH] [--dry-run]`
+    - protocol suites such as `protocol-deepseek` run deterministic DeepSeek protocol diagnostics (`test-tool-call`, `test-thinking`, stream replay, JSON output, and transport classification) instead of the broad benchmark gate set, and record compact pass evidence for deterministic diagnostics, including streaming and transport-policy classification
+  - `yoyo eval schedule [--suite local-smoke] [--interval-hours N] [--record] [--json]`
+  - `yoyo eval release-gate [--suite local-smoke] [--max-age-hours N] [--require-protocol] [--min-fixture-tasks N] [--min-fixture-commands N] [--min-fixture-high-risk N] [--min-fixture-medium-risk N] [--min-fixture-low-risk N] [--record] [--json] [--fail]`
+  - `yoyo eval replay --from-state [--limit N] [--json]`
+  - `yoyo eval fixtures list [--suite local-smoke]`
+  - `yoyo eval fixtures validate [--suite local-smoke]`
+  - fixture validation rejects task-id/filename drift, non-slug task ids, blank test commands, and unsafe `expected_files` allowlist entries, keeping benchmark identity and mutation-scope gates repo-relative
+  - `yoyo eval fixtures run [--suite local-smoke] [--task TASK] [--dry-run]`
+  - `yoyo eval fixtures attempt [--suite local-smoke] [--task TASK] --worktree PATH (--agent-command CMD | --default-agent) [--dry-run]`
+  - `yoyo eval report <eval-id>`
+  - `yoyo eval compare <baseline-eval> <candidate-eval>`
+  - eval state events include an `artifact_uri` pointing to `.yoyo/state/artifacts/evals/<eval-id>.json`
+  - eval artifacts are projected into state graph relations as `has_artifact` / `references_artifact`
+  - eval artifacts include a reproducibility manifest with replay command, git commit, dirty-worktree status, compact `git status --short` evidence, worktree, harness version, patch id, and command list; command previews are redacted before artifact persistence
+  - explicit fixture agent-attempt runs execute an agent command in a caller-supplied worktree before running fixture verification commands
+  - `fixtures attempt --default-agent` opts into a reproducible DeepSeek-native yoyo command template based on the current binary, so live source-patch attempts do not require every caller to handcraft an agent command
+  - fixture agent-attempt dry runs, eval artifacts, and eval reports identify whether the agent command came from an explicit argument, `YOYO_EVAL_AGENT_COMMAND`, or the default DeepSeek-native agent template
+  - fixture agent-attempt eval artifacts, reports, and failure events include compact changed-file evidence from `git status --short` after the agent command, so source-patch attempts show what the agent mutated before verification
+  - fixture agent-attempt evals fail when the agent mutates files outside the task's declared `expected_files` allowlist; eval reports, failure events, and graph signals surface those scope violations as unexpected changed-file evidence
+  - fixture agent-attempt mutation-scope failures are derived into eval state metrics, comparison deltas, and promotion evidence so harness evolution can block or reward changes based on unexpected source mutations
+  - `state graph evals`, `state graph files`, and `state graph evidence` surface fixture agent-attempt changed-file evidence from eval lineage as `agent_attempt_changed_file` and `agent_attempt_unexpected_file` relations
+  - fixture eval artifacts and reports include compact suite composition metadata with task count, command count, category distribution, risk-label distribution, and per-task test/expected-file counts
+  - eval reports and comparisons surface fixture suite breadth, fixture breadth mismatch status, state metrics for model/tool calls, model route-task distribution, tokens, cache ratio, cost, latency, failures, file edits, permission prompt pressure, and derived cost/latency per successful task
+  - eval reports surface eval type plus reproducibility manifest mode, replay command, command list, and compact protocol diagnostic counters, so protocol eval reports and state graph eval lineage show the concrete DeepSeek diagnostics that produced release-gate evidence
+  - eval state metrics classify JSON output failures, strict tool schema failures, context misses, rollback count, repair-loop count, fixture agent mutation-scope failures and unexpected changed-file counts, malformed tool-call rate, JSON parse failure rate, permission prompt rate, human intervention rate, DeepSeek thinking-mode usage rate, model route-task distribution, FIM success rate, FIM compile rate, FIM rollback rate, and FIM token savings
+  - historical failure replay reports turn state failures into bounded replay candidates with `state why` and fixture rerun commands, ranked by failure class, retryability, repair-loop evidence, and replay priority reasons
+  - release gates block when replayable state failures were recorded after the latest passing eval; state why reports include `eval replay --from-state`, graph failure/signal inspection, recent-failure review, and release-gate rerun guidance
+  - state why reports for failed release-gate suite eval blocks include the failed eval report, graph eval/signal inspection, suite rerun, and release-gate rerun guidance
+  - state why reports for stale release-gate suite eval blocks include the stale eval report, graph eval/signal inspection, fresh suite rerun, and release-gate rerun guidance
+  - release gate reports, recorded decisions, state why explanations, and graph decision reports include latest eval fixture suite task/command counts, risk-label distribution, and DeepSeek model route-task distribution, so release readiness keeps the benchmark breadth, route coverage, and risk coverage that produced the decision
+  - release gates can require minimum fixture suite task, command, and risk-label counts before allowing release readiness, and state why reports guide operators from fixture coverage blocks to eval reports, graph signal/evidence/eval inspection, fixture reruns, and release-gate reruns
+  - release-gate fixture risk-label minimum failures are projected into SQLite graph evidence and risk relations for state triage
+  - release-gate fixture breadth failures are projected into SQLite graph evidence and risk relations for state triage
+  - release gates block when the latest suite eval or required protocol eval reproducibility manifest says it was run from a dirty worktree, record that dirty-worktree evidence in release decisions, and state why reports guide operators to eval reports, graph evidence, and clean reruns
+  - release gates block when the latest suite eval does not include evidence for every standard required gate command, and state why reports guide operators to eval reports, graph signal/evidence/decision inspection, missing-gate reruns, suite reruns, and release-gate reruns
+  - release gates block when the latest suite eval reports fixture agent mutation-scope failures or unexpected changed files; state why reports guide operators to the eval report, graph file/evidence/signal inspection, fixture suite rerun, and release-gate rerun
+  - release-gate fixture agent mutation-scope blocks are projected into SQLite graph evidence, risk, and impact relations for state triage
+  - release-gate source-provenance audit decisions are projected into SQLite graph relations, including blocked audit edges for failed provenance checks and scan-source lineage, and state why reports guide operators through policy, evidence, signal, impact, decision, and rerun commands
+  - dirty eval release and promotion blocks are projected into SQLite graph risk relations for state triage
+  - release gates can require a fresh passing protocol eval with `--require-protocol`, so production readiness cannot rely on benchmark evidence while DeepSeek protocol coverage is missing, failed, stale, or older than the latest suite eval; release reports, recorded decisions, state why reports, and graph decision metadata include compact protocol-check counters plus protocol rerun and graph-inspection guidance for protocol blocks
+- Local benchmark fixture format added:
+  - `eval/fixtures/local-smoke/*.json`
+  - 368 starter task manifests covering context, schemas, cache, state, eval, promotion, rollback, lifecycle decisions, JSON output policy, JSON response-format request probes, JSON check JSON-mode recording, JSON check pass recording, state why JSON output check pass, state graph JSON output check pass, state graph evidence JSON output check pass, state graph impact JSON output check pass, state graph policies JSON output check pass, provider transport, transport error policy, permissions, CLI identity, approval lineage, explainability, recovery, retention, state-backed memory synthesis, state-backed memory proposal events, state-backed harness patch proposals, memory validity decisions, memory graph lineage, run/trace graph lineage, trace reconstruction reports, trace terminal status, hypothesis cause/support graph lineage, hypothesis contradiction graph lineage, patch-addresses graph lineage, eval freshness graph lineage, model/tool-call graph lineage, task/harness-version graph lineage, patch-lifecycle graph lineage, patch risk-scored lifecycle lineage, patch comparison lifecycle lineage, patch apply approval gates, scoped fresh promotion approval gates, promotion human approval state why guidance, applied-patch eval gates, harness apply safety snapshots, harness eval worktree isolation, harness patch path-traversal gates, constrained mutation surface gates, config-backed evolution policy gates, patch lifecycle metadata indexing, patch list base-commit summaries, patch list version metadata, patch detail evidence reports, patch detail eval-plan steps, patch detail expected effects, patch detail version metadata, prompt-version graph lineage, prompt/tool schema version evidence, file-reference graph lineage, plan-level file modified graph lineage, file-edit state diff previews, file-write approval diff previews, rename-symbol approval previews, env-wrapped test command lineage, state tail human summaries, commit-addressable state why explanations, commit-addressable state lineage, commit/branch graph lineage, issue-intake graph lineage, context policy and schema graph lineage, policy/schema state reports, state cache recent reports, state failure recent reports, expanded secret redaction, raw reasoning redaction, eval artifact secret redaction, state import/recovery redaction, state export/retention redaction, state backup redaction, failure-class fix reports, rollback candidate reports, state-backed journal generation, scheduled eval policy, release gate policy, protocol-aware release gates, protocol eval gate selection, protocol eval pass-evidence recording, transport check pass recording, state why transport check pass evidence, eval report protocol evidence, eval protocol pass metric evidence, state graph eval protocol metric evidence, harness proposal protocol eval plans, planned protocol eval promotion gate, fresh protocol eval promotion gate, release gate protocol freshness order, release gate protocol state why guidance, release gate protocol graph lineage, release gate protocol-check graph evidence, state graph protocol diagnostics, fixture agent-attempt patch evidence, state graph fixture agent patch evidence, fixture agent-attempt mutation scope, fixture agent mutation-scope metrics, release gate fixture agent mutation scope, release fixture agent scope state why guidance, release gate fixture agent mutation-scope graph evidence, release gate fixture agent mutation-scope graph impact, release gate source-provenance graph lineage, dirty-eval gate graph lineage, release packaging identity, README public identity metadata, provider client identity metadata, public docs identity metadata, release source provenance audit, repo-wide source provenance audit, source provenance fail-closed scan, source provenance scan-source evidence, source provenance scan-source graph lineage, untracked source provenance scan, release policy source provenance scan, unreadable source provenance fail-closed, symlink source provenance boundary, release source provenance finding summaries, release source provenance finding summary bounds, release source provenance finding graph lineage, source provenance finding graph evidence report, source provenance audit graph evidence status, source provenance policy graph report, release gate state why source provenance, release source provenance state why guidance, release gate graph decision metadata, release required gate graph evidence, release required gate graph signals, release required gate graph impact, source provenance finding graph impact, source provenance policy graph impact, source provenance summary node kinds, summary relation node kinds, cluster relation node kinds, state graph path kind context, state graph row kind context, fixture agent-attempt source metadata, state eval agent-source evidence, state eval fixture suite metadata, release source provenance graph signals, state graph timeline analytics, state graph evidence analytics, state graph file analytics, state graph eval analytics, state graph eval fixture suite metadata, state graph patch analytics, state graph patch rollback steps, state graph patch version metadata, state graph decision analytics, state graph policy analytics, state graph failure analytics, state graph cache analytics, state graph model analytics, state graph tool analytics, state graph command analytics, state graph test analytics, state graph commit analytics, state graph memory analytics, state graph issue analytics, state graph hypothesis analytics, state graph harness-version analytics, state graph run/task analytics, state graph artifact analytics, state graph artifact fixture suite metadata, promotion fixture suite evidence, release gate fixture suite evidence, release fixture coverage state why guidance, release gate fixture risk-label evidence, release gate fixture risk-label graph decision, release gate fixture risk-label state why, release gate fixture risk-label minimum, promotion fixture risk-label gate, promotion fixture risk-label graph risk, promotion fixture risk-label graph evidence, promotion fixture risk-label graph decision, promotion fixture risk-label state why guidance, baseline promotion required-gate evidence, promotion fixture breadth gate, promotion fixture breadth CLI evidence, eval compare fixture breadth evidence, release gate fixture breadth minimum, release gate fixture breadth state evidence, release gate fixture breadth rerun guidance, release gate fixture breadth graph evidence, release gate fixture breadth graph impact, release gate fixture breadth graph risk, ranked context file selection, context failure-signal filtering, safe FIM edit application, FIM sensitive target gates, FIM apply verification hooks, live FIM completion invocation, FIM HTTP protocol regression, FIM transport retry enforcement, interactive FIM edit command, guarded FIM route decisions, guarded FIM route execution, opt-in prompt FIM route execution, FIM route decision state lineage, state-backed canonical JSONL persistence, default prompt FIM routing, main-loop transport failure state evidence, default DeepSeek fixture-agent attempts, state why next-action guidance, state graph signal analytics, prioritized historical failure replay, DeepSeek chat stream replay, state graph streaming protocol pass evidence, DeepSeek thinking protocol replay diagnostics, DeepSeek thinking JSON record lineage, state graph thinking protocol pass evidence, DeepSeek thinking multiturn protocol replay, DeepSeek thinking tool-result order, DeepSeek thinking tool-result contiguity, DeepSeek thinking tool-result pending state, DeepSeek thinking duplicate tool-call IDs, strict tool-call request probes, strict tool-call pass recording, state why strict tool-call pass evidence, state graph strict tool-call pass evidence, strict tool-call duplicate schema gates, historical `state why` explanations, state why promotion metric evidence, state why promotion approval evidence, explicit fixture agent-attempt evaluation, fixture eval suite metadata, fixture manifest identity and scope validation, fixture task-id and command validation, eval run-reference reporting, eval layered type metadata, eval metric comparisons, eval latency-per-successful-task reporting, eval permission-prompt-rate comparison reporting, eval FIM quality metrics, state eval pass/fail lineage reporting, state eval reproducibility evidence, metric-backed promotion evidence, promotion safety-gate decision evidence, promotion protocol state why evidence, promotion protocol graph lineage, promotion stale protocol graph risk, promotion protocol CLI evidence, promotion protocol metric evidence, promotion dirty protocol eval gate, promotion dirty-eval gate, promotion dirty eval state why guidance, promotion CLI eval evidence, protocol-gated promotion, harness-quality promotion metric gates, harness-quality promotion regression gates, promotion harness quality state why guidance, promotion required-gate evidence, promotion required gate state why guidance, release required-gate evidence, release required gate state why guidance, bounded state graph traversal, state graph summary views, state graph summary JSON report, state graph clusters JSON report, state graph impact JSON report, state graph signals JSON report, state graph evidence JSON report, state graph files JSON report, state graph evals JSON report, state graph patches JSON report, state graph decisions JSON report, state graph hypotheses JSON report, state graph versions JSON report, state graph runs JSON report, state graph artifacts JSON report, state graph models JSON report, state graph tools JSON report, state graph commands JSON report, state graph tests JSON report, state graph commits JSON report, state graph memories JSON report, state graph issues JSON report, state graph cache JSON report, state graph failures JSON report, state graph policies JSON report, state graph protocol JSON report, state graph timeline JSON report, state graph JSON usage help consistency, DeepSeek yoagent model config boundary, DeepSeek cache report per-model JSON, DeepSeek doctor thinking-control readiness, DeepSeek context instruction policy alignment, DeepSeek context instruction policy diagnostics, ContextBuilt instruction policy lineage, state graph instruction-file policy nodes, DeepSeek model route metrics, DeepSeek model route compare, promotion model route evidence, promotion model route graph decision, state graph eval model routes, release gate model route evidence, state rollback JSON report, state graph hotspot analytics, state graph cluster analytics, state graph impact analytics, ownership/semantic context ranking, context semantic alias ranking, context embedding index ranking, context index status explanation, prompt layout policy-render alignment, DeepSeek context config policy, DeepSeek genome context summary, DeepSeek doctor active policy, DeepSeek doctor JSON policy, DeepSeek cache report JSON, context semantic index JSON report, state graph hotspots JSON report, lightweight context content semantic indexing, file-range FIM request generation, state graph path queries, chat prefix request generation, strict tool-argument validation, bounded tool-call repair policy, historical failure replay reports, eval reproducibility manifests, eval dirty-worktree reproducibility, harness quality metric breakdowns, DeepSeek mode metric reporting, repair-loop metric reporting, human-intervention metric reporting, layered config scopes, improvement intake, state failure taxonomy, tool approval reason evidence, tool policy decision lineage, explicit policy patch safety gates, bash policy decision lineage, critical bash explicit approval, critical file-operation approval, promotion budget gates, promotion budget gate state why guidance, rollback-plan promotion gates, promotion rollback plan state why guidance, release replay gates, release replay state why guidance, release dirty eval state why guidance, release failed eval state why guidance, release stale eval state why guidance, release gate dirty protocol eval reproducibility, release gate dirty-eval reproducibility
+- Release packaging hardening added:
+  - CI checks out sibling `yoagent-state` before building the path dependency and validates local eval fixtures.
+  - Release archives are named `yyds-harness-<tag>-<target>` and include both `yoyo-ds` and `yoyo` binaries.
+  - Crates.io publishing is opt-in via `PUBLISH_CRATE=true` until `yoagent-state` is published.
+  - Release source-provenance audit policy scans release source files, fails closed when no source files are scanned, records whether scan candidates came from git, filesystem fallback, or provided audit inputs, exposes allowed public reference domains, and flags forbidden copied/leaked source claims for release safety checks.
+  - Git-backed release source-provenance scans include tracked and untracked source candidates, so dirty release trees cannot hide forbidden copied/leaked source claims in new files.
+  - Release source-provenance scans no longer exclude the release policy implementation file itself; policy marker literals are assembled from parts to avoid self-triggering the audit.
+  - Release source-provenance audits fail closed when a source candidate cannot be read instead of passing with skipped files.
+  - Release source-provenance scans reject source symlinks that resolve outside the repository and filesystem fallback does not descend through symlinked directories.
+  - Release gate reports and recorded decisions include bounded source-provenance finding summaries with path and marker evidence.
+  - Release source-provenance finding summaries are capped per summary before they are written to reports, decisions, or graph evidence.
+  - Release-gate source-provenance finding summaries are projected into SQLite graph evidence relations for audit triage.
+  - State graph evidence reports classify release source-provenance finding edges as evidence-bearing audit relations.
+  - State graph evidence reports include release source-provenance audit pass/block outcome relations.
+  - State graph policy reports surface release source-provenance audit and scan policy lineage.
+  - `state why` explains release-gate source-provenance blocks with audit details and next-action commands.
+  - State graph decision reports surface release-gate suite, fixture risk-label distribution, protocol-check, replay, missing-gate, and source-provenance metadata.
+  - Release-gate missing required gates are projected into SQLite graph evidence relations for audit triage.
+  - State graph signal reports classify release-gate missing required gates as risk paths.
+  - State graph impact reports expose concrete release-gate missing required gate evidence nodes.
+  - State graph impact reports expose concrete release source-provenance finding evidence nodes.
+  - State graph impact reports expose concrete release source-provenance audit policy nodes.
+  - State graph summary reports count all reachable node kinds, so source-provenance evidence and policy nodes are visible even when they appear as relation sources.
+  - State graph summary node-kind counts use projected relation kinds before falling back to ID inference, so ordinary context policy, prompt, block, and schema nodes are not collapsed to unknown.
+  - State graph cluster kind counts use projected relation kinds before falling back to ID inference, so ordinary context policy, prompt, block, and schema neighborhoods are not collapsed to unknown.
+  - State graph path rows include source and destination kind context, including reverse release-policy edges.
+  - State graph traversal rows include source and destination kind context for release policy and evidence edges.
+  - State graph signal reports classify release source-provenance audit paths as release triage signals.
+  - Installers and self-update metadata target `yologdev/yyds-harness`.
+- Harness evolution lifecycle CLI added:
+  - `yoyo evolve harness propose (--intent <text> | --from-state <event-id|last-failure>) [--kind KIND] [--risk RISK] [--dry-run]`
+  - `yoyo evolve harness feedback --summary <text> [--details TEXT] [--kind KIND] [--risk RISK] [--dry-run]`
+  - `yoyo evolve harness issue --title <text> [--body TEXT] [--kind KIND] [--risk RISK] [--dry-run]`
+  - `yoyo evolve harness apply <patch-id> --patch-file PATH [--worktree PATH] [--check] [--dry-run] [--force]`
+  - `yoyo evolve harness rollback <patch-id> [--worktree PATH] [--patch-file PATH] [--reason TEXT] [--dry-run] [--force]`
+  - `yoyo evolve harness eval <patch-id> [--worktree PATH] [--dry-run] [--force]`
+  - `yoyo evolve harness approve <patch-id> [--reason TEXT]`
+  - `yoyo evolve harness promote <patch-id> [--baseline-eval EVAL] [--candidate-eval EVAL] [--approval-event EVENT[,EVENT]] [--reason TEXT] [--force]`
+  - `yoyo evolve harness reject <patch-id> [--reason TEXT]`
+  - human feedback and self-filed improvement issues are represented as `PatchProposed` events with intake metadata, so they enter the normal patch/eval/promotion lifecycle instead of a separate issue store; self-filed issues also project to issue graph nodes linked to their patch
+  - promotion, rejection, and rollback append `DecisionRecorded` events that link to the patch and lifecycle event
+  - promotion decisions include compact metric evidence snapshots from baseline, candidate, and linked protocol evals, including score, pass/fail counts, DeepSeek protocol check counters, fixture suite breadth and risk-label distribution, DeepSeek model route-task distribution, token totals, cost, latency, cache ratio, failures, edits, rollback/context signals, repair loops, malformed tool-call rate, JSON parse failure rate, FIM quality, and permission/human intervention pressure when present
+  - promotion CLI evidence lines show baseline, candidate, protocol eval evidence, fixture suite breadth plus risk-label distribution, and model route-task distribution before promotion decisions are recorded
+  - no-regression patch candidates can promote on lower malformed tool-call rate, lower JSON parse failure rate, lower repair loop count, improved FIM quality, or lower permission/human intervention pressure after the existing budget gate passes
+  - no-regression patch candidates are blocked before metric-based promotion when harness-quality metrics regress, including malformed tool-call rate, JSON parse failures, context misses, repair loops, permission/human intervention pressure, rollback rate, or FIM success/compile/rollback quality
+  - state why reports for promotion harness-quality regression blocks include eval comparison, candidate eval report, graph decision/eval inspection, and clean fixture rerun guidance when the suite is recorded
+  - promotion is blocked when selected candidate, baseline, or protocol eval reproducibility evidence says the eval ran from a dirty worktree
+  - state why reports for dirty promotion eval blocks include the affected eval report, graph eval/signal inspection, and clean fixture rerun guidance when the suite is recorded
+  - promotion is blocked when the candidate or baseline eval reproducibility manifest does not show every standard required gate command
+  - state why reports for promotion required-gate blocks include the affected eval report, missing gate rerun command, graph eval/decision inspection, and clean fixture rerun guidance when the suite is recorded
+  - promotion is blocked when baseline and candidate fixture evals expose different task, command, or risk-label counts, so metric comparisons require matching benchmark breadth and risk coverage
+  - promotion fixture risk-label mismatch blocks are projected into SQLite graph evidence, risk, and impact relations for state triage
+  - state graph decision reports surface promotion baseline/candidate fixture breadth, risk-label, and DeepSeek model route-task comparison metadata, so blocked promotion triage does not require opening raw decision JSON
+  - state why reports for promotion fixture breadth or risk-label blocks include eval comparison plus graph decision/evidence inspection commands, so operators have a concrete triage path
+  - promotion is blocked when a patch eval plan requires `protocol-deepseek` but no protocol eval evidence has been recorded, the latest protocol eval must be at least as fresh as the candidate patch eval, and promotion protocol eval evidence is projected into graph lineage, including stale protocol risk paths, and direct state why reports surface protocol eval evidence with rerun guidance
+  - high-risk, permission, shell, and safety patch promotions require a `harness_patch_promotion` approval that is at least as fresh as the candidate eval, so apply approvals or pre-eval approvals cannot be reused for promotion
+  - state why reports for promotion human-approval blocks include scoped approval request guidance plus patch and graph approval-evidence inspection commands
+  - unforced harness patch evals require applied-patch worktree evidence and reject the active repository checkout as the eval worktree, keeping candidate evaluation isolated from the production checkout
+  - harness patch apply and rollback preflight patch diff headers and reject absolute or parent-directory traversal targets before invoking `git apply`
+  - applied harness patch events preserve patch kind, risk, and rollback-plan safety metadata alongside worktree lineage for append-only lifecycle audit
+  - non-pass-rate promotion criteria are blocked when candidate cost or token totals increase beyond the default budget gate
+  - state why reports for promotion budget-gate blocks include eval comparison, baseline/candidate eval reports, graph decision/eval inspection, and clean fixture rerun guidance when the suite is recorded
+  - promotion is blocked when a patch event has no non-empty rollback plan; this is a hard gate, not a human-approval override
+  - state why reports for rollback-plan promotion blocks include patch rollback-plan inspection, rollback-safe proposal guidance, and promotion safety graph inspection
+  - harness patch kinds include explicit context, thinking, model-routing, test, repair, memory, permission, and shell policy surfaces; permission and shell policy patches require human approval even at low risk
+  - `propose --from-state` turns a recorded failure into a gated `PatchProposed` payload with inferred kind/risk, evidence links, replay eval plan, and rollback plan
+  - default harness patch eval plans include the standard required gates plus `yoyo eval run --suite protocol-deepseek`, and state-backed proposals include the protocol eval alongside `state why` and replay checks
+  - `[evolve.harness]` config can narrow allowed patch types for unforced apply and add patch kinds that require human approval
+  - DeepSeek-native context layout added:
+  - deterministic stable prefix and dynamic suffix block model
+  - `yoyo context preview --deepseek-native`
+  - `yoyo context explain --deepseek-native`
+  - DeepSeek stable-prefix instruction loading honors the active harness genome `include_instruction_files` policy instead of always reading every generic compatibility instruction file
+  - `.yoyo/deepseek.toml`, `yoyo deepseek doctor`, and `yoyo deepseek genome` expose the active DeepSeek instruction-file policy for stable-prefix diagnostics
+  - ContextBuilt events, state policy reports, and state graph policy metadata preserve the active DeepSeek instruction-file list and project typed `uses_instruction_file` relations
+  - state graph summaries and policy graph reports surface DeepSeek instruction files as first-class `instruction_file` policy nodes
+  - `yoyo context index --deepseek-native [--write] [--path PATH] [--json]`
+  - `.yoyo/deepseek.toml` can tune context failure breadth, changed-file breadth, and repo-map inclusion through `[deepseek.context]`
+  - `--deepseek-native` runtime prompt now uses the same context renderer
+  - recent failing command/test output is scanned for tracked file references and surfaced before generic recent files
+  - selected files are ranked by recent failure evidence, historical repair/decision references, simple file-symbol hints, recent git changes, CODEOWNERS-style ownership, alias-expanded semantic term overlap, bounded content semantic matches from tracked text files, fresh entries from `.yoyo/context-semantic-index.json`, and optional fresh local vector matches from `.yoyo/context-embedding-index.json`; successful command, test, and patch-eval events are not treated as failure evidence
+  - semantic index builds can emit a machine-readable JSON report with schema version, path, file count, term count, and write status for CI/release checks
+  - context preview/explain includes a `context_index_status` dynamic block that reports missing, invalid, unsupported, fresh, partial, stale, or empty persistent semantic and embedding indexes before operators rely on selected-file rankings
+  - the default `DeepSeekHarnessGenome` prompt-layout policy names the same stable-prefix and dynamic-suffix blocks that the context renderer emits, so cache-layout metadata and state evidence do not drift from rendered context
+- Config scopes now layer from XDG defaults to home shorthand to project-local `.yoyo.toml`, with project values overriding broader scopes while section parsers can still merge permissions, directories, hooks, and MCP snippets.
+- Path restriction canonicalization now handles missing paths under symlinked denied directories.
+
+## Current Behavior
+
+Generic `yoyo` behavior remains unchanged unless `--deepseek-native`, `--state`, or config/env state flags are used.
+
+`--deepseek-native` intentionally overrides project config provider/model defaults unless the user passes explicit CLI provider/model flags. This makes the profile reliable in a repo that already has `.yoyo.toml` configured for another provider.
+
+State recording is enabled by default in DeepSeek-native mode and can be disabled with:
+
+```bash
+yoyo --deepseek-native --no-state
+```
+
+State recording uses the local `yoagent-state` repo as a path dependency until
+that crate is released. `src/state.rs` is a yoyo adapter, not a replacement
+state library: it maps harness events into `yoagent_state::Event`, redacts
+secrets and raw reasoning payloads, stores yoyo run/trace metadata under payload
+`_yoyo`, appends canonical JSONL through `yoagent_state::JsonlEventStore`, and
+maintains the harness-specific SQLite projection, migrations, CLI views, and
+DeepSeek cache metrics. New JSONL lines are valid `yoagent_state::Event` records
+and are covered by a regression test that reads them through
+`yoagent_state::JsonlEventStore`.
+
+## Known Gaps
+
+- DeepSeek transport still uses the existing OpenAI-compatible `yoagent` provider path for the main agent loop; yoyo owns harness-side timeout/retry/error classification policy, records classified main-loop provider failures as state evidence when `yoagent` surfaces them, and the live FIM path enforces bounded retry itself. Lower-level generic model-call HTTP retry wiring remains upstream/provider work.
+- Thinking-mode `reasoning_content` is parsed from streaming responses by released `yoagent` 0.8.3. `yoyo deepseek test-thinking --messages JSON` can replay captured ordered and contiguous multi-turn message turns through a pending-tool-call protocol validator that rejects duplicate tool-call IDs and records compact pass/fail state evidence without storing raw reasoning content. Preserving `reasoning_content` when replaying assistant tool-call turns should still be fixed upstream in `yoagent` if live DeepSeek regression coverage proves it is missing.
+- DeepSeek chat streaming protocol replay parses SSE content deltas, reasoning-content deltas, tool-call IDs, finish reasons, and usage/cache metrics for deterministic regression coverage without making live network calls.
+- JSON output retry/failure policy is wired into DeepSeek-native single-shot and piped JSON-output runs, and yoyo now has a DeepSeek JSON request probe for `response_format`. Lower-level generic model-call `response_format` transport wiring is not implemented in released `yoagent` yet.
+- FIM completion request builder, chat prefix request builder, file-range prefix/suffix request generation, safe local edit-plan application, deterministic FIM response replay, live DeepSeek beta FIM completion invocation, explicit interactive `/fim` local-edit command, guarded ordinary-prompt FIM route classification, default single-shot/piped prompt FIM route execution for explicit safe local edits, and `--no-deepseek-fim-route` opt-out exist. The default route is still intentionally narrow and falls back to the normal agent loop for broad, sensitive, multi-file, or ambiguous prompts.
+- SQLite projection indexes the event log, failures, hypotheses, decisions, patches, evals, cache metrics, and first-pass graph relations. `state graph --depth N` supports bounded relation traversal, `state graph <id> --to <target>` finds bounded shortest relation paths, `state graph summary <id>` reports compact relation-count triage, `state graph clusters <id>` groups bounded first-hop relation neighborhoods, `state graph impact <id>` summarizes reachable patch/eval/decision/file impact plus positive and risk signals, `state graph signals <id>` separates positive validation paths from risk paths, `state graph evidence <id>` filters evidence-bearing relations with event provenance, `state graph files <id>` isolates reachable file references with event provenance, `state graph evals <id>` isolates reachable eval relations with suite/status/score/patch, fixture, protocol, and DeepSeek model route-task metadata, `state graph patches <id>` isolates reachable patch relations with lifecycle metadata, `state graph decisions <id>` isolates reachable decision relations with type/outcome/status metadata, `state graph hypotheses <id>` isolates reachable hypothesis cause/support/contradiction relations with summary/confidence/status metadata, `state graph versions <id>` isolates reachable harness-version and base-version relations with patch/eval metadata, `state graph runs <id>` isolates reachable run, trace, and task relations with event status and type metadata, `state graph artifacts <id>` isolates reachable eval artifacts with reproducibility and dirty-worktree metadata, `state graph models <id>` isolates reachable model-call relations with DeepSeek route-task, mode, and token metadata, `state graph tools <id>` isolates reachable tool-call relations with tool/status/argument/result metadata, `state graph commands <id>` isolates reachable command execution events with command/status/result metadata, `state graph tests <id>` isolates reachable test execution events with test-kind/status/result metadata, `state graph cache <id>` isolates reachable DeepSeek cache metric events with model/hit/miss/ratio metadata, `state graph failures <id>` isolates reachable failure events with class/owner/retryability/source metadata, `state graph policies <id>` isolates reachable context policy, prompt layout, context block, instruction-file, and strict tool schema relations with event metadata, `state graph protocol <id>` isolates reachable DeepSeek protocol checks around eval, release, and promotion evidence, `state graph timeline <id>` orders reachable relations by the event timestamp that created each edge, `state graph hotspots` ranks highly connected projected nodes, and `state why` can connect failures to similar historical failures and patch outcome evidence. Richer graph analytics beyond these CLI views are still not implemented.
+- DeepSeek context selector is still local-signal based; it now scores files by state evidence, historical repair references, symbol hints, recent changes, CODEOWNERS-style ownership, alias-expanded semantic term overlap, bounded lightweight content scans over tracked text files, fresh entries from an optional persistent lexical semantic index, and an optional fresh local embedding index, while context preview/explain reports index freshness. Embedding generation itself remains external to avoid introducing a live model/network dependency into context assembly.
+- Fixture benchmark task format exists with deterministic verification runs, state-derived historical failure replay reports, and an explicit `fixtures attempt` path that can run either a caller-provided command or an opt-in built-in DeepSeek-native yoyo command in a caller-supplied worktree before verification. Automatic source patch generation/application by the agent is still not enabled by default in CI and requires a live model/API environment.
+
+## Verification
+
+- `cargo fmt --check`
+- `cargo check`
+- `env -u NO_COLOR cargo test --bin yoyo -- --test-threads=1`
+- `cargo test --test integration -- --test-threads=1`

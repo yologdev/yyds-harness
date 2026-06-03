@@ -690,10 +690,23 @@ fn handle_undo_last_commit() -> Option<String> {
             println!();
 
             // Build context for agent
+            let affected_files = files
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>();
             let mut actions = Vec::new();
-            for f in files.lines().filter(|l| !l.is_empty()) {
+            for f in &affected_files {
                 actions.push(format!("reverted changes to {f} (commit undone)"));
             }
+            let reverted_commit = log.split_whitespace().next().unwrap_or("");
+            record_revert_performed(
+                reverted_commit,
+                log.trim(),
+                &affected_files,
+                "undo_last_commit",
+                &output,
+            );
 
             // Enhanced context note that mentions journal/conversation inconsistency
             let mut note =
@@ -784,10 +797,145 @@ fn handle_undo_all(history: &mut TurnHistory) -> Option<String> {
 
 // ── /commit ──────────────────────────────────────────────────────────────
 
+#[cfg(test)]
+pub(crate) fn commit_created_payload(
+    commit: Option<String>,
+    message: &str,
+    source: &str,
+    output: &str,
+) -> serde_json::Value {
+    commit_created_payload_with_branch(commit, message, source, output, None)
+}
+
+fn commit_created_payload_with_branch(
+    commit: Option<String>,
+    message: &str,
+    source: &str,
+    output: &str,
+    branch: Option<String>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "commit": commit,
+        "commit_id": commit,
+        "message": message,
+        "source": source,
+        "output_preview": output_preview(output, 500),
+    });
+    if let Some(branch) = normalize_branch(branch) {
+        payload["branch"] = serde_json::Value::String(branch);
+    }
+    payload
+}
+
+#[cfg(test)]
+pub(crate) fn revert_performed_payload(
+    revert_commit: Option<String>,
+    reverted_commit: &str,
+    reverted_commit_summary: &str,
+    files: &[String],
+    source: &str,
+    output: &str,
+) -> serde_json::Value {
+    revert_performed_payload_with_branch(
+        revert_commit,
+        reverted_commit,
+        reverted_commit_summary,
+        files,
+        source,
+        output,
+        None,
+    )
+}
+
+fn revert_performed_payload_with_branch(
+    revert_commit: Option<String>,
+    reverted_commit: &str,
+    reverted_commit_summary: &str,
+    files: &[String],
+    source: &str,
+    output: &str,
+    branch: Option<String>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "commit": revert_commit,
+        "commit_id": revert_commit,
+        "revert_commit": revert_commit,
+        "reverted_commit": reverted_commit,
+        "reverted_commit_summary": reverted_commit_summary,
+        "files": files,
+        "source": source,
+        "output_preview": output_preview(output, 500),
+    });
+    if let Some(branch) = normalize_branch(branch) {
+        payload["branch"] = serde_json::Value::String(branch);
+    }
+    payload
+}
+
+fn normalize_branch(branch: Option<String>) -> Option<String> {
+    let branch = branch?;
+    let branch = branch.trim();
+    if branch.is_empty() || branch == "HEAD" {
+        None
+    } else {
+        Some(branch.to_string())
+    }
+}
+
+pub(crate) fn record_commit_created(message: &str, source: &str, output: &str) {
+    let commit = run_git(&["rev-parse", "HEAD"])
+        .ok()
+        .filter(|commit| !commit.trim().is_empty());
+    let branch = git_branch();
+    crate::state::record(
+        crate::state::EventType::CommitCreated,
+        crate::state::Actor::Harness,
+        commit_created_payload_with_branch(commit, message, source, output, branch),
+    );
+}
+
+fn record_revert_performed(
+    reverted_commit: &str,
+    reverted_commit_summary: &str,
+    files: &[String],
+    source: &str,
+    output: &str,
+) {
+    let revert_commit = run_git(&["rev-parse", "HEAD"])
+        .ok()
+        .filter(|commit| !commit.trim().is_empty());
+    let branch = git_branch();
+    crate::state::record(
+        crate::state::EventType::RevertPerformed,
+        crate::state::Actor::Harness,
+        revert_performed_payload_with_branch(
+            revert_commit,
+            reverted_commit,
+            reverted_commit_summary,
+            files,
+            source,
+            output,
+            branch,
+        ),
+    );
+}
+
+fn run_commit_with_state(message: &str, source: &str) -> (bool, String) {
+    let (ok, output) = run_git_commit_with_trailer(message);
+    if ok {
+        record_commit_created(message, source, &output);
+    }
+    (ok, output)
+}
+
+fn output_preview(output: &str, max_chars: usize) -> String {
+    output.trim().chars().take(max_chars).collect::<String>()
+}
+
 pub fn handle_commit(input: &str) {
     let arg = input.strip_prefix("/commit").unwrap_or("").trim();
     if !arg.is_empty() {
-        let (ok, output) = run_git_commit_with_trailer(arg);
+        let (ok, output) = run_commit_with_state(arg, "commit_command_explicit");
         if ok {
             println!("{GREEN}  ✓ {}{RESET}\n", output.trim());
         } else {
@@ -814,7 +962,8 @@ pub fn handle_commit(input: &str) {
                     let response = response.trim().to_lowercase();
                     match response.as_str() {
                         "y" | "yes" | "" => {
-                            let (ok, output) = run_git_commit_with_trailer(&suggested);
+                            let (ok, output) =
+                                run_commit_with_state(&suggested, "commit_command_suggested");
                             if ok {
                                 println!("{GREEN}  ✓ {}{RESET}\n", output.trim());
                             } else {
@@ -831,7 +980,8 @@ pub fn handle_commit(input: &str) {
                                 if custom_msg.is_empty() {
                                     println!("{DIM}  (commit cancelled — empty message){RESET}\n");
                                 } else {
-                                    let (ok, output) = run_git_commit_with_trailer(custom_msg);
+                                    let (ok, output) =
+                                        run_commit_with_state(custom_msg, "commit_command_custom");
                                     if ok {
                                         println!("{GREEN}  ✓ {}{RESET}\n", output.trim());
                                     } else {
@@ -925,7 +1075,7 @@ pub async fn handle_commit_ai(input: &str, agent_config: &AgentConfig) {
         .to_string();
     if !explicit.is_empty() {
         // User gave a message alongside --ai — just use it directly
-        let (ok, output) = run_git_commit_with_trailer(&explicit);
+        let (ok, output) = run_commit_with_state(&explicit, "commit_ai_explicit");
         if ok {
             println!("{GREEN}  ✓ {}{RESET}\n", output.trim());
         } else {
@@ -990,7 +1140,7 @@ pub async fn handle_commit_ai(input: &str, agent_config: &AgentConfig) {
         let response = response.trim().to_lowercase();
         match response.as_str() {
             "y" | "yes" | "" => {
-                let (ok, output) = run_git_commit_with_trailer(&suggested);
+                let (ok, output) = run_commit_with_state(&suggested, "commit_ai_suggested");
                 if ok {
                     println!("{GREEN}  ✓ {}{RESET}\n", output.trim());
                 } else {
@@ -1007,7 +1157,7 @@ pub async fn handle_commit_ai(input: &str, agent_config: &AgentConfig) {
                     if custom_msg.is_empty() {
                         println!("{DIM}  (commit cancelled — empty message){RESET}\n");
                     } else {
-                        let (ok, output) = run_git_commit_with_trailer(custom_msg);
+                        let (ok, output) = run_commit_with_state(custom_msg, "commit_ai_custom");
                         if ok {
                             println!("{GREEN}  ✓ {}{RESET}\n", output.trim());
                         } else {
@@ -2457,6 +2607,75 @@ mod tests {
         assert!(note.contains("journal entries"));
         assert!(note.contains("[System note: /undo --last-commit"));
         assert!(note.contains("has been undone.]"));
+    }
+
+    #[test]
+    fn commit_created_payload_records_commit_lineage() {
+        let payload = commit_created_payload(
+            Some("abc123".into()),
+            "feat: add state",
+            "commit_command_explicit",
+            "  [main abc123] feat: add state\n",
+        );
+
+        assert_eq!(payload["commit"], "abc123");
+        assert_eq!(payload["commit_id"], "abc123");
+        assert_eq!(payload["message"], "feat: add state");
+        assert_eq!(payload["source"], "commit_command_explicit");
+        assert!(payload["output_preview"]
+            .as_str()
+            .unwrap()
+            .contains("abc123"));
+    }
+
+    #[test]
+    fn commit_created_payload_can_record_branch_lineage() {
+        let payload = commit_created_payload_with_branch(
+            Some("abc123".into()),
+            "feat: add state",
+            "commit_command_explicit",
+            "  [feature/state abc123] feat: add state\n",
+            Some("feature/state".into()),
+        );
+
+        assert_eq!(payload["commit"], "abc123");
+        assert_eq!(payload["branch"], "feature/state");
+    }
+
+    #[test]
+    fn revert_performed_payload_records_reverted_commit_lineage() {
+        let payload = revert_performed_payload(
+            Some("def456".into()),
+            "abc123",
+            "abc123 feat: add state",
+            &["src/main.rs".into(), "src/state.rs".into()],
+            "undo_last_commit",
+            "revert applied",
+        );
+
+        assert_eq!(payload["commit"], "def456");
+        assert_eq!(payload["revert_commit"], "def456");
+        assert_eq!(payload["reverted_commit"], "abc123");
+        assert_eq!(payload["reverted_commit_summary"], "abc123 feat: add state");
+        assert_eq!(payload["files"].as_array().unwrap().len(), 2);
+        assert_eq!(payload["source"], "undo_last_commit");
+    }
+
+    #[test]
+    fn revert_performed_payload_can_record_branch_lineage() {
+        let payload = revert_performed_payload_with_branch(
+            Some("def456".into()),
+            "abc123",
+            "abc123 feat: add state",
+            &["src/main.rs".into()],
+            "undo_last_commit",
+            "revert applied",
+            Some("feature/state".into()),
+        );
+
+        assert_eq!(payload["revert_commit"], "def456");
+        assert_eq!(payload["branch"], "feature/state");
+        assert_eq!(payload["files"][0], "src/main.rs");
     }
 
     #[test]
