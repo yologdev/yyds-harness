@@ -39,21 +39,20 @@ Evidence:
 - `Cargo.toml` package is `yoyo-ds-harness`.
 - `Cargo.toml` defines both `yoyo` and `yoyo-ds` binaries.
 - `Cargo.toml` consumes `yoagent = "0.8.3"` with `openapi` support.
-- `Cargo.toml` consumes `yoagent-state = { path = "../yoagent-state" }`.
+- `Cargo.toml` consumes published `yoagent-state = "0.2.0"`.
 - `git remote -v` shows `origin` as `yologdev/yyds-harness` and `upstream`
   as `yologdev/yoyo-evolve`.
 - Current branch is `deepseek-native-bootstrap`.
 - Bootstrap PR is open as <https://github.com/yologdev/yyds-harness/pull/1>
   against `main`.
-- `git -C /Users/yuanhao/Dev/yoagent-state status --short` is clean.
 
 Important boundary:
 
 - `src/state.rs` is a local adapter/projection over `yoagent-state`; it is not a
   forked replacement for the foundation library.
-- Upstream `yoagent` and sibling `yoagent-state` should not be edited from this
-  repo. If either package needs behavior changes, decide that upstream in its
-  own repo.
+- Upstream `yoagent` and `yoagent-state` should not be edited from this repo.
+  If either package needs behavior changes, decide that upstream in its own
+  repo.
 
 ### Week 1: fork bootstrap and DeepSeek provider hardening
 

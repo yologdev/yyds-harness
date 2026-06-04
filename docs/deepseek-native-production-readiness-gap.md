@@ -19,8 +19,8 @@ is still unproved or intentionally outside the bootstrap PR.
 ## Proved By Current Evidence
 
 - The fork keeps `yoyo` compatibility and adds the `yoyo-ds` binary.
-- The project consumes released `yoagent = "0.8.3"` and sibling
-  `yoagent-state = { path = "../yoagent-state" }`.
+- The project consumes released `yoagent = "0.8.3"` and published
+  `yoagent-state = "0.2.0"`.
 - `src/state.rs` is a local adapter/projection over `yoagent-state`, not an
   upstream fork.
 - DeepSeek-native profile, v4 model defaults, protocol diagnostics, JSON/FIM
@@ -52,7 +52,6 @@ is still unproved or intentionally outside the bootstrap PR.
   - `cargo clippy --all-targets --all-features -- -D warnings`
   - `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke`
   - `test ! -e .yoyo`
-  - `git -C /Users/yuanhao/Dev/yoagent-state status --short`
 - Local release packaging dry run passed on 2026-06-02 for
   `aarch64-apple-darwin`:
   - `cargo build --release --bins`

@@ -94,8 +94,7 @@ DEEPSEEK_API_KEY=... cargo run --bin yoyo-ds -- --deepseek-native "<small task>"
 
 - Confirm the PR keeps `yoyo` compatibility while adding `yoyo-ds`.
 - Confirm `yoagent = "0.8.3"` is consumed as a package.
-- Confirm `yoagent-state` is used only as a sibling path dependency until it is
-  released.
+- Confirm `yoagent-state` is consumed as the published crate.
 - Confirm `src/state.rs` is a local adapter/projection, not a fork of
   `yoagent-state`.
 - Confirm no upstream package sources are modified from this repo.

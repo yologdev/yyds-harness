@@ -127,12 +127,11 @@ Edit the cron schedule in `.github/workflows/evolve.yml`. The default `0 * * * *
 ### Limit issue intake
 
 Evolution only reads `agent-input` issues authored by trusted accounts. By default,
-`TRUSTED_ISSUE_AUTHORS` is the repository owner. To allow multiple creator
-accounts, set a comma-separated workflow env var:
+`TRUSTED_ISSUE_AUTHORS` falls back to the repository owner. To allow multiple
+creator accounts, set a comma-separated repository secret:
 
-```yaml
-env:
-  TRUSTED_ISSUE_AUTHORS: your-login,teammate-login
+```bash
+gh secret set TRUSTED_ISSUE_AUTHORS --body 'your-login,teammate-login'
 ```
 
 ### Add custom skills

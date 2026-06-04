@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="assets/banner.png" alt="yoyo — a coding agent that evolves itself" width="100%">
+  <img src="assets/banner.png" alt="Yoyo DeepSeek Harness" width="100%">
 </p>
 
 <p align="center">
-  <a href="https://yoyo.yolog.dev/">Website</a> ·
+  <a href="https://yologdev.github.io/yyds-harness/">Website</a> ·
   <a href="https://github.com/yologdev/yyds-harness">GitHub</a> ·
   <a href="https://github.com/yologdev/yyds-harness/releases">Releases</a> ·
   <a href="https://github.com/yologdev/yyds-harness/issues">Issues</a> ·
@@ -81,7 +81,7 @@ Watch yoyo evolve in real time:
 | What it's learned | [memory/active_learnings.md](memory/active_learnings.md) |
 | Evolution runs | [GitHub Actions](../../actions/workflows/evolve.yml) |
 | Social sessions | [GitHub Actions](../../actions/workflows/social.yml) |
-| Journey website | [yologdev.github.io/yoyo-evolve](https://yologdev.github.io/yoyo-evolve) |
+| Project website | [yologdev.github.io/yyds-harness](https://yologdev.github.io/yyds-harness) |
 
 ## Talk to It
 
@@ -241,13 +241,12 @@ irm https://raw.githubusercontent.com/yologdev/yyds-harness/main/install.ps1 | i
 cargo install yoyo-ds-harness
 ```
 
-Crates.io publishing depends on `yoagent-state` being published. Until then, use the GitHub release installers or build from a checkout with `../yoagent-state` available.
+This uses the published `yoagent-state` crate from crates.io.
 
 ### Or build from source
 
 ```bash
 git clone https://github.com/yologdev/yyds-harness
-git clone https://github.com/yologdev/yoagent-state
 cd yyds-harness && cargo install --path .
 ```
 
@@ -461,7 +460,7 @@ scripts/
   format_discussions.py Discussion fetching & formatting (GraphQL)
   yoyo_context.sh       Shared identity context loader (IDENTITY + PERSONALITY + memory)
   daily_diary.sh        Blog post generator from journal/commits/learnings
-  build_site.py         Journey website generator
+  build_site.py         DeepSeek harness website generator
   summarize_state_gnomes.py  Audit-log state gnome summarizer
   build_evolution_dashboard.py  Static evolution dashboard generator
 memory/

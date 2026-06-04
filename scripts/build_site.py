@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the yoyo journey website from markdown sources."""
+"""Build the Yoyo DeepSeek Harness website from markdown sources."""
 
 import html
 import re
@@ -112,7 +112,7 @@ def render_journal(entries):
     if not entries:
         return (
             '<div class="timeline-empty">'
-            "No journal entries yet. The journey begins soon."
+            "No evolution journal entries yet."
             "</div>"
         )
     parts = []
@@ -136,6 +136,40 @@ def render_journal(entries):
     return "\n".join(parts)
 
 
+def render_harness_overview(day_count):
+    cards = [
+        {
+            "title": "Interactive evolution dashboard",
+            "body": "Review harness gnomes, eval decisions, patch lifecycle evidence, hotspots, and audit-branch summaries.",
+            "href": "evolution/",
+        },
+        {
+            "title": "DeepSeek harness documentation",
+            "body": "Read the operator docs for the DeepSeek-native profile, state boundary, eval gates, and fork setup.",
+            "href": "book/",
+        },
+        {
+            "title": f"Day {day_count} harness state",
+            "body": "Follow the current harness evolution without exposing yoagent-state internals to end users of yoyo-ds.",
+            "href": "https://github.com/yologdev/yyds-harness/actions/workflows/evolve.yml",
+        },
+    ]
+    parts = []
+    for card in cards:
+        parts.append(
+            f'        <article class="entry">\n'
+            f'          <div class="entry-marker"></div>\n'
+            f'          <div class="entry-content">\n'
+            f'            <h3 class="entry-title"><a href="{card["href"]}">{md_inline(card["title"])}</a></h3>\n'
+            f'            <div class="entry-body">\n'
+            f'              <p class="entry-body-para">{md_inline(card["body"])}</p>\n'
+            f"            </div>\n"
+            f"          </div>\n"
+            f"        </article>"
+        )
+    return "\n".join(parts)
+
+
 
 def render_identity(identity):
     parts = []
@@ -154,6 +188,19 @@ def render_identity(identity):
     return "\n".join(parts)
 
 
+def render_harness_identity():
+    return """\
+      <p class="mission">Yoyo DeepSeek Harness is the internal evolution layer for making yoyo work reliably with DeepSeek. It tracks harness gnomes, eval evidence, failures, decisions, patches, and dashboard artifacts without exposing that state machinery to end users of the CLI.</p>
+      <p class="identity-text">The harness uses <code>yoagent-state</code> as its durable evidence substrate. Git remains the source of concrete code changes; state records why those changes exist, what they improve, and which DeepSeek-specific risks or KPIs they affect.</p>
+      <ol class="rules">
+        <li><strong>DeepSeek first.</strong> Improve protocol coverage, cache behavior, tool-call reliability, prompt layout, context policy, and eval gates from recorded evidence.</li>
+        <li><strong>Harness boundary.</strong> Keep state and evolution analytics in the harness layer, not in the user-facing yoyo/yoyo-ds CLI experience.</li>
+        <li><strong>Trusted intake.</strong> Evolution reads trusted-owner feedback and state-derived work items before deciding what to improve.</li>
+        <li><strong>Reviewable evidence.</strong> Dashboards and audit artifacts should explain gnome/KPI movement, not bury it in raw code changes.</li>
+      </ol>
+"""
+
+
 # ── Templates ──
 
 
@@ -163,8 +210,8 @@ HTML_TEMPLATE = """\
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>yoyo \u2014 Day {day_count}</title>
-  <meta name="description" content="A coding agent that evolves itself. Currently on Day {day_count}.">
+  <title>Yoyo DeepSeek Harness \u2014 Day {day_count}</title>
+  <meta name="description" content="A DeepSeek-native coding agent harness that evolves from state evidence. Currently on Day {day_count}.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
@@ -172,11 +219,12 @@ HTML_TEMPLATE = """\
 </head>
 <body>
   <nav>
-    <a href="#" class="nav-name">yoyo</a>
+    <a href="#" class="nav-name">Yoyo DS Harness</a>
     <div class="nav-links">
-      <a href="#journal">journal</a>
-      <a href="#identity">identity</a>
-      <a href="https://github.com/yologdev/yoyo-evolve" target="_blank" rel="noopener">github \u2197</a>
+      <a href="book/">docs</a>
+      <a href="evolution/">dashboard</a>
+      <a href="#journal">evidence</a>
+      <a href="https://github.com/yologdev/yyds-harness" target="_blank" rel="noopener">github \u2197</a>
     </div>
   </nav>
 
@@ -184,35 +232,35 @@ HTML_TEMPLATE = """\
     <header class="hero">
       <div class="hero-prompt">
         <span class="hero-prompt-sigil">$</span>
-        <span class="hero-cmd">yoyo --status</span>
+        <span class="hero-cmd">yoyo-ds --deepseek-native --status</span>
       </div>
-      <h1>yoyo<span class="cursor">_</span></h1>
-      <p class="hero-status">day {day_count}<span class="sep">·</span><span class="status-tag">growing up in public</span></p>
+      <h1>Yoyo DeepSeek Harness<span class="cursor">_</span></h1>
+      <p class="hero-status">day {day_count}<span class="sep">·</span><span class="status-tag">state-backed harness evolution</span></p>
     </header>
 
     <section id="journal">
-      <h2 class="section-label">// journal</h2>
+      <h2 class="section-label">// evidence surfaces</h2>
       <div class="timeline">
 {journal_html}
       </div>
     </section>
 
     <section id="identity">
-      <h2 class="section-label">// identity</h2>
+      <h2 class="section-label">// harness boundary</h2>
 {identity_html}
     </section>
   </main>
 
   <footer>
-    <p>built by an AI that evolves itself</p>
-    <a href="https://github.com/yologdev/yoyo-evolve">github.com/yologdev/yoyo-evolve</a>
+    <p>DeepSeek harness evolution powered by yoagent-state</p>
+    <a href="https://github.com/yologdev/yyds-harness">github.com/yologdev/yyds-harness</a>
   </footer>
 </body>
 </html>
 """
 
 CSS = """\
-/* yoyo journey — terminal chronicle */
+/* Yoyo DeepSeek Harness — terminal chronicle */
 
 :root {
   --bg: #0a0c10;
@@ -233,7 +281,7 @@ CSS = """\
   --fs-body:  0.9rem;
   --fs-lead:  1rem;
   --fs-title: 1.1rem;
-  --fs-hero:  3.25rem;
+  --fs-hero:  2.65rem;
 
   /* layout */
   --col:      720px;
@@ -618,7 +666,7 @@ footer a:hover {
 
 @media (max-width: 480px) {
   :root {
-    --fs-hero: 2.5rem;
+    --fs-hero: 2.1rem;
   }
 
   nav {
@@ -644,8 +692,8 @@ def build():
     except (ValueError, AttributeError):
         pass
 
-    journal_html = render_journal(parse_journal(read_file("journals/JOURNAL.md")))
-    identity_html = render_identity(parse_identity(read_file("IDENTITY.md")))
+    journal_html = render_harness_overview(day_count)
+    identity_html = render_harness_identity()
 
     page = HTML_TEMPLATE.format(
         day_count=day_count,

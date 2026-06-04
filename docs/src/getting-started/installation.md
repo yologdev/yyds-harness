@@ -11,13 +11,12 @@
 cargo install yoyo-ds-harness
 ```
 
-This installs `yoyo-ds` and keeps `yoyo` as a compatibility alias once `yoagent-state` is published. Until then, use GitHub release binaries or build from source with `../yoagent-state` available.
+This installs `yoyo-ds` and keeps `yoyo` as a compatibility alias. The harness uses the published `yoagent-state` crate from crates.io.
 
 ## Install from source
 
 ```bash
 git clone https://github.com/yologdev/yyds-harness.git
-git clone https://github.com/yologdev/yoagent-state.git
 cd yyds-harness
 cargo build --release
 ```
