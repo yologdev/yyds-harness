@@ -51,8 +51,10 @@ echo ""
 # Cron fires every hour. The flat 8h gap controls actual evolution frequency.
 MIN_GAP_SECS=$((8 * 3600))
 
-# Check last completed run.
-LAST_SCHEDULED_EPOCH=$(git log --format="%ct %s" --grep="session wrap-up" -20 2>/dev/null | head -1 | awk '{print $1}')
+# Check last completed run. Keep this pipeline-free: with `set -o pipefail`,
+# consumers such as `head` or early-exiting `awk` can close the pipe and make
+# `git log` exit 141.
+LAST_SCHEDULED_EPOCH=$(git log -1 --format="%ct" --grep="session wrap-up" 2>/dev/null || true)
 LAST_SCHEDULED_EPOCH="${LAST_SCHEDULED_EPOCH:-0}"
 NOW_EPOCH=$(date +%s)
 ELAPSED=$((NOW_EPOCH - LAST_SCHEDULED_EPOCH))
