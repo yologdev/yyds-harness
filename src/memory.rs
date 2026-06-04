@@ -72,6 +72,54 @@ pub fn add_memory(memory: &mut ProjectMemory, note: &str) {
     });
 }
 
+/// Build a concise note describing a successful watch-fix recovery.
+pub fn build_fix_memory_note(watch_cmd: &str, attempt: usize) -> String {
+    format!(
+        "Watch fix: '{}' failed, fixed on attempt {}",
+        watch_cmd, attempt
+    )
+}
+
+/// Automatically remember a note if it's not a near-duplicate of an existing memory.
+///
+/// Loads memories from disk, checks for duplicates (substring match on first 50 chars),
+/// saves if new, and prints a dim confirmation. Returns `true` if a memory was saved.
+pub fn auto_remember(note: &str) -> bool {
+    auto_remember_to(note, &memory_file_path())
+}
+
+/// Testable variant of [`auto_remember`] that writes to a specific path.
+pub fn auto_remember_to(note: &str, path: &Path) -> bool {
+    let mut memory = load_memories_from(path);
+
+    // Dedup: compare the first 50 chars (or whole note if shorter) against existing entries.
+    // Use char-boundary-safe truncation to avoid panics on multi-byte UTF-8.
+    let prefix: String = note.chars().take(50).collect();
+    let is_dup = memory.entries.iter().any(|e| {
+        let existing_prefix: String = e.note.chars().take(50).collect();
+        existing_prefix == prefix
+    });
+    if is_dup {
+        return false;
+    }
+
+    add_memory(&mut memory, note);
+    if let Err(e) = save_memories_to(&memory, path) {
+        eprintln!("  ⚠ auto-remember failed to save: {e}");
+        return false;
+    }
+
+    // Truncate for display (char-boundary safe)
+    let display: String = note.chars().take(60).collect();
+    let display = if display.len() < note.len() {
+        format!("{display}…")
+    } else {
+        display
+    };
+    eprintln!("  💾 Auto-remembered: {display}");
+    true
+}
+
 /// Remove a memory entry by index (0-based).
 /// Returns the removed entry, or None if the index is out of bounds.
 pub fn remove_memory(memory: &mut ProjectMemory, index: usize) -> Option<MemoryEntry> {
@@ -1121,5 +1169,70 @@ mod tests {
         assert!(is_exact_word("uses docker here", "docker", 5));
         assert!(!is_exact_word("dockerized app", "docker", 0)); // not bounded on right
         assert!(!is_exact_word("mydocker", "docker", 2)); // not bounded on left
+    }
+
+    #[test]
+    fn test_build_fix_memory_note() {
+        let note = build_fix_memory_note("cargo test", 1);
+        assert_eq!(note, "Watch fix: 'cargo test' failed, fixed on attempt 1");
+
+        let note = build_fix_memory_note("cargo clippy && cargo test", 3);
+        assert_eq!(
+            note,
+            "Watch fix: 'cargo clippy && cargo test' failed, fixed on attempt 3"
+        );
+    }
+
+    #[test]
+    fn test_auto_remember_creates_entry() {
+        let path = temp_memory_path("auto_remember_create");
+        cleanup(&path);
+
+        let saved = auto_remember_to("project uses postgresql for data", &path);
+        assert!(saved, "should save new memory");
+
+        let memory = load_memories_from(&path);
+        assert_eq!(memory.entries.len(), 1);
+        assert_eq!(memory.entries[0].note, "project uses postgresql for data");
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn test_auto_remember_deduplicates() {
+        let path = temp_memory_path("auto_remember_dedup");
+        cleanup(&path);
+
+        let saved1 = auto_remember_to("Watch fix: 'cargo test' failed, fixed on attempt 1", &path);
+        assert!(saved1, "first save should succeed");
+
+        // Same note again — should be detected as duplicate
+        let saved2 = auto_remember_to("Watch fix: 'cargo test' failed, fixed on attempt 1", &path);
+        assert!(!saved2, "duplicate should not be saved");
+
+        let memory = load_memories_from(&path);
+        assert_eq!(memory.entries.len(), 1, "only one entry should exist");
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn test_auto_remember_different_notes_both_saved() {
+        let path = temp_memory_path("auto_remember_different");
+        cleanup(&path);
+
+        let saved1 = auto_remember_to("Watch fix: 'cargo test' failed, fixed on attempt 1", &path);
+        assert!(saved1);
+
+        let saved2 = auto_remember_to(
+            "Watch fix: 'cargo clippy' failed, fixed on attempt 2",
+            &path,
+        );
+        assert!(saved2);
+
+        let memory = load_memories_from(&path);
+        assert_eq!(memory.entries.len(), 2);
+
+        cleanup(&path);
     }
 }
