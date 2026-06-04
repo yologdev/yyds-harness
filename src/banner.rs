@@ -27,7 +27,15 @@ pub fn print_banner() {
         println!("{DIM}  {line}{status_suffix}{RESET}");
     }
 
-    println!("{DIM}  Type /help for commands, /quit to exit{RESET}\n");
+    println!("{DIM}  Type /help for commands, /quit to exit{RESET}");
+
+    // Show auto-loaded skill count if any were found
+    let auto_count = crate::cli::auto_discovered_skill_count();
+    if auto_count > 0 {
+        println!("{DIM}  \u{1F9E0} {auto_count} skill(s) auto-loaded from .yoyo/skills/{RESET}");
+    }
+
+    println!();
 }
 
 /// Build the project context line for the startup banner.

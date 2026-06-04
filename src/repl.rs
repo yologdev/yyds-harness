@@ -628,7 +628,15 @@ fn print_startup_info(agent_config: &AgentConfig, repl_config: &ReplConfig) {
         println!("{DIM}  temperature: {temp:.1}{RESET}");
     }
     if !agent_config.skills.is_empty() {
-        println!("{DIM}  skills: {} loaded{RESET}", agent_config.skills.len());
+        let total = agent_config.skills.len();
+        let auto = crate::cli::auto_discovered_skill_count();
+        if auto > 0 && auto < total {
+            println!("{DIM}  skills: {total} loaded ({auto} auto-discovered){RESET}");
+        } else if auto > 0 {
+            println!("{DIM}  skills: {total} loaded (auto-discovered){RESET}");
+        } else {
+            println!("{DIM}  skills: {total} loaded{RESET}");
+        }
     }
     if repl_config.mcp_count > 0 {
         println!(

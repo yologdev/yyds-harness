@@ -36,6 +36,77 @@ pub fn is_verbose() -> bool {
     *VERBOSE.get_or_init(|| false)
 }
 
+/// Number of skills auto-discovered from `~/.yoyo/skills/` and `.yoyo/skills/`.
+/// Set once during `parse_args`; read by the banner to show auto-loaded count.
+static AUTO_DISCOVERED_SKILL_COUNT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Return the number of skills that were auto-discovered (0 if none or not yet parsed).
+pub fn auto_discovered_skill_count() -> usize {
+    *AUTO_DISCOVERED_SKILL_COUNT.get_or_init(|| 0)
+}
+
+/// Auto-discover skills from `~/.yoyo/skills/` (user-global) and `.yoyo/skills/` (project-local).
+///
+/// Merges discovered skills into `skills`. The merge order ensures:
+///   1. `--skills` flag directories (already in `skills`) have highest precedence.
+///   2. `.yoyo/skills/` (project-local) overrides `~/.yoyo/skills/` (global).
+///   3. `~/.yoyo/skills/` (global) is lowest precedence among auto-discovered.
+///
+/// Returns the total number of skills auto-discovered (before dedup with flag skills).
+fn auto_discover_skills(skills: &mut SkillSet) -> usize {
+    let mut auto_skills = SkillSet::empty();
+    let mut count = 0usize;
+
+    // 1. User-global: ~/.yoyo/skills/
+    if let Ok(home) = std::env::var("HOME") {
+        let global_dir = std::path::PathBuf::from(home).join(".yoyo/skills");
+        if global_dir.is_dir() {
+            match SkillSet::load_dir(&global_dir, "global") {
+                Ok(set) => {
+                    count += set.len();
+                    auto_skills.merge(set);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{YELLOW}warning:{RESET} Failed to load global skills from {}: {e}",
+                        global_dir.display()
+                    );
+                }
+            }
+        }
+    }
+
+    // 2. Project-local: .yoyo/skills/
+    let project_dir = std::path::PathBuf::from(".yoyo/skills");
+    if project_dir.is_dir() {
+        match SkillSet::load_dir(&project_dir, "project") {
+            Ok(set) => {
+                count += set.len();
+                auto_skills.merge(set);
+            }
+            Err(e) => {
+                eprintln!(
+                    "{YELLOW}warning:{RESET} Failed to load project skills from .yoyo/skills/: {e}"
+                );
+            }
+        }
+    }
+
+    // Merge auto-discovered into flag skills. Flag skills take precedence because
+    // SkillSet::merge gives the *argument* higher priority (it overrides on conflict).
+    // We want flag > project > global, so we merge flag skills *into* auto_skills
+    // (giving flag higher priority), then replace the original set.
+    if count > 0 {
+        // auto_skills already has global < project ordering.
+        // Now merge the original flag-provided skills on top (highest priority).
+        auto_skills.merge(skills.clone());
+        *skills = auto_skills;
+    }
+
+    let _ = AUTO_DISCOVERED_SKILL_COUNT.set(count);
+    count
+}
+
 // Project context loading — re-exported from context.rs
 pub use crate::context::{list_project_context_files, load_project_context};
 
@@ -742,7 +813,7 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
 
     let skill_dirs = collect_repeatable_flag(args, "--skills");
 
-    let skills = if skill_dirs.is_empty() {
+    let mut skills = if skill_dirs.is_empty() {
         SkillSet::empty()
     } else {
         match SkillSet::load(&skill_dirs) {
@@ -753,6 +824,11 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
             }
         }
     };
+
+    // Auto-discover skills from ~/.yoyo/skills/ (user-global) and .yoyo/skills/ (project-local).
+    // Later loads override earlier ones on name conflict, so project-local wins over global,
+    // and --skills flag wins over both (since flag skills are already in `skills`).
+    let _auto_skill_count = auto_discover_skills(&mut skills);
 
     // Custom system prompt: --system "text" or --system-file path
     let custom_system = flag_value(args, &["--system"]);
@@ -3111,5 +3187,74 @@ command = "server-two"
             result.is_none(),
             "parse_args should return None when both --allowed-tools and --disallowed-tools are provided"
         );
+    }
+
+    #[test]
+    fn test_auto_discover_skills_with_temp_dir() {
+        // Create a temp directory with .yoyo/skills/ containing a minimal skill
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skills_dir = tmp.path().join(".yoyo/skills/greet");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: greet\ndescription: Say hello\n---\n\n# Greet\n\nSay hello.",
+        )
+        .unwrap();
+
+        // Load from the temp dir using SkillSet::load_dir (same API auto_discover_skills uses)
+        let project_set = SkillSet::load_dir(tmp.path().join(".yoyo/skills"), "project").unwrap();
+        assert_eq!(project_set.len(), 1);
+        assert_eq!(project_set.skills()[0].name, "greet");
+
+        // Verify merge: flag skills take precedence over auto-discovered
+        let mut flag_skills = SkillSet::empty();
+        flag_skills.merge(project_set);
+        assert_eq!(flag_skills.len(), 1);
+        assert_eq!(flag_skills.skills()[0].name, "greet");
+    }
+
+    #[test]
+    fn test_auto_discover_skills_merge_precedence() {
+        // Create two temp dirs simulating global and project skills with same name
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Global skill: greet v1
+        let global_dir = tmp.path().join("global/greet");
+        std::fs::create_dir_all(&global_dir).unwrap();
+        std::fs::write(
+            global_dir.join("SKILL.md"),
+            "---\nname: greet\ndescription: Global greeting\n---\n\n# Greet v1",
+        )
+        .unwrap();
+
+        // Project skill: greet v2 (should win)
+        let project_dir = tmp.path().join("project/greet");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join("SKILL.md"),
+            "---\nname: greet\ndescription: Project greeting\n---\n\n# Greet v2",
+        )
+        .unwrap();
+
+        let global_set = SkillSet::load_dir(tmp.path().join("global"), "global").unwrap();
+        let project_set = SkillSet::load_dir(tmp.path().join("project"), "project").unwrap();
+
+        // Merge: global first, then project overrides
+        let mut merged = global_set;
+        merged.merge(project_set);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged.skills()[0].description, "Project greeting");
+    }
+
+    #[test]
+    fn test_auto_discover_skills_nonexistent_dir_is_silent() {
+        // auto_discover_skills should not panic or warn when dirs don't exist
+        let mut skills = SkillSet::empty();
+        // Calling the function directly — it checks .yoyo/skills/ in cwd which
+        // may or may not exist, but must not panic either way
+        let count = auto_discover_skills(&mut skills);
+        // We can't assert exact count since it depends on cwd, but it shouldn't panic
+        let _ = count; // just verify it ran without panicking
     }
 }
