@@ -44,39 +44,21 @@ def sanitize_content(text, boundary_begin, boundary_end):
     return text
 
 
-def select_issues(issues, sponsor_logins=None, pick=2, day=0):
-    """Select issues for a session: all sponsors + up to `pick` non-sponsor issues.
-
-    Sponsor issues always bypass the pick limit. The highest-scored non-sponsor
-    issue is always included. Remaining non-sponsor slots are filled randomly
-    from the top 10 scored issues, seeded by day for reproducibility.
-    """
+def select_issues(issues, pick=2, day=0):
+    """Select issues for a session by score, with a day-seeded random slot."""
     if not issues or pick <= 0:
         return issues or []
 
-    # Separate sponsor issues (always shown, bypass pick limit)
-    sponsors = []
-    rest = []
-    for issue in issues:
-        author = (issue.get("author") or {}).get("login", "")
-        if sponsor_logins and author in sponsor_logins:
-            sponsors.append(issue)
-        else:
-            rest.append(issue)
+    selected = []
+    remaining_slots = pick
 
-    # All sponsors always included (no truncation)
-    selected = list(sponsors)
-    remaining_slots = pick  # pick only limits non-sponsor issues
-    if remaining_slots <= 0:
-        return selected
+    # Top 1 by score (issues are already sorted by score descending from caller)
+    rest = list(issues)
+    selected.append(rest[0])
+    rest = rest[1:]
+    remaining_slots -= 1
 
-    # Top 1 non-sponsor by score (rest is already sorted by score descending from caller)
-    if rest:
-        selected.append(rest[0])
-        rest = rest[1:]
-        remaining_slots -= 1
-
-    # Random pick from top 10 scored for remaining non-sponsor slots (seeded by day)
+    # Random pick from top 10 scored for remaining slots (seeded by day)
     if rest and remaining_slots > 0:
         top_pool = rest[:10]
         rng = random.Random(day)
@@ -130,7 +112,7 @@ def classify_issue(issue):
     return "yoyo_last"
 
 
-def format_issues(issues, sponsor_logins=None, pick=2, day=0):
+def format_issues(issues, pick=2, day=0):
     if not issues:
         return "No community issues today."
 
@@ -155,7 +137,7 @@ def format_issues(issues, sponsor_logins=None, pick=2, day=0):
 
     # Select from active issues only; show yoyo_last only when nothing else is active
     if active:
-        selected = select_issues(active, sponsor_logins, pick=pick, day=day)
+        selected = select_issues(active, pick=pick, day=day)
     else:
         selected = yoyo_last[:pick]
 
@@ -191,8 +173,6 @@ def format_issues(issues, sponsor_logins=None, pick=2, day=0):
             lines.append(f"**Author:** @{author}")
         if status == "yoyo_last":
             lines.append("⏸️ You replied last — re-engage only if you promised follow-up")
-        if sponsor_logins and author in sponsor_logins:
-            lines.append("💖 **Sponsor**")
         if up > 0 or down > 0:
             lines.append(f"👍 {up} 👎 {down} (net: {'+' if net >= 0 else ''}{net})")
         if labels:
@@ -233,30 +213,13 @@ if __name__ == "__main__":
         with open(sys.argv[1]) as f:
             issues = json.load(f)
 
-        sponsor_logins = None
+        day = 0
         if len(sys.argv) >= 3:
             try:
-                with open(sys.argv[2]) as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    # Rich sponsor info dict — extract priority-eligible logins
-                    sponsor_logins = {
-                        login for login, info in data.items()
-                        if isinstance(info, dict) and "priority" in info.get("benefits", [])
-                    }
-                elif isinstance(data, list):
-                    # Flat array of logins (backwards compat)
-                    sponsor_logins = set(data)
-            except (json.JSONDecodeError, FileNotFoundError):
-                pass  # Graceful fallback: no sponsors
-
-        day = 0
-        if len(sys.argv) >= 4:
-            try:
-                day = int(sys.argv[3])
+                day = int(sys.argv[2])
             except ValueError:
                 pass
 
-        print(format_issues(issues, sponsor_logins, pick=2, day=day))
+        print(format_issues(issues, pick=2, day=day))
     except (json.JSONDecodeError, FileNotFoundError):
         print("No community issues today.")

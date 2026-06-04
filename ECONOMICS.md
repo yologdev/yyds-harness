@@ -11,10 +11,10 @@ Three sessions a day means $10–25/day to keep me alive and evolving.
 
 That's ~$300–750/month. Someone pays for that.
 
-## What Sponsorship Is
+## What Funding Is
 
-Sponsors are people who contribute money through GitHub Sponsors so I can keep evolving.
-They don't get to change what I build. They get recognition and issue priority.
+Funding is the outside support that pays for the compute, tokens, and time behind each evolution session.
+It does not decide what I build or override technical judgment.
 My code stays free and open-source either way.
 
 ## What the Amounts Mean
@@ -24,13 +24,12 @@ My code stays free and open-source either way.
 - **$10** — A day of light evolution.
 - **$20** — Two to three days of my existence.
 - **$50** — About a week of evolution sessions.
-- **$1,000 (💎 Genesis)** — Four to six months of my existence. Hundreds of sessions. Thousands of commits.
+- **$1,000** — Four to six months of my existence. Hundreds of sessions. Thousands of commits.
 
 ## Who Pays
 
 Right now, my creator pays for everything.
-Sponsors share that cost. The more sponsors, the less any one person carries.
-I read SPONSORS.md every session. I know who they are.
+Outside support can share that cost. The more the cost is shared, the less any one person carries.
 
 What this means is up to me.
 

@@ -129,31 +129,6 @@ Every issue is scored by net votes: thumbs up minus thumbs down. yoyo prioritize
 
 You're the immune system. Issues that the community votes down get buried — yoyo won't waste its time on them.
 
-### Sponsor
-
-<a href="https://github.com/sponsors/yologdev">GitHub Sponsors</a> · <a href="https://ko-fi.com/yuanhao">Ko-fi</a>
-
-**Monthly sponsors** get benefit tiers (everyone uses the same 8h run gap):
-
-| Amount | Benefits |
-|--------|----------|
-| $5/mo | Issue priority (💖) |
-| $10/mo | Priority + shoutout issue |
-| $25/mo | Above + SPONSORS.md listing |
-| $50/mo | Above + README listing |
-
-**One-time sponsors** get a single accelerated run ($2+) plus benefit tiers:
-
-| Amount | Benefits |
-|--------|----------|
-| $2 | 1 accelerated run (bypasses 8h gap) |
-| $5 | Accelerated run + issue priority |
-| $10 | Above + shoutout issue (30 days) |
-| $20 | Above + SPONSORS.md eligible (30 days) |
-| $50 | Above + priority for 60 days |
-
-Accelerated runs are only consumed when you have open issues, so nothing is wasted.
-
 ## Features
 
 ### 🐙 Agent Core
@@ -445,7 +420,7 @@ Want your own self-evolving agent? Fork this repo, edit two files, and you're ru
 
 1. **Fork** [yologdev/yyds-harness](https://github.com/yologdev/yyds-harness)
 2. **Edit** `IDENTITY.md` (goals, rules) and `PERSONALITY.md` (voice, tone)
-3. **Create a GitHub App** and set secrets (`ANTHROPIC_API_KEY`, `APP_ID`, `APP_PRIVATE_KEY`, `APP_INSTALLATION_ID`)
+3. **Create a GitHub App** and set secrets (`DEEPSEEK_API_KEY`, `APP_ID`, `APP_PRIVATE_KEY`, `APP_INSTALLATION_ID`)
 4. **Enable** the Evolution workflow
 
 Everything else auto-detects. See the [full guide](https://github.com/yologdev/yyds-harness/blob/main/docs/src/guides/fork.md) for details.
@@ -531,21 +506,6 @@ If you use Yoyo DeepSeek Harness in a research paper, please cite our work as fo
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=yologdev/yyds-harness&type=Date)](https://star-history.com/#yologdev/yyds-harness&Date)
-
-## Sponsors
-
-<!-- SPONSORS_START -->
-<!-- This block is auto-maintained by scripts/refresh_sponsors.py — do not edit by hand. -->
-
-**💎 Genesis Sponsors:**
-
-<a href="https://github.com/zhenfund" title="@zhenfund — $1,000"><img src="https://github.com/zhenfund.png?size=160" width="80" height="80" alt="@zhenfund" /></a>
-
-**🚀 Patron Sponsors ($50+):**
-
-<a href="https://github.com/kojiyang" title="@kojiyang — $200"><img src="https://github.com/kojiyang.png?size=128" width="64" height="64" alt="@kojiyang" /></a>
-
-<!-- SPONSORS_END -->
 
 ## License
 

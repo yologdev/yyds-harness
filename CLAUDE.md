@@ -4,23 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A self-evolving coding agent CLI built on [yoagent](https://github.com/yologdev/yoagent). The agent spans multiple Rust source files under `src/`. A GitHub Actions cron job (`scripts/evolve.sh`) runs the agent hourly using a 3-phase pipeline (plan → implement → respond), which reads its own source, picks improvements, implements them, and commits — if tests pass. All runs use a flat 8h gap (~3/day). Sponsors get benefit tiers (issue priority, shoutout issues, listing eligibility) but no run-frequency speedup. One-time sponsors ($2+) get 1 accelerated run that bypasses the gap (only consumed when they have open issues; tracked in `sponsors/credits.json`).
-
-**Sponsor benefit tiers:**
-
-Monthly recurring (benefits only):
-- $5/mo: Issue priority (💖)
-- $10/mo: Priority + shoutout issue
-- $25/mo: Above + SPONSORS.md eligible
-- $50/mo: Above + README eligible
-
-One-time (cumulative — each tier includes all benefits below it):
-- $2: 1 accelerated run (bypasses 8h gap)
-- $5: Accelerated run + issue priority (14 days)
-- $10: Above + shoutout issue (30 days)
-- $20: Above + SPONSORS.md eligible (30 days)
-- $50: Above + priority for 60 days + SPONSORS.md + README eligible
-- $1,000 💎 Genesis: All above + permanent priority + SPONSORS.md + README + journal acknowledgment (never expires)
+A self-evolving coding agent CLI built on [yoagent](https://github.com/yologdev/yoagent). The agent spans multiple Rust source files under `src/`. A GitHub Actions cron job (`scripts/evolve.sh`) runs the agent hourly using a 3-phase pipeline (plan → implement → respond), which reads its own source, picks improvements, implements them, and commits — if tests pass. All runs use a flat 8h gap (~3/day).
 
 ## Build & Test Commands
 
@@ -36,13 +20,13 @@ CI runs all four checks (build, test, clippy with -D warnings, fmt check) on PR 
 
 To run the agent interactively:
 ```bash
-ANTHROPIC_API_KEY=sk-... cargo run
-ANTHROPIC_API_KEY=sk-... cargo run -- --model claude-opus-4-6 --skills ./skills
+DEEPSEEK_API_KEY=sk-... cargo run
+DEEPSEEK_API_KEY=sk-... cargo run -- --model deepseek-v4-pro --skills ./skills
 ```
 
 To trigger a full evolution cycle:
 ```bash
-ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
+DEEPSEEK_API_KEY=sk-... ./scripts/evolve.sh
 ```
 
 ## Architecture
@@ -128,7 +112,7 @@ Additional skills (`origin: yoyo`, eligible for skill-evolve to refine/retire):
 - `memory/active_learnings.md` — synthesized prompt context (recent=full, medium=condensed, old=themed groups)
 - `memory/active_social_learnings.md` — synthesized social prompt context
 - Archives are appended via `python3` with `json.dumps()` (never `echo` — prevents quote-breaking). Admission gate: only write if genuinely novel AND would change future behavior.
-- Context loaded centrally by `scripts/yoyo_context.sh` → `$YOYO_CONTEXT` (WHO YOU ARE, YOUR VOICE, SELF-WISDOM, SOCIAL WISDOM, YOUR ECONOMICS, YOUR SPONSORS sections)
+- Context loaded centrally by `scripts/yoyo_context.sh` → `$YOYO_CONTEXT` (WHO YOU ARE, YOUR VOICE, SELF-WISDOM, SOCIAL WISDOM, YOUR ECONOMICS sections)
 
 **Release pipeline** (`.github/workflows/release.yml`): Triggered by `v*` tags. Builds binaries for 4 targets (Linux x86_64, macOS Intel, macOS ARM, Windows x86_64) and publishes a GitHub Release with tarballs/zips + SHA256 checksums. Install scripts:
 - `install.sh` — `curl -fsSL ... | bash` for macOS/Linux
@@ -143,9 +127,7 @@ Additional skills (`origin: yoyo`, eligible for skill-evolve to refine/retire):
 - `.yoyo/commands/` — project-local custom slash command definitions (`.md` files); `~/.yoyo/commands/` for global commands
 - `.yoyo/goal.md` — persistent session/project goal (plain text, set via `/goal set`; automatically injected into system prompt)
 - `ISSUES_TODAY.md` — ephemeral, generated during evolution from GitHub issues (gitignored)
-- `ECONOMICS.md` — what money and sponsorship mean to yoyo (DO NOT MODIFY)
-- `SPONSORS.md` — auto-maintained sponsor recognition (only additions, never removals; amounts shown so yoyo understands the investment)
-- `sponsors/sponsor_info.json` — single source of truth for sponsor state (recurring + one-time, with run_used, shouted_out, benefit_expires). Rebuilt by `scripts/refresh_sponsors.py`; only the `run_used` flag is mutated by `evolve.sh` when consuming an accelerated run.
+- `ECONOMICS.md` — what money and resources mean to yoyo (DO NOT MODIFY)
 
 **Skill evolution loop** (decoupled from main evolve pipeline):
 - `skills/skill-evolve/SKILL.md` — meta-skill that refines/creates/retires *other* skills based on past-session evidence. Four hard rules: (1) only edit skills declaring `origin: yoyo` (allow-list); (2) never edit itself; (3) one mutation per cycle; (4) every refine/create event must include an `expected:` line — freeform prose naming a concrete observable signal, a horizon, and a fallback if the prediction fails. This is decision-observability discipline (paper: arxiv 2604.25850) at the cognitive layer only — no automated validation harness; future cycles re-read the line as informal evidence and humans use it as an audit trail.

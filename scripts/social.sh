@@ -5,12 +5,13 @@
 # and records social learnings. No code changes — only memory/social_learnings.jsonl is modified.
 #
 # Usage:
-#   ANTHROPIC_API_KEY=sk-... ./scripts/social.sh
+#   DEEPSEEK_API_KEY=sk-... ./scripts/social.sh
 #
 # Environment:
-#   ANTHROPIC_API_KEY  — required
+#   DEEPSEEK_API_KEY   — required for DeepSeek-native social sessions
 #   REPO               — GitHub repo (default: yologdev/yoyo-evolve)
-#   MODEL              — LLM model (default: claude-sonnet-4-6)
+#   MODEL              — LLM model (default: deepseek-v4-pro)
+#   YOYO_DEEPSEEK_NATIVE — DeepSeek-native prompt/provider mode (default: 1)
 #   TIMEOUT            — Session time budget in seconds (default: 600)
 #   BOT_USERNAME       — Bot identity for reply detection (default: yoyo-evolve[bot])
 
@@ -25,7 +26,8 @@ fi
 # Auto-detect REPO, BOT_LOGIN, BIRTH_DATE (fork-friendly)
 source "$(dirname "$0")/common.sh"
 
-MODEL="${MODEL:-claude-sonnet-4-6}"
+MODEL="${MODEL:-deepseek-v4-pro}"
+export YOYO_DEEPSEEK_NATIVE="${YOYO_DEEPSEEK_NATIVE:-1}"
 TIMEOUT="${TIMEOUT:-600}"
 BOT_USERNAME="${BOT_USERNAME:-${BOT_LOGIN}}"
 DATE=$(date +%Y-%m-%d)

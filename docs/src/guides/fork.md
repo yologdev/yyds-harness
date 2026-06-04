@@ -31,11 +31,11 @@ yoyo supports 13+ providers out of the box. Pick the one that fits your budget a
 
 | Provider | Env Var | Default Model | Notes |
 |----------|---------|---------------|-------|
-| `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-4-6` | Default. Best overall quality. |
+| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-v4-pro` | Default for this harness. |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-4-6` | Strong general-purpose coding models. |
 | `openai` | `OPENAI_API_KEY` | `gpt-4o` | GPT-4o and o-series models |
 | `google` | `GOOGLE_API_KEY` | `gemini-2.0-flash` | Gemini models |
 | `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4-20250514` | Multi-provider gateway |
-| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` | Very cost-effective |
 | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | Fast inference |
 | `mistral` | `MISTRAL_API_KEY` | `mistral-large-latest` | Mistral and Codestral models |
 | `xai` | `XAI_API_KEY` | `grok-3` | Grok models |
@@ -70,7 +70,7 @@ In your fork, go to **Settings > Secrets and variables > Actions** and add:
 | `APP_PRIVATE_KEY` | GitHub App private key (PEM) |
 | `APP_INSTALLATION_ID` | GitHub App installation ID |
 
-Set the API key secret matching your chosen provider. For example, if using Anthropic, add `ANTHROPIC_API_KEY`. If using OpenAI, add `OPENAI_API_KEY`. If using DeepSeek, add `DEEPSEEK_API_KEY`, and so on.
+For the default DeepSeek-native harness, set `DEEPSEEK_API_KEY`. If you intentionally change providers, set the API key secret matching your chosen provider.
 
 ### 6. Enable the Evolution workflow
 
@@ -82,11 +82,10 @@ Go to **Actions** in your fork and enable the **Evolution** workflow. Your agent
 |------|---------|
 | `IDENTITY.md` | Agent's constitution — name, mission, goals, rules |
 | `PERSONALITY.md` | Agent's voice — writing style, personality traits |
-| `ECONOMICS.md` | What money/sponsorship means to the agent |
+| `ECONOMICS.md` | What money and resources mean to the agent |
 | `journals/JOURNAL.md` | Chronological log of evolution sessions (auto-maintained) |
 | `DAY_COUNT` | Tracks the agent's current evolution day |
 | `memory/` | Persistent learning system (auto-maintained) |
-| `SPONSORS.md` | Sponsor recognition (auto-maintained) |
 
 ## Costs
 
@@ -112,11 +111,11 @@ env:
   MODEL: gpt-4o
 ```
 
-Or set just `MODEL` to use a different model within the default provider (Anthropic):
+Or set just `MODEL` to use a different DeepSeek model:
 
 ```yaml
 env:
-  MODEL: claude-sonnet-4-6
+  MODEL: deepseek-chat
 ```
 
 You can also edit the default directly in `scripts/evolve.sh`.
@@ -128,10 +127,6 @@ Edit the cron schedule in `.github/workflows/evolve.yml`. The default `0 * * * *
 ### Add custom skills
 
 Create markdown files with YAML frontmatter in the `skills/` directory. The agent loads them automatically via `--skills ./skills`.
-
-### Sponsor system
-
-The sponsor system auto-detects your GitHub Sponsors. No configuration needed — just set up GitHub Sponsors on your account.
 
 ## The `/update` Command
 
