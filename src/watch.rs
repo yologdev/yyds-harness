@@ -5,6 +5,7 @@
 //! If the command fails, the agent gets a fix prompt and retries up to
 //! [`MAX_WATCH_FIX_ATTEMPTS`] times.
 
+use crate::commands_file::extract_file_paths_from_output;
 use crate::commands_lint::{lint_command_for_project, test_command_for_project, LintStrictness};
 use crate::commands_project::detect_project_type;
 use crate::format::*;
@@ -1080,7 +1081,7 @@ pub fn build_watch_fix_prompt(watch_cmd: &str, output: &str) -> String {
         _ => "",
     };
 
-    if let Some(summary) = structured_section {
+    let base = if let Some(summary) = structured_section {
         format!(
             "Your changes caused {cmd_type} failures. Here's the output from `{watch_cmd}`:\n\
              ```\n{truncated}\n```\n\n\
@@ -1091,6 +1092,18 @@ pub fn build_watch_fix_prompt(watch_cmd: &str, output: &str) -> String {
             "Your changes caused {cmd_type} failures. Here's the output from `{watch_cmd}`:\n\
              ```\n{truncated}\n```\n\
              Please fix the issues.{source_context}{hint}"
+        )
+    };
+
+    // Enrich the prompt with file paths extracted from the error output
+    // so the agent knows exactly which files to focus on.
+    let error_files = extract_file_paths_from_output(output);
+    if error_files.is_empty() {
+        base
+    } else {
+        let file_list = error_files.join(", ");
+        format!(
+            "{base}\n\nFiles referenced in errors: {file_list}. Focus your fixes on these files."
         )
     }
 }

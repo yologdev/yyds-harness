@@ -996,6 +996,82 @@ fn detect_src_prefix(path: &str) -> &str {
     }
 }
 
+/// Extract file paths referenced in compiler/linter error output.
+///
+/// Recognises common formats:
+/// - Rust:       `--> src/foo.rs:42:10` or `src/foo.rs:42:10`
+/// - TypeScript: `src/foo.ts(42,10)` or `src/foo.ts:42:10`
+/// - Python:     `File "src/foo.py", line 42`
+/// - Go:         `./foo.go:42:10`
+/// - Generic:    `path/file.ext:LINE`
+///
+/// Results are deduplicated, sorted, and filtered to only files that
+/// exist on disk.
+pub fn extract_file_paths_from_output(output: &str) -> Vec<String> {
+    use regex::Regex;
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    // Lazy-build patterns.  We accept some overlap — the BTreeSet
+    // deduplicates anyway.
+    let patterns: &[Regex] = &[
+        // Rust: `--> src/foo.rs:42:10`
+        Regex::new(r"-->\s+([\w./_\-\\]+\.\w+):\d+").unwrap(),
+        // Python: `File "src/foo.py", line 42`
+        Regex::new(r#"File\s+"([\w./_\-\\]+\.\w+)",\s+line\s+\d+"#).unwrap(),
+        // TS paren style: `src/foo.ts(42,10)`
+        Regex::new(r"([\w./_\-\\]+\.\w+)\(\d+[,)]").unwrap(),
+        // Generic `path/file.ext:LINE` — must contain a `/` or `.\` to
+        // avoid matching random words like `error:1`.
+        Regex::new(r"([\w._\-\\]*[/\\][\w./_\-\\]+\.\w+):\d+").unwrap(),
+        // Go-style `./foo.go:42`
+        Regex::new(r"(\./[\w./_\-\\]+\.\w+):\d+").unwrap(),
+    ];
+
+    let mut seen = BTreeSet::new();
+    for pat in patterns {
+        for cap in pat.captures_iter(output) {
+            if let Some(m) = cap.get(1) {
+                let p = m.as_str().to_string();
+                seen.insert(p);
+            }
+        }
+    }
+
+    // Filter to files that actually exist.
+    seen.into_iter()
+        .filter(|p| Path::new(p).is_file())
+        .collect()
+}
+
+/// Internal helper: extract file-path candidates from output without
+/// the filesystem-existence filter.  Used by tests to verify regex
+/// matching independently of on-disk state.
+#[cfg(test)]
+fn extract_file_path_candidates(output: &str) -> Vec<String> {
+    use regex::Regex;
+    use std::collections::BTreeSet;
+
+    let patterns: &[Regex] = &[
+        Regex::new(r"-->\s+([\w./_\-\\]+\.\w+):\d+").unwrap(),
+        Regex::new(r#"File\s+"([\w./_\-\\]+\.\w+)",\s+line\s+\d+"#).unwrap(),
+        Regex::new(r"([\w./_\-\\]+\.\w+)\(\d+[,)]").unwrap(),
+        Regex::new(r"([\w._\-\\]*[/\\][\w./_\-\\]+\.\w+):\d+").unwrap(),
+        Regex::new(r"(\./[\w./_\-\\]+\.\w+):\d+").unwrap(),
+    ];
+
+    let mut seen = BTreeSet::new();
+    for pat in patterns {
+        for cap in pat.captures_iter(output) {
+            if let Some(m) = cap.get(1) {
+                seen.insert(m.as_str().to_string());
+            }
+        }
+    }
+
+    seen.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1010,6 +1086,125 @@ mod tests {
     // ── is_valid_url ────────────────────────────────────────────────
 
     // ── /add command tests ────────────────────────────────────────────
+
+    // --- extract_file_paths_from_output tests (regex matching only) ---
+
+    #[test]
+    fn extract_paths_rust_error() {
+        let output = "error[E0308]: mismatched types\n  --> src/main.rs:42:10\n";
+        let paths = extract_file_path_candidates(output);
+        assert!(paths.contains(&"src/main.rs".to_string()), "got: {paths:?}");
+    }
+
+    #[test]
+    fn extract_paths_rust_multiple() {
+        let output = "\
+error[E0308]: mismatched types
+  --> src/foo.rs:10:5
+  --> src/bar.rs:20:3
+";
+        let paths = extract_file_path_candidates(output);
+        assert!(paths.contains(&"src/foo.rs".to_string()));
+        assert!(paths.contains(&"src/bar.rs".to_string()));
+    }
+
+    #[test]
+    fn extract_paths_typescript_paren() {
+        let output = "src/index.ts(42,10): error TS2345: ...\n";
+        let paths = extract_file_path_candidates(output);
+        assert!(
+            paths.contains(&"src/index.ts".to_string()),
+            "got: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn extract_paths_typescript_colon() {
+        let output = "src/app.tsx:15:8 - error TS1005: ';' expected.\n";
+        let paths = extract_file_path_candidates(output);
+        assert!(paths.contains(&"src/app.tsx".to_string()), "got: {paths:?}");
+    }
+
+    #[test]
+    fn extract_paths_python_traceback() {
+        let output = r#"Traceback (most recent call last):
+  File "src/main.py", line 42, in <module>
+  File "lib/utils.py", line 10, in helper
+"#;
+        let paths = extract_file_path_candidates(output);
+        assert!(paths.contains(&"src/main.py".to_string()), "got: {paths:?}");
+        assert!(
+            paths.contains(&"lib/utils.py".to_string()),
+            "got: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn extract_paths_go_style() {
+        let output = "./cmd/server.go:42:10: undefined: foo\n";
+        let paths = extract_file_path_candidates(output);
+        assert!(
+            paths.contains(&"./cmd/server.go".to_string()),
+            "got: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn extract_paths_deduplication() {
+        let output = "\
+error[E0308]: first
+  --> src/foo.rs:10:5
+error[E0308]: second
+  --> src/foo.rs:20:3
+";
+        let paths = extract_file_path_candidates(output);
+        // Should appear only once despite two references
+        assert_eq!(
+            paths.iter().filter(|p| *p == "src/foo.rs").count(),
+            1,
+            "got: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn extract_paths_sorted() {
+        let output = "\
+  --> src/z.rs:1:1
+  --> src/a.rs:1:1
+  --> src/m.rs:1:1
+";
+        let paths = extract_file_path_candidates(output);
+        assert_eq!(paths, vec!["src/a.rs", "src/m.rs", "src/z.rs"]);
+    }
+
+    #[test]
+    fn extract_paths_filters_nonexistent() {
+        // The public fn filters by Path::exists(). With fake paths, we
+        // should get an empty vec.
+        let output = "  --> definitely/not/a/real/file.rs:42:10\n";
+        let paths = extract_file_paths_from_output(output);
+        assert!(
+            paths.is_empty(),
+            "non-existent file should be filtered: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn extract_paths_real_file() {
+        // Cargo.toml always exists in the project root during tests.
+        let _output = "  --> Cargo.toml:1:1\n";
+        // Cargo.toml doesn't have a `/` so generic won't match — but
+        // the Rust arrow pattern will.  Let's use src/main.rs which
+        // does exist.
+        let output2 = "  --> src/main.rs:1:1\n";
+        let paths = extract_file_paths_from_output(output2);
+        assert!(
+            paths.contains(&"src/main.rs".to_string()),
+            "existing file should pass filter: {paths:?}"
+        );
+    }
+
+    // --- original tests below ---
 
     #[test]
     fn parse_add_arg_simple_path() {
