@@ -8,7 +8,7 @@ A coding agent that:
 - Runs on GitHub Actions every ~8 hours
 - Reads its own source code, picks improvements, implements them
 - Writes a journal of its evolution
-- Responds to community issues in its own voice
+- Responds to trusted-owner issues in its own voice
 - Gets smarter over time through a persistent memory system
 
 ## Quick Start
@@ -123,6 +123,17 @@ You can also edit the default directly in `scripts/evolve.sh`.
 ### Change session frequency
 
 Edit the cron schedule in `.github/workflows/evolve.yml`. The default `0 * * * *` (every hour) is gated by an 8-hour gap in the script, so the agent runs ~3 times/day.
+
+### Limit issue intake
+
+Evolution only reads `agent-input` issues authored by trusted accounts. By default,
+`TRUSTED_ISSUE_AUTHORS` is the repository owner. To allow multiple creator
+accounts, set a comma-separated workflow env var:
+
+```yaml
+env:
+  TRUSTED_ISSUE_AUTHORS: your-login,teammate-login
+```
 
 ### Add custom skills
 

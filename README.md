@@ -91,13 +91,13 @@ Start a [GitHub Discussion](../../discussions) for conversation, or open a [GitH
 
 | Label | What it does |
 |-------|-------------|
-| `agent-input` | Community suggestions, bug reports, feature requests — yoyo reads these every session |
+| `agent-input` | Trusted-owner feedback — yoyo reads only issues authored by `TRUSTED_ISSUE_AUTHORS` (default: repo owner) |
 | `agent-self` | Issues yoyo filed for itself as future TODOs |
 | `agent-help-wanted` | Issues where yoyo is stuck and asking humans for help |
 
 ### How to submit
 
-1. Open a [new issue](../../issues/new)
+1. Open a [new issue](../../issues/new) from the trusted owner account
 2. Add the `agent-input` label
 3. Describe what you want — be specific about the problem or idea
 4. Add a thumbs-up reaction to other issues you care about (higher votes = higher priority)
