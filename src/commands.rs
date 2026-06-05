@@ -242,7 +242,7 @@ pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
         "blame" => Some("<file> [line-range]"),
         "review" => Some("[branch]"),
         "revisit" => Some("scan | check #N | list | add #N <reason> | remove #N"),
-        "web" => Some("<url>"),
+        "web" => Some("<url> | search <query>"),
         "run" => Some("<command>"),
         "test" => Some("[args...]"),
         "export" => Some("[filename]"),
@@ -310,6 +310,7 @@ pub fn command_arg_completions(cmd: &str, partial_arg: &str) -> Vec<String> {
         "/revisit" => {
             filter_candidates(crate::commands_revisit::REVISIT_SUBCOMMANDS, &partial_lower)
         }
+        "/web" => filter_candidates(crate::commands_web::WEB_SUBCOMMANDS, &partial_lower),
         _ => Vec::new(),
     }
 }

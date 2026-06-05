@@ -1048,14 +1048,18 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /changelog 30",
         ),
         "web" => Some(
-            "/web <url> — Fetch and display web page content\n\n\
+            "/web <url> | /web search <query> — Fetch a web page or search the web\n\n\
              Usage:\n\
-             \x20 /web <url>    Fetch a URL and display readable text\n\n\
+             \x20 /web <url>           Fetch a URL and display readable text\n\
+             \x20 /web search <query>  Search the web via DuckDuckGo\n\n\
              Downloads the web page and extracts clean readable text,\n\
-             stripping HTML tags and scripts.\n\n\
+             stripping HTML tags and scripts. Search returns titles,\n\
+             URLs, and snippets for each result.\n\n\
              Examples:\n\
              \x20 /web https://docs.rs/serde/latest\n\
-             \x20 /web https://rust-lang.org",
+             \x20 /web https://rust-lang.org\n\
+             \x20 /web search rust async tutorial\n\
+             \x20 /web search \"tokio vs async-std\"",
         ),
         "open" => Some(
             "/open <file>[:<line>] — Open a file in your editor\n\n\
@@ -1316,7 +1320,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "update" => Some("Check for and install the latest version"),
         "version" => Some("Show yoyo version"),
         "watch" => Some("Auto-run lint+test after file changes"),
-        "web" => Some("Fetch a web page"),
+        "web" => Some("Fetch a web page or search the web"),
         "open" => Some("Open a file in your editor"),
         _ => None,
     }

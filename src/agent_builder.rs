@@ -45,6 +45,7 @@ pub(crate) const BUILTIN_TOOL_NAMES: &[&str] = &[
     "rename_symbol",
     "ask_user",
     "todo",
+    "web_search",
     "sub_agent",
     "shared_state",
 ];

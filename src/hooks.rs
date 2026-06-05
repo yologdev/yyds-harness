@@ -932,7 +932,7 @@ mod tests {
         let dirs = crate::config::DirectoryRestrictions::default();
         // Build with audit=false => hooks is empty => tools are NOT wrapped
         let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
-        assert_eq!(tools.len(), 8, "Tool count should be 8 without audit hooks");
+        assert_eq!(tools.len(), 9, "Tool count should be 9 without audit hooks");
     }
 
     #[test]
