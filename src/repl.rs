@@ -679,10 +679,10 @@ fn print_startup_info(agent_config: &AgentConfig, repl_config: &ReplConfig) {
     }
 
     // Hint about previous session if one exists and --continue wasn't used
-    if !repl_config.continue_session && commands::last_session_exists() {
-        println!(
-            "{DIM}  💡 Previous session found. Use {YELLOW}--continue{RESET}{DIM} or {YELLOW}/load .yoyo/last-session.json{RESET}{DIM} to resume.{RESET}\n"
-        );
+    if !repl_config.continue_session {
+        if let Some(hint) = crate::banner::session_resume_hint() {
+            println!("{hint}\n");
+        }
     }
 
     // Auto-enable watch mode if a project type is detected and config allows it

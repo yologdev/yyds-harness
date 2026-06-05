@@ -389,6 +389,7 @@ pub fn handle_compact(agent: &mut Agent, input: &str) {
 // ── auto-save ────────────────────────────────────────────────────────────
 
 /// Check whether a previous auto-saved session exists at `.yoyo/last-session.json`.
+#[allow(dead_code)]
 pub fn last_session_exists() -> bool {
     std::path::Path::new(AUTO_SAVE_SESSION_PATH).exists()
 }

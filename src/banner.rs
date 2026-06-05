@@ -1,6 +1,7 @@
 //! Startup banner, welcome text, and git status summary display.
 
 use crate::cli_config::VERSION;
+use crate::format::YELLOW;
 use crate::format::{BOLD, CYAN, DIM, RESET};
 
 /// Print the startup banner with version, project context, and git status.
@@ -183,6 +184,51 @@ pub fn print_welcome() {
     print!("{}", get_welcome_text());
 }
 
+/// Format a duration as a human-friendly relative time string.
+///
+/// Returns "just now" (<1min), "Xm ago" (<1h), "Xh ago" (<24h), "Xd ago" (<7d).
+pub(crate) fn format_session_age(elapsed_secs: u64) -> String {
+    if elapsed_secs < 60 {
+        "just now".to_string()
+    } else if elapsed_secs < 3600 {
+        format!("{}m ago", elapsed_secs / 60)
+    } else if elapsed_secs < 86400 {
+        format!("{}h ago", elapsed_secs / 3600)
+    } else {
+        format!("{}d ago", elapsed_secs / 86400)
+    }
+}
+
+/// Maximum session age (7 days) before we consider it stale and stop hinting.
+const MAX_SESSION_AGE_SECS: u64 = 7 * 24 * 3600;
+
+/// Check for an auto-saved session at `path` and return a resume hint if one exists
+/// and is less than 7 days old. Returns `None` if no session file or if it's stale.
+pub fn session_resume_hint_at(path: &std::path::Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let elapsed = modified.elapsed().ok()?;
+    let elapsed_secs = elapsed.as_secs();
+
+    if elapsed_secs > MAX_SESSION_AGE_SECS {
+        return None;
+    }
+
+    let age = format_session_age(elapsed_secs);
+    Some(format!(
+        "{DIM}  \u{1F4AC} Previous session available ({age}) — use {YELLOW}--continue{RESET}{DIM} to resume{RESET}"
+    ))
+}
+
+/// Check for an auto-saved session and return a resume hint if one exists.
+///
+/// Uses the default `AUTO_SAVE_SESSION_PATH`. Returns `None` if the file
+/// doesn't exist or is older than 7 days.
+pub fn session_resume_hint() -> Option<String> {
+    use crate::cli_config::AUTO_SAVE_SESSION_PATH;
+    session_resume_hint_at(std::path::Path::new(AUTO_SAVE_SESSION_PATH))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +408,54 @@ mod tests {
             welcome.contains("bedrock"),
             "welcome text should mention bedrock"
         );
+    }
+
+    #[test]
+    fn test_format_session_age() {
+        assert_eq!(format_session_age(0), "just now");
+        assert_eq!(format_session_age(30), "just now");
+        assert_eq!(format_session_age(59), "just now");
+        assert_eq!(format_session_age(60), "1m ago");
+        assert_eq!(format_session_age(300), "5m ago");
+        assert_eq!(format_session_age(3599), "59m ago");
+        assert_eq!(format_session_age(3600), "1h ago");
+        assert_eq!(format_session_age(7200), "2h ago");
+        assert_eq!(format_session_age(86399), "23h ago");
+        assert_eq!(format_session_age(86400), "1d ago");
+        assert_eq!(format_session_age(259200), "3d ago");
+    }
+
+    #[test]
+    fn test_session_resume_hint_no_file() {
+        let path = std::path::Path::new("/tmp/nonexistent-yoyo-session-test.json");
+        assert!(session_resume_hint_at(path).is_none());
+    }
+
+    #[test]
+    fn test_session_resume_hint_with_recent_file() {
+        let dir = std::env::temp_dir().join("yoyo-test-session-hint");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("last-session.json");
+        std::fs::write(&path, "{}").expect("write test session file");
+
+        let hint = session_resume_hint_at(&path);
+        assert!(hint.is_some(), "should return hint for recent file");
+        let hint_text = hint.unwrap();
+        assert!(
+            hint_text.contains("Previous session available"),
+            "hint should mention previous session"
+        );
+        assert!(
+            hint_text.contains("--continue"),
+            "hint should mention --continue flag"
+        );
+        assert!(
+            hint_text.contains("just now"),
+            "freshly created file should show 'just now'"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

@@ -551,7 +551,7 @@ pub use crate::commands_web::{handle_copy, handle_web, COPY_SUBCOMMANDS};
 pub use crate::commands_session::{
     auto_compact_if_needed, auto_save_on_exit, handle_compact, handle_export, handle_history,
     handle_history_detail, handle_jump, handle_load, handle_mark, handle_marks, handle_save,
-    handle_search, last_session_exists, reset_compact_thrash, Bookmarks,
+    handle_search, reset_compact_thrash, Bookmarks,
 };
 
 // Stash subsystem
