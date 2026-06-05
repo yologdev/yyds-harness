@@ -1458,7 +1458,12 @@ FIXEOF
         rm -f "$FIX_PROMPT"
     else
         echo "  Build: FAIL after $FIX_ATTEMPTS fix attempts — reverting to pre-session state"
-        git checkout "$SESSION_START_SHA" -- src/ Cargo.toml Cargo.lock
+        RESTORE_PATHS=(src/ Cargo.toml)
+        if git cat-file -e "$SESSION_START_SHA:Cargo.lock" 2>/dev/null; then
+            RESTORE_PATHS+=(Cargo.lock)
+        fi
+        git checkout "$SESSION_START_SHA" -- "${RESTORE_PATHS[@]}"
+        git clean -fd src/ 2>/dev/null || true
         cargo fmt 2>/dev/null || true
         git add -A && git commit -m "Day $DAY ($SESSION_TIME): revert session changes (could not fix build)" || true
         SESSION_REVERTED="true"
