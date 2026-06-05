@@ -1028,6 +1028,39 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
 mod tests {
     use super::*;
     use crate::config::glob_match;
+    use serial_test::serial;
+
+    struct EnvGuard {
+        key: &'static str,
+        value: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn clear(key: &'static str) -> Self {
+            let value = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, value }
+        }
+
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self {
+                key,
+                value: previous,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.value {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn test_version_constant_exists() {
@@ -2193,10 +2226,11 @@ system_prompt = "You are a Go expert"
     }
 
     #[test]
+    #[serial]
     fn test_deepseek_native_sets_provider_model_thinking_without_public_state() {
-        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
-        std::env::remove_var("YOYO_HARNESS_INTERNAL");
-        std::env::remove_var("YOYO_STATE");
+        let _api_key = EnvGuard::set("DEEPSEEK_API_KEY", "test-key");
+        let _harness_internal = EnvGuard::clear("YOYO_HARNESS_INTERNAL");
+        let _state = EnvGuard::clear("YOYO_STATE");
         let args: Vec<String> = vec!["yoyo".into(), "--deepseek-native".into()];
         let config = parse_args(&args).expect("should parse");
         assert!(config.deepseek_native);
@@ -2250,7 +2284,10 @@ system_prompt = "You are a Go expert"
     }
 
     #[test]
+    #[serial]
     fn deepseek_config_overrides_native_model_base_url_and_state_defaults() {
+        let _harness_internal = EnvGuard::clear("YOYO_HARNESS_INTERNAL");
+        let _state = EnvGuard::clear("YOYO_STATE");
         let args: Vec<String> = vec!["yoyo".into()];
         let base_config = HashMap::new();
         let deepseek_config = HashMap::from([
@@ -2302,16 +2339,15 @@ system_prompt = "You are a Go expert"
     }
 
     #[test]
+    #[serial]
     fn test_harness_internal_state_env_enables_state() {
-        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
-        std::env::set_var("YOYO_HARNESS_INTERNAL", "1");
-        std::env::set_var("YOYO_STATE", "1");
+        let _api_key = EnvGuard::set("DEEPSEEK_API_KEY", "test-key");
+        let _harness_internal = EnvGuard::set("YOYO_HARNESS_INTERNAL", "1");
+        let _state = EnvGuard::set("YOYO_STATE", "1");
         let args: Vec<String> = vec!["yoyo".into(), "--deepseek-native".into()];
         let config = parse_args(&args).expect("should parse");
         assert!(config.deepseek_native);
         assert!(config.state.enabled);
-        std::env::remove_var("YOYO_HARNESS_INTERNAL");
-        std::env::remove_var("YOYO_STATE");
     }
 
     #[test]
