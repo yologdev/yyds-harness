@@ -136,6 +136,25 @@ def render_journal(entries):
     return "\n".join(parts)
 
 
+def render_journal_preview(entries, limit=8):
+    preview = entries[:limit]
+    if not preview:
+        return (
+            '      <div class="day-group">\n'
+            '        <div class="day-separator">Latest journal</div>\n'
+            '        <div class="timeline-empty">No evolution journal entries yet.</div>\n'
+            '      </div>'
+        )
+    parts = [
+        '      <div class="journal-heading">',
+        '        <span class="journal-kicker">Latest journal</span>',
+        '        <a href="https://github.com/yologdev/yyds-harness/blob/main/journals/JOURNAL.md">full journal ↗</a>',
+        '      </div>',
+        render_journal(preview),
+    ]
+    return "\n".join(parts)
+
+
 def render_harness_overview(day_count):
     cards = [
         {
@@ -487,6 +506,29 @@ section {
   padding-left: 28px;
 }
 
+.journal-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid var(--border);
+  margin: 0 0 2rem;
+  padding-top: 2rem;
+}
+
+.journal-heading a {
+  flex-shrink: 0;
+  font-size: var(--fs-micro);
+}
+
+.journal-kicker {
+  color: var(--cyan);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .day-group {
   margin-bottom: 3rem;
 }
@@ -692,7 +734,13 @@ def build():
     except (ValueError, AttributeError):
         pass
 
-    journal_html = render_harness_overview(day_count)
+    journal_entries = parse_journal(read_file("journals/JOURNAL.md"))
+    journal_html = "\n".join(
+        [
+            render_harness_overview(day_count),
+            render_journal_preview(journal_entries),
+        ]
+    )
     identity_html = render_harness_identity()
 
     page = HTML_TEMPLATE.format(
