@@ -25,10 +25,10 @@
 
 `yyds-harness` is a production fork of `yologdev/yoyo-evolve`. It keeps the existing `yoyo` coding-agent runtime and history, then specializes the harness around DeepSeek models, deterministic prompt layout, and evaluation-driven harness evolution.
 
-The bootstrap keeps the familiar `yoyo` command for compatibility and adds `yoyo-ds` as the DeepSeek-focused product surface. During migration, both work:
+The bootstrap keeps the familiar `yoyo` command for compatibility and adds `yyds` as the DeepSeek-focused product surface. During migration, both work:
 
 ```bash
-yoyo-ds --deepseek-native "fix the failing tests"
+yyds --deepseek-native "fix the failing tests"
 yoyo --deepseek-native "fix the failing tests"
 ```
 

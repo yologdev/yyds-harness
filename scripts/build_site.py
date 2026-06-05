@@ -150,7 +150,7 @@ def render_harness_overview(day_count):
         },
         {
             "title": f"Day {day_count} harness state",
-            "body": "Follow the current harness evolution without exposing yoagent-state internals to end users of yoyo-ds.",
+            "body": "Follow the current harness evolution without exposing yoagent-state internals to end users of yyds.",
             "href": "https://github.com/yologdev/yyds-harness/actions/workflows/evolve.yml",
         },
     ]
@@ -194,7 +194,7 @@ def render_harness_identity():
       <p class="identity-text">The harness uses <code>yoagent-state</code> as its durable evidence substrate. Git remains the source of concrete code changes; state records why those changes exist, what they improve, and which DeepSeek-specific risks or KPIs they affect.</p>
       <ol class="rules">
         <li><strong>DeepSeek first.</strong> Improve protocol coverage, cache behavior, tool-call reliability, prompt layout, context policy, and eval gates from recorded evidence.</li>
-        <li><strong>Harness boundary.</strong> Keep state and evolution analytics in the harness layer, not in the user-facing yoyo/yoyo-ds CLI experience.</li>
+        <li><strong>Harness boundary.</strong> Keep state and evolution analytics in the harness layer, not in the user-facing yoyo/yyds CLI experience.</li>
         <li><strong>Trusted intake.</strong> Evolution reads trusted-owner feedback and state-derived work items before deciding what to improve.</li>
         <li><strong>Reviewable evidence.</strong> Dashboards and audit artifacts should explain gnome/KPI movement, not bury it in raw code changes.</li>
       </ol>
@@ -232,7 +232,7 @@ HTML_TEMPLATE = """\
     <header class="hero">
       <div class="hero-prompt">
         <span class="hero-prompt-sigil">$</span>
-        <span class="hero-cmd">yoyo-ds --deepseek-native --status</span>
+        <span class="hero-cmd">yyds --deepseek-native --status</span>
       </div>
       <h1>Yoyo DeepSeek Harness<span class="cursor">_</span></h1>
       <p class="hero-status">day {day_count}<span class="sep">·</span><span class="status-tag">state-backed harness evolution</span></p>

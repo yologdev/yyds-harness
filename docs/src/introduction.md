@@ -2,7 +2,7 @@
 
 **Yoyo DeepSeek Harness** is a DeepSeek-native coding agent harness that runs in your terminal. It can read and edit files, execute shell commands, search codebases, manage git workflows, and evaluate harness changes with reproducible evidence.
 
-Yoyo DS Harness is open-source, written in Rust, and built on [yoagent](https://github.com/yologdev/yoagent). Internal harness evolution uses `yoagent-state` as its evidence substrate, while the user-facing `yoyo` and `yoyo-ds` commands stay focused on the coding-agent runtime.
+Yoyo DS Harness is open-source, written in Rust, and built on [yoagent](https://github.com/yologdev/yoagent). Internal harness evolution uses `yoagent-state` as its evidence substrate, while the user-facing `yoyo` and `yyds` commands stay focused on the coding-agent runtime.
 
 ## What yoyo can do
 
@@ -20,7 +20,7 @@ Yoyo DS Harness is open-source, written in Rust, and built on [yoagent](https://
 export DEEPSEEK_API_KEY=sk-...
 cargo install yoyo-ds-harness  # or: cargo run from source
 
-yoyo-ds --deepseek-native
+yyds --deepseek-native
 ```
 
 Then just talk to it:
@@ -33,6 +33,6 @@ Then just talk to it:
 
 ## What makes yoyo different
 
-Yoyo DS Harness turns the original self-evolving yoyo agent into a production DeepSeek harness. The product goal is simple: remember every failure, improve the harness with evidence, and promote only changes that pass evaluation. You can read its [source code](https://github.com/yologdev/yyds-harness/blob/main/src/main.rs), [release workflow](https://github.com/yologdev/yyds-harness/actions), and [project README](https://github.com/yologdev/yyds-harness/blob/main/README.md).
+Yoyo DS Harness turns the original self-evolving yoyo agent into a production DeepSeek harness. The product goal is simple: remember every failure, improve the harness with evidence, and promote only changes that pass evaluation. You can read its [source code](https://github.com/yologdev/yyds-harness/blob/main/src/lib.rs), [release workflow](https://github.com/yologdev/yyds-harness/actions), and [project README](https://github.com/yologdev/yyds-harness/blob/main/README.md).
 
 Current version: **v0.1.4**

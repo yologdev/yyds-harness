@@ -544,7 +544,7 @@ pub fn get_branch_commits(base: &str) -> Option<String> {
 
 /// Build a prompt for the AI to generate a PR title and description.
 /// The AI output should be in the format:
-/// ```
+/// ```text
 /// TITLE: <one-line title>
 /// ---
 /// <markdown description body>

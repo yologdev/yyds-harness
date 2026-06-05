@@ -1360,10 +1360,10 @@ mod tests {
         let history = DefaultHistory::new();
         let ctx = rustyline::Context::new(&history);
 
-        // "src/ma" should match "src/main.rs"
-        let (start, candidates) = helper.complete("src/ma", 6, &ctx).unwrap();
+        // "src/li" should match "src/lib.rs"
+        let (start, candidates) = helper.complete("src/li", 6, &ctx).unwrap();
         assert_eq!(start, 0);
-        assert!(has_replacement(&candidates, "src/main.rs"));
+        assert!(has_replacement(&candidates, "src/lib.rs"));
     }
 
     #[test]
@@ -1385,11 +1385,11 @@ mod tests {
         let history = DefaultHistory::new();
         let ctx = rustyline::Context::new(&history);
 
-        // "read the src/ma" should complete "src/ma" as the last word
-        let input = "read the src/ma";
+        // "read the src/li" should complete "src/li" as the last word
+        let input = "read the src/li";
         let (start, candidates) = helper.complete(input, input.len(), &ctx).unwrap();
         assert_eq!(start, 9); // "read the " is 9 chars
-        assert!(has_replacement(&candidates, "src/main.rs"));
+        assert!(has_replacement(&candidates, "src/lib.rs"));
     }
 
     #[test]

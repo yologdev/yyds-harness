@@ -109,11 +109,9 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 crate::setup::run_setup_wizard();
                 return Some(None);
             }
-            "state" => {
-                if crate::state::harness_internal_enabled() {
-                    crate::commands_state::handle_state_subcommand(args);
-                    return Some(None);
-                }
+            "state" if crate::state::harness_internal_enabled() => {
+                crate::commands_state::handle_state_subcommand(args);
+                return Some(None);
             }
             "deepseek" => {
                 crate::commands_deepseek::handle_deepseek_subcommand(args);
@@ -123,11 +121,9 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 crate::commands_eval::handle_eval_subcommand(args);
                 return Some(None);
             }
-            "evolve" => {
-                if crate::state::harness_internal_enabled() {
-                    crate::commands_evolve::handle_evolve_subcommand(args);
-                    return Some(None);
-                }
+            "evolve" if crate::state::harness_internal_enabled() => {
+                crate::commands_evolve::handle_evolve_subcommand(args);
+                return Some(None);
             }
             "init" => {
                 crate::commands_project::handle_init();

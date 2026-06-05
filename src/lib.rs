@@ -921,8 +921,7 @@ fn exit_with_state(code: i32) -> ! {
     std::process::exit(code);
 }
 
-#[tokio::main]
-async fn main() {
+pub async fn run_cli() {
     let args: Vec<String> = std::env::args().collect();
 
     apply_cli_flags(&args);

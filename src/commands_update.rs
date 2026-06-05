@@ -274,7 +274,7 @@ fn extract_archive(archive_path: &str, extract_dir: &str) -> Result<String, Stri
 
     let preferred = preferred_extracted_binary_names();
     find_extracted_binary(std::path::Path::new(extract_dir), &preferred)
-        .ok_or_else(|| "Could not find yoyo or yoyo-ds binary in extracted archive".to_string())
+        .ok_or_else(|| "Could not find yoyo or yyds binary in extracted archive".to_string())
         .map(|path| path.to_string_lossy().to_string())
 }
 
@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn update_find_asset_url_matches_yoyo_ds_release_archive() {
+    fn update_find_asset_url_matches_yyds_release_archive() {
         let asset_name = crate::release::platform_asset_name("linux", "x86_64", "v0.1.13").unwrap();
         let assets = vec![serde_json::json!({
             "name": asset_name,
@@ -622,7 +622,7 @@ mod tests {
                 assert!(result.is_err());
                 let err = result.unwrap_err();
                 assert!(
-                    err.contains("Could not find yoyo or yoyo-ds binary"),
+                    err.contains("Could not find yoyo or yyds binary"),
                     "Expected missing binary error, got: {}",
                     err
                 );
@@ -675,14 +675,14 @@ mod tests {
     }
 
     #[test]
-    fn update_extract_archive_finds_yoyo_ds_binary_at_root() {
-        let test_id = "yoyo-test-root-yoyo-ds-binary";
+    fn update_extract_archive_finds_yyds_binary_at_root() {
+        let test_id = "yoyo-test-root-yyds-binary";
         let src_dir = std::env::temp_dir().join(format!("{}-src", test_id));
         let tar_path = std::env::temp_dir().join(format!("{}.tar.gz", test_id));
         let extract_dir = std::env::temp_dir().join(format!("{}-out", test_id));
 
         let _ = std::fs::create_dir_all(&src_dir);
-        std::fs::write(src_dir.join("yoyo-ds"), b"#!/bin/sh\necho hello").unwrap();
+        std::fs::write(src_dir.join("yyds"), b"#!/bin/sh\necho hello").unwrap();
 
         let status = std::process::Command::new("tar")
             .args([
@@ -690,7 +690,7 @@ mod tests {
                 tar_path.to_str().unwrap(),
                 "-C",
                 src_dir.to_str().unwrap(),
-                "yoyo-ds",
+                "yyds",
             ])
             .status();
 
@@ -701,8 +701,8 @@ mod tests {
                 assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
                 let binary_path = result.unwrap();
                 assert!(
-                    binary_path.contains("yoyo-ds"),
-                    "Binary path should contain 'yoyo-ds': {}",
+                    binary_path.contains("yyds"),
+                    "Binary path should contain 'yyds': {}",
                     binary_path
                 );
             }

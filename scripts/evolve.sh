@@ -8,6 +8,7 @@
 #   DEEPSEEK_API_KEY   — required for DeepSeek-native evolution
 #   REPO               — GitHub repo (default: yologdev/yoyo-evolve)
 #   MODEL              — LLM model (default: deepseek-v4-pro)
+#   YOAGENT_REPO       — optional upstream yoagent repo slug for dependency PRs
 #   YOYO_DEEPSEEK_NATIVE — DeepSeek-native prompt/provider mode (default: 1)
 #   TIMEOUT            — Total planning phase time budget in seconds (default: 1200)
 #                        Split evenly between assessment (A1) and planning (A2) agents
@@ -21,7 +22,17 @@ set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
 MODEL="${MODEL:-deepseek-v4-pro}"
+YOAGENT_REPO="${YOAGENT_REPO:-}"
 export YOYO_DEEPSEEK_NATIVE="${YOYO_DEEPSEEK_NATIVE:-1}"
+if [ -n "$YOAGENT_REPO" ]; then
+    YOAGENT_UPSTREAM_TARGET="Configured yoagent upstream repo: $YOAGENT_REPO. If evidence clearly belongs upstream, you may prepare a focused PR there."
+    YOAGENT_UPSTREAM_DECISION="- If you have enough evidence and access, create a focused upstream PR against $YOAGENT_REPO with tests and a body linking the yyds state/eval evidence.
+- If you lack access, credentials, design certainty, or enough context for a safe upstream PR, create an agent-help-wanted issue in $REPO instead."
+else
+    YOAGENT_UPSTREAM_TARGET="No yoagent upstream repo is configured. Do not guess an upstream target; file an agent-help-wanted issue instead."
+    YOAGENT_UPSTREAM_DECISION="- Create an agent-help-wanted issue in $REPO describing the upstream yoagent change request, including state/eval evidence and what you tried.
+- Do not create an upstream PR unless YOAGENT_REPO is configured."
+fi
 TIMEOUT="${TIMEOUT:-1200}"
 FALLBACK_PROVIDER="${FALLBACK_PROVIDER:-}"
 FALLBACK_MODEL="${FALLBACK_MODEL:-}"
@@ -44,6 +55,7 @@ git pull --rebase --quiet 2>/dev/null || true
 
 echo "=== Day $DAY ($DATE $SESSION_TIME) ==="
 echo "Model: $MODEL"
+echo "yoagent upstream: ${YOAGENT_REPO:-not configured}"
 echo "Plan timeout: ${TIMEOUT}s (assess: $((TIMEOUT/2))s + plan: $((TIMEOUT/2))s) | Impl timeout: 1200s/task"
 echo ""
 
@@ -512,11 +524,13 @@ Steps:
    - \`$YOYO_BIN deepseek cache-report\`
    Treat this as harness feedback, not product-user behavior. Look for DeepSeek protocol failures, repair churn, eval regressions, cache inefficiency, tool-call/schema friction, context misses, rollback pressure, and recurring failure classes.
 
-7. **Research competitors** — use curl to check what Claude Code, Cursor, Aider, Codex, and other coding agents can do. What capabilities do they have that you don't? What's your biggest gap?
+7. **Audit upstream dependency boundaries** — yoagent and yoagent-state are foundation dependencies, not code to patch inside this harness. $YOAGENT_UPSTREAM_TARGET If DeepSeek harness evidence points to a yoagent defect or missing capability, identify the smallest upstream change and whether it needs a yyds help issue or an upstream yoagent PR.
 
-8. **Check your own backlog** — read any self-filed issues (agent-self label) to see what you planned but haven't done.
+8. **Research competitors** — use curl to check what Claude Code, Cursor, Aider, Codex, and other coding agents can do. What capabilities do they have that you don't? What's your biggest gap?
 
-9. **Write your assessment** to \`session_plan/assessment.md\` in this exact format:
+9. **Check your own backlog** — read any self-filed issues (agent-self label) to see what you planned but haven't done.
+
+10. **Write your assessment** to \`session_plan/assessment.md\` in this exact format:
 
 \`\`\`markdown
 # Assessment — Day $DAY
@@ -538,6 +552,9 @@ Steps:
 
 ## yoagent-state DeepSeek Feedback
 [state tail / state why / graph hotspots / cache report — concrete harness signals and what they imply]
+
+## Upstream Dependency Signals
+[any evidence that yoagent / yoagent-state needs upstream work; include whether to file help-wanted or propose a PR]
 
 ## Capability Gaps
 [vs Claude Code, vs Cursor, vs user expectations — what's missing?]
@@ -671,7 +688,14 @@ Use yoagent-state feedback proactively:
 - Treat state tail, state why, graph hotspots, eval evidence, cache reports, failed protocol checks, repair loops, rollback pressure, context misses, and model/tool-call failures as live KPI feedback.
 - Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality.
 - Raw code changes are implementation details. The important tracked states are the harness gnomes/KPIs and the state graph evidence that shows whether a change helped.
-- Product users of yoyo/yoyo-ds should not see this state layer. Keep state/evolution logic in harness workflows, eval/state commands, audit/dashboard scripts, and internal docs.
+- Product users of yoyo/yyds should not see this state layer. Keep state/evolution logic in harness workflows, eval/state commands, audit/dashboard scripts, and internal docs.
+- yoagent is an upstream foundation library. Do not vendor, fork, reimplement, or patch yoagent behavior inside this harness when the correct fix belongs upstream.
+- $YOAGENT_UPSTREAM_TARGET
+
+If DeepSeek harness evidence points to a missing yoagent capability or yoagent bug:
+- Prefer a small, evidence-backed upstream PR with focused tests only when YOAGENT_REPO is configured and you have enough evidence/access.
+- If you lack access, credentials, design certainty, or enough context for a safe upstream PR, create an agent-help-wanted issue in $REPO instead. Include the state/eval evidence, the suspected yoagent boundary, what you tried, and the exact upstream change you think is needed.
+- Keep this harness consuming released yoagent/yoagent-state packages unless a human explicitly decides otherwise.
 
 === WRITE SESSION PLAN ===
 
@@ -698,6 +722,9 @@ If you hit a blocker that requires human action (missing credentials, external s
 permissions, design decisions you can't make alone), create an agent-help-wanted issue:
   gh issue create --repo $REPO --title "Help wanted: [what you need]" --body "[context and what you've tried]" --label agent-help-wanted
 Then move on to other tasks — don't keep retrying the same blocker across sessions.
+
+If you decide yoagent itself needs a change, do not patch around it here. Either:
+$YOAGENT_UPSTREAM_DECISION
 
 You have 3 task slots per session. Task allocation:
 
@@ -843,6 +870,7 @@ $CHECKPOINT_SECTION
 Follow the evolve skill rules:
 - Write a test first if possible
 - Use edit_file for surgical changes
+- Treat yoagent as upstream foundation code. If this task reveals that yoagent itself must change, do not patch around it in this repo. $YOAGENT_UPSTREAM_TARGET When you cannot safely make an upstream PR, create an agent-help-wanted issue in $REPO with the evidence and proposed upstream change, then stop this task or choose a harness-only mitigation that stays honest about the upstream dependency.
 - Run cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test after changes
 - If any check fails, read the error and fix it. Keep trying until it passes.
 - Only if you've tried 3+ times and are stuck, revert with: git checkout -- . (keeps previous commits)

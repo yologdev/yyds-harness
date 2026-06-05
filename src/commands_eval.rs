@@ -3871,7 +3871,7 @@ fn print_usage() {
 }
 
 const DEFAULT_AGENT_TEMPLATE_HINT: &str =
-    "yoyo-ds --deepseek-native --yes --no-update-check --prompt {goal}";
+    "yyds --deepseek-native --yes --no-update-check --prompt {goal}";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FixtureAttemptAgentCommand {
@@ -3906,7 +3906,7 @@ fn default_fixture_agent_command_template() -> String {
         .ok()
         .map(|path| path.display().to_string())
         .filter(|path| !path.trim().is_empty())
-        .unwrap_or_else(|| "yoyo-ds".to_string());
+        .unwrap_or_else(|| "yyds".to_string());
     format!(
         "{} --deepseek-native --yes --no-update-check --prompt {{goal}}",
         shell_quote(&binary)
@@ -4071,9 +4071,9 @@ mod tests {
             task_id: "task-1".into(),
             passed: false,
             worktree: "/tmp/worktree".into(),
-            agent_command: "yoyo-ds --prompt goal".into(),
+            agent_command: "yyds --prompt goal".into(),
             agent_result: crate::eval_fixtures::FixtureCommandResult {
-                command: "yoyo-ds --prompt goal".into(),
+                command: "yyds --prompt goal".into(),
                 passed: true,
                 status_code: Some(0),
                 duration_ms: 10,
@@ -6045,9 +6045,9 @@ mod tests {
             task_id: "task-1".into(),
             passed: true,
             worktree: "/tmp/worktree".into(),
-            agent_command: "yoyo-ds --prompt goal".into(),
+            agent_command: "yyds --prompt goal".into(),
             agent_result: crate::eval_fixtures::FixtureCommandResult {
-                command: "yoyo-ds --prompt goal".into(),
+                command: "yyds --prompt goal".into(),
                 passed: true,
                 status_code: Some(0),
                 duration_ms: 10,
@@ -6098,9 +6098,9 @@ mod tests {
             task_id: "task-1".into(),
             passed: false,
             worktree: "/tmp/worktree".into(),
-            agent_command: "yoyo-ds --prompt goal".into(),
+            agent_command: "yyds --prompt goal".into(),
             agent_result: crate::eval_fixtures::FixtureCommandResult {
-                command: "yoyo-ds --prompt goal".into(),
+                command: "yyds --prompt goal".into(),
                 passed: true,
                 status_code: Some(0),
                 duration_ms: 10,
@@ -6280,9 +6280,9 @@ mod tests {
             task_id: "context-miss".into(),
             passed: false,
             worktree: "/tmp/worktree".into(),
-            agent_command: "yoyo-ds --deepseek-native -p 'fix'".into(),
+            agent_command: "yyds --deepseek-native -p 'fix'".into(),
             agent_result: crate::eval_fixtures::FixtureCommandResult {
-                command: "yoyo-ds --deepseek-native -p 'fix'".into(),
+                command: "yyds --deepseek-native -p 'fix'".into(),
                 passed: true,
                 status_code: Some(0),
                 duration_ms: 12,

@@ -17,7 +17,7 @@ private MVP repository is `yologdev/yyds-harness`. The Rust package remains
 Include these changes in the bootstrap PR:
 
 - project identity and packaging for `yoyo-ds-harness`
-- `yoyo-ds` binary alias while preserving `yoyo`
+- `yyds` binary alias while preserving `yoyo`
 - DeepSeek-native profile, config loading, provider defaults, and prompt context
 - DeepSeek protocol helpers for thinking, strict schemas, JSON mode, FIM, cache,
   streaming replay, and transport diagnostics
@@ -43,7 +43,7 @@ Exclude from this bootstrap PR:
    - `Cargo.toml`
    - README and docs identity updates
    - installer and release archive naming updates
-   - `yoyo-ds` alias
+   - `yyds` alias
 
 2. DeepSeek-native runtime
    - DeepSeek model/config/profile behavior
@@ -71,7 +71,7 @@ Latest local gate run: passed on commit `8c020bc` on 2026-06-02.
 - `cargo fmt --check`
 - `cargo test`
   - `yoyo` unit tests: 3741 passed, 1 ignored
-  - `yoyo-ds` unit tests: 3741 passed, 1 ignored
+  - `yyds` unit tests: 3741 passed, 1 ignored
   - integration tests: 89 passed, 1 ignored
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke`
@@ -87,12 +87,12 @@ Known waiver:
   present in this environment. Run it before release/tagging with:
 
 ```bash
-DEEPSEEK_API_KEY=... cargo run --bin yoyo-ds -- --deepseek-native "<small task>"
+DEEPSEEK_API_KEY=... cargo run --bin yyds -- --deepseek-native "<small task>"
 ```
 
 ## Review Checklist
 
-- Confirm the PR keeps `yoyo` compatibility while adding `yoyo-ds`.
+- Confirm the PR keeps `yoyo` compatibility while adding `yyds`.
 - Confirm `yoagent = "0.8.3"` is consumed as a package.
 - Confirm `yoagent-state` is consumed as the published crate.
 - Confirm `src/state.rs` is a local adapter/projection, not a fork of

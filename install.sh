@@ -120,20 +120,20 @@ main() {
         exit 1
     fi
 
-    if [ ! -f "${tmpdir}/yoyo-ds" ] || [ ! -f "${tmpdir}/yoyo" ]; then
-        echo "Error: binaries 'yoyo-ds' and 'yoyo' not found in archive."
+    if [ ! -f "${tmpdir}/yyds" ] || [ ! -f "${tmpdir}/yoyo" ]; then
+        echo "Error: binaries 'yyds' and 'yoyo' not found in archive."
         echo "Please report this: https://github.com/${REPO}/issues"
         exit 1
     fi
 
     # Install
     mkdir -p "$INSTALL_DIR"
-    mv "${tmpdir}/yoyo-ds" "${INSTALL_DIR}/yoyo-ds"
+    mv "${tmpdir}/yyds" "${INSTALL_DIR}/yyds"
     mv "${tmpdir}/yoyo" "${INSTALL_DIR}/yoyo"
-    chmod +x "${INSTALL_DIR}/yoyo-ds"
+    chmod +x "${INSTALL_DIR}/yyds"
     chmod +x "${INSTALL_DIR}/yoyo"
 
-    echo "Installed yoyo-ds to ${INSTALL_DIR}/yoyo-ds"
+    echo "Installed yyds to ${INSTALL_DIR}/yyds"
     echo "Installed yoyo compatibility alias to ${INSTALL_DIR}/yoyo"
 
     # Check PATH
@@ -148,7 +148,7 @@ main() {
             ;;
     esac
 
-    echo "Run 'yoyo-ds --help' to get started."
+    echo "Run 'yyds --help' to get started."
 }
 
 cargo_fallback() {

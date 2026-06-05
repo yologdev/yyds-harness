@@ -924,8 +924,8 @@ mod tests {
 
     #[test]
     fn expand_add_globs_no_glob() {
-        let paths = expand_add_paths("src/main.rs");
-        assert_eq!(paths, vec!["src/main.rs".to_string()]);
+        let paths = expand_add_paths("src/lib.rs");
+        assert_eq!(paths, vec!["src/lib.rs".to_string()]);
     }
 
     #[test]
@@ -1277,13 +1277,13 @@ mod tests {
 
     #[test]
     fn expand_file_mentions_path_with_dirs() {
-        // src/main.rs should exist
-        let (text, results) = expand_file_mentions("look at @src/main.rs");
+        // src/lib.rs should exist
+        let (text, results) = expand_file_mentions("look at @src/lib.rs");
         assert_eq!(results.len(), 1);
         assert!(
-            matches!(&results[0], AddResult::Text { summary, .. } if summary.contains("src/main.rs"))
+            matches!(&results[0], AddResult::Text { summary, .. } if summary.contains("src/lib.rs"))
         );
-        assert_eq!(text, "look at main.rs");
+        assert_eq!(text, "look at lib.rs");
     }
 
     #[test]

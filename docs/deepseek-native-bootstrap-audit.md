@@ -18,7 +18,7 @@ Bootstrap is done when the repo can be reviewed as a DeepSeek-native harness
 fork with:
 
 - preserved fork identity and `yoyo` compatibility
-- `yoyo-ds` product CLI alias
+- `yyds` product CLI alias
 - DeepSeek-native model/config/profile behavior
 - DeepSeek protocol helpers and regression tests
 - `yoagent-state`-backed shadow state, without upstream package edits
@@ -37,7 +37,7 @@ Status: achieved for bootstrap.
 Evidence:
 
 - `Cargo.toml` package is `yoyo-ds-harness`.
-- `Cargo.toml` defines both `yoyo` and `yoyo-ds` binaries.
+- `Cargo.toml` defines both `yoyo` and `yyds` binaries.
 - `Cargo.toml` consumes `yoagent = "0.8.3"` with `openapi` support.
 - `Cargo.toml` consumes published `yoagent-state = "0.2.0"`.
 - `git remote -v` shows `origin` as `yologdev/yyds-harness` and `upstream`
@@ -137,7 +137,7 @@ Evidence:
 - CI checks out sibling `yoagent-state`.
 - CI runs formatting, tests, clippy, and local fixture validation.
 - Release workflow checks out sibling `yoagent-state`.
-- Release archives include both `yoyo-ds` and `yoyo`.
+- Release archives include both `yyds` and `yoyo`.
 - Crates.io publishing is opt-in behind `PUBLISH_CRATE=true` until
   `yoagent-state` is published.
 
@@ -159,7 +159,7 @@ forever:
 The bootstrap branch should stop feature growth and close only these items:
 
 1. Run or explicitly waive a live DeepSeek end-to-end smoke.
-   - Command shape: `DEEPSEEK_API_KEY=... cargo run --bin yoyo-ds -- --deepseek-native "<small task>"`.
+   - Command shape: `DEEPSEEK_API_KEY=... cargo run --bin yyds -- --deepseek-native "<small task>"`.
    - If network/API credentials are unavailable, record this as a manual release
      smoke rather than implementing unrelated local features.
    - Current status: waived for this local gate run because `DEEPSEEK_API_KEY`
@@ -191,7 +191,7 @@ Commands run on 2026-06-02:
 - `cargo fmt --check`
 - `cargo test`
   - `yoyo` unit tests: 3741 passed, 1 ignored
-  - `yoyo-ds` unit tests: 3741 passed, 1 ignored
+  - `yyds` unit tests: 3741 passed, 1 ignored
   - integration tests: 89 passed, 1 ignored
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke`
