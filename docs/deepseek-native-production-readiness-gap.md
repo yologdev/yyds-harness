@@ -18,7 +18,7 @@ is still unproved or intentionally outside the bootstrap PR.
 
 ## Proved By Current Evidence
 
-- The fork keeps `yoyo` compatibility and adds the `yoyo-ds` binary.
+- The fork keeps `yoyo` compatibility and adds the `yyds` binary.
 - The project consumes released `yoagent = "0.8.3"` and published
   `yoagent-state = "0.2.0"`.
 - `src/state.rs` is a local adapter/projection over `yoagent-state`, not an
@@ -57,11 +57,11 @@ is still unproved or intentionally outside the bootstrap PR.
   - `cargo build --release --bins`
   - `target/release/yoyo --version` ->
     `yoyo v0.1.13 (b5c4831 2026-06-02) macos-aarch64`
-  - `target/release/yoyo-ds --version` ->
+  - `target/release/yyds --version` ->
     `yoyo v0.1.13 (b5c4831 2026-06-02) macos-aarch64`
   - archive:
     `/private/tmp/yyds-release-dry-run/yyds-harness-dry-run-aarch64-apple-darwin.tar.gz`
-  - archive contents: `yoyo`, `yoyo-ds`
+  - archive contents: `yoyo`, `yyds`
   - sha256:
     `5a8da88194ca120c775828dfebd9c6eb2e6dc9b3e6ace6eab0e714b3246d6d51`
 - Local isolated release-gate evidence passed on 2026-06-02 after fixing the
@@ -104,7 +104,7 @@ is still unproved or intentionally outside the bootstrap PR.
 
 - Live DeepSeek end-to-end agent run. `DEEPSEEK_API_KEY` is not present in this
   environment, so the required smoke remains manual:
-  `DEEPSEEK_API_KEY=... cargo run --bin yoyo-ds -- --deepseek-native "<small task>"`.
+  `DEEPSEEK_API_KEY=... cargo run --bin yyds -- --deepseek-native "<small task>"`.
 - GitHub Actions execution on PR #1. `gh pr checks` reports no checks, and
   `gh workflow list` returned no workflows in this environment. Repo owner/admin
   settings should verify Actions visibility and default branch behavior.

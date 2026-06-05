@@ -33,8 +33,8 @@ fn yoyo_cmd() -> Command {
     cmd
 }
 
-fn yoyo_ds_cmd() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_yoyo-ds"));
+fn yyds_cmd() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_yyds"));
     cmd.env_remove("ANTHROPIC_API_KEY");
     cmd.env_remove("OPENAI_API_KEY");
     cmd.env_remove("GOOGLE_API_KEY");
@@ -135,14 +135,14 @@ fn version_short_flag_prints_version_and_exits_zero() {
 }
 
 #[test]
-fn yoyo_ds_alias_prints_version_and_exits_zero() {
-    let output = yoyo_ds_cmd()
+fn yyds_alias_prints_version_and_exits_zero() {
+    let output = yyds_cmd()
         .arg("--version")
         .stdin(Stdio::null())
         .output()
-        .expect("failed to run yoyo-ds");
+        .expect("failed to run yyds");
 
-    assert!(output.status.success(), "yoyo-ds --version should exit 0");
+    assert!(output.status.success(), "yyds --version should exit 0");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.starts_with("yoyo v"),
@@ -2311,7 +2311,7 @@ fn test_shared_state_sub_agent_roundtrip() {
         shared_state_tool.name(),
         "shared_state",
         "SharedStateTool must report name 'shared_state' — \
-         BUILTIN_TOOL_NAMES in src/main.rs depends on this"
+         BUILTIN_TOOL_NAMES in src/agent_builder.rs depends on this"
     );
 
     // 4. Round-trip: parent writes a value, reads it back
@@ -2365,7 +2365,7 @@ fn test_builtin_tool_names_includes_shared_state() {
     let tool_name = tool.name();
 
     // The tool name must be exactly "shared_state" — if yoagent ever changes this,
-    // BUILTIN_TOOL_NAMES in src/main.rs must be updated too.
+    // BUILTIN_TOOL_NAMES in src/agent_builder.rs must be updated too.
     assert_eq!(
         tool_name, "shared_state",
         "SharedStateTool name must be 'shared_state' to match BUILTIN_TOOL_NAMES"

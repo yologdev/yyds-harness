@@ -671,7 +671,7 @@ Use yoagent-state feedback proactively:
 - Treat state tail, state why, graph hotspots, eval evidence, cache reports, failed protocol checks, repair loops, rollback pressure, context misses, and model/tool-call failures as live KPI feedback.
 - Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality.
 - Raw code changes are implementation details. The important tracked states are the harness gnomes/KPIs and the state graph evidence that shows whether a change helped.
-- Product users of yoyo/yoyo-ds should not see this state layer. Keep state/evolution logic in harness workflows, eval/state commands, audit/dashboard scripts, and internal docs.
+- Product users of yoyo/yyds should not see this state layer. Keep state/evolution logic in harness workflows, eval/state commands, audit/dashboard scripts, and internal docs.
 
 === WRITE SESSION PLAN ===
 

@@ -1933,7 +1933,7 @@ mod tests {
             !matches.is_empty(),
             "Should find 'fn main' in src/ of this project"
         );
-        assert!(matches.iter().any(|m| m.file.contains("main.rs")));
+        assert!(matches.iter().any(|m| m.file.contains("src/bin/")));
     }
 
     #[test]
@@ -2143,7 +2143,7 @@ src/b.rs:20:match two";
         // Test that context mode actually works on the real project
         let args = GrepArgs {
             pattern: "fn main".to_string(),
-            path: "src/main.rs".to_string(),
+            path: "src/bin/yyds.rs".to_string(),
             case_sensitive: true,
             context_lines: Some((1, 1)),
             include: None,
@@ -2153,7 +2153,7 @@ src/b.rs:20:match two";
         let result = run_grep_with_context(&args).unwrap();
         assert!(
             !result.is_empty(),
-            "Should find 'fn main' with context in src/main.rs"
+            "Should find 'fn main' with context in src/bin/yyds.rs"
         );
         assert!(result.contains("fn main"));
     }
@@ -2274,7 +2274,7 @@ src/b.rs:20:match two";
         };
         let entries = run_grep_count(&args).unwrap();
         assert!(!entries.is_empty(), "Should find 'fn main' counts in src/");
-        assert!(entries.iter().any(|e| e.file.contains("main.rs")));
+        assert!(entries.iter().any(|e| e.file.contains("src/bin/")));
         assert!(entries.iter().all(|e| e.count > 0));
     }
 

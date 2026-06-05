@@ -97,10 +97,10 @@ function Main {
         }
 
         # Find the binaries
-        $PrimaryBinary = Get-ChildItem -Path $TmpDir -Filter "yoyo-ds.exe" -Recurse | Select-Object -First 1
+        $PrimaryBinary = Get-ChildItem -Path $TmpDir -Filter "yyds.exe" -Recurse | Select-Object -First 1
         $CompatBinary = Get-ChildItem -Path $TmpDir -Filter "yoyo.exe" -Recurse | Select-Object -First 1
         if (-not $PrimaryBinary -or -not $CompatBinary) {
-            Write-Host "Error: binaries 'yoyo-ds.exe' and 'yoyo.exe' not found in archive."
+            Write-Host "Error: binaries 'yyds.exe' and 'yoyo.exe' not found in archive."
             Write-Host "Please report this: https://github.com/$Repo/issues"
             exit 1
         }
@@ -108,7 +108,7 @@ function Main {
         # Install
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
         try {
-            Copy-Item -Path $PrimaryBinary.FullName -Destination (Join-Path $InstallDir "yoyo-ds.exe") -Force
+            Copy-Item -Path $PrimaryBinary.FullName -Destination (Join-Path $InstallDir "yyds.exe") -Force
             Copy-Item -Path $CompatBinary.FullName -Destination (Join-Path $InstallDir "yoyo.exe") -Force
         } catch {
             Write-Host "Error: could not install Yoyo DS Harness binaries to $InstallDir"
@@ -116,7 +116,7 @@ function Main {
             exit 1
         }
 
-        Write-Host "Installed yoyo-ds to $InstallDir\yoyo-ds.exe"
+        Write-Host "Installed yyds to $InstallDir\yyds.exe"
         Write-Host "Installed yoyo compatibility alias to $InstallDir\yoyo.exe"
 
         # Check PATH
@@ -137,7 +137,7 @@ function Main {
             }
         }
 
-        Write-Host "Run 'yoyo-ds --help' to get started."
+        Write-Host "Run 'yyds --help' to get started."
     } finally {
         Remove-Item -Path $TmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
