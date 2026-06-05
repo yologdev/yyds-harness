@@ -2280,8 +2280,26 @@ fn build_release_gate_report_with_policy(
     now_ms: u128,
     policy: ReleaseGatePolicy,
 ) -> ReleaseGateReport {
-    let require_protocol = policy.require_protocol;
     let source_audit = release_source_provenance_audit();
+    build_release_gate_report_with_policy_and_source_audit(
+        events,
+        suite,
+        max_age_hours,
+        now_ms,
+        policy,
+        source_audit,
+    )
+}
+
+fn build_release_gate_report_with_policy_and_source_audit(
+    events: &[Value],
+    suite: &str,
+    max_age_hours: u64,
+    now_ms: u128,
+    policy: ReleaseGatePolicy,
+    source_audit: crate::release::SourceProvenanceAudit,
+) -> ReleaseGateReport {
+    let require_protocol = policy.require_protocol;
     let source_provenance_passed = source_audit.passed;
     let source_provenance_findings = source_audit.findings.len();
     let source_provenance_finding_summaries = source_provenance_finding_summaries(&source_audit);
@@ -3943,6 +3961,19 @@ mod tests {
             .collect()
     }
 
+    fn passing_source_provenance_audit() -> crate::release::SourceProvenanceAudit {
+        crate::release::SourceProvenanceAudit {
+            policy_version: crate::release::SOURCE_PROVENANCE_POLICY_VERSION,
+            allowed_reference_domains: crate::release::allowed_public_reference_domains(),
+            forbidden_markers: crate::release::forbidden_source_provenance_markers(),
+            scan_source: "git",
+            scanned_files: 1,
+            skipped_files: 0,
+            findings: Vec::new(),
+            passed: true,
+        }
+    }
+
     #[test]
     fn eval_result_scores_passed_gates() {
         let eval = build_eval_result(
@@ -4925,7 +4956,19 @@ mod tests {
             "payload": eval,
         })];
 
-        let report = build_release_gate_report(&events, "local-smoke", 1, 10_000 + 3_599_999);
+        let report = build_release_gate_report_with_policy_and_source_audit(
+            &events,
+            "local-smoke",
+            1,
+            10_000 + 3_599_999,
+            ReleaseGatePolicy {
+                require_protocol: false,
+                min_fixture_tasks: None,
+                min_fixture_commands: None,
+                min_fixture_risk_labels: BTreeMap::new(),
+            },
+            passing_source_provenance_audit(),
+        );
         assert!(report.ready);
         assert!(!report.stale);
         assert_eq!(report.reason, "latest eval passed and is fresh");
@@ -5007,7 +5050,7 @@ mod tests {
             }),
         ];
 
-        let report = build_release_gate_report_with_policy(
+        let report = build_release_gate_report_with_policy_and_source_audit(
             &events,
             "local-smoke",
             1,
@@ -5022,6 +5065,7 @@ mod tests {
                     ("low".to_string(), 1),
                 ]),
             },
+            passing_source_provenance_audit(),
         );
 
         assert!(report.ready);
@@ -5496,7 +5540,7 @@ mod tests {
             "deepseek_json_output_checks": 1,
             "deepseek_transport_policy_checks": 1
         });
-        let ready = build_release_gate_report_with_options(
+        let ready = build_release_gate_report_with_policy_and_source_audit(
             &[
                 base_event,
                 json!({
@@ -5509,7 +5553,13 @@ mod tests {
             "local-smoke",
             1,
             12_000,
-            true,
+            ReleaseGatePolicy {
+                require_protocol: true,
+                min_fixture_tasks: None,
+                min_fixture_commands: None,
+                min_fixture_risk_labels: BTreeMap::new(),
+            },
+            passing_source_provenance_audit(),
         );
         assert!(ready.ready);
         assert_eq!(
