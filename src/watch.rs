@@ -2020,13 +2020,18 @@ mod tests {
         });
     }
 
-    #[serial]
     #[test]
     fn detect_watch_all_phases_returns_separate_commands() {
-        // In a Rust project (CWD), should return 2 separate commands.
-        // NOTE: depends on CWD being a project directory with a detectable type.
-        // Assertions are lenient — accept clippy or cargo check for lint phase.
-        let phases = detect_watch_all_phases();
+        // Use a temp directory with Cargo.toml so the test doesn't depend on CWD.
+        let tmp = std::env::temp_dir().join("yoyo_test_watch_phases_separate");
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("failed to write temp Cargo.toml");
+
+        let phases = detect_watch_all_phases_for_dir(&tmp);
         assert!(phases.is_some(), "should detect phases in a Rust project");
         let phases = phases.unwrap();
         assert_eq!(
@@ -2045,6 +2050,9 @@ mod tests {
             "second phase should be test: {}",
             phases[1]
         );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[serial]
