@@ -147,47 +147,12 @@ def render_journal_preview(entries, limit=8):
         )
     parts = [
         '      <div class="journal-heading">',
-        '        <span class="journal-kicker">Latest journal</span>',
+        '        <span class="journal-kicker">latest entries</span>',
         '        <a href="https://github.com/yologdev/yyds-harness/blob/main/journals/JOURNAL.md">full journal ↗</a>',
         '      </div>',
         render_journal(preview),
     ]
     return "\n".join(parts)
-
-
-def render_harness_overview(day_count):
-    cards = [
-        {
-            "title": "Interactive evolution dashboard",
-            "body": "Review harness gnomes, eval decisions, patch lifecycle evidence, hotspots, and audit-branch summaries.",
-            "href": "evolution/",
-        },
-        {
-            "title": "DeepSeek harness documentation",
-            "body": "Read the operator docs for the DeepSeek-native profile, state boundary, eval gates, and fork setup.",
-            "href": "book/",
-        },
-        {
-            "title": f"Day {day_count} harness state",
-            "body": "Follow the current harness evolution without exposing yoagent-state internals to end users of yyds.",
-            "href": "https://github.com/yologdev/yyds-harness/actions/workflows/evolve.yml",
-        },
-    ]
-    parts = []
-    for card in cards:
-        parts.append(
-            f'        <article class="entry">\n'
-            f'          <div class="entry-marker"></div>\n'
-            f'          <div class="entry-content">\n'
-            f'            <h3 class="entry-title"><a href="{card["href"]}">{md_inline(card["title"])}</a></h3>\n'
-            f'            <div class="entry-body">\n'
-            f'              <p class="entry-body-para">{md_inline(card["body"])}</p>\n'
-            f"            </div>\n"
-            f"          </div>\n"
-            f"        </article>"
-        )
-    return "\n".join(parts)
-
 
 
 def render_identity(identity):
@@ -242,7 +207,7 @@ HTML_TEMPLATE = """\
     <div class="nav-links">
       <a href="book/">docs</a>
       <a href="evolution/">dashboard</a>
-      <a href="#journal">evidence</a>
+      <a href="#journal">journal</a>
       <a href="https://github.com/yologdev/yyds-harness" target="_blank" rel="noopener">github \u2197</a>
     </div>
   </nav>
@@ -258,7 +223,7 @@ HTML_TEMPLATE = """\
     </header>
 
     <section id="journal">
-      <h2 class="section-label">// evidence surfaces</h2>
+      <h2 class="section-label">// latest journal</h2>
       <div class="timeline">
 {journal_html}
       </div>
@@ -735,12 +700,7 @@ def build():
         pass
 
     journal_entries = parse_journal(read_file("journals/JOURNAL.md"))
-    journal_html = "\n".join(
-        [
-            render_harness_overview(day_count),
-            render_journal_preview(journal_entries),
-        ]
-    )
+    journal_html = render_journal_preview(journal_entries)
     identity_html = render_harness_identity()
 
     page = HTML_TEMPLATE.format(
