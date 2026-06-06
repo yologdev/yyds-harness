@@ -204,6 +204,25 @@ def summarize_decision(event: dict[str, Any]) -> dict[str, Any]:
 
 def summarize_blocker(event: dict[str, Any]) -> Optional[dict[str, Any]]:
     data = payload(event)
+    kind = event_type(event)
+
+    if kind == "DecisionRecorded":
+        decision = data.get("promotion_decision")
+        if isinstance(decision, dict):
+            if decision.get("eligible") is not False:
+                return None
+            reason = decision.get("reason") or data.get("reason")
+            return {
+                "event_id": event_id(event),
+                "event_type": kind,
+                "patch_id": data.get("patch_id") or decision.get("patch_id"),
+                "reason": reason or "promotion decision marked ineligible",
+            }
+
+        decision_text = str(data.get("decision") or "").lower()
+        if not any(token in decision_text for token in ("reject", "block", "fail", "ineligible")):
+            return None
+
     reason = data.get("reason") or data.get("failure_reason") or data.get("blocker")
     if not reason:
         decision = data.get("promotion_decision")
