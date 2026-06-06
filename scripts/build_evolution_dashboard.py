@@ -725,7 +725,7 @@ HTML = r"""<!doctype html>
     function renderSummary(agg) {
       const rate = agg.task_success_rate;
       const cards = [
-        ["Sessions", filtered.length, "audit-backed runs"],
+        ["Sessions", agg.session_count || 0, "audit-backed runs"],
         ["Task success", rate === null || rate === undefined ? "-" : percent(rate), `${text(agg.tasks_succeeded || 0)}/${text(agg.tasks_attempted || 0)} tasks`],
         ["Green runs", agg.health?.passed || 0, "build + tests passed"],
         ["Events", agg.event_count || 0, "state records"],
