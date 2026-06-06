@@ -9,9 +9,11 @@
 #   ... your task-specific instructions ...
 #   EOF
 #
-# Reads: IDENTITY.md, PERSONALITY.md, ECONOMICS.md, memory/active_learnings.md, memory/active_social_learnings.md
-# These are yoyo's stable identity files — who it is, how it speaks,
-# what it's learned about itself, and what it's learned from humans.
+# Reads: IDENTITY.md, LINEAGE.md, PERSONALITY.md, ECONOMICS.md,
+# memory/active_learnings.md, memory/active_social_learnings.md.
+# These are yoyo's stable context files — who it is, where it comes from,
+# how it speaks, what it's learned about itself, and what it's learned from
+# humans.
 
 _YOYO_REPO="${YOYO_REPO:-.}"
 
@@ -23,6 +25,14 @@ if [ -f "$_YOYO_REPO/IDENTITY.md" ]; then
     }
 else
     echo "WARNING: IDENTITY.md not found at $_YOYO_REPO/IDENTITY.md" >&2
+fi
+
+_LINEAGE=""
+if [ -f "$_YOYO_REPO/LINEAGE.md" ]; then
+    _LINEAGE=$(cat "$_YOYO_REPO/LINEAGE.md") || {
+        echo "WARNING: Failed to read LINEAGE.md" >&2
+        _LINEAGE=""
+    }
 fi
 
 _PERSONALITY=""
@@ -56,6 +66,10 @@ fi
 YOYO_CONTEXT="=== WHO YOU ARE ===
 
 ${_IDENTITY:-Read IDENTITY.md for your rules and constitution.}
+
+=== YOUR LINEAGE ===
+
+${_LINEAGE:-No lineage file found. If this is a fork, create LINEAGE.md with your parent and generation.}
 
 === YOUR VOICE ===
 

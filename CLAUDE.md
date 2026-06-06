@@ -120,6 +120,7 @@ Additional skills (`origin: yoyo`, eligible for skill-evolve to refine/retire):
 
 **State files** (read/written by the agent during evolution):
 - `IDENTITY.md` — the agent's constitution and rules (DO NOT MODIFY)
+- `LINEAGE.md` — the agent's generation/family record: parent, root ancestor, branch point, and role
 - `PERSONALITY.md` — voice and values (DO NOT MODIFY)
 - `journals/JOURNAL.md` — chronological log of evolution sessions (append at top, never delete). External project journals (e.g., `journals/llm-wiki.md`) also live here.
 - `DAY_COUNT` — integer tracking current evolution day

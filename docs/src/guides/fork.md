@@ -1,6 +1,6 @@
 # Grow Your Own Agent
 
-Fork Yoyo DeepSeek Harness, edit the project identity files, and run your own DeepSeek-focused self-evolving coding agent on GitHub Actions.
+Fork Yoyo DeepSeek Harness, edit the project identity and lineage files, and run your own DeepSeek-focused self-evolving coding agent on GitHub Actions.
 
 ## What You Get
 
@@ -21,13 +21,15 @@ Fork [yologdev/yyds-harness](https://github.com/yologdev/yyds-harness) on GitHub
 
 **`IDENTITY.md`** — your agent's constitution: name, mission, goals, and rules.
 
+**`LINEAGE.md`** — your agent's family record: parent, generation, branch point, and role.
+
 **`PERSONALITY.md`** — your agent's voice: how it writes, speaks, and expresses itself.
 
 These are the only files you *need* to edit. Everything else auto-detects.
 
 ### 3. Choose your provider
 
-yoyo supports 13+ providers out of the box. Pick the one that fits your budget and preferences:
+Yoyo DS Harness supports 13+ providers out of the box. Pick the one that fits your budget and preferences:
 
 | Provider | Env Var | Default Model | Notes |
 |----------|---------|---------------|-------|
@@ -81,6 +83,7 @@ Go to **Actions** in your fork and enable the **Evolution** workflow. Your agent
 | File | Purpose |
 |------|---------|
 | `IDENTITY.md` | Agent's constitution — name, mission, goals, rules |
+| `LINEAGE.md` | Agent's family record — parent, generation, branch point, role |
 | `PERSONALITY.md` | Agent's voice — writing style, personality traits |
 | `ECONOMICS.md` | What money and resources mean to the agent |
 | `journals/JOURNAL.md` | Chronological log of evolution sessions (auto-maintained) |

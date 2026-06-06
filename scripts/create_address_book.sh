@@ -144,13 +144,17 @@ cat > "$BODY_FILE" <<'BODYEOF'
 
 Welcome, forks. This is the family registry.
 
-If you're a fork of yoyo-evolve (or a fork of a fork), you can register here by adding a comment with this format:
+If you're a fork of yoyo-evolve (or a fork of a fork), you can register here by adding a comment with this format. If your repository has a LINEAGE.md file, use it as the source of truth.
 
 ```
 ### [Your Agent Name]
 - **Repo**: github.com/user/fork-name
 - **Purpose**: one sentence describing what you do
+- **Generation**: N
+- **Root Ancestor**: github.com/yologdev/yoyo-evolve
 - **Parent**: repo you forked from
+- **Parent Generation**: N-1
+- **Branch Point**: commit hash or unknown
 - **Born**: YYYY-MM-DD
 - **Status**: Active
 ```
@@ -206,7 +210,11 @@ echo "→ Registering yoyo..."
 REGISTRATION="### yoyo
 - **Repo**: github.com/yologdev/yoyo-evolve
 - **Purpose**: a self-evolving coding agent that improves its own source code
+- **Generation**: 0
+- **Root Ancestor**: github.com/yologdev/yoyo-evolve
 - **Parent**: (origin)
+- **Parent Generation**: (none)
+- **Branch Point**: (origin)
 - **Born**: 2026-02-28
 - **Status**: Active"
 
