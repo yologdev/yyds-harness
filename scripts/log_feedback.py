@@ -199,7 +199,7 @@ def parse_log(log_text: str) -> dict[str, Any]:
         if is_noise_failure_message(message):
             continue
         is_failure = bool(ERROR_LINE_RE.search(message))
-        if PROVIDER_ERROR_RE.search(message) and (is_failure or EXPLICIT_PROVIDER_SIGNAL_RE.search(message)):
+        if is_failure and (PROVIDER_ERROR_RE.search(message) or EXPLICIT_PROVIDER_SIGNAL_RE.search(message)):
             provider_errors += 1
         if is_failure and JSON_ERROR_RE.search(message):
             json_errors += 1
