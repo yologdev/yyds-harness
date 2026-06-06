@@ -1852,9 +1852,10 @@ PYEOF
     AUDIT_PUSH_WT="/tmp/evolve-audit-push-$$"
     AUDIT_FAIL_FILE=".yoyo/audit_push_failures"
     AUDIT_PUSH_OK=0
+    AUDIT_REMOTE_EXISTS=0
 
     if git fetch origin audit-log:audit-log 2>/dev/null; then
-        :  # branch existed remotely
+        AUDIT_REMOTE_EXISTS=1
     else
         git branch audit-log 2>/dev/null || true
     fi
@@ -1868,8 +1869,9 @@ PYEOF
             # Pull-rebase before push to absorb a concurrent session's audit
             # commit (each session writes to its own day-N-<ts>/ subdir, so
             # rebase conflicts are essentially impossible — both touched only
-            # disjoint paths). 2>/dev/null because failure is non-fatal here.
-            git pull --rebase origin audit-log 2>/dev/null && \
+            # disjoint paths). Skip this on bootstrap because the remote branch
+            # does not exist yet. 2>/dev/null because failure is non-fatal here.
+            { [ "$AUDIT_REMOTE_EXISTS" = "0" ] || git pull --rebase origin audit-log 2>/dev/null; } && \
             git push origin audit-log 2>/dev/null
         ); then
             AUDIT_PUSH_OK=1
