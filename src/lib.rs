@@ -144,7 +144,7 @@ fn build_json_output(
     duration: std::time::Duration,
     num_turns: usize,
 ) -> String {
-    build_json_output_with_deepseek_policy(
+    build_json_output_with_deepseek_policy(JsonOutputContext {
         response,
         model,
         usage,
@@ -152,20 +152,32 @@ fn build_json_output(
         session_changes,
         duration,
         num_turns,
-        None,
-    )
+        deepseek_json: None,
+    })
 }
 
-fn build_json_output_with_deepseek_policy(
-    response: &PromptOutcome,
-    model: &str,
-    usage: &Usage,
+struct JsonOutputContext<'a> {
+    response: &'a PromptOutcome,
+    model: &'a str,
+    usage: &'a Usage,
     is_error: bool,
-    session_changes: &SessionChanges,
+    session_changes: &'a SessionChanges,
     duration: std::time::Duration,
     num_turns: usize,
-    deepseek_json: Option<&DeepSeekJsonPolicyReport>,
-) -> String {
+    deepseek_json: Option<&'a DeepSeekJsonPolicyReport>,
+}
+
+fn build_json_output_with_deepseek_policy(context: JsonOutputContext<'_>) -> String {
+    let JsonOutputContext {
+        response,
+        model,
+        usage,
+        is_error,
+        session_changes,
+        duration,
+        num_turns,
+        deepseek_json,
+    } = context;
     let cost_usd = estimate_cost(usage, model);
     let mut json_obj = serde_json::json!({
         "response": response.text,
@@ -658,16 +670,16 @@ async fn run_single_prompt(
     } else if wants_json_output {
         println!(
             "{}",
-            build_json_output_with_deepseek_policy(
-                &response,
-                &agent_config.model,
-                &session_total,
-                false,
-                &session_changes,
-                prompt_start.elapsed(),
-                count_assistant_turns(agent),
-                deepseek_json_report.as_ref(),
-            )
+            build_json_output_with_deepseek_policy(JsonOutputContext {
+                response: &response,
+                model: &agent_config.model,
+                usage: &session_total,
+                is_error: false,
+                session_changes: &session_changes,
+                duration: prompt_start.elapsed(),
+                num_turns: count_assistant_turns(agent),
+                deepseek_json: deepseek_json_report.as_ref(),
+            })
         );
     } else {
         write_output_file(output_path, &response.text);
@@ -825,16 +837,16 @@ async fn run_piped_mode(
     } else if wants_json_output {
         println!(
             "{}",
-            build_json_output_with_deepseek_policy(
-                &response,
-                &agent_config.model,
-                &session_total,
-                should_exit_error,
-                &session_changes,
-                prompt_start.elapsed(),
-                count_assistant_turns(agent),
-                deepseek_json_report.as_ref(),
-            )
+            build_json_output_with_deepseek_policy(JsonOutputContext {
+                response: &response,
+                model: &agent_config.model,
+                usage: &session_total,
+                is_error: should_exit_error,
+                session_changes: &session_changes,
+                duration: prompt_start.elapsed(),
+                num_turns: count_assistant_turns(agent),
+                deepseek_json: deepseek_json_report.as_ref(),
+            })
         );
     } else {
         write_output_file(output_path, &response.text);
@@ -1471,16 +1483,17 @@ mod tests {
         let report =
             evaluate_deepseek_json_output_attempts(&response.text, None, "test-json-output", None);
 
-        let result = build_json_output_with_deepseek_policy(
-            &response,
-            "deepseek-v4-pro",
-            &usage,
-            false,
-            &SessionChanges::new(),
-            std::time::Duration::from_millis(0),
-            1,
-            Some(&report),
-        );
+        let session_changes = SessionChanges::new();
+        let result = build_json_output_with_deepseek_policy(JsonOutputContext {
+            response: &response,
+            model: "deepseek-v4-pro",
+            usage: &usage,
+            is_error: false,
+            session_changes: &session_changes,
+            duration: std::time::Duration::from_millis(0),
+            num_turns: 1,
+            deepseek_json: Some(&report),
+        });
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         assert_eq!(parsed["response"], r#"{"answer":"ok"}"#);

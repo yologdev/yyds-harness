@@ -37,6 +37,18 @@ GNOME_KEYS = [
     "deepseek_streaming_protocol_checks",
     "deepseek_prefix_cache_checks",
     "deepseek_thinking_protocol_checks",
+    "coding_log_score",
+    "coding_log_confidence",
+    "coding_log_available",
+    "workflow_success_rate",
+    "session_success_rate",
+    "task_success_rate",
+    "retry_success_rate",
+    "recurring_failure_count",
+    "max_failure_fingerprint_recurrence",
+    "state_capture_coverage",
+    "audit_capture_coverage",
+    "closed_loop_fix_rate",
 ]
 
 
