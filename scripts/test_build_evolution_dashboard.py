@@ -142,7 +142,11 @@ class BuildEvolutionDashboard(unittest.TestCase):
             work = data["sessions"][0]["work_summary"]
             self.assertEqual(work["source_changed_files"], ["src/lib.rs"])
             self.assertEqual(work["edited_files"], ["journals/JOURNAL.md"])
-            self.assertIn("1 source file(s) changed", work["headline"])
+            self.assertIn("1 repo file(s) changed", work["headline"])
+            self.assertEqual(work["source_patch_count"], 1)
+            self.assertEqual(work["landed_patch_count"], 1)
+            self.assertEqual(work["state_patch_count"], 0)
+            self.assertEqual(work["landed_commit_count"], 1)
             self.assertEqual(work["commits"][0]["subject"], "Day 1 (00:00): implement source")
 
     def test_missing_optional_artifacts_do_not_fail(self):

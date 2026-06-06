@@ -250,11 +250,12 @@ def work_summary(
     patches = summary.get("patches", []) if isinstance(summary.get("patches"), list) else []
     decisions = summary.get("decisions", []) if isinstance(summary.get("decisions"), list) else []
     latest_eval = evals[-1] if evals else {}
+    source_patch_count = sum(1 for commit in commits if commit.get("source_files"))
     labels: list[str] = []
     if attempted:
         labels.append(f"{succeeded}/{attempted} tasks completed")
     if source_files:
-        labels.append(f"{len(source_files)} source file(s) changed")
+        labels.append(f"{len(source_files)} repo file(s) changed")
     elif event_data["edited_files"]:
         labels.append(f"{len(event_data['edited_files'])} file(s) edited")
     if event_data["command_count"]:
@@ -287,6 +288,10 @@ def work_summary(
         "failed_commands": event_data["failed_commands"],
         "tool_counts": event_data["tool_counts"],
         "patch_count": len(patches),
+        "state_patch_count": len(patches),
+        "source_patch_count": source_patch_count,
+        "landed_patch_count": source_patch_count,
+        "landed_commit_count": len(commits),
         "decision_count": len(decisions),
         "eval_count": len(evals),
         "latest_eval_status": latest_eval.get("status"),
@@ -1391,13 +1396,14 @@ HTML = r"""<!doctype html>
             <div class="legend">
               <span>${text(phaseText || "no transcripts")}</span>
               <span>${text(work.eval_count || 0)} evals</span>
-              <span>${text(work.patch_count || 0)} patches</span>
+              <span>${text(work.landed_patch_count || work.source_patch_count || 0)} landed patches</span>
+              <span>${text(work.state_patch_count || 0)} state patches</span>
               <span>${text(work.decision_count || 0)} decisions</span>
             </div>
             <details class="work-details">
               <summary>Show work evidence</summary>
               <div class="detail-grid">
-                <div><strong>Source files changed</strong>${listItems(sourceFiles, "No source changes recorded.")}</div>
+                <div><strong>Repo files changed</strong>${listItems(sourceFiles, "No repo changes recorded.")}</div>
                 <div><strong>Landed commits</strong>${commitItems(work.commits)}</div>
                 <div><strong>Commands/checks</strong>${listItems(work.commands, "No command events recorded.")}</div>
                 <div><strong>State edit events</strong>${listItems(work.edited_files, "No FileEdited events recorded.")}</div>
@@ -1427,7 +1433,7 @@ HTML = r"""<!doctype html>
           <td><span class="pill ${healthClass(health)}">${text(health)}</span><div class="muted">build ${text(session.build_ok)} / test ${text(session.test_ok)}<br>tasks ${text(session.tasks_succeeded)}/${text(session.tasks_attempted)}<br>${text(work.headline)}</div></td>
           <td><span class="${decisionClass(decision)}">${text(decision.criterion || decision.decision || decision.decision_type)}</span><div class="muted">${text(decision.reason)}</div></td>
           <td><span class="pill soft">${text(events)} events</span><div class="muted">eval ${text(evalData.status)} ${evalData.score === undefined ? "" : `score ${text(evalData.score)}`}</div></td>
-          <td><a href="${text(session.audit_url)}">audit files</a><div class="muted">${text((session.blockers || []).length)} blockers / ${text((session.evals || []).length)} evals / ${text((session.patches || []).length)} patches / ${text((session.code_refs || []).length)} refs</div></td>
+          <td><a href="${text(session.audit_url)}">audit files</a><div class="muted">${text((session.blockers || []).length)} blockers / ${text((session.evals || []).length)} evals / ${text(work.landed_commit_count || 0)} commits / ${text((session.patches || []).length)} state patches / ${text((session.code_refs || []).length)} refs</div></td>
         </tr>`;
       }).join("");
     }
@@ -1444,13 +1450,16 @@ HTML = r"""<!doctype html>
         (session.evals || []).slice(-2).forEach(evalData => {
           items.push({ kind: "Eval", className: evalData.status === "passed" ? "good" : "warn", session: session.id, title: evalData.eval_id || evalData.suite || "evaluation", detail: `${evalData.suite || "-"} ${evalData.status || "-"} score ${evalData.score === undefined ? "-" : evalData.score}` });
         });
+        ((session.work_summary || {}).commits || []).slice(-2).forEach(commit => {
+          items.push({ kind: "Commit", className: "good", session: session.id, title: `${commit.short_sha || ""} ${commit.subject || ""}`, detail: `${(commit.source_files || []).length} repo files` });
+        });
         (session.patches || []).slice(-2).forEach(patch => {
-          items.push({ kind: "Patch", className: "warn", session: session.id, title: patch.patch_id || patch.intent, detail: `${patch.kind || "-"} risk ${patch.risk_level || "-"}` });
+          items.push({ kind: "State patch", className: "warn", session: session.id, title: patch.patch_id || patch.intent, detail: `${patch.kind || "-"} risk ${patch.risk_level || "-"}` });
         });
       });
       const panel = document.getElementById("evidence");
       if (!items.length) {
-        panel.innerHTML = `<div class="empty">No blockers, evals, patches, or code references yet.</div>`;
+        panel.innerHTML = `<div class="empty">No blockers, evals, commits, state patches, or code references yet.</div>`;
         return;
       }
       panel.innerHTML = items.slice(0, 24).map(item => `
