@@ -2,8 +2,9 @@
 //!
 //! The runtime still delegates transport to `yoagent`'s OpenAI-compatible
 //! provider. This module keeps DeepSeek-specific model names, prompt policy,
-//! cache metrics, and strict-schema helpers explicit so they can evolve without
-//! turning the generic provider abstraction into a dumping ground.
+//! server-side cache metrics, and strict-schema helpers explicit so they can
+//! evolve without turning the generic provider abstraction into a dumping
+//! ground.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -189,8 +190,15 @@ pub struct PromptLayoutPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachePolicy {
+    /// Keep high-reuse prompt blocks before dynamic evidence so DeepSeek's
+    /// default server-side context cache can match repeated prefixes.
     pub stable_prefix: bool,
+    /// Record `usage.prompt_cache_hit_tokens` and
+    /// `usage.prompt_cache_miss_tokens`. DeepSeek does not require
+    /// request-side `cache_control` markers for context caching.
     pub record_metrics: bool,
+    /// Prefer prompt ordering that maximizes prefix reuse. This is a layout
+    /// policy, not a request-side switch to enable caching.
     pub optimize_prompt_order: bool,
 }
 
@@ -2569,6 +2577,16 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    fn contains_json_key(value: &Value, key: &str) -> bool {
+        match value {
+            Value::Object(map) => {
+                map.contains_key(key) || map.values().any(|child| contains_json_key(child, key))
+            }
+            Value::Array(items) => items.iter().any(|child| contains_json_key(child, key)),
+            _ => false,
+        }
+    }
+
     #[test]
     fn native_models_use_v4_names() {
         assert_eq!(DeepSeekModel::V4Pro.as_str(), "deepseek-v4-pro");
@@ -3315,6 +3333,60 @@ mod tests {
         assert_eq!(request.payload["max_tokens"], 128);
         assert_eq!(request.payload["temperature"], 0.1);
         assert!(!request.auto_routing_enabled);
+    }
+
+    #[test]
+    fn deepseek_request_builders_do_not_emit_request_side_cache_control() {
+        let json_request = build_json_output_request(JsonOutputRequestOptions {
+            user_prompt: "Summarize as JSON.".into(),
+            model: DEFAULT_MODEL.into(),
+            schema_name: Some("summary".into()),
+            max_tokens: 128,
+            stream: false,
+        })
+        .unwrap();
+        let tool_request = build_strict_tool_call_request(StrictToolCallRequestOptions {
+            user_prompt: "Use one tool.".into(),
+            model: DEFAULT_MODEL.into(),
+            tool_names: vec!["record_failure".into()],
+            thinking: ThinkingMode::Disabled,
+            max_tokens: 128,
+            stream: false,
+        })
+        .unwrap();
+        let prefix_request = build_chat_prefix_request(ChatPrefixRequestOptions {
+            user_prompt: "Write a concise release note.".into(),
+            assistant_prefix: "Release note:".into(),
+            model: DEFAULT_MODEL.into(),
+            max_tokens: 64,
+            temperature: Some(0.2),
+            stream: false,
+        })
+        .unwrap();
+        let fim_request = build_fim_completion_request(
+            FimRequestOptions {
+                prompt: "fn add(a: i32, b: i32) -> i32 {".into(),
+                suffix: Some("}".into()),
+                scope: "localized-completion".into(),
+                max_tokens: 128,
+                temperature: Some(0.1),
+                stream: false,
+            },
+            &DeepSeekHarnessGenome::default().fim_policy,
+        )
+        .unwrap();
+
+        for payload in [
+            &json_request.payload,
+            &tool_request.payload,
+            &prefix_request.payload,
+            &fim_request.payload,
+        ] {
+            assert!(
+                !contains_json_key(payload, "cache_control"),
+                "DeepSeek uses default server-side context caching; requests must not add cache_control"
+            );
+        }
     }
 
     #[test]

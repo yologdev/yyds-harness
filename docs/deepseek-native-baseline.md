@@ -13,7 +13,7 @@ This is the bootstrap inventory for `deepseek-native-bootstrap`.
 - `.yoyo/deepseek.toml` project config added for DeepSeek-native defaults:
   - `[deepseek] enabled/default_model/fast_model/base_url/thinking_default`
   - `[deepseek.routing] planning/root_cause/summary/local_edit`
-  - `[deepseek.cache] stable_prefix/record_metrics/optimize_prompt_order`
+  - `[deepseek.cache] stable_prefix/record_metrics/optimize_prompt_order` controls prompt layout and metric capture for DeepSeek's default server-side context cache; it does not add request-side `cache_control` markers
   - `[deepseek.context] recent_failure_limit/changed_file_limit/include_repo_map`
   - `[deepseek.transport] request_timeout_ms/max_retries`
   - `[evolve.harness] allowed_patch_types/require_human_approval_for`
@@ -198,7 +198,8 @@ This is the bootstrap inventory for `deepseek-native-bootstrap`.
   - `yoyo deepseek fim-parse --response JSON`
   - `yoyo deepseek fim-apply --file PATH --start N --end N --completion TEXT [--scope SCOPE] [--apply] [--verify CMD] [--json]`
   - `yoyo deepseek cache-report [--json]`
-    - cache reports aggregate recorded DeepSeek cache hit/miss token metrics and per-model breakdowns as human text or machine-readable JSON for CI and release checks
+    - cache reports aggregate recorded DeepSeek server-side cache hit/miss token metrics from `usage.prompt_cache_hit_tokens` / `usage.prompt_cache_miss_tokens` and per-model breakdowns as human text or machine-readable JSON for CI and release checks
+    - DeepSeek context caching is enabled by default by the provider; harness work should measure and optimize stable-prefix utilization rather than adding Anthropic-style `cache_control` request markers. Source: <https://api-docs.deepseek.com/guides/kv_cache>
 - Interactive DeepSeek FIM command added:
   - `/fim (--prompt TEXT [--suffix TEXT] | --file PATH --start N --end N) [--scope SCOPE] [--max-tokens N] [--response JSON] [--apply] [--verify CMD] [--json]`
   - `/fim` reuses `yoyo deepseek fim-complete` so interactive local edits follow the same request validation, deterministic replay, live invocation, safe edit-plan, apply, verify, and state recording path as the shell command

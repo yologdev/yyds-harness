@@ -498,11 +498,10 @@ impl AgentConfig {
             tool_output_max_lines: 50,
         });
 
-        // Enable prompt caching — Anthropic caches the system prompt, tool
-        // definitions, and conversation history prefix, reducing input-token
-        // costs by ~90% for cached content.  CacheStrategy::Auto places cache
-        // breakpoints automatically at system prompt, last tool, and the
-        // second-to-last message.
+        // Configure provider-level cache hints where yoagent supports them.
+        // Anthropic uses request-side cache markers; DeepSeek context caching
+        // is server-side/default and is measured from usage
+        // prompt_cache_hit_tokens / prompt_cache_miss_tokens instead.
         agent = agent.with_cache_config(CacheConfig {
             enabled: true,
             strategy: CacheStrategy::Auto,
@@ -1092,7 +1091,9 @@ mod tests {
 
     #[test]
     fn test_cache_config_enabled_on_all_agents() {
-        // All agent construction paths should enable prompt caching with Auto strategy
+        // All agent construction paths should keep provider cache hints
+        // configured with Auto. DeepSeek does not need request-side
+        // cache_control markers; its cache is server-side/default.
         let config = test_agent_config("anthropic", "claude-sonnet-4-20250514");
 
         // Main agent
@@ -2058,8 +2059,9 @@ mod tests {
 
     #[test]
     fn test_cache_config_openai_provider() {
-        // Cache config should be enabled even for non-Anthropic providers
-        // (the provider may not support it, but we set it unconditionally).
+        // Keep the generic cache hint config enabled for non-Anthropic
+        // providers. Providers that do not use request-side markers can ignore
+        // it; DeepSeek cache metrics are read from response usage fields.
         let config = test_agent_config("openai", "gpt-4o");
         let agent = config.build_agent();
         assert!(

@@ -307,6 +307,10 @@ fn cache_metrics_payload(model: &str, usage: &yoagent::Usage) -> Option<Value> {
     if !model.starts_with("deepseek") {
         return None;
     }
+    // yoagent's OpenAI-compatible provider maps DeepSeek
+    // `usage.prompt_cache_hit_tokens` to `cache_read` and
+    // `usage.prompt_cache_miss_tokens` to `input`. DeepSeek does not expose
+    // Anthropic-style cache creation/write tokens for request-side markers.
     let deepseek_usage = crate::deepseek::DeepSeekUsage {
         input_tokens: usage.input,
         output_tokens: usage.output,

@@ -36,7 +36,7 @@ First production wedge:
 
 - DeepSeek-native profile via `--deepseek-native`
 - DeepSeek v4 model defaults and 1M context-window policy
-- project-local `.yoyo/deepseek.toml` overrides for DeepSeek model, routing, cache, and context defaults
+- project-local `.yoyo/deepseek.toml` overrides for DeepSeek model, routing, server-side cache metric/layout, and context defaults
 - internal audit-log evidence for DeepSeek harness evolution
 - no broad internal rename sweep
 
@@ -319,6 +319,9 @@ summary = "flash_non_thinking"
 local_edit = "fim_non_thinking"
 
 [deepseek.cache]
+# DeepSeek context caching is server-side and enabled by default by DeepSeek.
+# These flags control stable-prefix layout and usage metric recording, not
+# request-side cache_control markers.
 stable_prefix = true
 record_metrics = true
 optimize_prompt_order = true

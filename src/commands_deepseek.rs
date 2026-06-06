@@ -320,8 +320,10 @@ fn render_genome_summary(genome: &crate::deepseek::DeepSeekHarnessGenome) -> Str
         genome.context_policy.include_instruction_files.join(", ")
     ));
     out.push_str(&format!(
-        "  cache metrics:    {}\n",
-        bool_label(genome.cache_policy.record_metrics)
+        "  cache:            server-side=default stable_prefix={} record_metrics={} optimize_order={}\n",
+        bool_label(genome.cache_policy.stable_prefix),
+        bool_label(genome.cache_policy.record_metrics),
+        bool_label(genome.cache_policy.optimize_prompt_order)
     ));
     out.push_str(&format!(
         "  transport:        timeout={}ms retries={}\n",
@@ -1974,7 +1976,7 @@ fn build_cache_report(events: &[Value]) -> Result<CacheReport, String> {
 
 fn render_cache_report(report: &CacheReport) -> String {
     let mut out = format!(
-        "DeepSeek cache report\n  events:      {}\n  hit tokens:  {}\n  miss tokens: {}\n  hit ratio:   {:.2}%",
+        "DeepSeek server-side cache report\n  events:      {}\n  hit tokens:  {}\n  miss tokens: {}\n  hit ratio:   {:.2}%",
         report.event_count,
         report.hit_tokens,
         report.miss_tokens,
