@@ -637,11 +637,29 @@ HTML = r"""<!doctype html>
       align-items: start;
     }
 
-    .chart-grid {
+    .chart-dashboard {
       display: grid;
-      grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+      grid-template-columns: minmax(420px, 1.55fr) minmax(300px, 0.85fr);
       gap: 18px;
       align-items: start;
+    }
+
+    .chart-dashboard.secondary {
+      grid-template-columns: minmax(320px, 0.95fr) minmax(360px, 1.05fr) minmax(320px, 0.95fr);
+    }
+
+    .signal-rail {
+      display: grid;
+      gap: 18px;
+    }
+
+    .panel.feature .panel-body {
+      gap: 16px;
+      min-height: 430px;
+    }
+
+    .panel.compact .panel-body {
+      gap: 12px;
     }
 
     .panel h2 {
@@ -761,20 +779,29 @@ HTML = r"""<!doctype html>
 
     .sparkline {
       width: 100%;
-      min-height: 210px;
+      min-height: 250px;
       border: 1px solid var(--line);
       border-radius: 6px;
       background:
-        linear-gradient(rgba(21, 20, 15, 0.04) 1px, transparent 1px),
+        linear-gradient(rgba(21, 20, 15, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(21, 20, 15, 0.03) 1px, transparent 1px),
         #fffdf7;
-      background-size: 100% 25%;
+      background-size: 100% 25%, 12.5% 100%;
       overflow: hidden;
     }
 
     .sparkline svg {
       display: block;
       width: 100%;
-      height: 210px;
+      height: 250px;
+    }
+
+    .panel.feature .sparkline {
+      min-height: 300px;
+    }
+
+    .panel.feature .sparkline svg {
+      height: 300px;
     }
 
     .sparkline text {
@@ -909,7 +936,8 @@ HTML = r"""<!doctype html>
 
     @media (max-width: 980px) {
       .grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
-      .chart-grid { grid-template-columns: 1fr; }
+      .chart-dashboard,
+      .chart-dashboard.secondary { grid-template-columns: 1fr; }
       .split { grid-template-columns: 1fr; }
       .toolbar { grid-template-columns: 1fr; }
     }
@@ -944,54 +972,54 @@ HTML = r"""<!doctype html>
       <button id="reset" type="button">Reset</button>
     </section>
     <section class="grid" id="summary"></section>
-    <section class="chart-grid">
-      <section class="panel">
-        <h2>Run Health</h2>
-        <div class="panel-body">
-          <p class="explain">This chart answers the first human question: did the autonomous session complete useful work and keep the harness green?</p>
-          <div id="healthChart"></div>
-          <div class="legend">
-            <span class="passed">passed</span>
-            <span class="partial">partial</span>
-            <span class="attention">needs attention</span>
-            <span class="reverted">reverted</span>
-          </div>
-        </div>
-      </section>
-      <section class="panel">
-        <h2>State Signals</h2>
-        <div class="panel-body">
-          <p class="explain">Top recorded event types from yoagent-state. These show what the harness actually observed, not what the journal claims.</p>
-          <div id="eventChart"></div>
-        </div>
-      </section>
-    </section>
-    <section class="chart-grid">
-      <section class="panel">
-        <h2>Task Throughput</h2>
-        <div class="panel-body">
-          <p class="explain">Successful tasks divided by attempted tasks across the visible audit window.</p>
-          <div id="taskChart"></div>
-        </div>
-      </section>
-      <section class="panel">
-        <h2>Latest Gnomes</h2>
-        <div class="panel-body">
-          <p class="explain">Gnome metrics are compact health signals from state summaries: cost, latency, cache, failures, workflow quality, and feedback-loop quality when available.</p>
-          <div id="gnomes"></div>
-        </div>
-      </section>
-    </section>
-    <section class="chart-grid">
-      <section class="panel">
+    <section class="chart-dashboard">
+      <section class="panel feature">
         <h2>Gnome Trends</h2>
         <div class="panel-body">
-          <p class="explain">Numeric gnome values over sessions. Missing values are gaps, not zeroes.</p>
+          <p class="explain">The main longitudinal view: select a numeric gnome and watch whether the harness is getting healthier across audited sessions. Missing values are gaps, not zeroes.</p>
           <select id="gnomeMetric" aria-label="Gnome metric"></select>
           <div id="gnomeTrend"></div>
         </div>
       </section>
-      <section class="panel">
+      <aside class="signal-rail" aria-label="Run status charts">
+        <section class="panel compact">
+          <h2>Run Health</h2>
+          <div class="panel-body">
+            <p class="explain">Did the autonomous session complete useful work and keep the harness green?</p>
+            <div id="healthChart"></div>
+            <div class="legend">
+              <span class="passed">passed</span>
+              <span class="partial">partial</span>
+              <span class="attention">needs attention</span>
+              <span class="reverted">reverted</span>
+            </div>
+          </div>
+        </section>
+        <section class="panel compact">
+          <h2>Task Throughput</h2>
+          <div class="panel-body">
+            <p class="explain">Successful tasks divided by attempted tasks across the visible audit window.</p>
+            <div id="taskChart"></div>
+          </div>
+        </section>
+      </aside>
+    </section>
+    <section class="chart-dashboard secondary">
+      <section class="panel compact">
+        <h2>State Signals</h2>
+        <div class="panel-body">
+          <p class="explain">Top observed event types from yoagent-state.</p>
+          <div id="eventChart"></div>
+        </div>
+      </section>
+      <section class="panel compact">
+        <h2>Latest Gnomes</h2>
+        <div class="panel-body">
+          <p class="explain">Compact health signals from state summaries: cost, latency, cache, failures, workflow quality, and feedback-loop quality.</p>
+          <div id="gnomes"></div>
+        </div>
+      </section>
+      <section class="panel compact">
         <h2>Gnome Availability</h2>
         <div class="panel-body">
           <p class="explain">Which sessions emitted each metric. This explains why a trend may have gaps.</p>
