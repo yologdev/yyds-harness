@@ -1878,6 +1878,8 @@ out = {
     "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "session_type": "evolve",
     "session_time": os.environ.get("YOYO_OUT_SESSION_TIME", ""),
+    "github_run_id": os.environ.get("GITHUB_RUN_ID", ""),
+    "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
     "build_ok": os.environ.get("YOYO_OUT_BUILD_OK", "false") == "true",
     "test_ok":  os.environ.get("YOYO_OUT_TEST_OK",  "false") == "true",
     "tasks_attempted": int(os.environ.get("YOYO_OUT_TASKS_ATTEMPTED", "0") or 0),

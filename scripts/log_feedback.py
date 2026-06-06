@@ -1,0 +1,595 @@
+#!/usr/bin/env python3
+"""Convert GitHub Actions coding logs into yoagent-state-compatible feedback.
+
+This script intentionally writes log feedback as a normal PatchEvaluated eval:
+
+  payload.suite == "log-feedback"
+  payload.metrics.state_metrics contains selected gnome/KPI values
+
+Raw logs stay out of prompts and state summaries. The saved assessment keeps
+short, normalized evidence only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+
+ERROR_LINE_RE = re.compile(
+    r"(error|failed|failure|fatal|panicked|exception|traceback|timed out)",
+    re.IGNORECASE,
+)
+PROVIDER_ERROR_RE = re.compile(
+    r"(provider_error|rate_limit|rate limit|429|5\d\d|api error|overloaded)",
+    re.IGNORECASE,
+)
+JSON_ERROR_RE = re.compile(r"(json|schema|deserialize|parse).*(error|fail)", re.IGNORECASE)
+TOOL_ERROR_RE = re.compile(r"(tool call|tool schema|malformed tool|invalid tool)", re.IGNORECASE)
+STATE_ERROR_RE = re.compile(r"(state|audit-log|events\.jsonl|state\.sqlite).*(error|fail|missing)", re.IGNORECASE)
+SECRET_RE = re.compile(
+    r"(?i)(token|secret|password|api[_-]?key|authorization|bearer)\s*[:=]\s*['\"]?[^'\"\s]+"
+)
+
+MAX_EVIDENCE_LINES = 8
+MAX_FINGERPRINTS = 10
+LOG_FETCH_TIMEOUT_SECONDS = 45
+
+
+def warn(message: str) -> None:
+    print(f"log_feedback: WARN: {message}", file=sys.stderr)
+
+
+def strip_ansi(value: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", value)
+
+
+def redact(value: str) -> str:
+    value = SECRET_RE.sub(lambda m: f"{m.group(1)}=<redacted>", value)
+    value = re.sub(r"gh[psu]_[A-Za-z0-9_]{20,}", "<redacted-token>", value)
+    return value
+
+
+def fingerprint_error_line(line: str) -> str:
+    text = redact(strip_ansi(line)).strip()
+    text = re.sub(
+        r"^(?:[A-Za-z_][\w-]*\s+)*\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*",
+        "",
+        text,
+    )
+    text = re.sub(r"^\d{4}-\d{2}-\d{2}T?[\d:.,Z+ ]*\s*", "", text)
+    text = re.sub(r"^[A-Za-z_-]+\s*[\|│]\s*", "", text)
+    text = re.sub(r":\d+:\d+", ":N:N", text)
+    text = re.sub(r":\d+\b", ":N", text)
+    text = re.sub(r"0x[0-9a-fA-F]{4,}", "<HEX>", text)
+    text = re.sub(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        "<UUID>",
+        text,
+    )
+    text = re.sub(r"\b\d{5,}\b", "<N>", text)
+    return re.sub(r"\s+", " ", text.lower())[:120]
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        warn(f"could not read {path}: {exc}")
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        warn(f"could not read {path}: {exc}")
+        return ""
+
+
+def fetch_run_log(repo: str, run_id: str) -> tuple[bool, str, str]:
+    if not repo or not run_id:
+        return False, "", "missing repo or run_id"
+    cmd = ["gh", "run", "view", run_id, "--repo", repo, "--log"]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=LOG_FETCH_TIMEOUT_SECONDS,
+            start_new_session=True,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "", "gh run view timed out"
+    except (FileNotFoundError, OSError) as exc:
+        return False, "", str(exc)
+    if result.returncode != 0:
+        return False, "", (result.stderr or result.stdout or "").strip()[:400]
+    return True, result.stdout, ""
+
+
+def event_count(events_path: Path) -> int:
+    if not events_path.is_file():
+        return 0
+    count = 0
+    try:
+        with events_path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.strip():
+                    count += 1
+    except OSError:
+        return 0
+    return count
+
+
+def parse_log(log_text: str) -> dict[str, Any]:
+    fingerprints: dict[str, dict[str, Any]] = {}
+    provider_errors = 0
+    json_errors = 0
+    tool_errors = 0
+    state_errors = 0
+    repair_loop_count = 0
+    retry_markers = 0
+    evidence: list[str] = []
+
+    for raw_line in log_text.splitlines():
+        line = redact(strip_ansi(raw_line)).strip()
+        if not line:
+            continue
+        lower = line.lower()
+        if "retry after" in lower or "waiting 15 minutes before retry" in lower:
+            retry_markers += 1
+        if "repair loop" in lower or "retrying after failure" in lower:
+            repair_loop_count += 1
+        if PROVIDER_ERROR_RE.search(line):
+            provider_errors += 1
+        if JSON_ERROR_RE.search(line):
+            json_errors += 1
+        if TOOL_ERROR_RE.search(line):
+            tool_errors += 1
+        if STATE_ERROR_RE.search(line):
+            state_errors += 1
+        if not ERROR_LINE_RE.search(line):
+            continue
+        fp = fingerprint_error_line(line)
+        if not fp:
+            continue
+        bucket = fingerprints.setdefault(fp, {"fingerprint": fp, "count": 0, "example": line[:240]})
+        bucket["count"] += 1
+        if len(evidence) < MAX_EVIDENCE_LINES:
+            evidence.append(line[:240])
+
+    ordered = sorted(fingerprints.values(), key=lambda item: (-int(item["count"]), item["fingerprint"]))
+    return {
+        "failure_fingerprints": ordered[:MAX_FINGERPRINTS],
+        "failure_count": sum(int(item["count"]) for item in ordered),
+        "distinct_failure_count": len(ordered),
+        "provider_error_count": provider_errors,
+        "json_error_count": json_errors,
+        "tool_error_count": tool_errors,
+        "state_error_count": state_errors,
+        "repair_loop_count": repair_loop_count,
+        "retry_markers": retry_markers,
+        "evidence": evidence,
+    }
+
+
+def previous_feedback(session_dir: Path, limit: int = 10) -> list[dict[str, Any]]:
+    root = session_dir.parent
+    if not root.is_dir():
+        return []
+    candidates: list[tuple[float, Path]] = []
+    for child in root.iterdir():
+        if child == session_dir or not child.is_dir():
+            continue
+        path = child / "log_feedback.json"
+        if not path.is_file():
+            continue
+        try:
+            candidates.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    candidates.sort(reverse=True)
+    return [load_json(path) for _, path in candidates[:limit]]
+
+
+def find_session_for_run(sessions_dir: Path, run_id: str) -> str:
+    if not sessions_dir.is_dir() or not run_id:
+        return ""
+    matches: list[tuple[float, Path]] = []
+    for child in sessions_dir.iterdir():
+        if not child.is_dir():
+            continue
+        outcome_path = child / "outcome.json"
+        outcome = load_json(outcome_path)
+        if str(outcome.get("github_run_id") or "") != run_id:
+            continue
+        try:
+            mtime = outcome_path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        matches.append((mtime, child))
+    if not matches:
+        return ""
+    matches.sort(key=lambda item: item[0], reverse=True)
+    return str(matches[0][1])
+
+
+def recurrence_metrics(current: list[dict[str, Any]], previous: list[dict[str, Any]]) -> dict[str, Any]:
+    current_fps = {
+        str(item.get("fingerprint"))
+        for item in current
+        if isinstance(item, dict) and item.get("fingerprint")
+    }
+    prior_counts: dict[str, int] = {}
+    prior_top: set[str] = set()
+    for assessment in previous:
+        metrics = assessment.get("metrics")
+        if not isinstance(metrics, dict):
+            continue
+        for item in metrics.get("failure_fingerprints", []) or []:
+            if not isinstance(item, dict):
+                continue
+            fp = item.get("fingerprint")
+            if not isinstance(fp, str):
+                continue
+            prior_counts[fp] = prior_counts.get(fp, 0) + 1
+            if len(prior_top) < 5:
+                prior_top.add(fp)
+    recurring = [fp for fp in current_fps if fp in prior_counts]
+    max_recurrence = max((prior_counts[fp] + 1 for fp in recurring), default=0)
+    if prior_top:
+        closed = len([fp for fp in prior_top if fp not in current_fps])
+        closed_loop_fix_rate: float | None = closed / len(prior_top)
+    else:
+        closed_loop_fix_rate = None
+    return {
+        "recurring_failure_count": len(recurring),
+        "max_failure_fingerprint_recurrence": max_recurrence,
+        "closed_loop_fix_rate": closed_loop_fix_rate,
+    }
+
+
+def ratio(numerator: float, denominator: float) -> float | None:
+    if denominator <= 0:
+        return None
+    return numerator / denominator
+
+
+def score_assessment(metrics: dict[str, Any]) -> float:
+    task_rate = metrics.get("task_success_rate")
+    outcome_parts = [
+        1.0 if metrics.get("workflow_success") else 0.0,
+        1.0 if metrics.get("session_success") else 0.0,
+        float(task_rate) if isinstance(task_rate, (int, float)) else 0.5,
+        1.0 if not metrics.get("session_reverted") else 0.0,
+    ]
+    outcome = sum(outcome_parts) / len(outcome_parts)
+
+    failure_pressure = min(
+        1.0,
+        (
+            float(metrics.get("distinct_failure_count") or 0)
+            + float(metrics.get("provider_error_count") or 0)
+            + float(metrics.get("json_error_count") or 0)
+            + float(metrics.get("tool_error_count") or 0)
+            + float(metrics.get("recurring_failure_count") or 0) * 2.0
+        )
+        / 12.0,
+    )
+    capture = (
+        float(metrics.get("state_capture_coverage") or 0.0)
+        + float(metrics.get("audit_capture_coverage") or 0.0)
+    ) / 2.0
+    reliability = max(0.0, (1.0 - failure_pressure) * 0.75 + capture * 0.25)
+
+    repair_pressure = min(1.0, float(metrics.get("repair_loop_count") or 0) / 6.0)
+    efficiency = 1.0 - repair_pressure
+
+    closed = metrics.get("closed_loop_fix_rate")
+    learning = float(closed) if isinstance(closed, (int, float)) else 0.5
+
+    return round(outcome * 0.40 + reliability * 0.25 + efficiency * 0.20 + learning * 0.15, 4)
+
+
+def build_assessment(
+    session_dir: Path,
+    log_available: bool,
+    log_error: str,
+    log_text: str,
+    repo: str,
+    run_id: str,
+    workflow_conclusion: str,
+) -> dict[str, Any]:
+    outcome = load_json(session_dir / "outcome.json")
+    state_events = event_count(session_dir / "state" / "events.jsonl")
+    audit_exists = (session_dir / "audit.jsonl").is_file()
+    parsed = parse_log(log_text) if log_available else parse_log("")
+    previous = previous_feedback(session_dir)
+    recurrences = recurrence_metrics(parsed["failure_fingerprints"], previous)
+
+    attempted = int(outcome.get("tasks_attempted") or 0)
+    succeeded = int(outcome.get("tasks_succeeded") or 0)
+    task_success_rate = ratio(succeeded, attempted)
+    workflow_success = workflow_conclusion.lower() in {"success", "passed"}
+    build_ok = bool(outcome.get("build_ok"))
+    test_ok = bool(outcome.get("test_ok"))
+    reverted = bool(outcome.get("reverted"))
+    session_success = bool(
+        build_ok
+        and test_ok
+        and not reverted
+        and (attempted == 0 or succeeded >= attempted)
+    )
+    retry_success_rate = None
+    if parsed["retry_markers"]:
+        retry_success_rate = 1.0 if workflow_success else 0.0
+
+    confidence = 0.0
+    if log_available:
+        confidence += 0.45
+    if outcome:
+        confidence += 0.20
+    if state_events > 0:
+        confidence += 0.20
+    if audit_exists:
+        confidence += 0.15
+
+    state_capture_coverage = 1.0 if state_events > 0 else 0.0
+    audit_capture_coverage = 1.0 if audit_exists else 0.0
+    metrics: dict[str, Any] = {
+        "coding_log_available": log_available,
+        "coding_log_confidence": round(confidence, 4),
+        "workflow_success": workflow_success,
+        "workflow_conclusion": workflow_conclusion or "unknown",
+        "session_success": session_success,
+        "session_reverted": reverted,
+        "workflow_success_rate": 1.0 if workflow_success else 0.0,
+        "session_success_rate": 1.0 if session_success else 0.0,
+        "task_success_rate": task_success_rate,
+        "tasks_attempted": attempted,
+        "tasks_succeeded": succeeded,
+        "retry_success_rate": retry_success_rate,
+        "state_capture_coverage": state_capture_coverage,
+        "audit_capture_coverage": audit_capture_coverage,
+        "state_event_count": state_events,
+        **parsed,
+        **recurrences,
+    }
+    metrics["coding_log_score"] = score_assessment(metrics)
+
+    return {
+        "schema_version": 1,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "repo": repo,
+        "run_id": run_id,
+        "session_id": session_dir.name,
+        "log_available": log_available,
+        "log_error": log_error,
+        "metrics": metrics,
+        "top_lessons": top_lessons(metrics),
+    }
+
+
+def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    lessons: list[dict[str, Any]] = []
+    for item in metrics.get("failure_fingerprints", []) or []:
+        if not isinstance(item, dict):
+            continue
+        fp = str(item.get("fingerprint") or "")
+        if not fp:
+            continue
+        recurring = int(metrics.get("recurring_failure_count") or 0) > 0
+        lessons.append(
+            {
+                "kind": "recurring_failure" if recurring else "failure",
+                "fingerprint": fp,
+                "count": item.get("count"),
+                "action": "inspect the failing phase and add a targeted harness guard or eval fixture",
+            }
+        )
+        if len(lessons) >= 3:
+            break
+    if not lessons and not metrics.get("coding_log_available"):
+        lessons.append(
+            {
+                "kind": "missing_log",
+                "fingerprint": "github actions log unavailable",
+                "action": "check workflow token actions:read permission and gh run view access",
+            }
+        )
+    if len(lessons) < 3 and float(metrics.get("state_capture_coverage") or 0) < 1.0:
+        lessons.append(
+            {
+                "kind": "missing_state",
+                "fingerprint": "yoagent-state events missing from session evidence",
+                "action": "preserve state/events.jsonl before audit-log session push",
+            }
+        )
+    return lessons[:3]
+
+
+def append_patch_evaluated(session_dir: Path, assessment: dict[str, Any]) -> Path:
+    events_path = session_dir / "state" / "events.jsonl"
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    now_ms = int(time.time() * 1000)
+    run_id = str(assessment.get("run_id") or "unknown")
+    metrics = assessment["metrics"]
+    score = float(metrics["coding_log_score"])
+    status = "passed" if score >= 0.75 else "failed"
+    failures = int(metrics.get("distinct_failure_count") or 0)
+    passed = 1 if bool(metrics.get("workflow_success")) else 0
+    eval_payload = {
+        "eval_id": f"log-feedback-{run_id}-{now_ms}",
+        "harness_version": "github-actions-log-feedback",
+        "patch_id": None,
+        "suite": "log-feedback",
+        "status": status,
+        "score": score,
+        "passed": passed,
+        "failed": failures + (0 if passed else 1),
+        "metrics": {
+            "state_metrics": metrics,
+            "log_feedback": {
+                "repo": assessment.get("repo"),
+                "run_id": run_id,
+                "session_id": assessment.get("session_id"),
+                "top_lessons": assessment.get("top_lessons", []),
+                "evidence": metrics.get("evidence", []),
+            },
+        },
+        "failure_event_ids": [],
+        "created_at_ms": now_ms,
+    }
+    event = {
+        "event_id": f"evt-log-feedback-{hashlib.sha1(f'{run_id}-{now_ms}'.encode()).hexdigest()[:16]}",
+        "event_type": "PatchEvaluated",
+        "schema_version": 1,
+        "timestamp_ms": now_ms,
+        "actor": "harness",
+        "run_id": f"github-actions-{run_id}",
+        "session_id": assessment.get("session_id"),
+        "trace_id": f"trace-log-feedback-{run_id}",
+        "parent_event_ids": [],
+        "payload": eval_payload,
+    }
+    with events_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, sort_keys=True) + "\n")
+    return events_path
+
+
+def write_assessment(session_dir: Path, assessment: dict[str, Any], append_state: bool) -> None:
+    out_path = session_dir / "log_feedback.json"
+    out_path.write_text(json.dumps(assessment, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if append_state:
+        append_patch_evaluated(session_dir, assessment)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--session-dir", type=Path)
+    parser.add_argument("--sessions-dir", type=Path)
+    parser.add_argument("--print-session-for-run", action="store_true")
+    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
+    parser.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
+    parser.add_argument("--workflow-conclusion", default=os.environ.get("YOYO_WORKFLOW_CONCLUSION", "unknown"))
+    parser.add_argument("--log-file", type=Path)
+    parser.add_argument("--no-fetch", action="store_true")
+    parser.add_argument("--no-append-state", action="store_true")
+    args = parser.parse_args()
+
+    if args.print_session_for_run:
+        print(find_session_for_run(args.sessions_dir or Path("sessions"), args.run_id))
+        return 0
+
+    session_dir = args.session_dir
+    if session_dir is None:
+        parser.error("--session-dir is required unless --print-session-for-run is used")
+    if not session_dir.is_dir():
+        warn(f"session dir does not exist: {session_dir}")
+        return 1
+
+    log_available = False
+    log_error = ""
+    log_text = ""
+    if args.log_file:
+        log_text = read_text(args.log_file)
+        log_available = bool(log_text)
+        if not log_available:
+            log_error = f"empty or unreadable log file: {args.log_file}"
+    elif not args.no_fetch:
+        log_available, log_text, log_error = fetch_run_log(args.repo, args.run_id)
+        if log_error:
+            warn(log_error)
+    else:
+        log_error = "fetch disabled"
+
+    assessment = build_assessment(
+        session_dir=session_dir,
+        log_available=log_available,
+        log_error=log_error,
+        log_text=log_text,
+        repo=args.repo,
+        run_id=args.run_id,
+        workflow_conclusion=args.workflow_conclusion,
+    )
+    write_assessment(session_dir, assessment, append_state=not args.no_append_state)
+    print(
+        "log feedback: "
+        f"score={assessment['metrics']['coding_log_score']} "
+        f"confidence={assessment['metrics']['coding_log_confidence']} "
+        f"session={session_dir.name}"
+    )
+    return 0
+
+
+def run_self_tests() -> int:
+    failures = 0
+
+    def check(label: str, condition: bool, detail: str = "") -> None:
+        nonlocal failures
+        if condition:
+            print(f"  ok: {label}")
+            return
+        failures += 1
+        print(f"  FAIL: {label} {detail}")
+
+    print("=== log_feedback self-tests ===\n")
+    fp_a = fingerprint_error_line("build test 2026-06-06T10:00:00.1Z error[E0308]: src/main.rs:42:9: type mismatch")
+    fp_b = fingerprint_error_line("build test 2026-06-07T10:00:00.1Z error[E0308]: src/main.rs:99:3: type mismatch")
+    check("fingerprints normalize timestamps and line numbers", fp_a == fp_b, f"{fp_a!r} != {fp_b!r}")
+
+    parsed = parse_log(
+        "\n".join(
+            [
+                "Retry after 15min",
+                "2026-06-06T00:00:00Z error: provider_error rate_limit",
+                "test | FAILED cargo test exit code 101",
+                "warning: unrelated",
+            ]
+        )
+    )
+    check("provider errors counted", parsed["provider_error_count"] == 1)
+    check("failure fingerprints captured", parsed["distinct_failure_count"] >= 2)
+    check("retry markers captured", parsed["retry_markers"] == 1)
+
+    metrics = {
+        "workflow_success": True,
+        "session_success": True,
+        "task_success_rate": 1.0,
+        "session_reverted": False,
+        "distinct_failure_count": 0,
+        "provider_error_count": 0,
+        "json_error_count": 0,
+        "tool_error_count": 0,
+        "recurring_failure_count": 0,
+        "state_capture_coverage": 1.0,
+        "audit_capture_coverage": 1.0,
+        "repair_loop_count": 0,
+        "closed_loop_fix_rate": None,
+    }
+    check("healthy score is high", score_assessment(metrics) > 0.85)
+    bad = dict(metrics)
+    bad.update({"workflow_success": False, "session_success": False, "distinct_failure_count": 8})
+    check("failed score is lower", score_assessment(bad) < score_assessment(metrics))
+    check("missing session selection is empty", find_session_for_run(Path("/does/not/exist"), "1") == "")
+
+    print(f"\n{'ALL PASSED' if failures == 0 else f'{failures} FAILURE(S)'}")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    if "--test" in sys.argv:
+        sys.exit(run_self_tests())
+    sys.exit(main())

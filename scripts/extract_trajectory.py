@@ -384,6 +384,74 @@ def render_provider_health(sessions: int, hits: int) -> str:
     return f"## Provider/API health\n{sessions} sessions, {hits} provider error hit(s) in audit.jsonl."
 
 
+# ── Section 6: Log feedback evals from prior GitHub Actions runs ─────────
+
+
+def load_log_feedback(audit_dir: Path) -> list[dict]:
+    if not audit_dir.exists() or not audit_dir.is_dir():
+        return []
+    triples: list[tuple[float, str, dict]] = []
+    for child in audit_dir.iterdir():
+        if not child.is_dir():
+            continue
+        feedback = child / "log_feedback.json"
+        if not feedback.is_file():
+            continue
+        try:
+            data = json.loads(feedback.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            warn(f"skipped malformed {feedback}: {e}")
+            continue
+        try:
+            mtime = feedback.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        triples.append((mtime, child.name, data))
+    triples.sort(key=lambda t: t[0], reverse=True)
+    return [t[2] for t in triples[:WINDOW_SESSIONS]]
+
+
+def render_log_feedback(feedbacks: list[dict]) -> str:
+    if not feedbacks:
+        return ""
+    latest = feedbacks[0]
+    metrics = latest.get("metrics") if isinstance(latest.get("metrics"), dict) else {}
+    score = metrics.get("coding_log_score")
+    confidence = metrics.get("coding_log_confidence")
+    recurring = metrics.get("recurring_failure_count", 0)
+    capture = metrics.get("state_capture_coverage")
+    lines = [
+        "## GitHub Actions log feedback",
+        f"latest score={score} confidence={confidence} recurring_failures={recurring} state_capture={capture}",
+    ]
+
+    lessons = latest.get("top_lessons")
+    if isinstance(lessons, list) and lessons:
+        lines.append("Top lessons for next run:")
+        for lesson in lessons[:3]:
+            if not isinstance(lesson, dict):
+                continue
+            fp = str(lesson.get("fingerprint") or "")[:90]
+            action = str(lesson.get("action") or "")[:100]
+            if fp:
+                lines.append(f"- {fp} -> {action}")
+
+    recurring_counter: Counter[str] = Counter()
+    for feedback in feedbacks:
+        m = feedback.get("metrics")
+        if not isinstance(m, dict):
+            continue
+        for item in m.get("failure_fingerprints", []) or []:
+            if isinstance(item, dict) and item.get("fingerprint"):
+                recurring_counter[str(item["fingerprint"])] += 1
+    repeated = [(fp, count) for fp, count in recurring_counter.most_common(3) if count > 1]
+    if repeated:
+        lines.append("Repeated across prior log feedback:")
+        for fp, count in repeated:
+            lines.append(f"- {count}x {fp[:90]}")
+    return "\n".join(lines)
+
+
 # ── Final assembly ───────────────────────────────────────────────────────
 
 
@@ -420,6 +488,7 @@ def main() -> int:
     tasks, reverts = collect_task_commits()
     sessions_audited, provider_hits = collect_provider_errors(audit_dir)
     ci_clusters = collect_failed_ci_fingerprints(repo)
+    log_feedback = load_log_feedback(audit_dir)
 
     sections: list[str] = []
     s = render_outcomes(outcomes)
@@ -435,6 +504,9 @@ def main() -> int:
     if s:
         sections.append(s)
     s = render_provider_health(sessions_audited, provider_hits)
+    if s:
+        sections.append(s)
+    s = render_log_feedback(log_feedback)
     if s:
         sections.append(s)
 

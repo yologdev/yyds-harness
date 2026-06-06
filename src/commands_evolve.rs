@@ -2241,6 +2241,32 @@ fn promotion_comparison(baseline: &EvalResult, candidate: &EvalResult) -> Promot
                 candidate,
             );
         }
+        if metric_greater(candidate, baseline, "coding_log_score")
+            || metric_greater(candidate, baseline, "workflow_success_rate")
+            || metric_greater(candidate, baseline, "session_success_rate")
+            || metric_greater(candidate, baseline, "task_success_rate")
+            || metric_greater(candidate, baseline, "retry_success_rate")
+            || metric_greater(candidate, baseline, "closed_loop_fix_rate")
+        {
+            return PromotionDecision::compared(
+                true,
+                Some("log_feedback_improved"),
+                "candidate GitHub Actions log feedback improves with no pass-rate regression",
+                baseline,
+                candidate,
+            );
+        }
+        if metric_less(candidate, baseline, "recurring_failure_count")
+            || metric_less(candidate, baseline, "max_failure_fingerprint_recurrence")
+        {
+            return PromotionDecision::compared(
+                true,
+                Some("log_feedback_reliability_improved"),
+                "candidate recurring GitHub Actions log failures are lower with no pass-rate regression",
+                baseline,
+                candidate,
+            );
+        }
         return PromotionDecision::compared(
             false,
             None,
@@ -2315,12 +2341,23 @@ fn harness_quality_regression(baseline: &EvalResult, candidate: &EvalResult) -> 
         "rollback_count",
         "rollback_rate",
         "fim_rollback_rate",
+        "recurring_failure_count",
+        "max_failure_fingerprint_recurrence",
     ] {
         if metric_greater(candidate, baseline, key) {
             return Some(format!("candidate {key} regresses harness quality gate"));
         }
     }
-    for key in ["fim_success_rate", "fim_compile_rate"] {
+    for key in [
+        "fim_success_rate",
+        "fim_compile_rate",
+        "coding_log_score",
+        "workflow_success_rate",
+        "session_success_rate",
+        "task_success_rate",
+        "state_capture_coverage",
+        "audit_capture_coverage",
+    ] {
         if metric_less(candidate, baseline, key) {
             return Some(format!("candidate {key} regresses harness quality gate"));
         }
@@ -4326,6 +4363,106 @@ mod tests {
         assert_eq!(
             decision.reason,
             "candidate fixture_agent_mutation_scope_failures regresses harness quality gate"
+        );
+    }
+
+    #[test]
+    fn promotion_decision_accepts_log_feedback_metric_improvements() {
+        let mut baseline = eval_payload("eval-base", None, 1.0, 2, 0);
+        baseline["metrics"]["state_metrics"] = json!({
+            "coding_log_score": 0.70,
+            "workflow_success_rate": 1.0,
+            "session_success_rate": 1.0,
+            "task_success_rate": 0.80,
+            "recurring_failure_count": 2
+        });
+        let mut candidate = eval_payload("eval-candidate", Some("patch-1"), 1.0, 2, 0);
+        candidate["metrics"]["state_metrics"] = json!({
+            "coding_log_score": 0.85,
+            "workflow_success_rate": 1.0,
+            "session_success_rate": 1.0,
+            "task_success_rate": 0.80,
+            "recurring_failure_count": 2
+        });
+        let events = vec![
+            event("PatchEvaluated", baseline.clone()),
+            event("PatchEvaluated", candidate.clone()),
+        ];
+
+        let decision = promotion_decision(&events, "patch-1", None, None);
+
+        assert!(decision.eligible);
+        assert_eq!(decision.criterion.as_deref(), Some("log_feedback_improved"));
+
+        candidate["metrics"]["state_metrics"] = json!({
+            "coding_log_score": 0.70,
+            "workflow_success_rate": 1.0,
+            "session_success_rate": 1.0,
+            "task_success_rate": 0.80,
+            "recurring_failure_count": 0
+        });
+        let events = vec![
+            event("PatchEvaluated", baseline),
+            event("PatchEvaluated", candidate),
+        ];
+
+        let decision = promotion_decision(&events, "patch-1", None, None);
+
+        assert!(decision.eligible);
+        assert_eq!(
+            decision.criterion.as_deref(),
+            Some("log_feedback_reliability_improved")
+        );
+    }
+
+    #[test]
+    fn promotion_decision_blocks_log_feedback_regressions() {
+        let mut baseline = eval_payload("eval-base", None, 1.0, 2, 0);
+        baseline["metrics"]["state_metrics"] = json!({
+            "coding_log_score": 0.90,
+            "state_capture_coverage": 1.0,
+            "audit_capture_coverage": 1.0,
+            "recurring_failure_count": 0
+        });
+        let mut candidate = eval_payload("eval-candidate", Some("patch-1"), 1.0, 2, 0);
+        candidate["metrics"]["state_metrics"] = json!({
+            "cost_usd": 0.10,
+            "coding_log_score": 0.60,
+            "state_capture_coverage": 1.0,
+            "audit_capture_coverage": 1.0,
+            "recurring_failure_count": 0
+        });
+        let events = vec![
+            event("PatchEvaluated", baseline.clone()),
+            event("PatchEvaluated", candidate.clone()),
+        ];
+
+        let decision = promotion_decision(&events, "patch-1", None, None);
+
+        assert!(!decision.eligible);
+        assert_eq!(
+            decision.reason,
+            "candidate coding_log_score regresses harness quality gate"
+        );
+
+        candidate["metrics"]["state_metrics"] = json!({
+            "cost_usd": 0.10,
+            "coding_log_score": 0.90,
+            "state_capture_coverage": 1.0,
+            "audit_capture_coverage": 1.0,
+            "recurring_failure_count": 3
+        });
+        let events = vec![
+            event("PatchEvaluated", baseline),
+            event("PatchEvaluated", candidate),
+        ];
+
+        let decision = promotion_decision(&events, "patch-1", None, None);
+
+        assert!(!decision.eligible);
+        assert_eq!(
+            decision.reason,
+            "candidate recurring_failure_count regresses harness quality gate"
         );
     }
 
