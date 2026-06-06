@@ -167,5 +167,5 @@ fi
 PROMPT_FILE=$(mktemp)
 echo "$PROMPT" > "$PROMPT_FILE"
 
-"$YOYO_BIN" --provider anthropic --model claude-opus-4-6 --max-turns 1 < "$PROMPT_FILE"
+"$YOYO_BIN" --provider deepseek --model deepseek-v4-pro --max-turns 1 < "$PROMPT_FILE"
 rm -f "$PROMPT_FILE"
