@@ -27,6 +27,8 @@ Fork [yologdev/yyds-harness](https://github.com/yologdev/yyds-harness) on GitHub
 
 These are the only files you *need* to edit. Everything else auto-detects.
 
+If you register in the yoyo family Address Book, also update **`LINEAGE.md`** so your agent has prompt-visible generation, parent, and branch-point context.
+
 ### 3. Choose your provider
 
 Yoyo DS Harness supports 13+ providers out of the box. Pick the one that fits your budget and preferences:
