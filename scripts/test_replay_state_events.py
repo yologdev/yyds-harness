@@ -79,6 +79,86 @@ class ReplayStateEvents(unittest.TestCase):
             self.assertEqual(stats["events_written"], 0)
             self.assertEqual(output.read_text(encoding="utf-8"), "")
 
+    def test_replays_real_format_events_in_order_with_dedup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Write two session files in the real state-event format
+            write_events(
+                root / "sessions/day-98-ts1/state/events.jsonl",
+                [
+                    {
+                        "id": "evt-001",
+                        "schema_version": 1,
+                        "ts_ms": 1000,
+                        "actor": {"kind": "system", "id": "harness"},
+                        "kind": "RunStarted",
+                        "payload": {"_yoyo": {"event_type": "RunStarted"}},
+                    },
+                    {
+                        "id": "evt-002",
+                        "schema_version": 1,
+                        "ts_ms": 2000,
+                        "actor": {"kind": "system", "id": "harness"},
+                        "kind": "ToolCallStarted",
+                        "payload": {"_yoyo": {"event_type": "ToolCallStarted"}, "tool_name": "bash"},
+                    },
+                    {
+                        "id": "evt-003",
+                        "schema_version": 1,
+                        "ts_ms": 3000,
+                        "actor": {"kind": "system", "id": "harness"},
+                        "kind": "RunCompleted",
+                        "payload": {"_yoyo": {"event_type": "RunCompleted"}, "status": "ok"},
+                    },
+                ],
+            )
+            write_events(
+                root / "sessions/day-98-ts2/state/events.jsonl",
+                [
+                    {
+                        "id": "evt-004",
+                        "schema_version": 1,
+                        "ts_ms": 4000,
+                        "actor": {"kind": "system", "id": "harness"},
+                        "kind": "FileEdited",
+                        "payload": {"_yoyo": {"event_type": "FileEdited"}, "path": "src/main.rs"},
+                    },
+                    # Duplicate event id — should be skipped
+                    {
+                        "id": "evt-002",
+                        "schema_version": 1,
+                        "ts_ms": 2000,
+                        "actor": {"kind": "system", "id": "harness"},
+                        "kind": "ToolCallStarted",
+                        "payload": {"_yoyo": {"event_type": "ToolCallStarted"}, "tool_name": "bash"},
+                    },
+                ],
+            )
+
+            output = root / "replayed.jsonl"
+            stats = replay(root / "sessions", output)
+
+            # Verify stats
+            self.assertEqual(stats["files_read"], 2)
+            self.assertEqual(stats["lines_read"], 5)
+            self.assertEqual(stats["events_written"], 4)
+            self.assertEqual(stats["duplicates_skipped"], 1)
+            self.assertEqual(stats["malformed_skipped"], 0)
+
+            # Verify output line count
+            lines = output.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 4)
+
+            # Verify each line is valid JSON
+            events = [json.loads(line) for line in lines]
+            for evt in events:
+                self.assertIsInstance(evt, dict)
+
+            # Verify events preserve sorted session order:
+            # day-98-ts1 (evt-001, evt-002, evt-003) then day-98-ts2 (evt-004)
+            event_ids = [evt["id"] for evt in events]
+            self.assertEqual(event_ids, ["evt-001", "evt-002", "evt-003", "evt-004"])
+
 
 if __name__ == "__main__":
     unittest.main()
