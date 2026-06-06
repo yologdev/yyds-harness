@@ -310,7 +310,13 @@ event model used by this harness.
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=yologdev/yyds-harness&type=Date)](https://star-history.com/#yologdev/yyds-harness&Date)
+<a href="https://www.star-history.com/?type=date&repos=yologdev%2Fyyds-harness">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=yologdev/yyds-harness&type=date&theme=dark&legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=yologdev/yyds-harness&type=date&legend=top-left" />
+    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=yologdev/yyds-harness&type=date&legend=top-left" />
+  </picture>
+</a>
 
 ## License
 
