@@ -35,7 +35,8 @@ pub fn handle_state_subcommand(args: &[String]) {
                 .and_then(|i| args.get(i + 1))
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(20);
-            handle_tail(limit);
+            let json = args.iter().any(|a| a == "--json");
+            handle_tail(limit, json);
         }
         "trace" => {
             let Some(id) = args.get(3) else {
@@ -498,6 +499,7 @@ pub fn handle_state_subcommand(args: &[String]) {
             };
             handle_lineage(id);
         }
+        "doctor" => handle_doctor(),
         _ => print_usage(),
     }
 }
@@ -521,14 +523,304 @@ fn handle_init() {
     println!("{GREEN}  initialized state log:{RESET} {}", path.display());
 }
 
-fn handle_tail(limit: usize) {
+fn handle_doctor() {
+    println!("{BOLD}State Doctor{RESET}");
+
+    let events_path = default_events_path();
+    let store_path = default_store_path(&events_path);
+
+    // --- Events: count, runs, failures, type distribution ---
+    let (total_events, runs, run_failures, type_counts, recent_failures) =
+        match read_events(&events_path) {
+            Ok(events) => {
+                let total = events.len();
+                let mut runs_count = 0u64;
+                let mut failures = 0u64;
+                let mut types: BTreeMap<String, u64> = BTreeMap::new();
+                let mut fail_list: Vec<(String, String)> = Vec::new();
+
+                for ev in &events {
+                    let typ = ev.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    *types.entry(typ.to_string()).or_default() += 1;
+
+                    match typ {
+                        "RunStarted" => runs_count += 1,
+                        "RunCompleted" => {
+                            let status = ev.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                            if status == "failed" {
+                                failures += 1;
+                                let ts = ev.get("ts").and_then(|v| v.as_str()).unwrap_or("?");
+                                let run_id =
+                                    ev.get("run_id").and_then(|v| v.as_str()).unwrap_or("?");
+                                fail_list.push((ts.to_string(), run_id.to_string()));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Sort by ts descending, keep last 5
+                fail_list.sort_by(|a, b| b.0.cmp(&a.0));
+                fail_list.truncate(5);
+
+                (total, runs_count, failures, types, fail_list)
+            }
+            Err(e) => {
+                eprintln!(
+                    "{RED}  Events: error reading {} — {e}{RESET}",
+                    events_path.display()
+                );
+                (0, 0, 0, BTreeMap::new(), Vec::new())
+            }
+        };
+
+    let events_color = if total_events > 0 { &GREEN } else { &YELLOW };
+    println!(
+        "  {events_color}Events:{RESET}    {total_events} total ({runs} runs, {run_failures} failures)"
+    );
+
+    // --- Store (SQLite) ---
+    let store_line = if store_path.exists() {
+        match Connection::open(&store_path) {
+            Ok(conn) => {
+                let integrity = conn
+                    .pragma_query_value(None, "integrity_check", |row| row.get::<_, String>(0))
+                    .unwrap_or_else(|_| "error".to_string());
+                if integrity != "ok" {
+                    format!("{RED}  Store:     SQLite — integrity FAIL: {integrity}{RESET}")
+                } else {
+                    let version = conn
+                        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                        .unwrap_or(-1);
+                    let current = i64::from(crate::state::STATE_SQLITE_SCHEMA_VERSION);
+                    if version == current {
+                        format!("{GREEN}  Store:     SQLite v{version} — integrity OK{RESET}")
+                    } else {
+                        format!(
+                            "{YELLOW}  Store:     SQLite v{version} (current v{current}) — integrity OK{RESET}"
+                        )
+                    }
+                }
+            }
+            Err(e) => {
+                format!("{RED}  Store:     cannot open: {e}{RESET}")
+            }
+        }
+    } else {
+        format!(
+            "{YELLOW}  Store:     not found at {}{RESET}",
+            store_path.display()
+        )
+    };
+    println!("{store_line}");
+
+    // --- Disk usage ---
+    let events_size = std::fs::metadata(&events_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let store_size = std::fs::metadata(&store_path).map(|m| m.len()).unwrap_or(0);
+    println!(
+        "  {CYAN}Disk:{RESET}      events={}, store={}",
+        human_bytes(events_size),
+        human_bytes(store_size),
+    );
+
+    // --- Schema version ---
+    let schema_current = crate::state::STATE_SQLITE_SCHEMA_VERSION;
+    let schema_status = if store_path.exists() {
+        match Connection::open(&store_path) {
+            Ok(conn) => {
+                let ver = conn
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap_or(-1);
+                if ver == i64::from(schema_current) {
+                    format!("{GREEN}  Schema:    version {ver} (current){RESET}")
+                } else {
+                    format!("{YELLOW}  Schema:    version {ver} (current={schema_current}){RESET}")
+                }
+            }
+            Err(_) => format!("{YELLOW}  Schema:    unable to read{RESET}"),
+        }
+    } else {
+        format!("{YELLOW}  Schema:    no store{RESET}")
+    };
+    println!("{schema_status}");
+
+    // --- Event type distribution (grouped) ---
+    let grouped = group_event_types(&type_counts);
+    if !grouped.is_empty() {
+        let parts: Vec<String> = grouped
+            .iter()
+            .map(|(name, count)| format!("{name}={count}"))
+            .collect();
+        println!("  {CYAN}Types:{RESET}     {}", parts.join(", "));
+    }
+
+    // --- Config validation ---
+    let events_dir_exists = events_path.parent().map(|p| p.exists()).unwrap_or(false);
+    let events_rw = std::fs::OpenOptions::new()
+        .read(true)
+        .open(&events_path)
+        .is_ok();
+    let store_dir_exists = store_path.parent().map(|p| p.exists()).unwrap_or(false);
+    let store_rw = if store_path.exists() {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .open(&store_path)
+            .is_ok()
+    } else {
+        // Store might not exist yet — check parent dir is writable
+        store_path
+            .parent()
+            .map(|p| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(p.join(".doctor_test_write"))
+                    .map(|f| {
+                        drop(f);
+                        let _ = std::fs::remove_file(p.join(".doctor_test_write"));
+                    })
+                    .is_ok()
+            })
+            .unwrap_or(false)
+    };
+
+    let config_ok = events_dir_exists && events_rw && store_dir_exists && store_rw;
+    let mut config_issues: Vec<&str> = Vec::new();
+    if !events_dir_exists {
+        config_issues.push("events dir missing");
+    }
+    if !events_rw {
+        config_issues.push("events not readable");
+    }
+    if !store_dir_exists {
+        config_issues.push("store dir missing");
+    }
+    if !store_rw {
+        config_issues.push("store not writable");
+    }
+
+    let config_line = if config_ok {
+        format!("{GREEN}  Config:    paths OK{RESET}")
+    } else {
+        format!(
+            "{YELLOW}  Config:    issues: {}{RESET}",
+            config_issues.join(", ")
+        )
+    };
+    println!("{config_line}");
+
+    // --- Recent failures ---
+    if !recent_failures.is_empty() {
+        println!("{BOLD}  Recent failures:{RESET}");
+        for (ts, run_id) in &recent_failures {
+            println!("{RED}    {ts}  {run_id}{RESET}");
+        }
+    }
+
+    // --- Overall health ---
+    let all_ok = total_events > 0
+        && store_path.exists()
+        && config_ok
+        && run_failures == 0
+        && store_line.contains("integrity OK");
+    let health_line = if all_ok {
+        format!("{GREEN}  Health:    ✓ All checks passed{RESET}")
+    } else if total_events == 0 || !store_path.exists() || !config_ok {
+        format!("{RED}  Health:    ✗ Issues found — see above{RESET}")
+    } else {
+        format!("{YELLOW}  Health:    ⚠ Warnings — see above{RESET}")
+    };
+    println!("{health_line}");
+}
+
+/// Group raw JSON event type strings into display categories.
+fn group_event_types(raw: &BTreeMap<String, u64>) -> Vec<(String, u64)> {
+    let mut grouped: BTreeMap<String, u64> = BTreeMap::new();
+
+    let merge = |map: &mut BTreeMap<String, u64>, key: &str, src_key: &str| {
+        if let Some(v) = raw.get(src_key) {
+            *map.entry(key.to_string()).or_default() += v;
+        }
+    };
+
+    merge(&mut grouped, "Run", "RunStarted");
+    merge(&mut grouped, "Run", "RunCompleted");
+    merge(&mut grouped, "ToolCall", "ToolCallStarted");
+    merge(&mut grouped, "ToolCall", "ToolCallCompleted");
+    merge(&mut grouped, "Command", "CommandStarted");
+    merge(&mut grouped, "Command", "CommandCompleted");
+    merge(&mut grouped, "Model", "ModelCallStarted");
+    merge(&mut grouped, "Model", "ModelCallCompleted");
+    merge(&mut grouped, "File", "FileRead");
+    merge(&mut grouped, "File", "FileEdited");
+    merge(&mut grouped, "Test", "TestStarted");
+    merge(&mut grouped, "Test", "TestCompleted");
+    merge(&mut grouped, "Cache", "CacheMetricsRecorded");
+
+    // Remaining types: keep as-is
+    let known: BTreeSet<&str> = [
+        "RunStarted",
+        "RunCompleted",
+        "ToolCallStarted",
+        "ToolCallCompleted",
+        "CommandStarted",
+        "CommandCompleted",
+        "ModelCallStarted",
+        "ModelCallCompleted",
+        "FileRead",
+        "FileEdited",
+        "TestStarted",
+        "TestCompleted",
+        "CacheMetricsRecorded",
+    ]
+    .iter()
+    .copied()
+    .collect();
+
+    for (key, count) in raw {
+        if !known.contains(key.as_str()) {
+            grouped.insert(key.clone(), *count);
+        }
+    }
+
+    // Sort by count descending
+    let mut result: Vec<(String, u64)> = grouped.into_iter().collect();
+    result.sort_by_key(|b| std::cmp::Reverse(b.1));
+    result
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if bytes >= GB {
+        format!("{:.1}GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1}MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{}KB", bytes / KB)
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
+fn handle_tail(limit: usize, json: bool) {
     let path = default_events_path();
     let Ok(lines) = read_tail(&path, limit) else {
         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
         return;
     };
-    for line in lines {
-        print_event_line(&line);
+    if json {
+        for line in lines {
+            println!("{line}");
+        }
+    } else {
+        for line in lines {
+            print_event_line(&line);
+        }
     }
 }
 
@@ -24635,5 +24927,27 @@ mod tests {
         assert!(report.contains(
             "release_source_provenance_audit <-[blocked_by_source_provenance_audit]- evt-release-gate (event -> policy)"
         ));
+    }
+
+    #[test]
+    fn tail_json_output_passes_raw_jsonl_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let events = vec![
+            json!({"event_id":"evt-a","event_type":"RunStarted","timestamp_ms":100,"run_id":"run-1","payload":{"task":"test"}}),
+            json!({"event_id":"evt-b","event_type":"RunCompleted","timestamp_ms":200,"run_id":"run-1","payload":{"status":"success"}}),
+            json!({"event_id":"evt-c","event_type":"ToolCallStarted","timestamp_ms":300,"run_id":"run-2","payload":{"tool_name":"bash"}}),
+        ];
+        write_jsonl(&events_path, &events);
+
+        let lines = read_tail(&events_path, 2).unwrap();
+        assert_eq!(lines.len(), 2, "read_tail respects limit");
+        // Last two events: evt-b and evt-c
+        let parsed: Vec<Value> = lines
+            .iter()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .collect();
+        assert_eq!(parsed[0]["event_id"], "evt-b");
+        assert_eq!(parsed[1]["event_id"], "evt-c");
     }
 }

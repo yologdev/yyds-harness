@@ -196,7 +196,19 @@ fn handle_fixtures(args: &[String]) {
     };
 
     match action {
-        "list" => println!("{}", crate::eval_fixtures::format_fixture_list(&suite)),
+        "list" => {
+            let group_by_domain = args
+                .windows(2)
+                .any(|w| w[0] == "--group-by" && w[1] == "domain");
+            if group_by_domain {
+                println!(
+                    "{}",
+                    crate::eval_fixtures::format_fixture_list_by_domain(&suite)
+                );
+            } else {
+                println!("{}", crate::eval_fixtures::format_fixture_list(&suite));
+            }
+        }
         "validate" => {
             println!("Eval fixture suite is valid");
             println!("  suite: {}", suite.suite);

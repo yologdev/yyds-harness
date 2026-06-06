@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -279,6 +280,62 @@ pub fn format_fixture_list(suite: &FixtureSuite) -> String {
         out.push_str(&format!(
             "  {:<28} {:<22} {:<8} {}\n",
             task.task_id, task.category, task.risk_label, task.goal
+        ));
+    }
+    out.trim_end().to_string()
+}
+
+/// Group fixtures by primary domain (first segment of category before '/',
+/// or first word of category if no '/'), sorted by count descending.
+pub fn format_fixture_list_by_domain(suite: &FixtureSuite) -> String {
+    let mut domains: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for task in &suite.tasks {
+        let domain = if task.category.is_empty() {
+            "other".to_string()
+        } else if let Some(idx) = task.category.find('/') {
+            task.category[..idx].trim().to_string()
+        } else {
+            // Take first word (split on whitespace)
+            task.category
+                .split_whitespace()
+                .next()
+                .unwrap_or("other")
+                .to_string()
+        };
+        domains.entry(domain).or_default().push(&task.task_id);
+    }
+    let mut sorted: Vec<(String, Vec<&str>)> = domains.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+
+    let total_tasks: usize = suite.tasks.iter().map(|t| t.tests.len()).sum();
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Eval fixture coverage by domain ({}, {} fixtures, {} tasks):\n",
+        suite.suite,
+        suite.tasks.len(),
+        total_tasks,
+    ));
+    let max_domain_width = sorted.iter().map(|(d, _)| d.len()).max().unwrap_or(0);
+    for (domain, names) in &sorted {
+        let fixture_label = if names.len() == 1 {
+            "fixture"
+        } else {
+            "fixtures"
+        };
+        let compact: Vec<String> = names.iter().take(5).map(|n| n.to_string()).collect();
+        let more = if names.len() > 5 {
+            format!(" (+{} more)", names.len() - 5)
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "  {:<width$} {:>3} {}  ({}{})\n",
+            domain,
+            names.len(),
+            fixture_label,
+            compact.join(", "),
+            more,
+            width = max_domain_width + 2,
         ));
     }
     out.trim_end().to_string()
@@ -1140,5 +1197,97 @@ mod tests {
         assert!(decision.reason.contains("budget exhausted"));
         // Abort should NOT carry a repair instruction
         assert!(decision.instruction.is_none());
+    }
+
+    #[test]
+    fn format_fixture_list_by_domain_groups_and_sorts() {
+        let suite = FixtureSuite {
+            suite: "local-smoke".to_string(),
+            root: PathBuf::from("eval/fixtures/local-smoke"),
+            tasks: vec![
+                BenchmarkTask {
+                    task_id: "state-redaction".to_string(),
+                    category: "state/security".to_string(),
+                    repo_fixture: ".".to_string(),
+                    initial_commit: "abc".to_string(),
+                    goal: "test".to_string(),
+                    tests: vec!["cargo test".to_string()],
+                    hidden_failure_mode: "none".to_string(),
+                    expected_files: vec!["src/lib.rs".to_string()],
+                    risk_label: "high".to_string(),
+                },
+                BenchmarkTask {
+                    task_id: "eval-scoring".to_string(),
+                    category: "eval/metrics".to_string(),
+                    repo_fixture: ".".to_string(),
+                    initial_commit: "abc".to_string(),
+                    goal: "test".to_string(),
+                    tests: vec!["cargo test".to_string()],
+                    hidden_failure_mode: "none".to_string(),
+                    expected_files: vec!["src/lib.rs".to_string()],
+                    risk_label: "medium".to_string(),
+                },
+                BenchmarkTask {
+                    task_id: "eval-state-metrics".to_string(),
+                    category: "eval/metrics".to_string(),
+                    repo_fixture: ".".to_string(),
+                    initial_commit: "abc".to_string(),
+                    goal: "test".to_string(),
+                    tests: vec!["cargo test".to_string()],
+                    hidden_failure_mode: "none".to_string(),
+                    expected_files: vec!["src/lib.rs".to_string()],
+                    risk_label: "medium".to_string(),
+                },
+                BenchmarkTask {
+                    task_id: "deepseek-profile".to_string(),
+                    category: "deepseek/protocol".to_string(),
+                    repo_fixture: ".".to_string(),
+                    initial_commit: "abc".to_string(),
+                    goal: "test".to_string(),
+                    tests: vec!["cargo test".to_string()],
+                    hidden_failure_mode: "none".to_string(),
+                    expected_files: vec!["src/lib.rs".to_string()],
+                    risk_label: "low".to_string(),
+                },
+                BenchmarkTask {
+                    task_id: "unknown-domain".to_string(),
+                    category: "".to_string(),
+                    repo_fixture: ".".to_string(),
+                    initial_commit: "abc".to_string(),
+                    goal: "test".to_string(),
+                    tests: vec!["cargo test".to_string()],
+                    hidden_failure_mode: "none".to_string(),
+                    expected_files: vec!["src/lib.rs".to_string()],
+                    risk_label: "low".to_string(),
+                },
+            ],
+        };
+
+        let output = format_fixture_list_by_domain(&suite);
+
+        // header with suite name and counts
+        assert!(output.contains("Eval fixture coverage by domain"));
+        assert!(output.contains("local-smoke"));
+        assert!(output.contains("5 fixtures"));
+        // tasks sum: 1+1+1+1+1 = 5
+        assert!(output.contains("5 tasks"));
+
+        // eval domain should come first (2 fixtures), then state (1), then deepseek (1), then other (1)
+        let eval_pos = output.find("eval").unwrap();
+        let state_pos = output.find("state").unwrap();
+        let deepseek_pos = output.find("deepseek").unwrap();
+        let other_pos = output.find("other").unwrap();
+        assert!(
+            eval_pos < state_pos,
+            "eval (2 fixtures) should sort before state (1)"
+        );
+        assert!(
+            state_pos < deepseek_pos,
+            "state and deepseek tied at 1, alpha order"
+        );
+        assert!(
+            deepseek_pos < other_pos,
+            "deepseek should sort before other (empty category)"
+        );
     }
 }
