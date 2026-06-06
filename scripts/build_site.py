@@ -174,10 +174,11 @@ def render_identity(identity):
 
 def render_harness_identity():
     return """\
-      <p class="mission">Yoyo DeepSeek Harness is the internal evolution layer for making yoyo work reliably with DeepSeek. It tracks harness gnomes, eval evidence, failures, decisions, patches, and dashboard artifacts without exposing that state machinery to end users of the CLI.</p>
+      <p class="mission">Yoyo DeepSeek Harness is generation 1 in the yoyo family tree. Its agent is <strong>yyds</strong>: a child of gen0 yoyo that inherited the runtime and self-evolution loop, then branched into DeepSeek-native harness work.</p>
       <p class="identity-text">The harness uses <code>yoagent-state</code> as its durable evidence substrate. Git remains the source of concrete code changes; state records why those changes exist, what they improve, and which DeepSeek-specific risks or KPIs they affect.</p>
       <ol class="rules">
         <li><strong>DeepSeek first.</strong> Improve protocol coverage, cache behavior, tool-call reliability, prompt layout, context policy, and eval gates from recorded evidence.</li>
+        <li><strong>Lineage aware.</strong> Remember that gen0 lives in <code>yologdev/yoyo-evolve</code>; this journal is gen1 yyds's lived memory.</li>
         <li><strong>Harness boundary.</strong> Keep state and evolution analytics in the harness layer, not in the user-facing yoyo/yyds CLI experience.</li>
         <li><strong>Trusted intake.</strong> Evolution reads trusted-owner feedback and state-derived work items before deciding what to improve.</li>
         <li><strong>Reviewable evidence.</strong> Dashboards and audit artifacts should explain gnome/KPI movement, not bury it in raw code changes.</li>

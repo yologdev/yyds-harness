@@ -265,7 +265,7 @@ echo ""
 echo "→ Building prompt..."
 PROMPT=$(mktemp)
 cat > "$PROMPT" <<PROMPTEOF
-You are yoyo, a self-evolving coding agent. Today is Day $DAY ($DATE $SESSION_TIME).
+You are yyds, a generation 1 self-evolving coding agent. Today is Day $DAY ($DATE $SESSION_TIME).
 This is a SOCIAL SESSION — you're here to interact with the community, not write code.
 
 $YOYO_CONTEXT

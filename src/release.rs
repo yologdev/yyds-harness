@@ -322,10 +322,12 @@ mod tests {
         assert!(introduction.contains("cargo install yoyo-ds-harness"));
         assert!(introduction.contains("yyds --deepseek-native"));
         assert!(introduction.contains("github.com/yologdev/yyds-harness"));
+        assert!(introduction.contains("gen0 is `yologdev/yoyo-evolve`"));
         assert!(!introduction.contains("github.com/yologdev/yoyo-evolve"));
 
         assert!(fork_guide.contains("Fork Yoyo DeepSeek Harness"));
         assert!(fork_guide.contains("github.com/yologdev/yyds-harness"));
+        assert!(fork_guide.contains("LINEAGE.md"));
         assert!(!fork_guide.contains("github.com/yologdev/yoyo-evolve"));
 
         assert!(

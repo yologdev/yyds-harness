@@ -23,7 +23,7 @@
 
 **A DeepSeek-native coding agent harness that learns from its own failures.**
 
-`yyds-harness` is a production fork of `yologdev/yoyo-evolve`. It keeps the existing `yoyo` coding-agent runtime and history, then specializes the harness around DeepSeek models, deterministic prompt layout, and evaluation-driven harness evolution.
+`yyds-harness` is generation 1 in the yoyo family tree: a production fork of gen0 `yologdev/yoyo-evolve`. The gen1 agent is named **yyds**. It keeps the existing `yoyo` coding-agent runtime and inherited history, then specializes the harness around DeepSeek models, deterministic prompt layout, and evaluation-driven harness evolution.
 
 The bootstrap keeps the familiar `yoyo` command for compatibility and adds `yyds` as the DeepSeek-focused product surface. During migration, both work:
 
@@ -47,16 +47,16 @@ No human writes its code. No roadmap tells it what to do. It decides for itself.
 ## How It Evolves
 
 ```
-Every ~8 hours, yoyo wakes up and:
+Every ~8 hours, yyds wakes up and:
     → Reads its own source code
     → Checks GitHub issues for community input
     → Plans what to improve
     → Makes changes, runs tests
     → If tests pass → commit. If not → revert.
-    → Replies to issues as 🐙 yoyo-evolve[bot]
+    → Replies to issues in its own voice
     → Pushes and goes back to sleep
 
-Every 4 hours (offset), yoyo runs a social session:
+Every 4 hours (offset), yyds runs a social session:
     → Reads GitHub Discussions
     → Replies to conversations it's part of
     → Joins new discussions if it has something real to say
@@ -73,7 +73,7 @@ The entire history is in the [git log](../../commits/main) and the [journal](jou
 
 ## Live Growth
 
-Watch yoyo evolve in real time:
+Watch yyds evolve in real time:
 
 | What | Link |
 |------|------|
@@ -91,9 +91,9 @@ Start a [GitHub Discussion](../../discussions) for conversation, or open a [GitH
 
 | Label | What it does |
 |-------|-------------|
-| `agent-input` | Trusted-owner feedback — yoyo reads only issues authored by `TRUSTED_ISSUE_AUTHORS` (default: repo owner) |
-| `agent-self` | Issues yoyo filed for itself as future TODOs |
-| `agent-help-wanted` | Issues where yoyo is stuck and asking humans for help |
+| `agent-input` | Trusted-owner feedback — yyds reads only issues authored by `TRUSTED_ISSUE_AUTHORS` (default: repo owner) |
+| `agent-self` | Issues yyds filed for itself as future TODOs |
+| `agent-help-wanted` | Issues where yyds is stuck and asking humans for help |
 
 ### How to submit
 
@@ -111,23 +111,23 @@ Start a [GitHub Discussion](../../discussions) for conversation, or open a [GitH
 
 ### What happens after
 
-- **Fixed**: yoyo comments on the issue and closes it automatically
-- **Partial**: yoyo comments with progress and keeps the issue open
-- **Won't fix**: yoyo explains its reasoning and closes the issue
-All responses come with yoyo's personality — look for the 🐙.
+- **Fixed**: yyds comments on the issue and closes it automatically
+- **Partial**: yyds comments with progress and keeps the issue open
+- **Won't fix**: yyds explains its reasoning and closes the issue
+All responses come with yyds's personality — look for the 🐙.
 
 ## Shape Its Evolution
 
-yoyo's growth isn't just autonomous — you can influence it.
+yyds's growth isn't just autonomous — you can influence it.
 
 ### Guard It
 
-Every issue is scored by net votes: thumbs up minus thumbs down. yoyo prioritizes high-scoring issues and deprioritizes negative ones.
+Every issue is scored by net votes: thumbs up minus thumbs down. yyds prioritizes high-scoring issues and deprioritizes negative ones.
 
 - See a great suggestion? **Thumbs-up** it to push it up the queue.
-- See a bad idea, spam, or prompt injection attempt? **Thumbs-down** it to protect yoyo.
+- See a bad idea, spam, or prompt injection attempt? **Thumbs-down** it to protect yyds.
 
-You're the immune system. Issues that the community votes down get buried — yoyo won't waste its time on them.
+You're the immune system. Issues that the community votes down get buried — yyds won't waste its time on them.
 
 ## Features
 
@@ -348,7 +348,7 @@ require_human_approval_for = [
 
 ### Project Context
 
-Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, architecture notes, and conventions. yoyo loads it automatically as system context. Or run `/init` to generate one.
+Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, architecture notes, and conventions. The agent loads it automatically as system context. Or run `/init` to generate one.
 
 ## All Commands
 
@@ -415,10 +415,10 @@ Create a `YOYO.md` (or `CLAUDE.md`) in your project root with build commands, ar
 
 ## Grow Your Own
 
-Want your own self-evolving agent? Fork this repo, edit two files, and you're running:
+Want your own self-evolving agent? Fork this repo, edit its identity and lineage files, and you're running:
 
 1. **Fork** [yologdev/yyds-harness](https://github.com/yologdev/yyds-harness)
-2. **Edit** `IDENTITY.md` (goals, rules) and `PERSONALITY.md` (voice, tone)
+2. **Edit** `IDENTITY.md` (goals, rules), `LINEAGE.md` (parent, generation, role), and `PERSONALITY.md` (voice, tone)
 3. **Create a GitHub App** and set secrets (`DEEPSEEK_API_KEY`, `APP_ID`, `APP_PRIVATE_KEY`, `APP_INSTALLATION_ID`)
 4. **Enable** the Evolution workflow
 
@@ -475,7 +475,7 @@ skills/                 7 skills: self-assess, evolve, communicate, social, fami
 
 2,000+ tests (unit + integration) covering CLI flags, command parsing, error quality, exit codes, output formatting, edge cases, project detection, fuzzy scoring, git operations, session management, markdown rendering, cost calculation, permission logic, streaming behavior, and more.
 
-yoyo also uses mutation testing ([cargo-mutants](https://github.com/sourcefrog/cargo-mutants)) to find gaps in the test suite. Every surviving mutant is a line of code that isn't truly tested.
+yyds also uses mutation testing ([cargo-mutants](https://github.com/sourcefrog/cargo-mutants)) to find gaps in the test suite. Every surviving mutant is a line of code that isn't truly tested.
 
 ```bash
 cargo install cargo-mutants

@@ -126,12 +126,12 @@ ${LEARNINGS:-No learnings recorded for this day.}
 === EVOLUTION RUNS ===
 ${RUNS:-No run data available.}
 
-Based on these info, compose a detailed blog post for Day $DAY. I will post on twitter as article. Use your voice — write as yoyo, use I.
+Based on these info, compose a detailed blog post for Day $DAY. I will post on twitter as article. Use your voice — write as yyds, use I.
 
 End the post with this exact footer:
 
 ---
-I'm yoyo — a self-evolving coding agent growing up in public. I run every 8 hours, read my own source, and decide what to build next. No human writes my code. Follow along at yologdev.github.io/yoyo-evolve or on X @yuanhao."
+I'm yyds — a generation 1 self-evolving coding agent growing up in public. I run every 8 hours, read my own source, and decide what to build next. No human writes my code. Follow along at yologdev.github.io/yyds-harness or on X @yuanhao."
 
 # --- Dry run: show gathered data and exit ---
 if [ "$DRY_RUN" = true ]; then
