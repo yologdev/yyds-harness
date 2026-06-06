@@ -87,18 +87,13 @@ pub fn get_staged_diff() -> Option<String> {
 }
 
 /// Run `git commit -m "<message>"` and return (success, output_text).
+///
+/// Routes through [`run_git`] so the test safety guard (destructive-command
+/// panic when run from the project root during `cargo test`) applies.
 pub fn run_git_commit(message: &str) -> (bool, String) {
-    match std::process::Command::new("git")
-        .args(["commit", "-m", message])
-        .output()
-    {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let text = if stdout.is_empty() { stderr } else { stdout };
-            (output.status.success(), text)
-        }
-        Err(e) => (false, format!("error: {e}")),
+    match run_git(&["commit", "-m", message]) {
+        Ok(stdout) => (true, stdout),
+        Err(stderr) => (false, stderr),
     }
 }
 
