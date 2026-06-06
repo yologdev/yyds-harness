@@ -742,6 +742,7 @@ pub fn truncate(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_truncate_short_string() {
@@ -1510,6 +1511,7 @@ mod tests {
     // ── context_budget_warning tests ───────────────────────────────────
 
     #[test]
+    #[serial]
     fn test_context_budget_warning_below_60_returns_none() {
         reset_context_budget_warning();
         assert!(context_budget_warning(0, 100_000).is_none());
@@ -1519,6 +1521,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_context_budget_warning_60_threshold() {
         reset_context_budget_warning();
         let warn = context_budget_warning(60_000, 100_000);
@@ -1529,6 +1532,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_context_budget_warning_80_threshold() {
         reset_context_budget_warning();
         let warn = context_budget_warning(80_000, 100_000);
@@ -1541,6 +1545,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_context_budget_warning_90_threshold() {
         reset_context_budget_warning();
         let warn = context_budget_warning(90_000, 100_000);
@@ -1552,6 +1557,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_context_budget_warning_95_threshold() {
         reset_context_budget_warning();
         let warn = context_budget_warning(95_000, 100_000);
@@ -1562,6 +1568,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_context_budget_warning_same_threshold_no_repeat() {
         reset_context_budget_warning();
         // First call at 60% should warn
@@ -1573,6 +1580,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_context_budget_warning_escalates() {
         reset_context_budget_warning();
         let w60 = context_budget_warning(60_000, 100_000);
@@ -1584,6 +1592,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_context_budget_warning_reset_rearms() {
         reset_context_budget_warning();
         let w1 = context_budget_warning(60_000, 100_000);
@@ -1595,6 +1604,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_context_budget_warning_zero_max_returns_none() {
         reset_context_budget_warning();
         assert!(context_budget_warning(100, 0).is_none());
@@ -1789,6 +1799,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hint_first_turn() {
         reset_shown_hints();
         let ctx = HintContext {
@@ -1801,6 +1812,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hint_watch_when_files_modified_no_watch() {
         reset_shown_hints();
         let ctx = HintContext {
@@ -1815,6 +1827,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hint_no_watch_hint_when_watch_set() {
         reset_shown_hints();
         let ctx = HintContext {
@@ -1831,6 +1844,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hint_retry_on_tool_error() {
         reset_shown_hints();
         let ctx = HintContext {
@@ -1844,6 +1858,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hint_compact_on_high_usage() {
         reset_shown_hints();
         let ctx = HintContext {
@@ -1857,6 +1872,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hint_diff_when_files_modified() {
         reset_shown_hints();
         // watch hint fires first for files_modified + no watch, so set has_watch
@@ -1872,6 +1888,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hint_tips_after_no_slash_commands() {
         reset_shown_hints();
         let ctx = HintContext {
@@ -1885,6 +1902,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hint_no_repeat_same_category() {
         reset_shown_hints();
         let ctx = HintContext {
@@ -1906,6 +1924,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hint_none_when_no_conditions_match() {
         reset_shown_hints();
         let ctx = HintContext {
@@ -1921,6 +1940,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hint_priority_first_turn_wins() {
         reset_shown_hints();
         // Multiple conditions true, but first_turn is highest priority
