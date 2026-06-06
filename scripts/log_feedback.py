@@ -35,9 +35,9 @@ PROVIDER_ERROR_RE = re.compile(
 JSON_ERROR_RE = re.compile(r"(json|schema|deserialize|parse).*(error|fail)", re.IGNORECASE)
 TOOL_ERROR_RE = re.compile(r"(tool call|tool schema|malformed tool|invalid tool)", re.IGNORECASE)
 STATE_ERROR_RE = re.compile(r"(state|audit-log|events\.jsonl|state\.sqlite).*(error|fail|missing)", re.IGNORECASE)
-SECRET_RE = re.compile(
-    r"(?i)(token|secret|password|api[_-]?key|authorization|bearer)\s*[:=]\s*['\"]?[^'\"\s]+"
-)
+AUTHORIZATION_RE = re.compile(r"(?i)\bauthorization\s*[:=]\s*bearer\s+[^'\"\s]+")
+BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}")
+SECRET_RE = re.compile(r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*['\"]?[^'\"\s]+")
 
 MAX_EVIDENCE_LINES = 8
 MAX_FINGERPRINTS = 10
@@ -53,6 +53,8 @@ def strip_ansi(value: str) -> str:
 
 
 def redact(value: str) -> str:
+    value = AUTHORIZATION_RE.sub("Authorization: Bearer <redacted>", value)
+    value = BEARER_RE.sub("Bearer <redacted>", value)
     value = SECRET_RE.sub(lambda m: f"{m.group(1)}=<redacted>", value)
     value = re.sub(r"gh[psu]_[A-Za-z0-9_]{20,}", "<redacted-token>", value)
     return value
@@ -204,7 +206,7 @@ def previous_feedback(session_dir: Path, limit: int = 10) -> list[dict[str, Any]
     return [load_json(path) for _, path in candidates[:limit]]
 
 
-def find_session_for_run(sessions_dir: Path, run_id: str) -> str:
+def find_session_for_run(sessions_dir: Path, run_id: str, run_attempt: str = "") -> str:
     if not sessions_dir.is_dir() or not run_id:
         return ""
     matches: list[tuple[float, Path]] = []
@@ -214,6 +216,8 @@ def find_session_for_run(sessions_dir: Path, run_id: str) -> str:
         outcome_path = child / "outcome.json"
         outcome = load_json(outcome_path)
         if str(outcome.get("github_run_id") or "") != run_id:
+            continue
+        if run_attempt and str(outcome.get("github_run_attempt") or "") != run_attempt:
             continue
         try:
             mtime = outcome_path.stat().st_mtime
@@ -310,6 +314,7 @@ def build_assessment(
     log_text: str,
     repo: str,
     run_id: str,
+    run_attempt: str,
     workflow_conclusion: str,
 ) -> dict[str, Any]:
     outcome = load_json(session_dir / "outcome.json")
@@ -374,6 +379,7 @@ def build_assessment(
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "repo": repo,
         "run_id": run_id,
+        "run_attempt": run_attempt,
         "session_id": session_dir.name,
         "log_available": log_available,
         "log_error": log_error,
@@ -425,6 +431,7 @@ def append_patch_evaluated(session_dir: Path, assessment: dict[str, Any]) -> Pat
     events_path.parent.mkdir(parents=True, exist_ok=True)
     now_ms = int(time.time() * 1000)
     run_id = str(assessment.get("run_id") or "unknown")
+    run_attempt = str(assessment.get("run_attempt") or "")
     metrics = assessment["metrics"]
     score = float(metrics["coding_log_score"])
     status = "passed" if score >= 0.75 else "failed"
@@ -444,6 +451,7 @@ def append_patch_evaluated(session_dir: Path, assessment: dict[str, Any]) -> Pat
             "log_feedback": {
                 "repo": assessment.get("repo"),
                 "run_id": run_id,
+                "run_attempt": run_attempt,
                 "session_id": assessment.get("session_id"),
                 "top_lessons": assessment.get("top_lessons", []),
                 "evidence": metrics.get("evidence", []),
@@ -453,14 +461,14 @@ def append_patch_evaluated(session_dir: Path, assessment: dict[str, Any]) -> Pat
         "created_at_ms": now_ms,
     }
     event = {
-        "event_id": f"evt-log-feedback-{hashlib.sha1(f'{run_id}-{now_ms}'.encode()).hexdigest()[:16]}",
+        "event_id": f"evt-log-feedback-{hashlib.sha1(f'{run_id}-{run_attempt}-{now_ms}'.encode()).hexdigest()[:16]}",
         "event_type": "PatchEvaluated",
         "schema_version": 1,
         "timestamp_ms": now_ms,
         "actor": "harness",
         "run_id": f"github-actions-{run_id}",
         "session_id": assessment.get("session_id"),
-        "trace_id": f"trace-log-feedback-{run_id}",
+        "trace_id": f"trace-log-feedback-{run_id}-{run_attempt or 'attempt-unknown'}",
         "parent_event_ids": [],
         "payload": eval_payload,
     }
@@ -483,6 +491,7 @@ def main() -> int:
     parser.add_argument("--print-session-for-run", action="store_true")
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
+    parser.add_argument("--run-attempt", default=os.environ.get("GITHUB_RUN_ATTEMPT", ""))
     parser.add_argument("--workflow-conclusion", default=os.environ.get("YOYO_WORKFLOW_CONCLUSION", "unknown"))
     parser.add_argument("--log-file", type=Path)
     parser.add_argument("--no-fetch", action="store_true")
@@ -490,7 +499,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.print_session_for_run:
-        print(find_session_for_run(args.sessions_dir or Path("sessions"), args.run_id))
+        print(find_session_for_run(args.sessions_dir or Path("sessions"), args.run_id, args.run_attempt))
         return 0
 
     session_dir = args.session_dir
@@ -522,6 +531,7 @@ def main() -> int:
         log_text=log_text,
         repo=args.repo,
         run_id=args.run_id,
+        run_attempt=args.run_attempt,
         workflow_conclusion=args.workflow_conclusion,
     )
     write_assessment(session_dir, assessment, append_state=not args.no_append_state)
@@ -563,6 +573,11 @@ def run_self_tests() -> int:
     check("provider errors counted", parsed["provider_error_count"] == 1)
     check("failure fingerprints captured", parsed["distinct_failure_count"] >= 2)
     check("retry markers captured", parsed["retry_markers"] == 1)
+    redacted = redact("error: Authorization: Bearer sk-super-secret-token-1234567890 failed")
+    check("authorization bearer token redacted", "sk-super-secret" not in redacted, redacted)
+    check("authorization prefix preserved", "Authorization: Bearer <redacted>" in redacted, redacted)
+    bearer = redact("fatal: upstream said Bearer ghp_abcdefghijklmnopqrstuvwxyz123456")
+    check("bare bearer token redacted", "ghp_abcdefghijklmnopqrstuvwxyz" not in bearer, bearer)
 
     metrics = {
         "workflow_success": True,
@@ -584,6 +599,30 @@ def run_self_tests() -> int:
     bad.update({"workflow_success": False, "session_success": False, "distinct_failure_count": 8})
     check("failed score is lower", score_assessment(bad) < score_assessment(metrics))
     check("missing session selection is empty", find_session_for_run(Path("/does/not/exist"), "1") == "")
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        attempt1 = root / "attempt-1"
+        attempt2 = root / "attempt-2"
+        attempt1.mkdir()
+        attempt2.mkdir()
+        (attempt1 / "outcome.json").write_text(
+            json.dumps({"github_run_id": "run-1", "github_run_attempt": "1"}),
+            encoding="utf-8",
+        )
+        (attempt2 / "outcome.json").write_text(
+            json.dumps({"github_run_id": "run-1", "github_run_attempt": "2"}),
+            encoding="utf-8",
+        )
+        check(
+            "session selection matches run attempt",
+            find_session_for_run(root, "run-1", "2") == str(attempt2),
+        )
+        check(
+            "session selection rejects missing attempt",
+            find_session_for_run(root, "run-1", "3") == "",
+        )
 
     print(f"\n{'ALL PASSED' if failures == 0 else f'{failures} FAILURE(S)'}")
     return 1 if failures else 0
