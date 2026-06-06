@@ -788,7 +788,7 @@ HTML = r"""<!doctype html>
           <td><span class="pill ${healthClass(health)}">${text(health)}</span><div class="muted">build ${text(session.build_ok)} / test ${text(session.test_ok)}<br>tasks ${text(session.tasks_succeeded)}/${text(session.tasks_attempted)}</div></td>
           <td><span class="${decisionClass(decision)}">${text(decision.criterion || decision.decision || decision.decision_type)}</span><div class="muted">${text(decision.reason)}</div></td>
           <td><span class="pill soft">${text(events)} events</span><div class="muted">eval ${text(evalData.status)} ${evalData.score === undefined ? "" : `score ${text(evalData.score)}`}</div></td>
-          <td><a href="${text(session.audit_url)}">audit files</a><div class="muted">${text((session.blockers || []).length)} blockers / ${text((session.patches || []).length)} patches</div></td>
+          <td><a href="${text(session.audit_url)}">audit files</a><div class="muted">${text((session.blockers || []).length)} blockers / ${text((session.evals || []).length)} evals / ${text((session.patches || []).length)} patches / ${text((session.code_refs || []).length)} refs</div></td>
         </tr>`;
       }).join("");
     }
@@ -802,13 +802,16 @@ HTML = r"""<!doctype html>
         (session.code_refs || []).forEach(ref => {
           items.push({ kind: "Code ref", className: "info", session: session.id, title: ref.commit || ref.patch_id || ref.artifact_path, detail: ref.event_type });
         });
+        (session.evals || []).slice(-2).forEach(evalData => {
+          items.push({ kind: "Eval", className: evalData.status === "passed" ? "good" : "warn", session: session.id, title: evalData.eval_id || evalData.suite || "evaluation", detail: `${evalData.suite || "-"} ${evalData.status || "-"} score ${evalData.score === undefined ? "-" : evalData.score}` });
+        });
         (session.patches || []).slice(-2).forEach(patch => {
           items.push({ kind: "Patch", className: "warn", session: session.id, title: patch.patch_id || patch.intent, detail: `${patch.kind || "-"} risk ${patch.risk_level || "-"}` });
         });
       });
       const panel = document.getElementById("evidence");
       if (!items.length) {
-        panel.innerHTML = `<div class="empty">No blockers or code references yet.</div>`;
+        panel.innerHTML = `<div class="empty">No blockers, evals, patches, or code references yet.</div>`;
         return;
       }
       panel.innerHTML = items.slice(0, 24).map(item => `

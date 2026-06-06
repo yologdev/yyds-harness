@@ -1,0 +1,110 @@
+name: Evolution Log Feedback
+
+on:
+  workflow_run:
+    workflows: ["Evolution"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Evolution run ID"
+        required: true
+      run_attempt:
+        description: "Evolution run attempt"
+        required: false
+        default: "1"
+      conclusion:
+        description: "Workflow conclusion"
+        required: false
+        default: "success"
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: log-feedback-${{ github.event.workflow_run.id || inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Generate bot token
+        id: bot-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ steps.bot-token.outputs.token }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Detect bot identity
+        id: bot-info
+        run: |
+          SLUG="${{ steps.bot-token.outputs.app-slug }}"
+          echo "login=${SLUG}[bot]" >> "$GITHUB_OUTPUT"
+          echo "email=${SLUG}[bot]@users.noreply.github.com" >> "$GITHUB_OUTPUT"
+
+      - name: Configure git
+        run: |
+          git config user.name "${{ steps.bot-info.outputs.login }}"
+          git config user.email "${{ steps.bot-info.outputs.email }}"
+
+      - name: Record GitHub Actions log feedback
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOT_TOKEN: ${{ steps.bot-token.outputs.token }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || inputs.run_attempt }}
+          WORKFLOW_CONCLUSION: ${{ github.event.workflow_run.conclusion || inputs.conclusion }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if ! git fetch --depth 100 origin audit-log:audit-log; then
+            echo "audit-log branch unavailable; skipping log feedback"
+            exit 0
+          fi
+
+          AUDIT_WT="/tmp/yoyo-audit-log-feedback"
+          rm -rf "$AUDIT_WT"
+          git worktree add "$AUDIT_WT" audit-log
+          LATEST_SESSION=$(python3 scripts/log_feedback.py \
+            --print-session-for-run \
+            --sessions-dir "$AUDIT_WT/sessions" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT")
+          if [ -z "$LATEST_SESSION" ]; then
+            echo "no audit-log session found for run ${RUN_ID} attempt ${RUN_ATTEMPT}; skipping log feedback"
+            exit 0
+          fi
+
+          python3 scripts/log_feedback.py \
+            --session-dir "$LATEST_SESSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --workflow-conclusion "$WORKFLOW_CONCLUSION"
+
+          if [ -f "$LATEST_SESSION/state/events.jsonl" ]; then
+            python3 scripts/summarize_state_gnomes.py \
+              --events "$LATEST_SESSION/state/events.jsonl" \
+              --output "$LATEST_SESSION/state/summary.json"
+          fi
+
+          cd "$AUDIT_WT"
+          git add sessions
+          if git diff --cached --quiet; then
+            echo "no log feedback changes to commit"
+            exit 0
+          fi
+          git commit -m "Record log feedback for run ${RUN_ID}"
+          git push origin audit-log
