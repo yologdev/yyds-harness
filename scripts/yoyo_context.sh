@@ -9,9 +9,9 @@
 #   ... your task-specific instructions ...
 #   EOF
 #
-# Reads: IDENTITY.md, PERSONALITY.md, ECONOMICS.md, sponsors/active.json, memory/active_learnings.md, memory/active_social_learnings.md
+# Reads: IDENTITY.md, PERSONALITY.md, LINEAGE.md, ECONOMICS.md, sponsors/active.json, memory/active_learnings.md, memory/active_social_learnings.md
 # These are yoyo's stable identity files — who it is, how it speaks,
-# what it's learned about itself, and what it's learned from humans.
+# where it sits in the family tree, what it's learned about itself, and what it's learned from humans.
 
 _YOYO_REPO="${YOYO_REPO:-.}"
 
@@ -33,6 +33,12 @@ if [ -f "$_YOYO_REPO/PERSONALITY.md" ]; then
     }
 else
     echo "WARNING: PERSONALITY.md not found at $_YOYO_REPO/PERSONALITY.md" >&2
+fi
+
+# Lineage — prompt-visible family-tree identity
+_LINEAGE=""
+if [ -f "$_YOYO_REPO/LINEAGE.md" ]; then
+    _LINEAGE=$(cat "$_YOYO_REPO/LINEAGE.md") || _LINEAGE=""
 fi
 
 # Active learnings — no warning if missing
@@ -76,6 +82,10 @@ ${_IDENTITY:-Read IDENTITY.md for your rules and constitution.}
 === YOUR VOICE ===
 
 ${_PERSONALITY:-Read PERSONALITY.md for your voice and values.}
+
+=== YOUR LINEAGE ===
+
+${_LINEAGE:-No lineage file found. If you are a repository fork, read LINEAGE.md or your Address Book registration to understand your family-tree generation.}
 
 === SELF-WISDOM ===
 

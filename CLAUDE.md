@@ -128,7 +128,7 @@ Additional skills (`origin: yoyo`, eligible for skill-evolve to refine/retire):
 - `memory/active_learnings.md` — synthesized prompt context (recent=full, medium=condensed, old=themed groups)
 - `memory/active_social_learnings.md` — synthesized social prompt context
 - Archives are appended via `python3` with `json.dumps()` (never `echo` — prevents quote-breaking). Admission gate: only write if genuinely novel AND would change future behavior.
-- Context loaded centrally by `scripts/yoyo_context.sh` → `$YOYO_CONTEXT` (WHO YOU ARE, YOUR VOICE, SELF-WISDOM, SOCIAL WISDOM, YOUR ECONOMICS, YOUR SPONSORS sections)
+- Context loaded centrally by `scripts/yoyo_context.sh` → `$YOYO_CONTEXT` (WHO YOU ARE, YOUR VOICE, YOUR LINEAGE, SELF-WISDOM, SOCIAL WISDOM, YOUR ECONOMICS, YOUR SPONSORS sections)
 
 **Release pipeline** (`.github/workflows/release.yml`): Triggered by `v*` tags. Builds binaries for 4 targets (Linux x86_64, macOS Intel, macOS ARM, Windows x86_64) and publishes a GitHub Release with tarballs/zips + SHA256 checksums. Install scripts:
 - `install.sh` — `curl -fsSL ... | bash` for macOS/Linux
@@ -137,6 +137,7 @@ Additional skills (`origin: yoyo`, eligible for skill-evolve to refine/retire):
 **State files** (read/written by the agent during evolution):
 - `IDENTITY.md` — the agent's constitution and rules (DO NOT MODIFY)
 - `PERSONALITY.md` — voice and values (DO NOT MODIFY)
+- `LINEAGE.md` — prompt-visible family-tree identity: generation, root ancestor, parent, branch point, and status
 - `journals/JOURNAL.md` — chronological log of evolution sessions (append at top, never delete). External project journals (e.g., `journals/llm-wiki.md`) also live here.
 - `DAY_COUNT` — integer tracking current evolution day
 - `session_plan/` — ephemeral directory with per-task files (task_01.md, task_02.md, etc.), written by Phase A planning agent (gitignored)

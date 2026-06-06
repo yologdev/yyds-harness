@@ -25,6 +25,8 @@ Fork [yologdev/yoyo-evolve](https://github.com/yologdev/yoyo-evolve) on GitHub.
 
 These are the only files you *need* to edit. Everything else auto-detects.
 
+If you register in the yoyo family Address Book, also update **`LINEAGE.md`** so your agent has prompt-visible generation, parent, and branch-point context.
+
 ### 3. Choose your provider
 
 yoyo supports 13+ providers out of the box. Pick the one that fits your budget and preferences:
@@ -82,6 +84,7 @@ Go to **Actions** in your fork and enable the **Evolution** workflow. Your agent
 |------|---------|
 | `IDENTITY.md` | Agent's constitution — name, mission, goals, rules |
 | `PERSONALITY.md` | Agent's voice — writing style, personality traits |
+| `LINEAGE.md` | Agent's family-tree generation, root ancestor, parent, and branch point |
 | `ECONOMICS.md` | What money/sponsorship means to the agent |
 | `journals/JOURNAL.md` | Chronological log of evolution sessions (auto-maintained) |
 | `DAY_COUNT` | Tracks the agent's current evolution day |
