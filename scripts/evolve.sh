@@ -532,7 +532,7 @@ fi
 echo ""
 
 # ── Step 3b: Scan for yoyo's own forward-looking commitments (LLM-judged) ──
-# A single batched Claude call reads each open issue's last bot comment +
+# A single batched DeepSeek call reads each open issue's last bot comment +
 # recent git log and decides which promises are outstanding. Transient API
 # errors fail-soft (warn + empty output). Config/auth errors (missing key,
 # 401/403/400) exit non-zero so this banner fires — a broken cron should
@@ -542,6 +542,7 @@ if command -v gh &>/dev/null && [ -n "$REPLY_ISSUES" ]; then
     echo "→ Scanning for outstanding yoyo commitments..."
     GIT_LOG_RECENT=$(git log --since="30 days ago" --pretty=format:"%H%n%B%n---COMMITSEP---" 2>/dev/null || true)
     : > /tmp/scan_commitments.stderr  # truncate so stale warnings from a prior session don't surface
+    set +e
     YOYO_COMMITMENTS=$(
         echo "$REPLY_ISSUES" | \
             BOT_LOGIN="$BOT_LOGIN" \
@@ -549,6 +550,7 @@ if command -v gh &>/dev/null && [ -n "$REPLY_ISSUES" ]; then
             python3 scripts/scan_commitments.py 2>/tmp/scan_commitments.stderr
     )
     SCAN_RC=$?
+    set -e
     if [ "$SCAN_RC" -ne 0 ]; then
         echo "  ⚠️ scan_commitments.py exited $SCAN_RC — commitments scan FAILED this session."
         YOYO_COMMITMENTS=""

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Detect outstanding forward-looking commitments yoyo made on GitHub issues.
 
-Each evolve.sh session, this script makes ONE batched call to Claude to
+Each evolve.sh session, this script makes ONE batched call to DeepSeek to
 triage all open issues: which of yoyo's last-bot-comments are unfulfilled
 commitments to act in a future session, and which have already been
 satisfied by a recent git commit? Outstanding commitments are surfaced at
@@ -9,8 +9,8 @@ the top of the Phase A prompt so yoyo sees its broken promises before
 choosing new work.
 
 Uses urllib only — no third-party dependencies — because evolve.sh runs in
-GitHub Actions where reaching for `pip install anthropic` would add another
-step that can fail silently.
+GitHub Actions where reaching for another SDK install would add another step
+that can fail silently.
 
 Usage (from evolve.sh):
     cat reply_issues.json | BOT_LOGIN=yoyo-evolve \\
@@ -38,19 +38,13 @@ import time
 import urllib.error
 import urllib.request
 
-API_URL = "https://api.anthropic.com/v1/messages"
-API_VERSION = "2023-06-01"
-MODEL = "claude-opus-4-6"
+API_URL = os.environ.get("DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions")
+MODEL = os.environ.get("SCAN_COMMITMENTS_MODEL", "deepseek-chat")
 MAX_TOKENS = 4096
 TIMEOUT_SECS = 60
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0  # seconds; doubled each attempt
 
-# Static across sessions, marked ephemeral so it becomes a cacheable prefix
-# once it crosses the model's minimum cacheable token count (~1024 for Opus).
-# At current length it may fall below the threshold; `cache_control` is a
-# forward-compatible no-op if so. Volatile per-session data (issue bodies,
-# git log) goes in the user message, after this prefix.
 SYSTEM_PROMPT = """\
 You are a triage assistant for an autonomous coding agent named yoyo.
 
@@ -171,14 +165,13 @@ def _build_payload(issues, bot_login, git_log_recent):
 
 
 def _post(api_key, body_bytes):
-    """POST to the Messages API, returning the parsed JSON body."""
+    """POST to the DeepSeek chat completions API, returning parsed JSON."""
     req = urllib.request.Request(
         API_URL,
         data=body_bytes,
         headers={
             "Content-Type": "application/json",
-            "x-api-key": api_key,
-            "anthropic-version": API_VERSION,
+            "Authorization": f"Bearer {api_key}",
         },
         method="POST",
     )
@@ -230,22 +223,42 @@ def _call_api_with_retries(api_key, body_bytes):
 
 
 def _parse_assistant_json(response):
-    """Extract the structured JSON from the assistant's first text block."""
-    content = response.get("content") or []
-    for block in content:
-        if block.get("type") == "text":
-            text = block.get("text", "")
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError as e:
-                _warn(f"assistant text was not valid JSON: {e}")
-                return None
-    _warn("response had no text block")
+    """Extract structured JSON from an OpenAI-compatible chat response."""
+    text = ""
+    choices = response.get("choices") or []
+    if choices:
+        message = choices[0].get("message") or {}
+        text = message.get("content") or ""
+    else:
+        # Backward-compatible parser path for local tests or captured fixtures
+        # using the older Messages API shape.
+        for block in response.get("content") or []:
+            if block.get("type") == "text":
+                text = block.get("text", "")
+                break
+
+    if not text:
+        _warn("response had no assistant text")
+        return None
+
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        _warn(f"assistant text was not valid JSON: {e}")
     return None
 
 
 def scan(issues, bot_login, git_log_recent, api_key):
-    """Call Claude once and return formatted commitment blocks."""
+    """Call DeepSeek once and return formatted commitment blocks."""
     trimmed_issues, git_log = _build_payload(issues, bot_login, git_log_recent)
     if not trimmed_issues:
         return []
@@ -257,28 +270,25 @@ def scan(issues, bot_login, git_log_recent, api_key):
         "recent_commits": git_log,
     }
 
+    schema_text = json.dumps(OUTPUT_SCHEMA, separators=(",", ":"))
     request_body = {
         "model": MODEL,
-        "max_tokens": MAX_TOKENS,
-        "system": [
-            {
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
         "messages": [
+            {
+                "role": "system",
+                "content": (
+                    f"{SYSTEM_PROMPT}\n\n"
+                    f"Return only valid JSON matching this JSON Schema:\n{schema_text}"
+                ),
+            },
             {
                 "role": "user",
                 "content": json.dumps(user_payload, separators=(",", ":")),
             }
         ],
-        "output_config": {
-            "format": {
-                "type": "json_schema",
-                "schema": OUTPUT_SCHEMA,
-            }
-        },
+        "max_tokens": MAX_TOKENS,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
     }
 
     body_bytes = json.dumps(request_body).encode("utf-8")
@@ -326,15 +336,15 @@ def scan(issues, bot_login, git_log_recent, api_key):
 
 
 def main():
-    # Missing BOT_LOGIN / ANTHROPIC_API_KEY are config regressions, not
+    # Missing BOT_LOGIN / DEEPSEEK_API_KEY are config regressions, not
     # runtime conditions — exit non-zero so the bash wrapper surfaces them.
     bot_login = os.environ.get("BOT_LOGIN", "")
     if not bot_login:
         _warn("BOT_LOGIN unset — workflow config regression?")
         sys.exit(2)
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
-        _warn("ANTHROPIC_API_KEY unset — workflow config regression?")
+        _warn("DEEPSEEK_API_KEY unset — workflow config regression?")
         sys.exit(2)
 
     git_log = os.environ.get("GIT_LOG_RECENT", "")

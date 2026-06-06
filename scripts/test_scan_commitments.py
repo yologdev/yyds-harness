@@ -2,7 +2,7 @@
 """Tests for scripts/scan_commitments.py — the LLM-based commitment scanner.
 
 Run via:  python3 scripts/test_scan_commitments.py
-(Pure stdlib unittest — no pytest, no anthropic SDK, no network.)
+(Pure stdlib unittest — no pytest, no SDK, no network.)
 """
 
 import io
@@ -96,22 +96,31 @@ class BuildPayload(unittest.TestCase):
 
 
 class ParseAssistantJson(unittest.TestCase):
-    def test_extracts_first_text_block(self):
-        resp = {"content": [{"type": "text", "text": '{"outstanding_commitments": []}'}]}
+    def test_extracts_openai_compatible_message_content(self):
+        resp = {
+            "choices": [
+                {"message": {"content": '{"outstanding_commitments": []}'}}
+            ]
+        }
         parsed = _parse_assistant_json(resp)
         self.assertEqual(parsed, {"outstanding_commitments": []})
 
     def test_returns_none_for_malformed_json(self):
-        resp = {"content": [{"type": "text", "text": "not json"}]}
+        resp = {"choices": [{"message": {"content": "not json"}}]}
         self.assertIsNone(_parse_assistant_json(resp))
 
-    def test_returns_none_for_no_text_block(self):
-        resp = {"content": [{"type": "image", "source": {}}]}
+    def test_returns_none_for_no_assistant_text(self):
+        resp = {"choices": [{"message": {}}]}
         self.assertIsNone(_parse_assistant_json(resp))
 
     def test_returns_none_for_empty_content(self):
-        self.assertIsNone(_parse_assistant_json({"content": []}))
+        self.assertIsNone(_parse_assistant_json({"choices": []}))
         self.assertIsNone(_parse_assistant_json({}))
+
+    def test_supports_legacy_text_block_fixture(self):
+        resp = {"content": [{"type": "text", "text": '{"outstanding_commitments": []}'}]}
+        parsed = _parse_assistant_json(resp)
+        self.assertEqual(parsed, {"outstanding_commitments": []})
 
 
 class ScanIntegration(unittest.TestCase):
@@ -119,7 +128,7 @@ class ScanIntegration(unittest.TestCase):
 
     def _mock_response(self, outstanding):
         text = json.dumps({"outstanding_commitments": outstanding})
-        return {"content": [{"type": "text", "text": text}]}
+        return {"choices": [{"message": {"content": text}}]}
 
     def test_empty_issues_skips_api_call(self):
         with patch("scan_commitments._call_api_with_retries") as mock_call:
@@ -178,15 +187,15 @@ class ScanIntegration(unittest.TestCase):
         self.assertIn("#418", blocks[0])
 
     def test_request_body_shape(self):
-        """Pins the wire format so a refactor that renames `output_config`,
-        drops `cache_control`, or moves `system` to a string triggers a test
-        failure here instead of an API 400 in production.
+        """Pins the wire format so a refactor that drops JSON mode or moves
+        system instructions into the user payload triggers a test failure here
+        instead of an API 400 in production.
         """
         captured = {}
 
         def capture(api_key, body_bytes):
             captured["body"] = json.loads(body_bytes)
-            return {"content": [{"type": "text", "text": '{"outstanding_commitments": []}'}]}
+            return {"choices": [{"message": {"content": '{"outstanding_commitments": []}'}}]}
 
         issue = _issue(1, "X", [_comment(BOT, "Picking this up.")])
         with patch("scan_commitments._call_api_with_retries", side_effect=capture):
@@ -195,11 +204,13 @@ class ScanIntegration(unittest.TestCase):
         body = captured["body"]
         self.assertEqual(body["model"], MODEL)
         self.assertIn("max_tokens", body)
-        self.assertEqual(body["system"][0]["cache_control"], {"type": "ephemeral"})
-        self.assertEqual(body["output_config"]["format"]["type"], "json_schema")
-        self.assertEqual(body["messages"][0]["role"], "user")
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertEqual(body["temperature"], 0)
+        self.assertEqual(body["messages"][0]["role"], "system")
+        self.assertIn("JSON Schema", body["messages"][0]["content"])
+        self.assertEqual(body["messages"][1]["role"], "user")
         # User content must be a JSON-encoded string (not a list of blocks).
-        inner = json.loads(body["messages"][0]["content"])
+        inner = json.loads(body["messages"][1]["content"])
         self.assertIn("issues", inner)
         self.assertIn("recent_commits", inner)
 
@@ -212,7 +223,7 @@ class RetryPolicy(unittest.TestCase):
 
     def _http_error(self, code):
         return urllib.error.HTTPError(
-            "https://api.anthropic.com/v1/messages",
+            "https://api.deepseek.com/v1/chat/completions",
             code, "x", {}, io.BytesIO(b"{}")
         )
 
@@ -239,11 +250,11 @@ class RetryPolicy(unittest.TestCase):
             self.assertEqual(p.call_count, MAX_RETRIES)
 
     def test_503_then_success(self):
-        responses = [self._http_error(503), {"content": []}]
+        responses = [self._http_error(503), {"choices": []}]
         with patch("scan_commitments._post", side_effect=responses), \
              patch("scan_commitments.time.sleep"):
             result = _call_api_with_retries("sk-fake", b"{}")
-            self.assertEqual(result, {"content": []})
+            self.assertEqual(result, {"choices": []})
 
 
 if __name__ == "__main__":
