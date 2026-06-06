@@ -130,6 +130,10 @@ main() {
     mkdir -p "$INSTALL_DIR"
     mv "${tmpdir}/yyds" "${INSTALL_DIR}/yyds"
     chmod +x "${INSTALL_DIR}/yyds"
+    if [ -e "${INSTALL_DIR}/yoyo" ] || [ -L "${INSTALL_DIR}/yoyo" ]; then
+        rm -f "${INSTALL_DIR}/yoyo"
+        echo "Removed stale yoyo compatibility alias from ${INSTALL_DIR}/yoyo"
+    fi
 
     echo "Installed yyds to ${INSTALL_DIR}/yyds"
 

@@ -1,18 +1,18 @@
 # Models & Providers
 
-yoyo supports **13 providers** out of the box — from Anthropic and OpenAI to local models via Ollama.
+yyds supports **13 providers** out of the box — from DeepSeek and Anthropic to local models via Ollama.
 
 ## Default model
 
-The default model is `claude-opus-4-6` (Anthropic). You can change it at startup or mid-session.
+The default model for the `yyds` entrypoint is `deepseek-v4-pro` (DeepSeek). You can change it at startup or mid-session.
 
 ## Changing the model
 
 **At startup:**
 ```bash
-yoyo --model claude-sonnet-4-20250514
-yoyo --model gpt-4o --provider openai
-yoyo --model llama3.2 --provider ollama
+yyds --model deepseek-v4-flash
+yyds --model gpt-4o --provider openai
+yyds --model llama3.2 --provider ollama
 ```
 
 **During a session:**
@@ -28,18 +28,18 @@ yoyo --model llama3.2 --provider ollama
 
 Use `--provider <name>` to select a provider. Each provider has a default model and an environment variable for its API key.
 
-> **Tip:** If you run `yoyo` without any API key configured, an interactive setup wizard will walk you through choosing a provider and entering your key. You can also save the config to `.yoyo.toml` directly from the wizard.
+> **Tip:** If you run `yyds` without any API key configured, an interactive setup wizard will walk you through choosing a provider and entering your key. You can also save the config to `.yoyo.toml` directly from the wizard.
 
 | Provider | Default Model | API Key Env Var |
 |----------|--------------|-----------------|
-| `anthropic` (default) | `claude-opus-4-6` | `ANTHROPIC_API_KEY` |
+| `deepseek` (default) | `deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
+| `anthropic` | `claude-opus-4-6` | `ANTHROPIC_API_KEY` |
 | `openai` | `gpt-4o` | `OPENAI_API_KEY` |
 | `google` | `gemini-2.0-flash` | `GOOGLE_API_KEY` |
 | `openrouter` | `anthropic/claude-sonnet-4-20250514` | `OPENROUTER_API_KEY` |
 | `ollama` | `llama3.2` | *(none — local)* |
 | `xai` | `grok-3` | `XAI_API_KEY` |
 | `groq` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
-| `deepseek` | `deepseek-chat` | `DEEPSEEK_API_KEY` |
 | `mistral` | `mistral-large-latest` | `MISTRAL_API_KEY` |
 | `cerebras` | `llama-3.3-70b` | `CEREBRAS_API_KEY` |
 | `zai` | `glm-4-plus` | `ZAI_API_KEY` |
@@ -50,16 +50,16 @@ Use `--provider <name>` to select a provider. Each provider has a default model 
 
 ```bash
 # OpenAI
-OPENAI_API_KEY=sk-... yoyo --provider openai
+OPENAI_API_KEY=sk-... yyds --provider openai
 
 # Google Gemini
-GOOGLE_API_KEY=... yoyo --provider google --model gemini-2.5-pro
+GOOGLE_API_KEY=... yyds --provider google --model gemini-2.5-pro
 
 # Local with Ollama (no API key needed)
-yoyo --provider ollama --model llama3.2
+yyds --provider ollama --model llama3.2
 
 # Custom endpoint (OpenAI-compatible API)
-yoyo --provider custom --base-url http://localhost:8080/v1 --model my-model
+yyds --provider custom --base-url http://localhost:8080/v1 --model my-model
 ```
 
 You can also set these in `.yoyo.toml`:

@@ -56,15 +56,15 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(s, "Options:");
     let _ = writeln!(
         s,
-        "  --model <name>    Model to use (default: claude-opus-4-6)"
+        "  --model <name>    Model to use (default: deepseek-v4-pro)"
     );
     let _ = writeln!(
         s,
-        "  --provider <name> Provider: anthropic (default), openai, google, openrouter,"
+        "  --provider <name> Provider: deepseek (default), anthropic, openai, google,"
     );
     let _ = writeln!(
         s,
-        "                    ollama, xai, groq, deepseek, mistral, cerebras, zai, custom"
+        "                    openrouter, ollama, xai, groq, mistral, cerebras, zai, custom"
     );
     let _ = writeln!(
         s,
@@ -613,13 +613,13 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(s, "Environment:");
     let _ = writeln!(
         s,
-        "  ANTHROPIC_API_KEY  API key for Anthropic (default provider)"
+        "  DEEPSEEK_API_KEY  API key for DeepSeek (default provider)"
     );
+    let _ = writeln!(s, "  ANTHROPIC_API_KEY  API key for Anthropic");
     let _ = writeln!(s, "  OPENAI_API_KEY    API key for OpenAI");
     let _ = writeln!(s, "  GOOGLE_API_KEY    API key for Google/Gemini");
     let _ = writeln!(s, "  GROQ_API_KEY      API key for Groq");
     let _ = writeln!(s, "  XAI_API_KEY       API key for xAI");
-    let _ = writeln!(s, "  DEEPSEEK_API_KEY  API key for DeepSeek");
     let _ = writeln!(s, "  OPENROUTER_API_KEY API key for OpenRouter");
     let _ = writeln!(s, "  ZAI_API_KEY       API key for ZAI (Zhipu AI / z.ai)");
     let _ = writeln!(s, "  API_KEY            Fallback API key (any provider)");
@@ -1623,8 +1623,8 @@ mod tests {
             "should have Environment section"
         );
         assert!(
-            text.contains("ANTHROPIC_API_KEY"),
-            "should mention ANTHROPIC_API_KEY"
+            text.contains("DEEPSEEK_API_KEY"),
+            "should mention DEEPSEEK_API_KEY"
         );
         assert!(text.contains("Config files"), "should mention config files");
     }

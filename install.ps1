@@ -108,6 +108,11 @@ function Main {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
         try {
             Copy-Item -Path $PrimaryBinary.FullName -Destination (Join-Path $InstallDir "yyds.exe") -Force
+            $CompatPath = Join-Path $InstallDir "yoyo.exe"
+            if (Test-Path $CompatPath) {
+                Remove-Item -Path $CompatPath -Force
+                Write-Host "Removed stale yoyo compatibility alias from $CompatPath"
+            }
         } catch {
             Write-Host "Error: could not install Yoyo DS Harness binary to $InstallDir"
             Write-Host "If yyds is currently running, close it and try again."

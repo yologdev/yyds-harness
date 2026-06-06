@@ -38,13 +38,13 @@ yyds supports multiple AI providers out of the box. Use the `--provider` flag to
 
 | Provider | Flag | Default Model | Env Var |
 |----------|------|---------------|---------|
-| Anthropic (default) | `--provider anthropic` | `claude-opus-4-6` | `ANTHROPIC_API_KEY` |
+| DeepSeek (default) | `--provider deepseek` | `deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
+| Anthropic | `--provider anthropic` | `claude-opus-4-6` | `ANTHROPIC_API_KEY` |
 | OpenAI | `--provider openai` | `gpt-4o` | `OPENAI_API_KEY` |
 | Google/Gemini | `--provider google` | `gemini-2.0-flash` | `GOOGLE_API_KEY` |
 | OpenRouter | `--provider openrouter` | `anthropic/claude-sonnet-4-20250514` | `OPENROUTER_API_KEY` |
 | xAI | `--provider xai` | `grok-3` | `XAI_API_KEY` |
 | Groq | `--provider groq` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
-| DeepSeek | `--provider deepseek` | `deepseek-chat` | `DEEPSEEK_API_KEY` |
 | Mistral | `--provider mistral` | `mistral-large-latest` | `MISTRAL_API_KEY` |
 | Cerebras | `--provider cerebras` | `llama-3.3-70b` | `CEREBRAS_API_KEY` |
 | Ollama | `--provider ollama` | `llama3.2` | *(none needed)* |
@@ -55,20 +55,20 @@ yyds supports multiple AI providers out of the box. Use the `--provider` flag to
 Examples:
 
 ```bash
-# Anthropic (default)
-ANTHROPIC_API_KEY=sk-ant-... yoyo
+# DeepSeek (default)
+DEEPSEEK_API_KEY=sk-... yyds
 
 # OpenAI
-OPENAI_API_KEY=sk-... yoyo --provider openai
+OPENAI_API_KEY=sk-... yyds --provider openai
 
 # Google Gemini
-GOOGLE_API_KEY=... yoyo --provider google
+GOOGLE_API_KEY=... yyds --provider google
 
 # Local Ollama (no API key needed)
-yoyo --provider ollama --model llama3.2
+yyds --provider ollama --model llama3.2
 
 # Custom OpenAI-compatible endpoint
-yoyo --provider custom --base-url http://localhost:8080/v1 --model my-model
+yyds --provider custom --base-url http://localhost:8080/v1 --model my-model
 ```
 
 ## Set your API key
