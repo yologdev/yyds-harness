@@ -96,6 +96,8 @@ if [ -f "$YOYO_REPO/scripts/yoyo_context.sh" ]; then
     YOYO_REPO="$YOYO_REPO" source "$YOYO_REPO/scripts/yoyo_context.sh"
 else
     echo "WARNING: yoyo_context.sh not found — prompts will lack identity context" >&2
+    YOYO_STABLE_CONTEXT=""
+    YOYO_DYNAMIC_CONTEXT=""
     YOYO_CONTEXT=""
 fi
 
@@ -107,9 +109,12 @@ SESSION_COUNT=$(echo "$JOURNAL" | grep -c "^## Day" 2>/dev/null || echo "0")
 COMMUNICATE_SKILL=$(cat "$YOYO_REPO/skills/communicate/SKILL.md")
 
 # --- Build prompt ---
-PROMPT="Day $DAY finished.
+PROMPT="$YOYO_STABLE_CONTEXT
 
-$YOYO_CONTEXT
+=== CURRENT SESSION ===
+Day $DAY finished.
+
+$YOYO_DYNAMIC_CONTEXT
 
 === COMMUNICATION STYLE ===
 $COMMUNICATE_SKILL

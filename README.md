@@ -322,6 +322,8 @@ local_edit = "fim_non_thinking"
 # DeepSeek context caching is server-side and enabled by default by DeepSeek.
 # These flags control stable-prefix layout and usage metric recording, not
 # request-side cache_control markers.
+# Layout rule: stable identity/rules/tool policy/repo policy first; dynamic
+# task/logs/files/current evidence later. See docs/deepseek-prompt-cache-layout.md.
 stable_prefix = true
 record_metrics = true
 optimize_prompt_order = true

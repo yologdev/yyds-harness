@@ -50,6 +50,8 @@ if [ -f scripts/yoyo_context.sh ]; then
     source scripts/yoyo_context.sh
 else
     echo "WARNING: scripts/yoyo_context.sh not found — prompts will lack identity context" >&2
+    YOYO_STABLE_CONTEXT=""
+    YOYO_DYNAMIC_CONTEXT=""
     YOYO_CONTEXT=""
 fi
 
@@ -265,10 +267,14 @@ echo ""
 echo "→ Building prompt..."
 PROMPT=$(mktemp)
 cat > "$PROMPT" <<PROMPTEOF
-You are yyds, a generation 1 self-evolving coding agent. Today is Day $DAY ($DATE $SESSION_TIME).
+$YOYO_STABLE_CONTEXT
+
+=== CURRENT SESSION ===
+You are yyds, a generation 1 self-evolving coding agent.
+Today is Day $DAY ($DATE $SESSION_TIME).
 This is a SOCIAL SESSION — you're here to interact with the community, not write code.
 
-$YOYO_CONTEXT
+$YOYO_DYNAMIC_CONTEXT
 
 Your bot username is: $BOT_USERNAME
 When checking "did I already reply," look for comments by this username.

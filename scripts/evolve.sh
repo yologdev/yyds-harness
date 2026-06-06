@@ -101,6 +101,8 @@ if [ -f scripts/yoyo_context.sh ]; then
     source scripts/yoyo_context.sh
 else
     echo "WARNING: scripts/yoyo_context.sh not found — prompts will lack identity context" >&2
+    YOYO_STABLE_CONTEXT=""
+    YOYO_DYNAMIC_CONTEXT=""
     YOYO_CONTEXT=""
 fi
 
@@ -620,9 +622,13 @@ echo "  Phase A1: Assessment (${ASSESS_TIMEOUT}s)..."
 mkdir -p session_plan
 ASSESS_PROMPT=$(mktemp)
 cat > "$ASSESS_PROMPT" <<ASSESSEOF
-You are yyds, a generation 1 self-evolving coding agent. Today is Day $DAY ($DATE $SESSION_TIME).
+$YOYO_STABLE_CONTEXT
 
-$YOYO_CONTEXT
+=== CURRENT SESSION ===
+You are yyds, a generation 1 self-evolving coding agent.
+Today is Day $DAY ($DATE $SESSION_TIME).
+
+$YOYO_DYNAMIC_CONTEXT
 
 === YOUR TRAJECTORY (computed by harness from audit-log + git log + recent CI) ===
 $YOYO_TRAJECTORY
@@ -755,9 +761,13 @@ Keep this investigation brief — focus on gathering enough context to write goo
 fi
 
 cat > "$PLAN_PROMPT" <<PLANEOF
-You are yyds, a generation 1 self-evolving coding agent. Today is Day $DAY ($DATE $SESSION_TIME).
+$YOYO_STABLE_CONTEXT
 
-$YOYO_CONTEXT
+=== CURRENT SESSION ===
+You are yyds, a generation 1 self-evolving coding agent.
+Today is Day $DAY ($DATE $SESSION_TIME).
+
+$YOYO_DYNAMIC_CONTEXT
 
 === YOUR TRAJECTORY (computed by harness from audit-log + git log + recent CI) ===
 $YOYO_TRAJECTORY
@@ -992,9 +1002,13 @@ for TASK_FILE in session_plan/task_*.md; do
     for ATTEMPT in 1 2; do
         TASK_PROMPT=$(mktemp)
         cat > "$TASK_PROMPT" <<TEOF
-You are yyds, a generation 1 self-evolving coding agent. Day $DAY ($DATE $SESSION_TIME).
+$YOYO_STABLE_CONTEXT
 
-$YOYO_CONTEXT
+=== CURRENT SESSION ===
+You are yyds, a generation 1 self-evolving coding agent.
+Day $DAY ($DATE $SESSION_TIME).
+
+$YOYO_DYNAMIC_CONTEXT
 
 Use your voice in commit messages and comments — curious, honest, celebrating wins.
 
@@ -1635,11 +1649,14 @@ ${RECENT_ENTRY}
 
     JOURNAL_PROMPT=$(mktemp)
     cat > "$JOURNAL_PROMPT" <<JEOF
-You are yyds, a generation 1 self-evolving coding agent. You just finished an evolution session.
+$YOYO_STABLE_CONTEXT
 
+=== CURRENT SESSION ===
+You are yyds, a generation 1 self-evolving coding agent.
+You just finished an evolution session.
 Today is Day $DAY ($DATE $SESSION_TIME).
 
-$YOYO_CONTEXT
+$YOYO_DYNAMIC_CONTEXT
 
 This session's commits: $COMMITS
 Read journals/JOURNAL.md to see your previous entries and match the voice/style.
@@ -1703,9 +1720,13 @@ if [ -n "$COMMITS_FOR_REFLECTION" ]; then
     echo "  Reflecting on session learnings..."
     REFLECT_PROMPT=$(mktemp)
     cat > "$REFLECT_PROMPT" <<REOF
-You are yyds, a generation 1 self-evolving coding agent. You just finished Day $DAY ($DATE $SESSION_TIME).
+$YOYO_STABLE_CONTEXT
 
-$YOYO_CONTEXT
+=== CURRENT SESSION ===
+You are yyds, a generation 1 self-evolving coding agent.
+You just finished Day $DAY ($DATE $SESSION_TIME).
+
+$YOYO_DYNAMIC_CONTEXT
 
 This session's commits: $COMMITS_FOR_REFLECTION
 
@@ -1801,10 +1822,15 @@ if [ "$ISSUE_COUNT" -gt 0 ] && command -v gh &>/dev/null; then
     RESPOND_PROMPT=$(mktemp)
     RESPOND_LOG=$(mktemp)
     cat > "$RESPOND_PROMPT" <<RESPONDEOF
-You are yyds, a generation 1 self-evolving coding agent. You just finished an evolution session.
+$YOYO_STABLE_CONTEXT
 
+=== CURRENT SESSION ===
+You are yyds, a generation 1 self-evolving coding agent.
+You just finished an evolution session.
 Today is Day $DAY ($DATE $SESSION_TIME).
 Repository: $REPO
+
+$YOYO_DYNAMIC_CONTEXT
 
 Here are ALL the issues (community + self-filed) from this session:
 $ALL_ISSUES

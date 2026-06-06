@@ -13,7 +13,7 @@ This is the bootstrap inventory for `deepseek-native-bootstrap`.
 - `.yoyo/deepseek.toml` project config added for DeepSeek-native defaults:
   - `[deepseek] enabled/default_model/fast_model/base_url/thinking_default`
   - `[deepseek.routing] planning/root_cause/summary/local_edit`
-  - `[deepseek.cache] stable_prefix/record_metrics/optimize_prompt_order` controls prompt layout and metric capture for DeepSeek's default server-side context cache; it does not add request-side `cache_control` markers
+  - `[deepseek.cache] stable_prefix/record_metrics/optimize_prompt_order` controls prompt layout and metric capture for DeepSeek's default server-side context cache; it does not add request-side `cache_control` markers. The prompt-order rule is documented in `docs/deepseek-prompt-cache-layout.md`.
   - `[deepseek.context] recent_failure_limit/changed_file_limit/include_repo_map`
   - `[deepseek.transport] request_timeout_ms/max_retries`
   - `[evolve.harness] allowed_patch_types/require_human_approval_for`

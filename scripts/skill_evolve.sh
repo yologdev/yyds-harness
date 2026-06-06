@@ -171,6 +171,8 @@ GATES_PASSED=1
 if [ -f scripts/yoyo_context.sh ]; then
     source scripts/yoyo_context.sh
 else
+    YOYO_STABLE_CONTEXT=""
+    YOYO_DYNAMIC_CONTEXT=""
     YOYO_CONTEXT=""
 fi
 
@@ -193,9 +195,11 @@ LOG_FILE=$(mktemp)
 
 {
     cat <<EOF
-$YOYO_CONTEXT
+$YOYO_STABLE_CONTEXT
 
 You are running one skill-evolve cycle. Read skills/skill-evolve/SKILL.md for the full procedure — that skill is your spec.
+
+$YOYO_DYNAMIC_CONTEXT
 
 # Recent evidence
 

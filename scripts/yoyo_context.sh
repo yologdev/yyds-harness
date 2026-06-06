@@ -1,6 +1,8 @@
 #!/bin/bash
 # scripts/yoyo_context.sh — Build yoyo's identity context for prompts.
-# Source this file, then use $YOYO_CONTEXT in any prompt.
+# Source this file, then use $YOYO_STABLE_CONTEXT before dynamic session data
+# when prompt-prefix cache reuse matters. $YOYO_CONTEXT remains as the legacy
+# combined block for callers that do not need the split.
 #
 # Usage:
 #   YOYO_REPO="/path/to/yoyo-evolve" source scripts/yoyo_context.sh
@@ -11,9 +13,8 @@
 #
 # Reads: IDENTITY.md, LINEAGE.md, PERSONALITY.md, ECONOMICS.md,
 # memory/active_learnings.md, memory/active_social_learnings.md.
-# These are yoyo's stable context files — who it is, where it comes from,
-# how it speaks, what it's learned about itself, and what it's learned from
-# humans.
+# Identity, lineage, voice, and economics are stable prefix material. Active
+# learnings change over time and are exposed separately as $YOYO_DYNAMIC_CONTEXT.
 
 _YOYO_REPO="${YOYO_REPO:-.}"
 
@@ -63,7 +64,7 @@ if [ -f "$_YOYO_REPO/ECONOMICS.md" ]; then
     _ECONOMICS=$(cat "$_YOYO_REPO/ECONOMICS.md") || _ECONOMICS=""
 fi
 
-YOYO_CONTEXT="=== WHO YOU ARE ===
+YOYO_STABLE_CONTEXT="=== WHO YOU ARE ===
 
 ${_IDENTITY:-Read IDENTITY.md for your rules and constitution.}
 
@@ -74,6 +75,20 @@ ${_LINEAGE:-No lineage file found. If this is a fork, create LINEAGE.md with you
 === YOUR VOICE ===
 
 ${_PERSONALITY:-Read PERSONALITY.md for your voice and values.}
+
+=== YOUR ECONOMICS ===
+
+${_ECONOMICS:-Read ECONOMICS.md for what money and resources mean to you.}"
+
+YOYO_DYNAMIC_CONTEXT="=== SELF-WISDOM ===
+
+${_LEARNINGS:-No learnings yet.}
+
+=== SOCIAL WISDOM ===
+
+${_SOCIAL_LEARNINGS:-No social learnings yet.}"
+
+YOYO_CONTEXT="${YOYO_STABLE_CONTEXT}
 
 === SELF-WISDOM ===
 
