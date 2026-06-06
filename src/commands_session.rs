@@ -2,7 +2,9 @@
 //! /mark, /jump, /marks, /export.
 
 use crate::format::*;
-use crate::prompt_utils::{search_messages, summarize_message};
+use crate::prompt_utils::{
+    format_context_summary, search_messages, summarize_context_topics, summarize_message,
+};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -45,6 +47,8 @@ pub enum CompactArg {
     Default,
     /// Explicit number of recent messages to keep.
     KeepRecent(usize),
+    /// Preview what compaction would do without performing it.
+    Preview,
     /// Invalid input — contains the original string for error reporting.
     Invalid(String),
 }
@@ -63,6 +67,9 @@ pub fn parse_compact_arg(arg: &str) -> CompactArg {
     }
     if arg.eq_ignore_ascii_case("all") {
         return CompactArg::KeepRecent(2);
+    }
+    if arg == "--preview" || arg.eq_ignore_ascii_case("preview") {
+        return CompactArg::Preview;
     }
     match arg.parse::<usize>() {
         Ok(n) => CompactArg::KeepRecent(n.max(2)),
@@ -175,6 +182,160 @@ pub fn proactive_compact_if_needed(agent: &mut Agent) -> bool {
     false
 }
 
+/// Show what compaction would do without performing it.
+/// Read-only operation: inspects messages, estimates savings, shows topics.
+fn handle_compact_preview(agent: &Agent) {
+    let messages = agent.messages();
+    let msg_count = messages.len();
+    let current_tokens = total_tokens(messages) as u64;
+    let context_window = crate::cli::effective_context_tokens();
+    let usage_pct = if context_window > 0 {
+        (current_tokens as f64 / context_window as f64 * 100.0) as u64
+    } else {
+        0
+    };
+
+    if msg_count == 0 {
+        println!("{DIM}  📋 Compact preview: nothing to compact (empty conversation){RESET}\n");
+        return;
+    }
+
+    // Determine what compaction would keep vs compress.
+    // Default keep_recent is 10 (from ContextConfig::default()).
+    let keep_recent: usize = 10;
+    let would_keep = msg_count.min(keep_recent);
+    let would_compress = msg_count.saturating_sub(keep_recent);
+
+    // Estimate post-compaction tokens by simulating compaction on a clone
+    let cloned = messages.to_vec();
+    let config = ContextConfig {
+        max_context_tokens: 0,
+        system_prompt_tokens: 0,
+        keep_recent,
+        ..ContextConfig::default()
+    };
+    let simulated = compact_messages(cloned, &config);
+    let after_tokens = total_tokens(&simulated) as u64;
+    let after_count = simulated.len();
+    let savings = current_tokens.saturating_sub(after_tokens);
+
+    let after_pct = if context_window > 0 {
+        (after_tokens as f64 / context_window as f64 * 100.0) as u64
+    } else {
+        0
+    };
+
+    // Scan messages for file paths and tool call counts
+    let mut file_paths: Vec<String> = Vec::new();
+    let mut tool_counts: HashMap<String, usize> = HashMap::new();
+    let mut topics: Vec<String> = Vec::new();
+    let mut user_topic_count = 0;
+
+    for msg in messages {
+        match msg {
+            AgentMessage::Llm(Message::Assistant { content, .. }) => {
+                for c in content {
+                    if let Content::ToolCall {
+                        name, arguments, ..
+                    } = c
+                    {
+                        *tool_counts.entry(name.clone()).or_insert(0) += 1;
+                        // Extract file path from arguments if present
+                        if let Some(path) = arguments.get("path").and_then(|v| v.as_str()) {
+                            if !file_paths.contains(&path.to_string()) && file_paths.len() < 10 {
+                                file_paths.push(path.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            AgentMessage::Llm(Message::User { content, .. }) if user_topic_count < 5 => {
+                let text: String = content
+                    .iter()
+                    .filter_map(|c| {
+                        if let Content::Text { text } = c {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let text = text.trim();
+                if !text.is_empty() && !text.starts_with('/') && text.len() > 3 {
+                    // Take first ~50 chars as topic
+                    let topic = if text.len() <= 50 {
+                        text.to_string()
+                    } else {
+                        let mut end = 50;
+                        while end > 0 && !text.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        if let Some(sp) = text[..end].rfind(' ') {
+                            if sp > 10 {
+                                end = sp;
+                            }
+                        }
+                        format!("{}…", &text[..end])
+                    };
+                    topics.push(topic);
+                    user_topic_count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Print the preview
+    println!("  📋 Compact preview:");
+    println!(
+        "    Current: {msg_count} messages, ~{} tokens ({usage_pct}% of context)",
+        format_token_count(current_tokens)
+    );
+    println!(
+        "    After:   ~{after_count} messages, ~{} tokens (~{after_pct}% of context, estimated)",
+        format_token_count(after_tokens)
+    );
+    println!("    Savings: ~{} tokens freed", format_token_count(savings));
+
+    if would_compress > 0 {
+        println!();
+        println!("    Would compress: {would_compress} older messages covering:");
+        if !file_paths.is_empty() {
+            let display_paths: Vec<&str> = file_paths.iter().take(8).map(|s| s.as_str()).collect();
+            let suffix = if file_paths.len() > 8 {
+                format!(" (+{} more)", file_paths.len() - 8)
+            } else {
+                String::new()
+            };
+            println!("      • Files: {}{suffix}", display_paths.join(", "));
+        }
+        if !tool_counts.is_empty() {
+            let mut sorted_tools: Vec<_> = tool_counts.iter().collect();
+            sorted_tools.sort_by(|a, b| b.1.cmp(a.1));
+            let tool_parts: Vec<String> = sorted_tools
+                .iter()
+                .take(5)
+                .map(|(name, count)| format!("{count} {name}"))
+                .collect();
+            println!("      • Tool calls: {}", tool_parts.join(", "));
+        }
+        if !topics.is_empty() {
+            println!("      • Topics: {}", topics.join("; "));
+        }
+    }
+
+    println!("    Would keep: last {would_keep} messages (recent conversation)");
+
+    if savings == 0 {
+        println!();
+        println!(
+            "{DIM}    (compaction would not reduce tokens — conversation is already compact){RESET}"
+        );
+    }
+    println!();
+}
+
 pub fn handle_compact(agent: &mut Agent, input: &str) {
     let arg_str = input.strip_prefix("/compact").unwrap_or("").trim();
     let parsed = parse_compact_arg(arg_str);
@@ -182,9 +343,13 @@ pub fn handle_compact(agent: &mut Agent, input: &str) {
     let keep_recent = match parsed {
         CompactArg::Default => None,
         CompactArg::KeepRecent(n) => Some(n),
+        CompactArg::Preview => {
+            handle_compact_preview(agent);
+            return;
+        }
         CompactArg::Invalid(s) => {
             println!(
-                "{DIM}  invalid argument: \"{s}\" — use a number or \"all\"\n  usage: /compact [N|all]{RESET}\n"
+                "{DIM}  invalid argument: \"{s}\" — use a number, \"all\", or \"--preview\"\n  usage: /compact [N|all|--preview]{RESET}\n"
             );
             return;
         }
@@ -201,10 +366,16 @@ pub fn handle_compact(agent: &mut Agent, input: &str) {
                 None => String::new(),
             };
             println!(
-                "{DIM}  compacted{keep_label}: {before_count} → {after_count} messages, ~{} → ~{} tokens{RESET}\n",
+                "{DIM}  compacted{keep_label}: {before_count} → {after_count} messages, ~{} → ~{} tokens{RESET}",
                 format_token_count(before_tokens),
                 format_token_count(after_tokens)
             );
+            // Show what topics/files survived compaction
+            let topics = summarize_context_topics(agent.messages());
+            if let Some(summary) = format_context_summary(&topics) {
+                println!("{DIM}  {summary}{RESET}");
+            }
+            println!();
         }
         None => {
             println!(
@@ -218,6 +389,7 @@ pub fn handle_compact(agent: &mut Agent, input: &str) {
 // ── auto-save ────────────────────────────────────────────────────────────
 
 /// Check whether a previous auto-saved session exists at `.yoyo/last-session.json`.
+#[allow(dead_code)]
 pub fn last_session_exists() -> bool {
     std::path::Path::new(AUTO_SAVE_SESSION_PATH).exists()
 }
@@ -877,6 +1049,28 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_compact_arg_preview() {
+        assert_eq!(parse_compact_arg("--preview"), CompactArg::Preview);
+        assert_eq!(parse_compact_arg("preview"), CompactArg::Preview);
+        assert_eq!(parse_compact_arg("Preview"), CompactArg::Preview);
+        assert_eq!(parse_compact_arg("  --preview  "), CompactArg::Preview);
+        assert_eq!(parse_compact_arg("  preview  "), CompactArg::Preview);
+    }
+
+    #[test]
+    fn test_compact_preview_empty_conversation() {
+        // handle_compact_preview should not panic on an agent with no messages
+        use yoagent::agent::Agent;
+        use yoagent::provider::AnthropicProvider;
+        let agent = Agent::new(AnthropicProvider)
+            .with_system_prompt("test")
+            .with_model("test-model")
+            .with_api_key("test-key");
+        // Just call it — should print the empty message and return without panic
+        handle_compact_preview(&agent);
+    }
+
+    #[test]
     fn test_auto_save_session_path_constant() {
         assert_eq!(AUTO_SAVE_SESSION_PATH, ".yoyo/last-session.json");
     }
@@ -905,55 +1099,53 @@ mod tests {
         use yoagent::provider::AnthropicProvider;
 
         // Use a temp directory to avoid polluting the project
-        let tmp_dir = std::env::temp_dir().join("yoyo_test_autosave");
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_autosave_")
+            .tempdir()
+            .unwrap();
 
         // Create an agent with an empty conversation — should NOT save
         let agent = Agent::new(AnthropicProvider)
             .with_system_prompt("test")
             .with_model("test-model")
             .with_api_key("test-key");
-        auto_save_on_exit_in(&agent, &tmp_dir);
+        auto_save_on_exit_in(&agent, tmp_dir.path());
         assert!(
-            !tmp_dir.join(AUTO_SAVE_SESSION_PATH).exists(),
+            !tmp_dir.path().join(AUTO_SAVE_SESSION_PATH).exists(),
             "Should not save empty conversations"
         );
-
-        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]
     fn test_continue_session_path_prefers_auto_save() {
         // Create a temp directory with .yoyo/last-session.json
-        let tmp_dir = std::env::temp_dir().join("yoyo_test_continue_path");
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        std::fs::create_dir_all(tmp_dir.join(".yoyo")).unwrap();
-        std::fs::write(tmp_dir.join(".yoyo/last-session.json"), "[]").unwrap();
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_continue_path_")
+            .tempdir()
+            .unwrap();
+        std::fs::create_dir_all(tmp_dir.path().join(".yoyo")).unwrap();
+        std::fs::write(tmp_dir.path().join(".yoyo/last-session.json"), "[]").unwrap();
 
-        let path = continue_session_path_in(&tmp_dir);
+        let path = continue_session_path_in(tmp_dir.path());
         assert_eq!(
             path, AUTO_SAVE_SESSION_PATH,
             "Should prefer .yoyo/last-session.json when it exists"
         );
-
-        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]
     fn test_continue_session_path_falls_back_to_default() {
         // Create a temp directory WITHOUT .yoyo/last-session.json
-        let tmp_dir = std::env::temp_dir().join("yoyo_test_continue_fallback");
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_continue_fallback_")
+            .tempdir()
+            .unwrap();
 
-        let path = continue_session_path_in(&tmp_dir);
+        let path = continue_session_path_in(tmp_dir.path());
         assert_eq!(
             path, DEFAULT_SESSION_PATH,
             "Should fall back to yoyo-session.json when .yoyo/last-session.json doesn't exist"
         );
-
-        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     // ── /export tests ────────────────────────────────────────────────────

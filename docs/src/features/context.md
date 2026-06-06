@@ -39,11 +39,24 @@ Use `/compact` to compress the conversation:
 /compact
 ```
 
-This summarizes older messages while preserving recent context. You'll see:
+This summarizes older messages while preserving recent context. You'll see what survived:
 
 ```
   compacted: 24 → 8 messages, ~85.2k → ~32.1k tokens
+  📋 Still in context: src/main.rs, src/tools.rs, auth refactor (2 files, 1 topic)
 ```
+
+The context summary shows which files and topics are still present after compaction, so you can trust that important context wasn't lost.
+
+### Previewing compaction
+
+Not sure if you should compact? Use `--preview` to see what would happen without changing anything:
+
+```
+/compact --preview
+```
+
+This shows estimated token savings, which messages would be compressed, files touched, and topics in the conversation — all read-only.
 
 ## Auto-compaction
 

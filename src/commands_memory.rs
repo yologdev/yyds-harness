@@ -7,7 +7,9 @@
 //! so the move is purely mechanical and carries no behavioral risk.
 
 use crate::format::*;
-use crate::memory::{add_memory, load_memories, remove_memory, save_memories, search_memories};
+use crate::memory::{
+    add_memory, format_relative_time, load_memories, remove_memory, save_memories, search_memories,
+};
 
 // ── /remember ────────────────────────────────────────────────────────────
 
@@ -57,7 +59,11 @@ pub fn handle_memories(input: &str) {
         // Show all memories
         println!("{DIM}  Project memories ({}):", memory.entries.len());
         for (i, entry) in memory.entries.iter().enumerate() {
-            println!("    [{i}] {} ({})", entry.note, entry.timestamp);
+            println!(
+                "    [{i}] {} ({})",
+                entry.note,
+                format_relative_time(&entry.timestamp)
+            );
         }
         println!("  Use /forget <n> to remove a memory.{RESET}\n");
     } else {
@@ -76,7 +82,11 @@ pub fn handle_memories(input: &str) {
                 }
             );
             for (i, entry) in &results {
-                println!("    [{i}] {} ({})", entry.note, entry.timestamp);
+                println!(
+                    "    [{i}] {} ({})",
+                    entry.note,
+                    format_relative_time(&entry.timestamp)
+                );
             }
             println!("  Use /forget <n> to remove a memory.{RESET}\n");
         }
@@ -254,6 +264,8 @@ mod tests {
 
         let results = search_memories(&memory, "sqlx");
         assert_eq!(results.len(), 2);
+        // "uses sqlx for DB" is shorter (more focused) so scores slightly
+        // higher than "sqlx migrations in ./migrations" despite later position
         assert_eq!(results[0].0, 0);
         assert_eq!(results[1].0, 2);
 

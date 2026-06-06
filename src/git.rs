@@ -271,6 +271,8 @@ pub enum GitSubcommand {
     StashDrop(Option<usize>),
     /// `/git stash show [n]` — show diff of a stash entry (default: stash@{0})
     StashShow(Option<usize>),
+    /// `/git stage` — interactive file staging picker
+    Stage,
     /// `/git diff` — show diff (unstaged by default, `--cached` for staged)
     Diff { cached: bool },
     /// `/git branch` — list branches or create/switch to a new one
@@ -325,6 +327,7 @@ pub fn parse_git_args(arg: &str) -> GitSubcommand {
                 GitSubcommand::Stash
             }
         }
+        "stage" => GitSubcommand::Stage,
         "diff" => {
             let cached =
                 parts.len() >= 2 && parts[1].trim_start_matches('-').to_lowercase() == "cached";
@@ -339,6 +342,130 @@ pub fn parse_git_args(arg: &str) -> GitSubcommand {
             }
         }
         _ => GitSubcommand::Help,
+    }
+}
+
+/// Parse `git status --porcelain` output into (status_code, filename) pairs.
+pub fn parse_status_files(porcelain: &str) -> Vec<(String, String)> {
+    porcelain
+        .lines()
+        .filter_map(|line| {
+            if line.len() < 4 {
+                return None;
+            }
+            let status = line[..2].trim().to_string();
+            // Porcelain format: XY <space> filename (or XY <space> old -> new for renames)
+            let filename = line[3..].trim().to_string();
+            if filename.is_empty() {
+                return None;
+            }
+            Some((status, filename))
+        })
+        .collect()
+}
+
+/// Parse a user's stage selection input into a list of 0-based indices.
+///
+/// Supports:
+/// - Single numbers: `1`, `3`
+/// - Ranges: `1-3`
+/// - Comma-separated mix: `1,3,5-7`
+/// - Glob patterns: `*.rs`, `src/*`
+/// - `all` or `a`: select everything
+///
+/// Returns sorted, deduplicated 0-based indices. Out-of-range indices are silently dropped.
+pub fn parse_stage_selection(input: &str, files: &[(String, String)]) -> Vec<usize> {
+    let input = input.trim();
+    if input.is_empty() || input == "q" {
+        return vec![];
+    }
+    if input == "all" || input == "a" {
+        return (0..files.len()).collect();
+    }
+
+    // Check if input looks like a glob (contains * or ?)
+    if input.contains('*') || input.contains('?') {
+        return files
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, name))| glob_match_simple(input, name))
+            .map(|(i, _)| i)
+            .collect();
+    }
+
+    // Parse comma-separated numbers and ranges
+    let mut indices: Vec<usize> = Vec::new();
+    for part in input.split(',') {
+        let part = part.trim();
+        if part.contains('-') {
+            // Range: "1-3"
+            let bounds: Vec<&str> = part.splitn(2, '-').collect();
+            if let (Ok(start), Ok(end)) = (
+                bounds[0].trim().parse::<usize>(),
+                bounds[1].trim().parse::<usize>(),
+            ) {
+                if start >= 1 && end >= start {
+                    for i in start..=end {
+                        if i >= 1 && i <= files.len() {
+                            indices.push(i - 1);
+                        }
+                    }
+                }
+            }
+        } else if let Ok(n) = part.parse::<usize>() {
+            if n >= 1 && n <= files.len() {
+                indices.push(n - 1);
+            }
+        }
+    }
+    indices.sort();
+    indices.dedup();
+    indices
+}
+
+/// Simple glob matching for file paths.
+/// Supports `*` (match any sequence) and `?` (match single char).
+fn glob_match_simple(pattern: &str, text: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().collect();
+    let txt: Vec<char> = text.chars().collect();
+    glob_match_chars(&pat, &txt)
+}
+
+fn glob_match_chars(pat: &[char], txt: &[char]) -> bool {
+    let (mut pi, mut ti) = (0, 0);
+    let (mut star_pi, mut star_ti) = (usize::MAX, 0);
+
+    while ti < txt.len() {
+        if pi < pat.len() && (pat[pi] == '?' || pat[pi] == txt[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pat.len() && pat[pi] == '*' {
+            star_pi = pi;
+            star_ti = ti;
+            pi += 1;
+        } else if star_pi != usize::MAX {
+            pi = star_pi + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+    while pi < pat.len() && pat[pi] == '*' {
+        pi += 1;
+    }
+    pi == pat.len()
+}
+
+/// Format a status code with a colored label for the stage display.
+fn format_status_label(status: &str) -> String {
+    match status {
+        "M" => format!("{YELLOW}M{RESET}"),
+        "A" => format!("{GREEN}A{RESET}"),
+        "D" => format!("{RED}D{RESET}"),
+        "R" => format!("{CYAN}R{RESET}"),
+        "??" => format!("{DIM}?{RESET}"),
+        other => format!("{DIM}{other}{RESET}"),
     }
 }
 
@@ -501,10 +628,63 @@ pub fn run_git_subcommand(subcmd: &GitSubcommand) {
                 Err(_) => eprintln!("{RED}  error: not in a git repository{RESET}\n"),
             },
         },
+        GitSubcommand::Stage => {
+            let porcelain = match run_git(&["status", "--porcelain"]) {
+                Ok(text) => text,
+                Err(_) => {
+                    eprintln!("{RED}  error: not in a git repository{RESET}\n");
+                    return;
+                }
+            };
+            if porcelain.is_empty() {
+                println!("{DIM}  (nothing to stage — clean working tree){RESET}\n");
+                return;
+            }
+            let files = parse_status_files(&porcelain);
+            if files.is_empty() {
+                println!("{DIM}  (nothing to stage){RESET}\n");
+                return;
+            }
+            // Display numbered list
+            println!("{DIM}  Modified/untracked files:{RESET}");
+            for (i, (status, name)) in files.iter().enumerate() {
+                let label = format_status_label(status);
+                println!("    {BOLD}{}. {RESET}[{label}] {name}", i + 1);
+            }
+            // Prompt for selection
+            eprint!("\n  {DIM}Stage which? (1,3 / 1-3 / *.rs / all / q): {RESET}");
+            std::io::Write::flush(&mut std::io::stderr()).ok();
+            let mut input = String::new();
+            if std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut input).is_err() {
+                return;
+            }
+            let selected = parse_stage_selection(input.trim(), &files);
+            if selected.is_empty() {
+                println!("{DIM}  (cancelled){RESET}\n");
+                return;
+            }
+            // Stage selected files
+            let mut staged_count = 0;
+            for idx in &selected {
+                let (_, ref path) = files[*idx];
+                if run_git(&["add", path]).is_ok() {
+                    staged_count += 1;
+                } else {
+                    eprintln!("{RED}  error staging: {path}{RESET}");
+                }
+            }
+            if staged_count > 0 {
+                println!(
+                    "{GREEN}  ✓ staged {staged_count} file{}{RESET}\n",
+                    if staged_count == 1 { "" } else { "s" }
+                );
+            }
+        }
         GitSubcommand::Help => {
             println!("{DIM}  usage: /git status             Show working tree status");
             println!("         /git log [n]             Show last n commits (default: 5)");
             println!("         /git add <path>          Stage files for commit");
+            println!("         /git stage               Interactive file staging picker");
             println!("         /git diff [--cached]     Show diff (unstaged or staged changes)");
             println!("         /git branch [name]       List branches or create & switch");
             println!("         /git stash               Stash uncommitted changes");
@@ -1310,5 +1490,143 @@ stash@{1}: On feature: def5678 wip stuff";
         let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let result = destructive_guard(&["revert", "HEAD", "--no-edit"], project_root);
         assert_eq!(result, Some("revert"));
+    }
+
+    #[test]
+    fn test_parse_git_args_stage() {
+        assert_eq!(parse_git_args("stage"), GitSubcommand::Stage);
+        assert_eq!(parse_git_args("STAGE"), GitSubcommand::Stage);
+        assert_eq!(parse_git_args("Stage"), GitSubcommand::Stage);
+    }
+
+    #[test]
+    fn test_parse_status_files_basic() {
+        let porcelain = " M src/main.rs\n?? new_file.rs\n D deleted.rs\n";
+        let files = parse_status_files(porcelain);
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0], ("M".to_string(), "src/main.rs".to_string()));
+        assert_eq!(files[1], ("??".to_string(), "new_file.rs".to_string()));
+        assert_eq!(files[2], ("D".to_string(), "deleted.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_status_files_empty() {
+        assert_eq!(parse_status_files(""), Vec::<(String, String)>::new());
+        assert_eq!(parse_status_files("\n"), Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn test_parse_stage_selection_all() {
+        let files = vec![
+            ("M".to_string(), "a.rs".to_string()),
+            ("M".to_string(), "b.rs".to_string()),
+            ("??".to_string(), "c.rs".to_string()),
+        ];
+        assert_eq!(parse_stage_selection("all", &files), vec![0, 1, 2]);
+        assert_eq!(parse_stage_selection("a", &files), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_parse_stage_selection_single() {
+        let files = vec![
+            ("M".to_string(), "a.rs".to_string()),
+            ("M".to_string(), "b.rs".to_string()),
+            ("??".to_string(), "c.rs".to_string()),
+        ];
+        assert_eq!(parse_stage_selection("1", &files), vec![0]);
+        assert_eq!(parse_stage_selection("2", &files), vec![1]);
+        assert_eq!(parse_stage_selection("3", &files), vec![2]);
+    }
+
+    #[test]
+    fn test_parse_stage_selection_range() {
+        let files = vec![
+            ("M".to_string(), "a.rs".to_string()),
+            ("M".to_string(), "b.rs".to_string()),
+            ("??".to_string(), "c.rs".to_string()),
+            ("D".to_string(), "d.rs".to_string()),
+        ];
+        assert_eq!(parse_stage_selection("1-3", &files), vec![0, 1, 2]);
+        assert_eq!(parse_stage_selection("2-4", &files), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_parse_stage_selection_comma_separated() {
+        let files = vec![
+            ("M".to_string(), "a.rs".to_string()),
+            ("M".to_string(), "b.rs".to_string()),
+            ("??".to_string(), "c.rs".to_string()),
+            ("D".to_string(), "d.rs".to_string()),
+        ];
+        assert_eq!(parse_stage_selection("1,3", &files), vec![0, 2]);
+        assert_eq!(parse_stage_selection("1,3,4", &files), vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn test_parse_stage_selection_mixed() {
+        let files = vec![
+            ("M".to_string(), "a.rs".to_string()),
+            ("M".to_string(), "b.rs".to_string()),
+            ("??".to_string(), "c.rs".to_string()),
+            ("D".to_string(), "d.rs".to_string()),
+            ("M".to_string(), "e.rs".to_string()),
+        ];
+        assert_eq!(parse_stage_selection("1,3-5", &files), vec![0, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_parse_stage_selection_glob() {
+        let files = vec![
+            ("M".to_string(), "src/main.rs".to_string()),
+            ("M".to_string(), "src/lib.rs".to_string()),
+            ("??".to_string(), "README.md".to_string()),
+            ("M".to_string(), "Cargo.toml".to_string()),
+        ];
+        assert_eq!(parse_stage_selection("*.rs", &files), vec![0, 1]);
+        assert_eq!(parse_stage_selection("*.md", &files), vec![2]);
+        assert_eq!(parse_stage_selection("src/*", &files), vec![0, 1]);
+    }
+
+    #[test]
+    fn test_parse_stage_selection_quit_and_empty() {
+        let files = vec![("M".to_string(), "a.rs".to_string())];
+        assert_eq!(parse_stage_selection("q", &files), Vec::<usize>::new());
+        assert_eq!(parse_stage_selection("", &files), Vec::<usize>::new());
+        assert_eq!(parse_stage_selection("  ", &files), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn test_parse_stage_selection_out_of_range() {
+        let files = vec![
+            ("M".to_string(), "a.rs".to_string()),
+            ("M".to_string(), "b.rs".to_string()),
+        ];
+        // Out-of-range numbers are silently dropped
+        assert_eq!(parse_stage_selection("5", &files), Vec::<usize>::new());
+        assert_eq!(parse_stage_selection("0", &files), Vec::<usize>::new());
+        // But valid ones remain
+        assert_eq!(parse_stage_selection("1,5", &files), vec![0]);
+    }
+
+    #[test]
+    fn test_parse_stage_selection_deduplicates() {
+        let files = vec![
+            ("M".to_string(), "a.rs".to_string()),
+            ("M".to_string(), "b.rs".to_string()),
+            ("M".to_string(), "c.rs".to_string()),
+        ];
+        // Overlapping range and explicit number
+        assert_eq!(parse_stage_selection("1-2,2", &files), vec![0, 1]);
+    }
+
+    #[test]
+    fn test_glob_match_simple_patterns() {
+        assert!(glob_match_simple("*.rs", "main.rs"));
+        assert!(glob_match_simple("*.rs", "src/lib.rs"));
+        assert!(!glob_match_simple("*.rs", "main.toml"));
+        assert!(glob_match_simple("src/*", "src/main.rs"));
+        assert!(!glob_match_simple("src/*", "tests/main.rs"));
+        assert!(glob_match_simple("??.rs", "ab.rs"));
+        assert!(!glob_match_simple("??.rs", "abc.rs"));
     }
 }

@@ -68,14 +68,20 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /bg kill 1",
         ),
         "help" => Some(
-            "/help [command] — Show help information\n\n\
+            "/help [command|search <keyword>] — Show help information\n\n\
              Usage:\n\
              \x20 /help              Show all available commands\n\
-             \x20 /help <command>    Show detailed help for a specific command\n\n\
+             \x20 /help <command>    Show detailed help for a specific command\n\
+             \x20 /help search <kw>  Search commands by keyword\n\n\
+             The search looks across command names, descriptions, and detailed\n\
+             help text. Results are ranked by relevance (name match > description\n\
+             match > help text match).\n\n\
              Examples:\n\
              \x20 /help\n\
              \x20 /help add\n\
-             \x20 /help commit",
+             \x20 /help commit\n\
+             \x20 /help search git\n\
+             \x20 /help search test",
         ),
         "quit" | "exit" => Some(
             "/quit — Exit yoyo\n\n\
@@ -97,15 +103,18 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              Always clears immediately regardless of message count.",
         ),
         "compact" => Some(
-            "/compact [N|all] — Compact conversation to save context space\n\n\
+            "/compact [N|all|--preview] — Compact conversation to save context space\n\n\
              Summarizes older turns to free context window space.\n\n\
              Usage:\n\
              \x20 /compact              Default — keep last 10 messages at full fidelity\n\
              \x20 /compact 4            Keep last 4 messages, summarize everything before\n\
-             \x20 /compact all          Summarize everything except the last 2 messages\n\n\
+             \x20 /compact all          Summarize everything except the last 2 messages\n\
+             \x20 /compact --preview    Show what compaction would do without performing it\n\n\
              The number controls how many recent messages survive compaction at\n\
              full detail. Lower numbers free more space but lose more context.\n\
-             Minimum value is 2 (always keeps at least the last exchange).",
+             Minimum value is 2 (always keeps at least the last exchange).\n\n\
+             The --preview flag shows estimated token savings, message counts,\n\
+             files touched, and topics in the conversation — without changing anything.",
         ),
         "commit" => Some(
             "/commit [message] — Commit staged changes\n\n\
@@ -371,10 +380,12 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              Uses the same symbol extraction as /map (regex or ast-grep).",
         ),
         "status" => Some(
-            "/status — Show session info\n\n\
-             Displays current session information including: working directory,\n\
-             active model, message count, git branch (if in a repo), and\n\
-             context window usage percentage.",
+            "/status — Show session dashboard\n\n\
+             Displays a comprehensive session overview: model, git branch,\n\
+             working directory, active modes (teach, architect, plan, read-only),\n\
+             project goal (if set), watch command (if active), session duration\n\
+             and turns, uncommitted file changes, token usage, and context\n\
+             window usage percentage.",
         ),
         "profile" => Some(
             "/profile — Show unified session statistics\n\n\
@@ -474,7 +485,13 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
         "retry" => Some(
             "/retry — Re-send the last user input\n\n\
              Repeats the most recent user message to the AI. Useful when\n\
-             a response was interrupted or you want a different answer.",
+             a response was interrupted or you want a different answer.\n\n\
+             Modifiers:\n\
+             \x20 /retry --with \"...\"   Append additional instructions to the retry\n\n\
+             Examples:\n\
+             \x20 /retry                        Re-run as-is\n\
+             \x20 /retry --with \"use async\"     Re-run with extra guidance\n\
+             \x20 /retry --with \"make it shorter\"",
         ),
         "history" => Some(
             "/history — Show summary of conversation messages\n\n\
@@ -871,21 +888,28 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /spawn status",
         ),
         "review" => Some(
-            "/review [target] — AI code review\n\n\
+            "/review [--quick|--thorough] [target] — AI code review\n\n\
              Usage:\n\
              \x20 /review                   Review staged/uncommitted changes\n\
              \x20 /review <path>            Review a specific file\n\
              \x20 /review HEAD~3..HEAD      Review a commit range\n\
-             \x20 /review --pr 42           Review a GitHub PR\n\n\
-             Sends the diff or file to the AI for a code review, looking\n\
-             for bugs, style issues, and improvement opportunities.\n\n\
+             \x20 /review --pr 42           Review a GitHub PR\n\
+             \x20 /review --quick           Quick review: bugs & security only\n\
+             \x20 /review --thorough        Deep review: all dimensions\n\n\
+             Effort levels:\n\
+             \x20 --quick     Focus on bugs and security only. Skip style nits. Terse output.\n\
+             \x20 (default)   Bugs, security, style, performance, and suggestions.\n\
+             \x20 --thorough  Exhaustive review: also checks error handling, edge cases,\n\
+             \x20             API contracts, test coverage, docs, and concurrency.\n\n\
+             Sends the diff or file to the AI for a code review.\n\n\
              Also works as a CLI subcommand (non-interactive):\n\
              \x20 yoyo review               Review from the command line\n\
+             \x20 yoyo review --quick       Quick review from CLI\n\
              \x20 yoyo review HEAD~1 > r.md Pipe review to a file\n\n\
              Examples:\n\
              \x20 /review\n\
-             \x20 /review src/main.rs\n\
-             \x20 /review HEAD~3..HEAD",
+             \x20 /review --quick src/main.rs\n\
+             \x20 /review --thorough HEAD~3..HEAD",
         ),
         "revisit" => Some(
             "/revisit [subcommand] — Review closed/shelved issues that may now be feasible\n\n\
@@ -1033,14 +1057,18 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 /changelog 30",
         ),
         "web" => Some(
-            "/web <url> — Fetch and display web page content\n\n\
+            "/web <url> | /web search <query> — Fetch a web page or search the web\n\n\
              Usage:\n\
-             \x20 /web <url>    Fetch a URL and display readable text\n\n\
+             \x20 /web <url>           Fetch a URL and display readable text\n\
+             \x20 /web search <query>  Search the web via DuckDuckGo\n\n\
              Downloads the web page and extracts clean readable text,\n\
-             stripping HTML tags and scripts.\n\n\
+             stripping HTML tags and scripts. Search returns titles,\n\
+             URLs, and snippets for each result.\n\n\
              Examples:\n\
              \x20 /web https://docs.rs/serde/latest\n\
-             \x20 /web https://rust-lang.org",
+             \x20 /web https://rust-lang.org\n\
+             \x20 /web search rust async tutorial\n\
+             \x20 /web search \"tokio vs async-std\"",
         ),
         "open" => Some(
             "/open <file>[:<line>] — Open a file in your editor\n\n\
@@ -1144,7 +1172,18 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              Keep track of multi-step plans without losing context.\n\
              Tasks persist for the duration of the session.\n\n\
              The AI agent can also manage tasks via the todo tool during\n\
-             agentic runs, helping it stay organized on multi-step operations.",
+             agentic runs, helping it stay organized on multi-step operations.\n\n\
+             Board (Kanban view of session_plan/ tasks):\n\
+             \x20 /todo board              Show board (reads session_plan/task_*.md)\n\
+             \x20 /todo board init [goal]  Create session_plan/ with optional goal\n\
+             \x20 /todo board add <title>  Add task (creates task_NN.md, status: backlog)\n\
+             \x20 /todo board move <task_id> <status>  Update status in task file\n\
+             \x20   e.g. /todo board move task_02 active\n\
+             \x20 /todo board done <task_id>  Set task status to done\n\
+             \x20 /todo board goal <text>  Write/update session_plan/goal.md\n\
+             \x20 /todo board evidence <text>  Append to session_plan/evidence.md\n\n\
+             Task IDs are file-based (task_01, task_02, etc.) derived from filenames.\n\
+             Valid statuses: backlog, active, done.",
         ),
         "teach" => Some(
             "/teach — Toggle teach mode\n\n\
@@ -1158,6 +1197,21 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              \x20 • Adds comments on non-obvious lines\n\
              \x20 • Summarizes what you should learn after each task\n\n\
              Great for learning while the agent codes. Session-only — resets when you exit.",
+        ),
+        "read" => Some(
+            "/read — Toggle read-only oracle mode\n\n\
+             Usage:\n\
+             \x20 /read       Toggle read-only mode on/off\n\
+             \x20 /read on    Enable read-only mode\n\
+             \x20 /read off   Disable read-only mode\n\n\
+             When read-only mode is active, the agent can only:\n\
+             \x20 • Read files (read_file)\n\
+             \x20 • Search code (search, grep, find)\n\
+             \x20 • List files (list_files)\n\
+             \x20 • Run non-destructive bash commands for analysis\n\n\
+             The agent will NOT write, edit, or run destructive commands.\n\
+             Use for code understanding, architecture exploration, and Q&A.\n\
+             Session-only — resets when you exit.",
         ),
         "tips" => Some(
             "/tips — Context-sensitive feature suggestions\n\n\
@@ -1249,11 +1303,12 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "provider" => Some("Switch or show current provider"),
         "quick" => Some("Fast answer without tools (single-turn, no agent loop)"),
         "quit" => Some("Exit yoyo"),
+        "read" => Some("Toggle read-only oracle mode — analyze but not modify"),
         "refactor" => Some("Refactoring tools (extract, rename, move)"),
         "remember" => Some("Save a memory note"),
         "rename" => Some("Rename a symbol across the project"),
-        "retry" => Some("Re-send the last input"),
-        "review" => Some("AI code review"),
+        "retry" => Some("Re-send the last input (--with \"...\" to refine)"),
+        "review" => Some("AI code review (--quick, --thorough)"),
         "revisit" => Some("Review closed/shelved issues that may now be feasible"),
         "run" => Some("Run a shell command"),
         "save" => Some("Save session to file"),
@@ -1263,20 +1318,198 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "skill" => Some("List, inspect, install, and search for skills"),
         "spawn" => Some("Run a task in a sub-agent"),
         "stash" => Some("Stash conversation and start fresh"),
-        "status" => Some("Show session info"),
+        "status" => Some("Show session dashboard"),
         "teach" => Some("Toggle teach mode — explains reasoning as it works"),
         "test" => Some("Run project tests"),
         "think" => Some("Set thinking level"),
         "tips" => Some("Context-sensitive feature suggestions"),
-        "todo" => Some("Track tasks (add, done, remove, clear)"),
+        "todo" => Some("Track tasks (add, done, remove, clear, board)"),
         "tokens" => Some("Show token usage and context window"),
         "tree" => Some("Show project directory tree"),
         "undo" => Some("Undo last turn's changes, all uncommitted, or last commit"),
         "update" => Some("Check for and install the latest version"),
         "version" => Some("Show yoyo version"),
         "watch" => Some("Auto-run lint+test after file changes"),
-        "web" => Some("Fetch a web page"),
+        "web" => Some("Fetch a web page or search the web"),
         "open" => Some("Open a file in your editor"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::KNOWN_COMMANDS;
+    use std::collections::HashSet;
+
+    // ── Completeness tests ──
+
+    #[test]
+    fn test_every_known_command_has_help() {
+        for cmd in KNOWN_COMMANDS {
+            let name = cmd.trim_start_matches('/');
+            // /exit is an alias for /quit — no dedicated help entry
+            if name == "exit" {
+                continue;
+            }
+            assert!(
+                command_help(name).is_some(),
+                "KNOWN_COMMAND {cmd} has no command_help entry"
+            );
+        }
+    }
+
+    #[test]
+    fn test_every_known_command_has_short_description() {
+        for cmd in KNOWN_COMMANDS {
+            let name = cmd.trim_start_matches('/');
+            assert!(
+                command_short_description(name).is_some(),
+                "KNOWN_COMMAND {cmd} has no command_short_description entry"
+            );
+        }
+    }
+
+    #[test]
+    fn test_no_orphan_help_entries() {
+        // Verify a fake command returns None (no catch-all that leaks)
+        assert!(
+            command_help("zzz_nonexistent").is_none(),
+            "Fake command should not have a help entry"
+        );
+        assert!(
+            command_short_description("zzz_nonexistent").is_none(),
+            "Fake command should not have a short description"
+        );
+    }
+
+    // ── Content quality tests ──
+
+    #[test]
+    fn test_short_descriptions_are_actually_short() {
+        for cmd in KNOWN_COMMANDS {
+            let name = cmd.trim_start_matches('/');
+            if let Some(desc) = command_short_description(name) {
+                assert!(
+                    desc.len() <= 80,
+                    "Short description for {cmd} is too long ({} chars): {desc}",
+                    desc.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_help_entries_are_non_empty() {
+        for cmd in KNOWN_COMMANDS {
+            let name = cmd.trim_start_matches('/');
+            if name == "exit" {
+                continue;
+            }
+            if let Some(help) = command_help(name) {
+                assert!(
+                    help.len() >= 20,
+                    "Help entry for {cmd} is suspiciously short ({} chars): {help}",
+                    help.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_help_uses_bare_names_not_slashes() {
+        // command_help matches on bare names like "add", not "/add"
+        // Verify that passing a slash-prefixed name returns None
+        // (callers are expected to strip the slash before calling)
+        assert!(
+            command_help("/add").is_none(),
+            "command_help should not match slash-prefixed names"
+        );
+        assert!(
+            command_short_description("/add").is_none(),
+            "command_short_description should not match slash-prefixed names"
+        );
+        // But bare name works
+        assert!(command_help("add").is_some());
+        assert!(command_short_description("add").is_some());
+    }
+
+    // ── Edge case tests ──
+
+    #[test]
+    fn test_command_help_returns_none_for_empty() {
+        assert!(command_help("").is_none());
+    }
+
+    #[test]
+    fn test_command_short_description_returns_none_for_empty() {
+        assert!(command_short_description("").is_none());
+    }
+
+    #[test]
+    fn test_command_short_description_returns_none_for_unknown() {
+        assert!(command_short_description("zzz_nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_no_duplicate_short_descriptions() {
+        // Deduplicate KNOWN_COMMANDS (e.g. /quick appears twice)
+        let unique_cmds: HashSet<&str> = KNOWN_COMMANDS.iter().copied().collect();
+
+        let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        let mut duplicates: Vec<(&str, &str)> = Vec::new();
+
+        for cmd in &unique_cmds {
+            let name = cmd.trim_start_matches('/');
+            if let Some(desc) = command_short_description(name) {
+                if let Some(first) = seen.get(desc) {
+                    duplicates.push((cmd, first));
+                } else {
+                    seen.insert(desc, cmd);
+                }
+            }
+        }
+
+        // Allow known aliases: /exit and /quit share a description
+        duplicates.retain(|(a, b)| {
+            let pair = [a.trim_start_matches('/'), b.trim_start_matches('/')];
+            !(pair.contains(&"exit") && pair.contains(&"quit"))
+        });
+
+        assert!(
+            duplicates.is_empty(),
+            "Duplicate short descriptions found: {duplicates:?}"
+        );
+    }
+
+    // ── Consistency tests ──
+
+    #[test]
+    fn test_help_entries_start_with_command_name() {
+        // Help text should mention the command (usually starts with /cmd)
+        for cmd in KNOWN_COMMANDS {
+            let name = cmd.trim_start_matches('/');
+            if name == "exit" {
+                continue;
+            }
+            if let Some(help) = command_help(name) {
+                assert!(
+                    help.contains(name) || help.contains(cmd),
+                    "Help entry for {cmd} doesn't mention the command name anywhere"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_quit_and_exit_share_short_description() {
+        let quit_desc = command_short_description("quit");
+        let exit_desc = command_short_description("exit");
+        assert!(quit_desc.is_some(), "/quit should have a short description");
+        assert!(exit_desc.is_some(), "/exit should have a short description");
+        assert_eq!(
+            quit_desc, exit_desc,
+            "/quit and /exit should share the same short description"
+        );
     }
 }

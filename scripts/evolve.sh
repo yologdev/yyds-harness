@@ -400,9 +400,12 @@ PENDING_REPLIES=""
 if command -v gh &>/dev/null; then
     echo "→ Scanning for pending replies..."
 
-    # Fetch all open issues with our labels, including comments
+    # Fetch all open issues with any of our labels, including comments.
+    # NOTE: gh's `--label "a,b,c"` is an AND filter (issue must have all 3
+    # labels), which silently returns 0 results. We need OR semantics, so
+    # use `--search "label:a,b,c"` which is comma-as-OR.
     REPLY_ISSUES=$(gh issue list --repo "$REPO" --state open \
-        --label "agent-input,agent-help-wanted,agent-self" \
+        --search "label:agent-input,agent-help-wanted,agent-self" \
         --limit 30 \
         --json number,title,comments \
         2>/dev/null || true)
@@ -459,6 +462,43 @@ print(chr(10).join(results))
     else
         echo "  No pending replies."
         PENDING_REPLIES=""
+    fi
+fi
+echo ""
+
+# ── Step 3b: Scan for yoyo's own forward-looking commitments (LLM-judged) ──
+# A single batched Claude call reads each open issue's last bot comment +
+# recent git log and decides which promises are outstanding. Transient API
+# errors fail-soft (warn + empty output). Config/auth errors (missing key,
+# 401/403/400) exit non-zero so this banner fires — a broken cron should
+# not silently lose commitment visibility for hours.
+YOYO_COMMITMENTS=""
+if command -v gh &>/dev/null && [ -n "$REPLY_ISSUES" ]; then
+    echo "→ Scanning for outstanding yoyo commitments..."
+    GIT_LOG_RECENT=$(git log --since="30 days ago" --pretty=format:"%H%n%B%n---COMMITSEP---" 2>/dev/null || true)
+    : > /tmp/scan_commitments.stderr  # truncate so stale warnings from a prior session don't surface
+    YOYO_COMMITMENTS=$(
+        echo "$REPLY_ISSUES" | \
+            BOT_LOGIN="$BOT_LOGIN" \
+            GIT_LOG_RECENT="$GIT_LOG_RECENT" \
+            python3 scripts/scan_commitments.py 2>/tmp/scan_commitments.stderr
+    )
+    SCAN_RC=$?
+    if [ "$SCAN_RC" -ne 0 ]; then
+        echo "  ⚠️ scan_commitments.py exited $SCAN_RC — commitments scan FAILED this session."
+        YOYO_COMMITMENTS=""
+    fi
+    if [ -s /tmp/scan_commitments.stderr ]; then
+        echo "  scan_commitments stderr:"
+        sed 's/^/    /' /tmp/scan_commitments.stderr
+    fi
+    COMMITMENT_COUNT=$(echo "$YOYO_COMMITMENTS" | grep -c '^### Issue' || true)
+    COMMITMENT_COUNT="${COMMITMENT_COUNT:-0}"
+    if [ "$COMMITMENT_COUNT" -gt 0 ]; then
+        echo "  $COMMITMENT_COUNT outstanding commitments detected."
+    else
+        echo "  No outstanding commitments."
+        YOYO_COMMITMENTS=""
     fi
 fi
 echo ""
@@ -656,6 +696,14 @@ ${RESOLVED_HELP:+
 Your human resolved these help-wanted issues for you in the last 3 days.
 The blocker is gone — if you had work waiting on this, you can now proceed.
 $RESOLVED_HELP
+}
+${YOYO_COMMITMENTS:+
+=== YOUR OPEN COMMITMENTS ===
+⚠️ You made these promises in past sessions and have not yet fulfilled them.
+Each entry shows the issue, what you said, and how long ago you said it.
+Address these BEFORE choosing new work. If you must skip one, name why
+(blocked by upstream, no longer needed, etc.) in your assessment.
+$YOYO_COMMITMENTS
 }
 ${PENDING_REPLIES:+
 === PENDING REPLIES ===

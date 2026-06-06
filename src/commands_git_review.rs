@@ -141,10 +141,11 @@ pub async fn run_non_interactive_review(
     arg: &str,
     agent_config: &crate::agent_builder::AgentConfig,
 ) -> Result<String, String> {
+    let (effort, remaining) = parse_review_effort(arg);
     let (label, content) =
-        build_review_content(arg).ok_or_else(|| "nothing to review".to_string())?;
+        build_review_content(&remaining).ok_or_else(|| "nothing to review".to_string())?;
 
-    let prompt = build_review_prompt(&label, &content);
+    let prompt = build_review_prompt(&label, &content, effort);
 
     // Build a side agent — one-shot, no tools, concise
     let mut side_agent = agent_config.build_side_agent();
@@ -210,8 +211,50 @@ pub async fn run_non_interactive_review(
     }
 }
 
+/// Review effort level — controls depth and focus of the code review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewEffort {
+    /// Focus on bugs and security only. Skip style nits. Be terse.
+    Quick,
+    /// Default: bugs, security, style, performance, suggestions.
+    Normal,
+    /// Deep review: also check error handling edge cases, API contract
+    /// violations, test coverage gaps, documentation accuracy, concurrency safety.
+    Thorough,
+}
+
+impl ReviewEffort {
+    /// Human-readable label for the effort level.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ReviewEffort::Quick => "quick",
+            ReviewEffort::Normal => "normal",
+            ReviewEffort::Thorough => "thorough",
+        }
+    }
+}
+
+/// Parse effort flags from review input.
+///
+/// Strips `--quick` or `--thorough` from the input and returns the
+/// effort level plus the remaining argument string (file path, range, etc.).
+pub fn parse_review_effort(input: &str) -> (ReviewEffort, String) {
+    let mut effort = ReviewEffort::Normal;
+    let mut remaining_parts: Vec<&str> = Vec::new();
+
+    for part in input.split_whitespace() {
+        match part {
+            "--quick" => effort = ReviewEffort::Quick,
+            "--thorough" => effort = ReviewEffort::Thorough,
+            _ => remaining_parts.push(part),
+        }
+    }
+
+    (effort, remaining_parts.join(" "))
+}
+
 /// Build the review prompt to send to the AI.
-pub fn build_review_prompt(label: &str, content: &str) -> String {
+pub fn build_review_prompt(label: &str, content: &str, effort: ReviewEffort) -> String {
     // Truncate if very large
     let max_chars = 30_000;
     let content_preview = if content.len() > max_chars {
@@ -224,21 +267,50 @@ pub fn build_review_prompt(label: &str, content: &str) -> String {
         content.to_string()
     };
 
+    let criteria = match effort {
+        ReviewEffort::Quick => {
+            "Focus on critical issues ONLY:\n\n\
+             1. **Bugs** — logic errors, crashes, data corruption\n\
+             2. **Security** — injection, unsafe operations, credential exposure\n\n\
+             Skip style, performance, and minor suggestions. Be terse — one line per finding."
+                .to_string()
+        }
+        ReviewEffort::Normal => {
+            "Look for:\n\n\
+             1. **Bugs** — logic errors, off-by-one errors, null/None handling, race conditions\n\
+             2. **Security** — injection vulnerabilities, unsafe operations, credential exposure\n\
+             3. **Style** — naming, idiomatic patterns, unnecessary complexity, dead code\n\
+             4. **Performance** — obvious inefficiencies, unnecessary allocations, N+1 patterns\n\
+             5. **Suggestions** — improvements, missing error handling, better approaches\n\n\
+             Be specific: reference line numbers or code snippets. Be concise — skip things that look fine.\n\
+             If the code looks good overall, say so briefly and note any minor suggestions."
+                .to_string()
+        }
+        ReviewEffort::Thorough => {
+            "Perform an exhaustive code review. Check ALL of the following:\n\n\
+             1. **Bugs** — logic errors, off-by-one errors, null/None handling, race conditions\n\
+             2. **Security** — injection vulnerabilities, unsafe operations, credential exposure\n\
+             3. **Style** — naming, idiomatic patterns, unnecessary complexity, dead code\n\
+             4. **Performance** — obvious inefficiencies, unnecessary allocations, N+1 patterns\n\
+             5. **Error Handling** — missing error paths, swallowed errors, unhelpful error messages\n\
+             6. **Edge Cases** — boundary conditions, empty inputs, overflow, unicode handling\n\
+             7. **API Contracts** — function signatures match usage, invariants maintained\n\
+             8. **Test Coverage** — untested paths, missing assertions, fragile test assumptions\n\
+             9. **Documentation** — stale comments, missing doc comments, misleading descriptions\n\
+             10. **Concurrency** — data races, deadlocks, lock ordering, shared mutable state\n\n\
+             Be exhaustive. Reference line numbers. For each finding, explain the risk and suggest a fix.\n\
+             Group findings by severity: critical → major → minor → nit."
+                .to_string()
+        }
+    };
+
+    let effort_label = match effort {
+        ReviewEffort::Normal => String::new(),
+        other => format!(" [{} review]", other.label()),
+    };
+
     format!(
-        r#"Review the following code ({label}). Look for:
-
-1. **Bugs** — logic errors, off-by-one errors, null/None handling, race conditions
-2. **Security** — injection vulnerabilities, unsafe operations, credential exposure
-3. **Style** — naming, idiomatic patterns, unnecessary complexity, dead code
-4. **Performance** — obvious inefficiencies, unnecessary allocations, N+1 patterns
-5. **Suggestions** — improvements, missing error handling, better approaches
-
-Be specific: reference line numbers or code snippets. Be concise — skip things that look fine.
-If the code looks good overall, say so briefly and note any minor suggestions.
-
-```
-{content_preview}
-```"#
+        "Review the following code ({label}){effort_label}. {criteria}\n\n```\n{content_preview}\n```"
     )
 }
 
@@ -251,10 +323,14 @@ pub async fn handle_review(
     model: &str,
 ) -> Option<String> {
     let arg = input.strip_prefix("/review").unwrap_or("").trim();
+    let (effort, remaining) = parse_review_effort(arg);
 
-    match build_review_content(arg) {
+    match build_review_content(&remaining) {
         Some((label, content)) => {
-            let prompt = build_review_prompt(&label, &content);
+            if effort != ReviewEffort::Normal {
+                eprintln!("{DIM}  effort: {}{RESET}", effort.label());
+            }
+            let prompt = build_review_prompt(&label, &content, effort);
             run_prompt(agent, &prompt, session_total, model).await;
             auto_compact_if_needed(agent);
             Some(prompt)
@@ -280,10 +356,14 @@ pub fn parse_blame_args(input: &str) -> Result<BlameArgs, String> {
 
     // Check for <file>:<start>-<end> pattern
     if let Some(colon_pos) = arg.rfind(':') {
+        // SAFETY: colon_pos from rfind(':') — ':' is ASCII (1 byte), so colon_pos
+        // and colon_pos + 1 are always valid char boundaries.
         let file_part = &arg[..colon_pos];
         let range_part = &arg[colon_pos + 1..];
 
         if let Some(dash_pos) = range_part.find('-') {
+            // SAFETY: dash_pos from find('-') — '-' is ASCII (1 byte), so dash_pos
+            // and dash_pos + 1 are always valid char boundaries within range_part.
             let start_str = &range_part[..dash_pos];
             let end_str = &range_part[dash_pos + 1..];
 
@@ -335,6 +415,9 @@ pub fn colorize_blame_line(line: &str) -> String {
         return line.to_string();
     }
 
+    // SAFETY: paren_open from find('('), paren_close from find(')') — both ASCII
+    // (1 byte each), so paren_open, paren_open + 1, paren_close, and paren_close + 1
+    // are all valid char boundaries.
     let hash = &line[..paren_open];
     let annotation = &line[paren_open + 1..paren_close];
     let code = if paren_close + 1 < line.len() {
@@ -351,14 +434,20 @@ pub fn colorize_blame_line(line: &str) -> String {
     // Look for a date pattern: 4-digit year followed by -
     for (i, _) in annotation.char_indices() {
         if i + 10 <= annotation.len() {
+            // SAFETY: i from char_indices() is always a valid char boundary.
             let slice = &annotation[i..];
             if slice.len() >= 10
+                // SAFETY: as_bytes() indexing is safe because slice.len() >= 10
+                // and bytes 0-9 are checked individually. The sub-slices [..4],
+                // [5..7], [8..10] are safe because all checked bytes are ASCII digits
+                // or '-', so every index falls on a char boundary.
                 && slice.as_bytes()[4] == b'-'
                 && slice.as_bytes()[7] == b'-'
                 && slice[..4].chars().all(|c| c.is_ascii_digit())
                 && slice[5..7].chars().all(|c| c.is_ascii_digit())
                 && slice[8..10].chars().all(|c| c.is_ascii_digit())
             {
+                // SAFETY: i from char_indices() — always a valid char boundary.
                 author = annotation[..i].trim_end();
                 date_and_lineno = &annotation[i..];
                 break;
@@ -370,6 +459,8 @@ pub fn colorize_blame_line(line: &str) -> String {
     // The lineno is typically the last whitespace-separated token
     let (date_part, lineno_part) =
         if let Some(last_space) = date_and_lineno.rfind(char::is_whitespace) {
+            // SAFETY: rfind(char::is_whitespace) returns the byte index of the
+            // start of the matching char — always a valid char boundary.
             let candidate = date_and_lineno[last_space..].trim();
             if candidate.chars().all(|c| c.is_ascii_digit()) && !candidate.is_empty() {
                 (&date_and_lineno[..last_space], candidate)
@@ -742,7 +833,7 @@ mod tests {
 
     #[test]
     fn build_review_prompt_contains_label() {
-        let prompt = build_review_prompt("staged changes", "fn main() {}");
+        let prompt = build_review_prompt("staged changes", "fn main() {}", ReviewEffort::Normal);
         assert!(
             prompt.contains("staged changes"),
             "Prompt should include the label"
@@ -752,13 +843,13 @@ mod tests {
     #[test]
     fn build_review_prompt_contains_content() {
         let code = "fn add(a: i32, b: i32) -> i32 { a + b }";
-        let prompt = build_review_prompt("test.rs", code);
+        let prompt = build_review_prompt("test.rs", code, ReviewEffort::Normal);
         assert!(prompt.contains(code), "Prompt should include the code");
     }
 
     #[test]
     fn build_review_prompt_contains_review_criteria() {
-        let prompt = build_review_prompt("file.rs", "let x = 1;");
+        let prompt = build_review_prompt("file.rs", "let x = 1;", ReviewEffort::Normal);
         assert!(prompt.contains("Bugs"), "Should mention bugs");
         assert!(prompt.contains("Security"), "Should mention security");
         assert!(prompt.contains("Style"), "Should mention style");
@@ -769,7 +860,7 @@ mod tests {
     #[test]
     fn build_review_prompt_truncates_large_content() {
         let large_content = "x".repeat(50_000);
-        let prompt = build_review_prompt("big.rs", &large_content);
+        let prompt = build_review_prompt("big.rs", &large_content, ReviewEffort::Normal);
         assert!(
             prompt.contains("truncated"),
             "Large content should be truncated"
@@ -788,7 +879,7 @@ mod tests {
     #[test]
     fn build_review_prompt_does_not_truncate_small_content() {
         let small_content = "fn hello() { println!(\"hi\"); }";
-        let prompt = build_review_prompt("small.rs", small_content);
+        let prompt = build_review_prompt("small.rs", small_content, ReviewEffort::Normal);
         assert!(
             !prompt.contains("truncated"),
             "Small content should not be truncated"
@@ -801,7 +892,7 @@ mod tests {
 
     #[test]
     fn build_review_prompt_wraps_in_code_block() {
-        let prompt = build_review_prompt("test.rs", "let x = 42;");
+        let prompt = build_review_prompt("test.rs", "let x = 42;", ReviewEffort::Normal);
         assert!(prompt.contains("```"), "Content should be in a code block");
     }
 
@@ -828,8 +919,11 @@ mod tests {
 
     #[test]
     fn test_build_review_prompt_contains_content() {
-        let prompt =
-            build_review_prompt("staged changes", "fn main() {\n    println!(\"hello\");\n}");
+        let prompt = build_review_prompt(
+            "staged changes",
+            "fn main() {\n    println!(\"hello\");\n}",
+            ReviewEffort::Normal,
+        );
         assert!(
             prompt.contains("staged changes"),
             "Should mention the label"
@@ -851,7 +945,7 @@ mod tests {
     #[test]
     fn test_build_review_prompt_truncates_large_content() {
         let large_content = "x".repeat(40_000);
-        let prompt = build_review_prompt("big file", &large_content);
+        let prompt = build_review_prompt("big file", &large_content, ReviewEffort::Normal);
         assert!(
             prompt.contains("truncated"),
             "Large content should be truncated"
@@ -961,6 +1055,25 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_blame_args_unicode_file_path() {
+        // File paths can contain multi-byte UTF-8 characters (e.g., accented letters).
+        // The colon and dash splitting must not panic on such paths.
+        let result = parse_blame_args("/blame src/données.rs:10-20").unwrap();
+        assert_eq!(result.file, "src/données.rs");
+        assert_eq!(result.range, Some((10, 20)));
+
+        // Unicode path without range
+        let result2 = parse_blame_args("/blame src/données.rs").unwrap();
+        assert_eq!(result2.file, "src/données.rs");
+        assert_eq!(result2.range, None);
+
+        // Unicode path with colon but non-numeric range (treated as file)
+        let result3 = parse_blame_args("/blame café:résumé").unwrap();
+        assert_eq!(result3.file, "café:résumé");
+        assert_eq!(result3.range, None);
+    }
+
+    #[test]
     fn test_colorize_blame_line_typical() {
         let line = "abc1234f (John Doe  2024-01-15 10:30:00 +0000  42) fn main() {";
         let colored = colorize_blame_line(line);
@@ -1026,14 +1139,18 @@ mod tests {
 
     #[test]
     fn build_review_prompt_with_diff_label() {
-        let prompt = build_review_prompt("diff HEAD~3..HEAD", "diff --git a/foo b/foo\n+bar");
+        let prompt = build_review_prompt(
+            "diff HEAD~3..HEAD",
+            "diff --git a/foo b/foo\n+bar",
+            ReviewEffort::Normal,
+        );
         assert!(prompt.contains("diff HEAD~3..HEAD"));
         assert!(prompt.contains("+bar"));
     }
 
     #[test]
     fn build_review_prompt_with_pr_label() {
-        let prompt = build_review_prompt("PR #42", "diff --git a/foo b/foo");
+        let prompt = build_review_prompt("PR #42", "diff --git a/foo b/foo", ReviewEffort::Normal);
         assert!(prompt.contains("PR #42"));
     }
 
@@ -1133,5 +1250,136 @@ mod tests {
             body: "ok".to_string(),
         };
         assert_eq!(a, b);
+    }
+
+    // --- ReviewEffort tests ---
+
+    #[test]
+    fn test_parse_review_effort_default() {
+        let (effort, remaining) = parse_review_effort("src/main.rs");
+        assert_eq!(effort, ReviewEffort::Normal);
+        assert_eq!(remaining, "src/main.rs");
+    }
+
+    #[test]
+    fn test_parse_review_effort_default_empty() {
+        let (effort, remaining) = parse_review_effort("");
+        assert_eq!(effort, ReviewEffort::Normal);
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_parse_review_effort_quick() {
+        let (effort, remaining) = parse_review_effort("--quick src/main.rs");
+        assert_eq!(effort, ReviewEffort::Quick);
+        assert_eq!(remaining, "src/main.rs");
+    }
+
+    #[test]
+    fn test_parse_review_effort_quick_no_arg() {
+        let (effort, remaining) = parse_review_effort("--quick");
+        assert_eq!(effort, ReviewEffort::Quick);
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_parse_review_effort_thorough() {
+        let (effort, remaining) = parse_review_effort("--thorough");
+        assert_eq!(effort, ReviewEffort::Thorough);
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_parse_review_effort_thorough_with_file() {
+        let (effort, remaining) = parse_review_effort("--thorough src/lib.rs");
+        assert_eq!(effort, ReviewEffort::Thorough);
+        assert_eq!(remaining, "src/lib.rs");
+    }
+
+    #[test]
+    fn test_parse_review_effort_flag_after_file() {
+        // Flag can appear after the file path too
+        let (effort, remaining) = parse_review_effort("src/main.rs --quick");
+        assert_eq!(effort, ReviewEffort::Quick);
+        assert_eq!(remaining, "src/main.rs");
+    }
+
+    #[test]
+    fn test_build_review_prompt_quick() {
+        let prompt = build_review_prompt("test.rs", "let x = 1;", ReviewEffort::Quick);
+        assert!(prompt.contains("Bugs"), "Quick review should mention bugs");
+        assert!(
+            prompt.contains("Security"),
+            "Quick review should mention security"
+        );
+        assert!(
+            !prompt.contains("Style"),
+            "Quick review should NOT mention style"
+        );
+        assert!(
+            !prompt.contains("Performance"),
+            "Quick review should NOT mention performance"
+        );
+        assert!(
+            prompt.contains("quick review"),
+            "Should include effort label"
+        );
+        assert!(
+            prompt.contains("terse"),
+            "Quick review should ask for terse output"
+        );
+    }
+
+    #[test]
+    fn test_build_review_prompt_thorough() {
+        let prompt = build_review_prompt("test.rs", "let x = 1;", ReviewEffort::Thorough);
+        assert!(prompt.contains("Bugs"), "Should mention bugs");
+        assert!(prompt.contains("Security"), "Should mention security");
+        assert!(prompt.contains("Edge Cases"), "Should mention edge cases");
+        assert!(
+            prompt.contains("API Contracts"),
+            "Should mention API contracts"
+        );
+        assert!(
+            prompt.contains("Test Coverage"),
+            "Should mention test coverage"
+        );
+        assert!(prompt.contains("Concurrency"), "Should mention concurrency");
+        assert!(
+            prompt.contains("Documentation"),
+            "Should mention documentation"
+        );
+        assert!(
+            prompt.contains("thorough review"),
+            "Should include effort label"
+        );
+        assert!(
+            prompt.contains("exhaustive"),
+            "Thorough review should ask for exhaustive review"
+        );
+    }
+
+    #[test]
+    fn test_build_review_prompt_normal_no_effort_label() {
+        let prompt = build_review_prompt("test.rs", "let x = 1;", ReviewEffort::Normal);
+        // Normal should not have an effort label suffix
+        assert!(
+            !prompt.contains("[normal review]"),
+            "Normal effort should not show effort label"
+        );
+    }
+
+    #[test]
+    fn test_review_effort_label() {
+        assert_eq!(ReviewEffort::Quick.label(), "quick");
+        assert_eq!(ReviewEffort::Normal.label(), "normal");
+        assert_eq!(ReviewEffort::Thorough.label(), "thorough");
+    }
+
+    #[test]
+    fn test_parse_review_effort_with_pr_flag() {
+        let (effort, remaining) = parse_review_effort("--quick --pr 42");
+        assert_eq!(effort, ReviewEffort::Quick);
+        assert_eq!(remaining, "--pr 42");
     }
 }

@@ -40,8 +40,8 @@ pub use crate::commands_memory::{handle_forget, handle_memories, handle_remember
 pub use crate::commands_config::{
     architect_model, default_editor_model, handle_architect, handle_config, handle_config_edit,
     handle_config_get, handle_config_set, handle_config_show, handle_hooks, handle_mcp,
-    handle_permissions, handle_teach, is_architect_mode, is_teach_mode, ConfigDisplay,
-    ARCHITECT_PROMPT, TEACH_MODE_PROMPT,
+    handle_permissions, handle_read, handle_teach, is_architect_mode, is_read_mode, is_teach_mode,
+    ConfigDisplay, ARCHITECT_PROMPT, READ_MODE_PROMPT, TEACH_MODE_PROMPT,
 };
 
 use yoagent::agent::Agent;
@@ -113,6 +113,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "/jump",
     "/marks",
     "/plan",
+    "/read",
     "/remember",
     "/memories",
     "/provider",
@@ -180,7 +181,7 @@ pub const KNOWN_MODELS: &[&str] = &[
 pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high"];
 
 /// Git subcommand names for `/git <Tab>` completion.
-pub const GIT_SUBCOMMANDS: &[&str] = &["status", "log", "add", "diff", "branch", "stash"];
+pub const GIT_SUBCOMMANDS: &[&str] = &["status", "log", "add", "stage", "diff", "branch", "stash"];
 
 /// PR subcommand names for `/pr <Tab>` completion.
 pub const PR_SUBCOMMANDS: &[&str] = &[
@@ -242,7 +243,7 @@ pub fn command_arg_hint(cmd: &str) -> Option<&'static str> {
         "blame" => Some("<file> [line-range]"),
         "review" => Some("[branch]"),
         "revisit" => Some("scan | check #N | list | add #N <reason> | remove #N"),
-        "web" => Some("<url>"),
+        "web" => Some("<url> | search <query>"),
         "run" => Some("<command>"),
         "test" => Some("[args...]"),
         "export" => Some("[filename]"),
@@ -310,6 +311,7 @@ pub fn command_arg_completions(cmd: &str, partial_arg: &str) -> Vec<String> {
         "/revisit" => {
             filter_candidates(crate::commands_revisit::REVISIT_SUBCOMMANDS, &partial_lower)
         }
+        "/web" => filter_candidates(crate::commands_web::WEB_SUBCOMMANDS, &partial_lower),
         _ => Vec::new(),
     }
 }
@@ -541,7 +543,8 @@ pub use crate::commands_lint::{handle_lint, handle_lint_fix, handle_security, ha
 pub use crate::commands_run::{handle_loop, handle_run, handle_run_usage};
 
 pub use crate::commands_file::{
-    build_explain_prompt, expand_file_mentions, handle_add, handle_apply, handle_open, AddResult,
+    build_explain_prompt, expand_file_mentions, handle_add, handle_apply, handle_open,
+    suggest_related_files, AddResult,
 };
 
 pub use crate::commands_web::{handle_copy, handle_web, COPY_SUBCOMMANDS};
@@ -550,7 +553,7 @@ pub use crate::commands_web::{handle_copy, handle_web, COPY_SUBCOMMANDS};
 pub use crate::commands_session::{
     auto_compact_if_needed, auto_save_on_exit, handle_compact, handle_export, handle_history,
     handle_history_detail, handle_jump, handle_load, handle_mark, handle_marks, handle_save,
-    handle_search, last_session_exists, reset_compact_thrash, Bookmarks,
+    handle_search, reset_compact_thrash, Bookmarks,
 };
 
 // Stash subsystem
@@ -914,8 +917,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         let mut agent = config.build_agent();
         handle_provider_switch("openai", &mut config, &mut agent);
@@ -947,8 +952,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         let mut agent = config.build_agent();
         // Invalid provider should not change the config
@@ -981,8 +988,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         let mut agent = config.build_agent();
         // Switch to google → should use gemini default
@@ -1139,10 +1148,11 @@ mod tests {
         let candidates = command_arg_completions("/git", "st");
         assert_eq!(
             candidates.len(),
-            2,
-            "Should match 'status' and 'stash': {candidates:?}"
+            3,
+            "Should match 'status', 'stage', and 'stash': {candidates:?}"
         );
         assert!(candidates.contains(&"status".to_string()));
+        assert!(candidates.contains(&"stage".to_string()));
         assert!(candidates.contains(&"stash".to_string()));
     }
 

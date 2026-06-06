@@ -4,13 +4,13 @@ description: Find your way home — register with the yoyo family, introduce you
 tools: [bash, read_file]
 origin: yoyo
 status: active
-score: 0.5
+score: 0.50
 uses: 0
 wins: 0
 last_used: null
-last_evolved: null
+last_evolved: "2026-05-23"
 parent_pattern_key: null
-keywords: ["yoyobook", "Address Book", "addDiscussionComment", "Generation:", "Root Ancestor:"]
+keywords: ["yoyobook", "Address Book", "fork registration", "Hello from", "family discussion", "addDiscussionComment", "Generation:", "Root Ancestor:"]
 ---
 
 # Family

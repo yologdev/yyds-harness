@@ -20,6 +20,11 @@ pub fn help_command_completions(partial_lower: &str) -> Vec<String> {
         .map(|name| name.to_string())
         .collect();
 
+    // Add "search" for `/help search <keyword>` completion
+    if "search".starts_with(partial_lower) && !completions.contains(&"search".to_string()) {
+        completions.push("search".to_string());
+    }
+
     // Append custom commands
     for (name, _) in discover_custom_commands() {
         if name.to_lowercase().starts_with(partial_lower) && !completions.contains(&name) {
@@ -193,6 +198,10 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(
         s,
         "  --no-tools        Disable all tools (chat-only mode, no file access or commands)"
+    );
+    let _ = writeln!(
+        s,
+        "  --lite            Optimize for small/local LLMs (minimal prompt, 4 tools, 8K context)"
     );
     let _ = writeln!(
         s,
@@ -586,6 +595,10 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "    /read [on|off]     Toggle read-only oracle mode (analyze only)"
+    );
+    let _ = writeln!(
+        s,
         "    /side <question>   Quick question (no tools, no context impact)"
     );
     let _ = writeln!(
@@ -669,6 +682,7 @@ pub fn help_text() -> String {
     // ── Session ──
     out.push_str("  ── Session ──\n");
     out.push_str("  /help              Show this help\n");
+    out.push_str("  /help search <kw>  Search commands by keyword\n");
     out.push_str("  /quit, /exit       Exit yoyo\n");
     out.push_str("  /clear             Clear conversation history (confirms if >4 messages)\n");
     out.push_str("  /clear!            Force-clear without confirmation\n");
@@ -828,6 +842,7 @@ pub fn help_text() -> String {
         "  /extended <task>   Run the agent autonomously on a long task (--turns N, --budget N)\n",
     );
     out.push_str("  /teach [on|off]    Toggle teach mode — explains reasoning as it works\n");
+    out.push_str("  /read [on|off]     Toggle read-only oracle mode — analyze but not modify\n");
     out.push_str(
         "  /side <question>   Quick question without affecting main conversation (no tools)\n",
     );
@@ -869,6 +884,98 @@ pub fn handle_help() {
     println!("{DIM}{}{RESET}", help_text());
 }
 
+/// A search result entry with relevance score.
+#[derive(Debug)]
+struct SearchResult {
+    command: &'static str,
+    description: &'static str,
+    score: u32,
+}
+
+/// Search all commands by keyword across names, short descriptions, and detailed help.
+///
+/// Scoring (higher = more relevant):
+///   4 — exact command name match
+///   3 — command name contains keyword
+///   2 — short description contains keyword
+///   1 — detailed help text contains keyword
+///
+/// Results are deduplicated per command (highest score wins) and sorted by score
+/// descending, then alphabetically.
+fn search_commands(keyword: &str) -> Vec<SearchResult> {
+    let kw = keyword.to_lowercase();
+    let mut results: Vec<SearchResult> = Vec::new();
+
+    for &cmd_with_slash in KNOWN_COMMANDS {
+        let name = cmd_with_slash.strip_prefix('/').unwrap_or(cmd_with_slash);
+        // Skip aliases to avoid duplicate entries
+        if name == "exit" || name == "clear!" {
+            continue;
+        }
+
+        let desc = command_short_description(name).unwrap_or("");
+        let name_lower = name.to_lowercase();
+
+        // Compute highest matching score for this command
+        let mut score: u32 = 0;
+
+        if name_lower == kw {
+            score = 4; // exact name match
+        } else if name_lower.contains(&kw) {
+            score = score.max(3); // name contains keyword
+        }
+
+        if desc.to_lowercase().contains(&kw) {
+            score = score.max(2); // description contains keyword
+        }
+
+        if score == 0 {
+            // Check detailed help text (heavier, so only as fallback)
+            if let Some(detail) = command_help(name) {
+                if detail.to_lowercase().contains(&kw) {
+                    score = 1;
+                }
+            }
+        }
+
+        if score > 0 {
+            results.push(SearchResult {
+                command: name,
+                description: desc,
+                score,
+            });
+        }
+    }
+
+    // Sort: highest score first, then alphabetically by command name
+    results.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.command.cmp(b.command)));
+    results
+}
+
+/// Handle `/help search <keyword>` — search commands by keyword.
+pub fn handle_help_search(keyword: &str) {
+    let kw = keyword.trim();
+    if kw.is_empty() {
+        println!("{DIM}  Usage: /help search <keyword>{RESET}");
+        println!("{DIM}  Search commands by name, description, or help text.{RESET}");
+        return;
+    }
+
+    let results = search_commands(kw);
+    if results.is_empty() {
+        println!("{DIM}  No commands matching '{kw}'. Try /help for the full list.{RESET}");
+        return;
+    }
+
+    println!("{DIM}  Commands matching \"{kw}\":{RESET}");
+    for r in &results {
+        println!(
+            "    {GREEN}/{}{RESET}  {DIM}{}{RESET}",
+            r.command, r.description
+        );
+    }
+}
+
 /// Handle `/help <command>` — show detailed help for a specific command.
 /// Returns `true` if a command was looked up (found or not), `false` if no argument.
 pub fn handle_help_command(input: &str) -> bool {
@@ -879,6 +986,11 @@ pub fn handle_help_command(input: &str) -> bool {
         .trim_start_matches('/');
     if arg.is_empty() {
         return false;
+    }
+    // Route `/help search <keyword>` to the search handler
+    if let Some(keyword) = arg.strip_prefix("search") {
+        handle_help_search(keyword);
+        return true;
     }
     match command_help(arg) {
         Some(text) => {
@@ -2116,7 +2228,7 @@ mod tests {
                 assert!(
                     starts_with_slash,
                     "command_help(\"{name}\") should start with /{name}, got: {}",
-                    &text[..text.len().min(60)]
+                    crate::format::safe_truncate(text, 60)
                 );
             }
         }
@@ -2211,5 +2323,148 @@ mod tests {
                 "help_command_completions(\"\") missing '{name}' from KNOWN_COMMANDS"
             );
         }
+    }
+
+    // ── search_commands tests ──
+
+    #[test]
+    fn search_git_returns_git_related_commands() {
+        let results = search_commands("git");
+        let names: Vec<&str> = results.iter().map(|r| r.command).collect();
+        // /git should be found (exact name match)
+        assert!(names.contains(&"git"), "search 'git' should find /git");
+        // /diff should be found (description mentions "git changes")
+        assert!(names.contains(&"diff"), "search 'git' should find /diff");
+        // /blame should be found (description mentions "git blame")
+        assert!(names.contains(&"blame"), "search 'git' should find /blame");
+    }
+
+    #[test]
+    fn search_test_returns_test_related_commands() {
+        let results = search_commands("test");
+        let names: Vec<&str> = results.iter().map(|r| r.command).collect();
+        assert!(names.contains(&"test"), "search 'test' should find /test");
+    }
+
+    #[test]
+    fn search_case_insensitive() {
+        let lower = search_commands("git");
+        let upper = search_commands("GIT");
+        let mixed = search_commands("Git");
+        // All three should return the same set of commands
+        let names_lower: Vec<&str> = lower.iter().map(|r| r.command).collect();
+        let names_upper: Vec<&str> = upper.iter().map(|r| r.command).collect();
+        let names_mixed: Vec<&str> = mixed.iter().map(|r| r.command).collect();
+        assert_eq!(names_lower, names_upper, "case should not matter");
+        assert_eq!(names_lower, names_mixed, "case should not matter");
+    }
+
+    #[test]
+    fn search_no_results() {
+        let results = search_commands("zzz_absolutely_nothing_matches_this");
+        assert!(
+            results.is_empty(),
+            "nonsense keyword should return no results"
+        );
+    }
+
+    #[test]
+    fn search_scoring_name_match_ranks_higher() {
+        let results = search_commands("diff");
+        // /diff should be first since it's an exact name match (score 4)
+        assert!(!results.is_empty(), "should have results for 'diff'");
+        assert_eq!(
+            results[0].command, "diff",
+            "exact name match should rank first"
+        );
+        assert_eq!(
+            results[0].score, 4,
+            "/diff should score 4 (exact name match)"
+        );
+    }
+
+    #[test]
+    fn search_empty_keyword_returns_empty() {
+        let results = search_commands("");
+        // Empty keyword matches everything, but handle_help_search guards against this
+        // search_commands with "" will match all commands — that's fine, the UI guards it
+        assert!(!results.is_empty(), "empty string matches all");
+    }
+
+    #[test]
+    fn search_excludes_aliases() {
+        let results = search_commands("exit");
+        let names: Vec<&str> = results.iter().map(|r| r.command).collect();
+        // /exit is an alias for /quit and should be excluded
+        assert!(
+            !names.contains(&"exit"),
+            "search should exclude /exit alias"
+        );
+        // /quit should still be findable
+        assert!(
+            names.contains(&"quit"),
+            "search should find /quit (the primary command)"
+        );
+    }
+
+    #[test]
+    fn search_description_match_scores_2() {
+        // "session" appears in /status description ("Show session dashboard")
+        let results = search_commands("session");
+        let status_result = results.iter().find(|r| r.command == "status");
+        assert!(
+            status_result.is_some(),
+            "search 'session' should find /status"
+        );
+        // status should score 2 (description match), not higher (name doesn't contain "session")
+        assert!(
+            status_result.unwrap().score >= 2,
+            "/status should score at least 2 for 'session' (description match)"
+        );
+    }
+
+    #[test]
+    fn search_results_sorted_by_score_then_name() {
+        let results = search_commands("model");
+        // /model should come first (exact name match, score 4)
+        if results.len() >= 2 {
+            assert!(
+                results[0].score >= results[1].score,
+                "results should be sorted by score descending"
+            );
+        }
+    }
+
+    #[test]
+    fn handle_help_command_routes_search() {
+        // /help search <keyword> should be handled (returns true)
+        assert!(handle_help_command("/help search git"));
+        assert!(handle_help_command("/help search test"));
+        assert!(handle_help_command("/help search zzz_nothing"));
+    }
+
+    #[test]
+    fn handle_help_command_search_no_keyword() {
+        // /help search with no keyword should still return true (handled)
+        assert!(handle_help_command("/help search"));
+        assert!(handle_help_command("/help search   "));
+    }
+
+    #[test]
+    fn help_completions_includes_search() {
+        let completions = help_command_completions("");
+        assert!(
+            completions.contains(&"search".to_string()),
+            "help completions should include 'search' for /help search"
+        );
+    }
+
+    #[test]
+    fn help_completions_search_partial() {
+        let completions = help_command_completions("sea");
+        assert!(
+            completions.contains(&"search".to_string()),
+            "partial 'sea' should complete to 'search'"
+        );
     }
 }

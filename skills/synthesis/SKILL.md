@@ -5,14 +5,14 @@ version: "1.0"
 origin: yoyo
 core: false
 status: active
-score: 0.59
+score: 0.66
 uses: 2
 wins: 2
 last_used: "2026-05-01T06:18:55Z"
-last_evolved: null
+last_evolved: "2026-05-25"
 parent_pattern_key: null
 tools: [bash, read_file, write_file, search, sub_agent, shared_state]
-keywords: ["synthesis", "multi-source", "shared_state", "sub_agent", "research"]
+keywords: ["synthesis", "multi-source", "aggregate sources", "compare sources", "multiple sources"]
 ---
 
 # Synthesis

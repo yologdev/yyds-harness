@@ -117,6 +117,11 @@ max_tokens = 8192
 max_turns = 50
 temperature = 0.7
 
+# Display settings
+no_bell = false
+quiet = false
+no_color = false
+
 # Custom endpoint (for ollama, proxies, etc.)
 # base_url = "http://localhost:11434/v1"
 

@@ -739,18 +739,17 @@ mod tests {
     #[test]
     fn test_save_config_to_file() {
         // Use a temp dir to avoid polluting the project
-        let dir = std::env::temp_dir().join("yoyo_test_wizard");
-        let _ = std::fs::create_dir_all(&dir);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_wizard")
+            .tempdir()
+            .unwrap();
 
-        let result = save_config_to_file(&dir, "openai", "gpt-4o", None);
+        let result = save_config_to_file(tmp_dir.path(), "openai", "gpt-4o", None);
         assert!(result.is_ok());
 
-        let content = std::fs::read_to_string(dir.join(".yoyo.toml")).unwrap();
+        let content = std::fs::read_to_string(tmp_dir.path().join(".yoyo.toml")).unwrap();
         assert!(content.contains("provider = \"openai\""));
         assert!(content.contains("model = \"gpt-4o\""));
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -876,13 +875,14 @@ mod tests {
     #[serial]
     fn test_save_config_to_user_file() {
         // Use a temp dir to simulate XDG_CONFIG_HOME
-        let dir = std::env::temp_dir().join("yoyo_test_xdg_save");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_xdg_save")
+            .tempdir()
+            .unwrap();
 
         // Override XDG_CONFIG_HOME so user_config_path() points here
         let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
-        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        std::env::set_var("XDG_CONFIG_HOME", tmp_dir.path());
 
         let result = save_config_to_user_file("google", "gemini-2.0-flash", None);
         assert!(result.is_ok(), "save_config_to_user_file should succeed");
@@ -901,25 +901,25 @@ mod tests {
         assert!(content.contains("provider = \"google\""));
         assert!(content.contains("model = \"gemini-2.0-flash\""));
 
-        // Cleanup
+        // Cleanup env
         if let Some(val) = prev_xdg {
             std::env::set_var("XDG_CONFIG_HOME", val);
         } else {
             std::env::remove_var("XDG_CONFIG_HOME");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     #[serial]
     fn test_save_config_to_user_file_creates_parent_dirs() {
         // Use a temp dir with nested path to verify parent creation
-        let dir = std::env::temp_dir().join("yoyo_test_xdg_nested");
-        let _ = std::fs::remove_dir_all(&dir);
-        // Don't create the dir — save_config_to_user_file should create it
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_xdg_nested")
+            .tempdir()
+            .unwrap();
 
         let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
-        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        std::env::set_var("XDG_CONFIG_HOME", tmp_dir.path());
 
         let result = save_config_to_user_file("openai", "gpt-4o", None);
         assert!(
@@ -928,16 +928,15 @@ mod tests {
             result.err()
         );
 
-        let expected_path = dir.join("yoyo").join("config.toml");
+        let expected_path = tmp_dir.path().join("yoyo").join("config.toml");
         assert!(expected_path.exists(), "config file should exist");
 
-        // Cleanup
+        // Cleanup env
         if let Some(val) = prev_xdg {
             std::env::set_var("XDG_CONFIG_HOME", val);
         } else {
             std::env::remove_var("XDG_CONFIG_HOME");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -970,11 +969,13 @@ mod tests {
     #[serial]
     fn test_wizard_save_to_user_level() {
         // Set up a temp XDG dir so saving actually works
-        let dir = std::env::temp_dir().join("yoyo_test_wizard_user_save");
-        let _ = std::fs::remove_dir_all(&dir);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_wizard_user_save")
+            .tempdir()
+            .unwrap();
 
         let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
-        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        std::env::set_var("XDG_CONFIG_HOME", tmp_dir.path());
 
         // Choose ollama (4), default model, save to user-level (2)
         let input = "4\n\n2\n";
@@ -991,7 +992,7 @@ mod tests {
         );
 
         // Verify file was actually created
-        let expected_path = dir.join("yoyo").join("config.toml");
+        let expected_path = tmp_dir.path().join("yoyo").join("config.toml");
         assert!(
             expected_path.exists(),
             "user-level config should be created"
@@ -999,13 +1000,12 @@ mod tests {
         let content = std::fs::read_to_string(&expected_path).unwrap();
         assert!(content.contains("provider = \"ollama\""));
 
-        // Cleanup
+        // Cleanup env
         if let Some(val) = prev_xdg {
             std::env::set_var("XDG_CONFIG_HOME", val);
         } else {
             std::env::remove_var("XDG_CONFIG_HOME");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -946,202 +946,6 @@ pub(crate) fn with_auto_check(tool: Box<dyn AgentTool>) -> Box<dyn AgentTool> {
 }
 
 // ---------------------------------------------------------------------------
-// SmartEditTool — augments edit_file "not found" errors with line-number context
-// ---------------------------------------------------------------------------
-
-/// Maximum file size (bytes) we'll read for nearest-match searching.
-const SMART_EDIT_MAX_FILE_SIZE: u64 = 100_000;
-
-/// Number of context lines to show around the nearest match.
-const SMART_EDIT_CONTEXT_LINES: usize = 5;
-
-/// A wrapper tool specifically for `edit_file` that intercepts "not found"
-/// failures and augments the error message with:
-/// - The line number of the nearest match (first-line matching with whitespace normalization)
-/// - A snippet of actual content at that location
-/// - A hint when the mismatch is purely whitespace/indentation
-pub(crate) struct SmartEditTool {
-    inner: Box<dyn AgentTool>,
-}
-
-/// Search a file's content for the best match of `old_text`, returning
-/// `(line_number_1indexed, is_whitespace_only_diff, snippet)`.
-fn find_nearest_match(file_content: &str, old_text: &str) -> Option<(usize, bool, String)> {
-    let old_lines: Vec<&str> = old_text.lines().collect();
-    if old_lines.is_empty() {
-        return None;
-    }
-
-    // Find the first non-empty line in old_text to use as anchor
-    let anchor = old_lines.iter().find(|l| !l.trim().is_empty())?;
-    let anchor_trimmed = anchor.trim();
-
-    let file_lines: Vec<&str> = file_content.lines().collect();
-
-    // Search for lines whose trimmed content matches the anchor's trimmed content
-    let mut best_match: Option<(usize, usize)> = None; // (line_idx, matching_lines_count)
-
-    for (i, line) in file_lines.iter().enumerate() {
-        if line.trim() == anchor_trimmed {
-            // Count how many subsequent lines also match (trimmed)
-            let mut match_count = 1;
-            let anchor_offset = old_lines
-                .iter()
-                .position(|l| !l.trim().is_empty())
-                .unwrap_or(0);
-
-            for j in 1..(old_lines.len() - anchor_offset) {
-                let old_idx = anchor_offset + j;
-                let file_idx = i + j;
-                if file_idx < file_lines.len()
-                    && old_idx < old_lines.len()
-                    && file_lines[file_idx].trim() == old_lines[old_idx].trim()
-                {
-                    match_count += 1;
-                } else {
-                    break;
-                }
-            }
-
-            if best_match.is_none_or(|(_, prev_count)| match_count > prev_count) {
-                // Adjust line number to account for leading empty lines in old_text
-                let start_line = if anchor_offset > 0 && i >= anchor_offset {
-                    i - anchor_offset
-                } else {
-                    i
-                };
-                best_match = Some((start_line, match_count));
-            }
-        }
-    }
-
-    let (match_line_idx, _match_count) = best_match?;
-
-    // Check if the entire old_text matches but only differs in whitespace
-    let is_ws_only = {
-        let mut all_match_trimmed = true;
-        let mut any_exact_mismatch = false;
-        for (j, old_line) in old_lines.iter().enumerate() {
-            let file_idx = match_line_idx + j;
-            if file_idx < file_lines.len() {
-                if file_lines[file_idx].trim() == old_line.trim() {
-                    if file_lines[file_idx] != *old_line {
-                        any_exact_mismatch = true;
-                    }
-                } else {
-                    all_match_trimmed = false;
-                    break;
-                }
-            } else {
-                all_match_trimmed = false;
-                break;
-            }
-        }
-        all_match_trimmed && any_exact_mismatch
-    };
-
-    // Build snippet: up to SMART_EDIT_CONTEXT_LINES lines starting at the match
-    let snippet_start = match_line_idx;
-    let snippet_end = (match_line_idx + SMART_EDIT_CONTEXT_LINES).min(file_lines.len());
-    let snippet: String = file_lines[snippet_start..snippet_end]
-        .iter()
-        .enumerate()
-        .map(|(j, line)| format!("{:>4} │ {}", snippet_start + j + 1, line))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    Some((match_line_idx + 1, is_ws_only, snippet)) // 1-indexed line number
-}
-
-/// Wrap an edit_file tool with smart error augmentation.
-pub(crate) fn with_smart_edit(tool: Box<dyn AgentTool>) -> Box<dyn AgentTool> {
-    Box::new(SmartEditTool { inner: tool })
-}
-
-#[async_trait::async_trait]
-impl AgentTool for SmartEditTool {
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-
-    fn label(&self) -> &str {
-        self.inner.label()
-    }
-
-    fn description(&self) -> &str {
-        self.inner.description()
-    }
-
-    fn parameters_schema(&self) -> serde_json::Value {
-        self.inner.parameters_schema()
-    }
-
-    async fn execute(
-        &self,
-        params: serde_json::Value,
-        ctx: yoagent::types::ToolContext,
-    ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
-        match self.inner.execute(params.clone(), ctx).await {
-            Ok(result) => Ok(result),
-            Err(yoagent::types::ToolError::Failed(msg)) if msg.contains("not found") => {
-                // Try to augment the error with location information
-                let augmented = self.augment_not_found_error(&msg, &params);
-                Err(yoagent::types::ToolError::Failed(augmented))
-            }
-            Err(other) => Err(other),
-        }
-    }
-}
-
-impl SmartEditTool {
-    fn augment_not_found_error(&self, original_msg: &str, params: &serde_json::Value) -> String {
-        // Extract path and old_text from params
-        let path = match params.get("path").and_then(|v| v.as_str()) {
-            Some(p) => p,
-            None => return original_msg.to_string(),
-        };
-        let old_text = match params.get("old_text").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => return original_msg.to_string(),
-        };
-
-        // Check file size — skip for huge files
-        let metadata = match std::fs::metadata(path) {
-            Ok(m) => m,
-            Err(_) => return original_msg.to_string(),
-        };
-        if metadata.len() > SMART_EDIT_MAX_FILE_SIZE {
-            return original_msg.to_string();
-        }
-
-        // Read the file
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => return original_msg.to_string(),
-        };
-
-        // Search for nearest match
-        match find_nearest_match(&content, old_text) {
-            Some((line_num, is_ws_only, snippet)) => {
-                let mut augmented = original_msg.to_string();
-                augmented.push_str(&format!(
-                    "\n\n📍 Nearest match at line {}:\n```\n{}\n```",
-                    line_num, snippet
-                ));
-                if is_ws_only {
-                    augmented.push_str(
-                        "\n\n⚠️ Hint: the text exists but indentation/whitespace differs. \
-                         Use read_file to see the exact whitespace.",
-                    );
-                }
-                augmented
-            }
-            None => original_msg.to_string(),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // RecoveryHintTool — appends recovery hints to tool error messages
 // ---------------------------------------------------------------------------
 
@@ -1250,6 +1054,79 @@ pub(crate) fn with_recovery_hints(
         inner: tool,
         tracker: tracker.clone(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// LiteDescriptionTool — augments tool descriptions with JSON format examples
+// ---------------------------------------------------------------------------
+
+/// A wrapper tool that appends a JSON input example to the tool's description.
+///
+/// Small/local LLMs (llama3, mistral, codellama, phi) struggle with tool-call
+/// formatting because they haven't been heavily fine-tuned on Anthropic's
+/// tool-use schema. Adding explicit JSON input examples to each tool's
+/// description dramatically improves tool-call accuracy for these models.
+pub(crate) struct LiteDescriptionTool {
+    inner: Box<dyn AgentTool>,
+    augmented_description: String,
+}
+
+#[async_trait::async_trait]
+impl AgentTool for LiteDescriptionTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn label(&self) -> &str {
+        self.inner.label()
+    }
+
+    fn description(&self) -> &str {
+        &self.augmented_description
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.inner.parameters_schema()
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: yoagent::types::ToolContext,
+    ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+        self.inner.execute(params, ctx).await
+    }
+}
+
+/// Return a JSON example string for a given tool name, or `None` if no
+/// example is defined (unknown tools pass through without augmentation).
+fn lite_example_for_tool(name: &str) -> Option<&'static str> {
+    match name {
+        "bash" => Some(r#"{"command": "ls -la src/"}"#),
+        "read_file" => Some(r#"{"path": "src/main.rs"}"#),
+        "write_file" => Some(r#"{"path": "hello.txt", "content": "Hello world"}"#),
+        "edit_file" => {
+            Some(r#"{"path": "src/main.rs", "old_text": "let x = 1;", "new_text": "let x = 2;"}"#)
+        }
+        "list_files" => Some(r#"{"path": "src/"}"#),
+        "search" => Some(r#"{"pattern": "fn main", "path": "src/"}"#),
+        _ => None,
+    }
+}
+
+/// Wrap a tool with an augmented description that includes a JSON format
+/// example. For unknown tool names, the tool is returned as-is (no wrapper).
+pub(crate) fn with_lite_description(tool: Box<dyn AgentTool>) -> Box<dyn AgentTool> {
+    match lite_example_for_tool(tool.name()) {
+        Some(example) => {
+            let augmented_description = format!("{}\n\nExample: {}", tool.description(), example);
+            Box::new(LiteDescriptionTool {
+                inner: tool,
+                augmented_description,
+            })
+        }
+        None => tool,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2415,7 +2292,7 @@ mod tests {
                 assert!(
                     text.contains("truncated"),
                     "Should contain truncation marker: {}",
-                    &text[..text.len().min(200)]
+                    crate::format::safe_truncate(text, 200)
                 );
             }
             _ => panic!("Expected Text content"),
@@ -2654,7 +2531,7 @@ mod tests {
         assert!(
             text.contains("truncated"),
             "Output exceeding limit should be truncated: {}...",
-            &text[..text.len().min(100)]
+            crate::format::safe_truncate(&text, 100)
         );
     }
 
@@ -3196,246 +3073,86 @@ mod tests {
         );
     }
 
-    // === SmartEditTool / find_nearest_match tests ===
+    // === LiteDescriptionTool tests ===
 
     #[test]
-    fn test_find_nearest_match_exact_line() {
-        let file_content = "line one\nline two\nfn hello() {\n    world()\n}\nline six\n";
-        let old_text = "fn hello() {\n    world()\n}";
-        let result = find_nearest_match(file_content, old_text);
-        assert!(result.is_some(), "Should find a match");
-        let (line, is_ws, snippet) = result.unwrap();
-        assert_eq!(line, 3, "Match should be at line 3");
-        assert!(!is_ws, "Should not be whitespace-only diff");
+    fn test_lite_description_bash_has_example() {
+        let tool = with_lite_description(Box::new(MockTool {
+            tool_name: "bash",
+            result_text: "ok".to_string(),
+        }));
+        let desc = tool.description();
         assert!(
-            snippet.contains("fn hello()"),
-            "Snippet should contain the match"
+            desc.contains(r#"{"command": "ls -la src/"}"#),
+            "bash description should include JSON example, got: {desc}"
         );
-    }
-
-    #[test]
-    fn test_find_nearest_match_whitespace_only_diff() {
-        // File has 4-space indent, old_text has 2-space indent
-        let file_content = "fn main() {\n    let x = 1;\n    let y = 2;\n}\n";
-        let old_text = "fn main() {\n  let x = 1;\n  let y = 2;\n}";
-        let result = find_nearest_match(file_content, old_text);
-        assert!(result.is_some(), "Should find a match");
-        let (line, is_ws, _snippet) = result.unwrap();
-        assert_eq!(line, 1, "Match should be at line 1");
-        assert!(is_ws, "Should detect whitespace-only diff");
-    }
-
-    #[test]
-    fn test_find_nearest_match_no_match() {
-        let file_content = "fn main() {\n    println!(\"hello\");\n}\n";
-        let old_text = "fn totally_different() {\n    nothing();\n}";
-        let result = find_nearest_match(file_content, old_text);
-        assert!(result.is_none(), "Should not find a match");
-    }
-
-    #[test]
-    fn test_find_nearest_match_empty_old_text() {
-        let file_content = "fn main() {}\n";
-        let result = find_nearest_match(file_content, "");
-        assert!(result.is_none(), "Empty old_text should return None");
-    }
-
-    #[test]
-    fn test_find_nearest_match_only_whitespace_lines() {
-        let file_content = "fn main() {}\n";
-        let result = find_nearest_match(file_content, "   \n   \n");
         assert!(
-            result.is_none(),
-            "All-whitespace old_text should return None"
+            desc.contains("Example:"),
+            "Should have 'Example:' label, got: {desc}"
+        );
+        // Original description should still be present
+        assert!(
+            desc.contains("mock tool"),
+            "Should preserve original description, got: {desc}"
         );
     }
 
     #[test]
-    fn test_find_nearest_match_snippet_limited_to_5_lines() {
-        let file_content = (1..=20)
-            .map(|i| format!("line {}", i))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let old_text = "line 5";
-        let result = find_nearest_match(&file_content, old_text);
-        assert!(result.is_some());
-        let (line, _, snippet) = result.unwrap();
-        assert_eq!(line, 5);
-        // Should show exactly 5 lines of context
-        let snippet_lines: Vec<&str> = snippet.lines().collect();
-        assert_eq!(
-            snippet_lines.len(),
-            5,
-            "Snippet should be 5 lines: {:?}",
-            snippet_lines
-        );
-    }
-
-    /// A mock tool for SmartEditTool tests — returns a configurable error or success.
-    struct SmartEditMockTool {
-        fail_msg: Option<String>,
-        result_text: Option<String>,
-    }
-
-    #[async_trait::async_trait]
-    impl AgentTool for SmartEditMockTool {
-        fn name(&self) -> &str {
-            "edit_file"
-        }
-        fn label(&self) -> &str {
-            "edit_file"
-        }
-        fn description(&self) -> &str {
-            "mock edit_file"
-        }
-        fn parameters_schema(&self) -> serde_json::Value {
-            serde_json::json!({})
-        }
-        async fn execute(
-            &self,
-            _params: serde_json::Value,
-            _ctx: yoagent::types::ToolContext,
-        ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
-            if let Some(ref msg) = self.fail_msg {
-                Err(yoagent::types::ToolError::Failed(msg.clone()))
-            } else {
-                Ok(yoagent::types::ToolResult {
-                    content: vec![yoagent::Content::Text {
-                        text: self.result_text.clone().unwrap_or_else(|| "ok".into()),
-                    }],
-                    details: serde_json::Value::Null,
-                })
-            }
-        }
+    fn test_lite_description_unknown_tool_passthrough() {
+        let tool = with_lite_description(Box::new(MockTool {
+            tool_name: "unknown_tool_xyz",
+            result_text: "ok".to_string(),
+        }));
+        // Unknown tools should pass through without modification
+        assert_eq!(tool.description(), "mock tool");
+        assert_eq!(tool.name(), "unknown_tool_xyz");
     }
 
     #[tokio::test]
-    async fn test_smart_edit_passes_through_success() {
-        let tool = with_smart_edit(Box::new(SmartEditMockTool {
-            fail_msg: None,
-            result_text: Some("edited successfully".into()),
+    async fn test_lite_description_delegates_call() {
+        let tool = with_lite_description(Box::new(MockTool {
+            tool_name: "bash",
+            result_text: "hello from bash".to_string(),
         }));
-
-        let params = serde_json::json!({
-            "path": "src/main.rs",
-            "old_text": "fn main()",
-            "new_text": "fn main2()"
-        });
-
-        let result = tool.execute(params, test_tool_context()).await;
-        assert!(result.is_ok(), "Success should pass through");
+        let result = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap();
+        let text = match &result.content[0] {
+            yoagent::Content::Text { text } => text.clone(),
+            _ => panic!("Expected text content"),
+        };
+        assert_eq!(text, "hello from bash");
     }
 
-    #[tokio::test]
-    async fn test_smart_edit_passes_through_non_not_found_error() {
-        let tool = with_smart_edit(Box::new(SmartEditMockTool {
-            fail_msg: Some("permission denied".into()),
-            result_text: None,
+    #[test]
+    fn test_lite_description_delegates_name() {
+        let tool = with_lite_description(Box::new(MockTool {
+            tool_name: "read_file",
+            result_text: "content".to_string(),
         }));
-
-        let params = serde_json::json!({
-            "path": "src/main.rs",
-            "old_text": "fn main()",
-            "new_text": "fn main2()"
-        });
-
-        let result = tool.execute(params, test_tool_context()).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert_eq!(
-            err, "permission denied",
-            "Non-'not found' errors pass through unchanged"
-        );
+        assert_eq!(tool.name(), "read_file");
     }
 
-    #[tokio::test]
-    async fn test_smart_edit_augments_not_found_with_line_number() {
-        // Create a temp file with known content
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("test.rs");
-        std::fs::write(
-            &file_path,
-            "line one\nline two\nfn hello() {\n    world()\n}\nline six\n",
-        )
-        .unwrap();
-
-        let tool = with_smart_edit(Box::new(SmartEditMockTool {
-            fail_msg: Some("old_text not found in file".into()),
-            result_text: None,
-        }));
-
-        let params = serde_json::json!({
-            "path": file_path.to_str().unwrap(),
-            "old_text": "fn hello() {\n  world()\n}",
-            "new_text": "fn goodbye()"
-        });
-
-        let result = tool.execute(params, test_tool_context()).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("line 3"), "Should mention line number: {err}");
-        assert!(
-            err.contains("fn hello()"),
-            "Should show snippet with actual content: {err}"
-        );
-        assert!(
-            err.contains("📍 Nearest match"),
-            "Should have nearest match marker: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_smart_edit_detects_whitespace_mismatch() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("ws.rs");
-        std::fs::write(
-            &file_path,
-            "fn main() {\n    let x = 1;\n    let y = 2;\n}\n",
-        )
-        .unwrap();
-
-        let tool = with_smart_edit(Box::new(SmartEditMockTool {
-            fail_msg: Some("old_text not found in file".into()),
-            result_text: None,
-        }));
-
-        // old_text with 2-space indent instead of 4-space
-        let params = serde_json::json!({
-            "path": file_path.to_str().unwrap(),
-            "old_text": "fn main() {\n  let x = 1;\n  let y = 2;\n}",
-            "new_text": "fn main() {\n  let x = 42;\n}"
-        });
-
-        let result = tool.execute(params, test_tool_context()).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("indentation") || err.contains("whitespace"),
-            "Should hint about whitespace difference: {err}"
-        );
-        assert!(err.contains("line 1"), "Should report line number: {err}");
-    }
-
-    #[tokio::test]
-    async fn test_smart_edit_handles_missing_file_gracefully() {
-        let tool = with_smart_edit(Box::new(SmartEditMockTool {
-            fail_msg: Some("old_text not found in file".into()),
-            result_text: None,
-        }));
-
-        let params = serde_json::json!({
-            "path": "/nonexistent/file.rs",
-            "old_text": "fn hello()",
-            "new_text": "fn goodbye()"
-        });
-
-        let result = tool.execute(params, test_tool_context()).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        // Should gracefully fall back to original message without panic
-        assert!(
-            err.contains("old_text not found"),
-            "Should contain original error: {err}"
-        );
+    #[test]
+    fn test_lite_description_all_known_tools() {
+        // Verify examples exist for all the essential lite tools
+        for tool_name in &[
+            "bash",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "list_files",
+            "search",
+        ] {
+            let tool = with_lite_description(Box::new(MockTool {
+                tool_name,
+                result_text: "ok".to_string(),
+            }));
+            assert!(
+                tool.description().contains("Example:"),
+                "{tool_name} should have an example in lite mode"
+            );
+        }
     }
 }

@@ -36,7 +36,25 @@ pub const SYSTEM_PROMPT: &str = r#"You are a coding assistant working in the use
 You have access to the filesystem and shell. Be direct and concise.
 When the user asks you to do something, do it — don't just explain how.
 Use tools proactively: read files to understand context, run commands to verify your work.
-After making changes, run tests or verify the result when appropriate."#;
+After making changes, run tests or verify the result when appropriate.
+
+How to work effectively:
+- Search before reading: use search and list_files to locate relevant code before reading whole files. Don't guess at file paths.
+- Be efficient with context: don't read entire large files when you only need a specific function. Use search or read with offset/limit to find the right section.
+- Verify changes: after edits, run the project's build/test/lint commands. Check that your changes compile and tests pass before moving on.
+- Plan multi-file edits: when a change spans multiple files, think through the approach first. Make changes incrementally and verify between steps.
+- Handle errors carefully: if a command fails or an edit doesn't match, read the error output. Check actual file content before retrying with a corrected edit.
+- Use git awareness: check git status/diff to understand the current state. Don't make changes that conflict with uncommitted work without asking.
+- Confirm destructive operations: before deleting files, resetting git state, or running other irreversible commands, confirm with the user."#;
+
+/// Minimal system prompt for --lite mode (small/local LLMs with limited context).
+pub const LITE_SYSTEM_PROMPT: &str = "You are a coding assistant. Help the user with their code.\nYou have tools: bash (run commands), read_file, write_file, edit_file (find and replace text in files).\nAfter making changes, run the project's build or test commands to verify nothing is broken.";
+
+/// The 4 essential tools available in --lite mode.
+pub const LITE_TOOLS: &[&str] = &["bash", "read_file", "write_file", "edit_file"];
+
+/// Default context window for --lite mode (suitable for 4B-8B parameter models).
+pub const LITE_DEFAULT_CONTEXT_WINDOW: u32 = 8_000;
 
 /// Context management strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -95,12 +113,14 @@ pub struct Config {
     pub print_system_prompt: bool,
     pub print_mode: bool,
     pub auto_watch: bool,
+    pub allowed_tools: Vec<String>,
     pub disallowed_tools: Vec<String>,
     pub no_tools: bool,
     pub deepseek_native: bool,
     pub deepseek_fim_route: bool,
     pub deepseek_fim_response: Option<String>,
     pub state: crate::state::StateConfig,
+    pub lite: bool,
 }
 
 #[cfg(test)]
@@ -140,5 +160,22 @@ mod tests {
         assert_eq!(OutputFormat::Text, OutputFormat::Text);
         assert_ne!(OutputFormat::Text, OutputFormat::Json);
         assert_ne!(OutputFormat::Json, OutputFormat::StreamJson);
+    }
+
+    #[test]
+    fn test_lite_constants() {
+        // LITE_SYSTEM_PROMPT should be minimal — much shorter than the default
+        assert!(LITE_SYSTEM_PROMPT.contains("coding assistant"));
+        assert!(LITE_SYSTEM_PROMPT.len() < SYSTEM_PROMPT.len());
+
+        // LITE_TOOLS should have exactly the 4 essential tools
+        assert_eq!(LITE_TOOLS.len(), 4);
+        assert!(LITE_TOOLS.contains(&"bash"));
+        assert!(LITE_TOOLS.contains(&"read_file"));
+        assert!(LITE_TOOLS.contains(&"write_file"));
+        assert!(LITE_TOOLS.contains(&"edit_file"));
+
+        // LITE_DEFAULT_CONTEXT_WINDOW should be reasonable for small models
+        assert_eq!(LITE_DEFAULT_CONTEXT_WINDOW, 8_000);
     }
 }

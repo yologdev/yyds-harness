@@ -224,18 +224,49 @@ fn walk_directory_inner(dir: &str, max_depth: usize, depth: usize, files: &mut V
 
 /// Highlight the matching pattern within a file path for display.
 /// Returns the path with ANSI bold/color around the matched portion.
+///
+/// Uses char-level search to avoid byte-offset mismatches between
+/// the path and its lowercased form (safe for non-ASCII filenames).
 pub fn highlight_match(path: &str, pattern: &str) -> String {
-    let path_lower = path.to_lowercase();
     let pattern_lower = pattern.to_lowercase();
+    let pattern_lower_chars: Vec<char> = pattern_lower.chars().collect();
 
-    if let Some(pos) = path_lower.rfind(&pattern_lower) {
-        // Prefer highlighting in the filename portion
-        let end = pos + pattern.len();
+    // Build lowered char array and mapping back to original char indices
+    let lower_chars: Vec<char> = path.chars().flat_map(|c| c.to_lowercase()).collect();
+    let char_starts: Vec<usize> = path.char_indices().map(|(i, _)| i).collect();
+
+    let mut lower_to_orig: Vec<usize> = Vec::with_capacity(lower_chars.len());
+    for (orig_idx, ch) in path.chars().enumerate() {
+        for _ in 0..ch.to_lowercase().count() {
+            lower_to_orig.push(orig_idx);
+        }
+    }
+
+    // rfind equivalent: search from the end
+    let match_lower_idx = (0..=lower_chars.len().saturating_sub(pattern_lower_chars.len()))
+        .rev()
+        .find(|&j| lower_chars[j..j + pattern_lower_chars.len()] == pattern_lower_chars[..]);
+
+    if let Some(lc_idx) = match_lower_idx {
+        let orig_char_start = lower_to_orig[lc_idx];
+        let orig_char_end = if lc_idx + pattern_lower_chars.len() < lower_to_orig.len() {
+            lower_to_orig[lc_idx + pattern_lower_chars.len()]
+        } else {
+            char_starts.len()
+        };
+
+        let byte_start = char_starts[orig_char_start];
+        let byte_end = if orig_char_end < char_starts.len() {
+            char_starts[orig_char_end]
+        } else {
+            path.len()
+        };
+
         format!(
             "{}{BOLD}{GREEN}{}{RESET}{}",
-            &path[..pos],
-            &path[pos..end],
-            &path[end..]
+            &path[..byte_start],
+            &path[byte_start..byte_end],
+            &path[byte_end..]
         )
     } else {
         path.to_string()

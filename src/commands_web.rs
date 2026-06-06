@@ -253,17 +253,26 @@ pub(crate) fn fetch_url(url: &str) -> Result<String, String> {
 }
 
 /// Handle the /web command — fetch a URL and display readable text.
-pub fn handle_web(input: &str) {
-    let url = input.trim_start_matches("/web").trim();
+/// Subcommands for `/web` tab-completion.
+pub const WEB_SUBCOMMANDS: &[&str] = &["search"];
 
-    if url.is_empty() {
-        println!("{DIM}  usage: /web <url>");
-        println!("  Fetch a web page and display readable text content.");
-        println!(
-            "  Example: /web https://doc.rust-lang.org/book/ch01-01-installation.html{RESET}\n"
-        );
+pub fn handle_web(input: &str) {
+    let arg = input.trim_start_matches("/web").trim();
+
+    if arg.is_empty() {
+        println!("{DIM}  usage: /web <url>          — fetch a web page");
+        println!("         /web search <query> — search the web{RESET}\n");
         return;
     }
+
+    if arg.starts_with("search ") || arg.starts_with("search\t") || arg == "search" {
+        let query = arg.strip_prefix("search").unwrap().trim();
+        handle_web_search(query);
+        return;
+    }
+
+    // Existing URL fetch logic
+    let url = arg;
 
     // Auto-prepend https:// if missing
     let url = if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -295,6 +304,36 @@ pub fn handle_web(input: &str) {
         }
         Err(e) => {
             println!("{RED}  Failed to fetch: {e}{RESET}\n");
+        }
+    }
+}
+
+fn handle_web_search(query: &str) {
+    if query.is_empty() {
+        println!("{DIM}  usage: /web search <query>{RESET}\n");
+        return;
+    }
+
+    println!("{DIM}  Searching for: {query}...{RESET}");
+
+    match web_search(query, 8) {
+        Ok(results) if results.is_empty() => {
+            println!("  {DIM}(no results found){RESET}\n");
+        }
+        Ok(results) => {
+            println!();
+            for (i, r) in results.iter().enumerate() {
+                println!("  {}. {BOLD}{}{RESET}", i + 1, r.title);
+                println!("     {CYAN}{}{RESET}", r.url);
+                if !r.snippet.is_empty() {
+                    println!("     {DIM}{}{RESET}", r.snippet);
+                }
+                println!();
+            }
+            println!("  {DIM}Tip: use /web <url> to read any result{RESET}\n");
+        }
+        Err(e) => {
+            println!("  {RED}Search failed: {e}{RESET}\n");
         }
     }
 }
@@ -470,6 +509,344 @@ pub fn handle_copy(input: &str, messages: &[yoagent::AgentMessage]) {
         Err(e) => {
             eprintln!("{RED}  ✗ {e}{RESET}");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Web search via DuckDuckGo HTML endpoint
+// ---------------------------------------------------------------------------
+
+/// A single web search result.
+#[allow(dead_code)]
+pub(crate) struct WebSearchResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+}
+
+/// Simple percent-encoding for URL query parameters.
+/// Encodes everything except unreserved characters (A-Z, a-z, 0-9, `-`, `_`, `.`, `~`).
+#[allow(dead_code)]
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => out.push('+'),
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{b:02X}"));
+            }
+        }
+    }
+    out
+}
+
+/// Decode a percent-encoded string (e.g. from a URL query parameter).
+#[allow(dead_code)]
+fn url_decode(s: &str) -> String {
+    let mut out = Vec::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&String::from_utf8_lossy(&bytes[i + 1..i + 3]), 16)
+            {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        if bytes[i] == b'+' {
+            out.push(b' ');
+        } else {
+            out.push(bytes[i]);
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// Extract the actual URL from a DuckDuckGo redirect href.
+///
+/// DDG wraps result links like:
+/// `//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage&rut=...`
+///
+/// We extract the `uddg=` value and percent-decode it. If the href doesn't
+/// contain `uddg=`, we return it as-is (stripping a leading `//` if present).
+#[allow(dead_code)]
+pub(crate) fn extract_ddg_url(href: &str) -> String {
+    // Look for uddg= parameter
+    if let Some(pos) = href.find("uddg=") {
+        let value_start = pos + 5; // len("uddg=")
+        let rest = &href[value_start..];
+        // Value ends at next '&' or end of string
+        let value_end = rest.find('&').unwrap_or(rest.len());
+        let encoded = &rest[..value_end];
+        return url_decode(encoded);
+    }
+    // No uddg parameter — return href cleaned up
+    let trimmed = href.trim();
+    if trimmed.starts_with("//") {
+        format!("https:{trimmed}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Extract the value of an HTML attribute from a tag string.
+///
+/// Given `<a class="result__a" href="/l/?uddg=...">`, calling
+/// `extract_attr(tag, "href")` returns the value inside the quotes.
+#[allow(dead_code)]
+fn extract_attr(tag: &str, attr_name: &str) -> Option<String> {
+    // Search for attr_name= (case-insensitive for the attr name)
+    let needle = format!("{attr_name}=");
+    let pos = find_ascii_ci(tag, &needle.to_ascii_lowercase())?;
+    let after = &tag[pos + needle.len()..];
+    // Attribute value may be quoted with " or '
+    let (quote, rest) = if let Some(stripped) = after.strip_prefix('"') {
+        ('"', stripped)
+    } else if let Some(stripped) = after.strip_prefix('\'') {
+        ('\'', stripped)
+    } else {
+        // Unquoted — value ends at whitespace or >
+        let end = after
+            .find(|c: char| c.is_whitespace() || c == '>')
+            .unwrap_or(after.len());
+        return Some(after[..end].to_string());
+    };
+    let end = rest.find(quote).unwrap_or(rest.len());
+    Some(rest[..end].to_string())
+}
+
+/// Extract text content between an opening tag at position 0 and its closing tag.
+/// Returns the inner text with HTML tags stripped.
+#[allow(dead_code)]
+fn extract_inner_text(html: &str) -> String {
+    // Strip all tags from the fragment
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        if c == '<' {
+            in_tag = true;
+        } else if c == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            out.push(c);
+        }
+    }
+    let decoded = crate::format::decode_html_entities(&out);
+    // Collapse whitespace
+    let mut result = String::with_capacity(decoded.len());
+    let mut prev_space = false;
+    for c in decoded.chars() {
+        if c.is_whitespace() {
+            if !prev_space {
+                result.push(' ');
+                prev_space = true;
+            }
+        } else {
+            result.push(c);
+            prev_space = false;
+        }
+    }
+    result.trim().to_string()
+}
+
+/// Parse DuckDuckGo HTML search results into structured data.
+///
+/// The HTML structure we look for:
+/// ```html
+/// <div class="result results_links results_links_deep web-result">
+///   <a class="result__a" href="//duckduckgo.com/l/?uddg=...">Title</a>
+///   <a class="result__snippet" href="...">Snippet text</a>
+/// </div>
+/// ```
+#[allow(dead_code)]
+pub(crate) fn parse_ddg_results(html: &str, max_results: usize) -> Vec<WebSearchResult> {
+    let max_results = max_results.min(20);
+    let mut results = Vec::new();
+
+    // Strategy: find each `class="result__a"` anchor — that's the title+url.
+    // Then find the next `result__snippet` after it for the snippet.
+    let mut search_from = 0;
+
+    while results.len() < max_results {
+        // Find the next result__a anchor
+        let anchor_class = "class=\"result__a\"";
+        let alt_anchor_class = "class='result__a'";
+        let anchor_pos = find_ascii_ci(&html[search_from..], anchor_class)
+            .or_else(|| find_ascii_ci(&html[search_from..], alt_anchor_class));
+        let anchor_pos = match anchor_pos {
+            Some(p) => search_from + p,
+            None => break,
+        };
+
+        // Walk backwards to find the opening '<a' of this tag
+        let tag_start = html[..anchor_pos].rfind('<').unwrap_or(anchor_pos);
+        // Find the end of this opening tag
+        let tag_end = match html[tag_start..].find('>') {
+            Some(p) => tag_start + p + 1,
+            None => {
+                search_from = anchor_pos + anchor_class.len();
+                continue;
+            }
+        };
+
+        let tag_str = &html[tag_start..tag_end];
+
+        // Extract href
+        let href = match extract_attr(tag_str, "href") {
+            Some(h) => h,
+            None => {
+                search_from = tag_end;
+                continue;
+            }
+        };
+
+        let url = extract_ddg_url(&href);
+
+        // Extract title: text between <a ...> and </a>
+        let close_a = match find_ascii_ci(&html[tag_end..], "</a>") {
+            Some(p) => tag_end + p,
+            None => {
+                search_from = tag_end;
+                continue;
+            }
+        };
+        let title_html = &html[tag_end..close_a];
+        let title = extract_inner_text(title_html);
+
+        // Now look for the snippet in the vicinity (within next ~2000 chars)
+        let snippet_search_end = (close_a + 2000).min(html.len());
+        let snippet_region = &html[close_a..snippet_search_end];
+
+        let snippet = if let Some(snip_pos) = find_ascii_ci(snippet_region, "result__snippet") {
+            // Find the tag start
+            let snip_abs = close_a + snip_pos;
+            let snip_tag_start = html[..snip_abs].rfind('<').unwrap_or(snip_abs);
+            // Find end of opening tag
+            if let Some(snip_tag_end_rel) = html[snip_tag_start..].find('>') {
+                let snip_tag_end = snip_tag_start + snip_tag_end_rel + 1;
+                // Determine if it's an <a> or <td> tag
+                let tag_name_region = &html[snip_tag_start..snip_tag_end].to_ascii_lowercase();
+                let close_tag = if tag_name_region.starts_with("<td") {
+                    "</td>"
+                } else {
+                    "</a>"
+                };
+                if let Some(snip_close_rel) = find_ascii_ci(&html[snip_tag_end..], close_tag) {
+                    let snip_content = &html[snip_tag_end..snip_tag_end + snip_close_rel];
+                    extract_inner_text(snip_content)
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        // Only add if we have at least a title and URL
+        if !title.is_empty() && !url.is_empty() {
+            results.push(WebSearchResult {
+                title,
+                url,
+                snippet,
+            });
+        }
+
+        search_from = close_a + 4; // past </a>
+    }
+
+    results
+}
+
+/// Format search results as a clean numbered text block.
+#[allow(dead_code)]
+pub(crate) fn format_search_results(results: &[WebSearchResult]) -> String {
+    if results.is_empty() {
+        return "No results found.".to_string();
+    }
+    let mut out = String::new();
+    for (i, r) in results.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format!("{}. {}\n", i + 1, r.title));
+        out.push_str(&format!("   {}\n", r.url));
+        if !r.snippet.is_empty() {
+            out.push_str(&format!("   {}\n", r.snippet));
+        }
+    }
+    out
+}
+
+/// Perform a web search via DuckDuckGo and return formatted results.
+///
+/// Uses `curl` to hit the DuckDuckGo HTML endpoint, parses results, and
+/// returns them as a formatted string. On failure returns an error message
+/// (never `Result` — designed for tool consumption).
+/// Perform a web search via DuckDuckGo and return structured results.
+///
+/// Uses `curl` to hit the DuckDuckGo HTML endpoint and parses the response.
+pub(crate) fn web_search(query: &str, max_results: usize) -> Result<Vec<WebSearchResult>, String> {
+    let max_results = if max_results == 0 {
+        8
+    } else {
+        max_results.min(20)
+    };
+    let encoded_query = url_encode(query);
+    let url = format!("https://html.duckduckgo.com/html/?q={encoded_query}");
+
+    let output = std::process::Command::new("curl")
+        .args([
+            "-sL",
+            "--max-time",
+            "15",
+            "-A",
+            "Mozilla/5.0 (compatible; yoyo-agent/0.1)",
+            &url,
+        ])
+        .output()
+        .map_err(|e| format!("failed to run curl: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "search request failed (exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        ));
+    }
+
+    let html = String::from_utf8_lossy(&output.stdout).to_string();
+    if html.is_empty() {
+        return Err("empty response from search".to_string());
+    }
+
+    let results = parse_ddg_results(&html, max_results);
+    if results.is_empty() {
+        return Err(
+            "no search results found (DuckDuckGo returned no parseable results)".to_string(),
+        );
+    }
+
+    Ok(results)
+}
+
+/// Convenience: run a web search and return formatted text.
+///
+/// Returns a human-/agent-readable string on both success and failure.
+#[allow(dead_code)]
+pub(crate) fn web_search_and_read(query: &str, max_results: usize) -> String {
+    match web_search(query, max_results) {
+        Ok(results) => format_search_results(&results),
+        Err(e) => format!("Web search failed: {e}"),
     }
 }
 
@@ -799,5 +1176,282 @@ mod tests {
         assert!(!is_valid_url("./relative/path.txt"));
         assert!(!is_valid_url(""));
         assert!(!is_valid_url("http://x")); // too short, no dot
+    }
+
+    // -----------------------------------------------------------------------
+    // Web search tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_web_search_result_construction() {
+        let result = WebSearchResult {
+            title: "Rust Programming Language".to_string(),
+            url: "https://www.rust-lang.org/".to_string(),
+            snippet: "A language empowering everyone to build reliable software.".to_string(),
+        };
+        assert_eq!(result.title, "Rust Programming Language");
+        assert_eq!(result.url, "https://www.rust-lang.org/");
+        assert_eq!(
+            result.snippet,
+            "A language empowering everyone to build reliable software."
+        );
+    }
+
+    #[test]
+    fn test_url_encode_basic() {
+        assert_eq!(url_encode("hello world"), "hello+world");
+        assert_eq!(url_encode("rust lang"), "rust+lang");
+        assert_eq!(url_encode("simple"), "simple");
+    }
+
+    #[test]
+    fn test_url_encode_special_chars() {
+        assert_eq!(url_encode("a&b=c"), "a%26b%3Dc");
+        assert_eq!(url_encode("foo bar?baz"), "foo+bar%3Fbaz");
+        assert_eq!(url_encode("100%"), "100%25");
+    }
+
+    #[test]
+    fn test_url_encode_preserves_unreserved() {
+        assert_eq!(url_encode("a-b_c.d~e"), "a-b_c.d~e");
+        assert_eq!(url_encode("ABC123"), "ABC123");
+    }
+
+    #[test]
+    fn test_url_decode_basic() {
+        assert_eq!(url_decode("hello+world"), "hello world");
+        assert_eq!(url_decode("hello%20world"), "hello world");
+        assert_eq!(url_decode("simple"), "simple");
+    }
+
+    #[test]
+    fn test_url_decode_special_chars() {
+        assert_eq!(url_decode("a%26b%3Dc"), "a&b=c");
+        assert_eq!(
+            url_decode("https%3A%2F%2Fexample.com%2Fpage"),
+            "https://example.com/page"
+        );
+    }
+
+    #[test]
+    fn test_extract_ddg_url_with_uddg() {
+        let href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.rust-lang.org%2F&rut=abc123";
+        assert_eq!(extract_ddg_url(href), "https://www.rust-lang.org/");
+    }
+
+    #[test]
+    fn test_extract_ddg_url_with_uddg_no_other_params() {
+        let href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpath";
+        assert_eq!(extract_ddg_url(href), "https://example.com/path");
+    }
+
+    #[test]
+    fn test_extract_ddg_url_plain_url() {
+        // If no uddg parameter, return as-is (with // → https:)
+        let href = "//example.com/direct";
+        assert_eq!(extract_ddg_url(href), "https://example.com/direct");
+    }
+
+    #[test]
+    fn test_extract_ddg_url_absolute() {
+        let href = "https://example.com/page";
+        assert_eq!(extract_ddg_url(href), "https://example.com/page");
+    }
+
+    #[test]
+    fn test_extract_attr_double_quote() {
+        let tag = r#"<a class="result__a" href="/l/?uddg=test">"#;
+        assert_eq!(extract_attr(tag, "href"), Some("/l/?uddg=test".to_string()));
+        assert_eq!(extract_attr(tag, "class"), Some("result__a".to_string()));
+    }
+
+    #[test]
+    fn test_extract_attr_single_quote() {
+        let tag = "<a class='result__a' href='/l/?uddg=test'>";
+        assert_eq!(extract_attr(tag, "href"), Some("/l/?uddg=test".to_string()));
+    }
+
+    #[test]
+    fn test_extract_attr_missing() {
+        let tag = "<a class=\"foo\">";
+        assert_eq!(extract_attr(tag, "href"), None);
+    }
+
+    #[test]
+    fn test_extract_inner_text_strips_tags() {
+        assert_eq!(
+            extract_inner_text("<b>Hello</b> <i>world</i>"),
+            "Hello world"
+        );
+    }
+
+    #[test]
+    fn test_extract_inner_text_decodes_entities() {
+        assert_eq!(
+            extract_inner_text("foo &amp; bar &lt;baz&gt;"),
+            "foo & bar <baz>"
+        );
+    }
+
+    #[test]
+    fn test_parse_ddg_results_realistic() {
+        // Realistic DuckDuckGo HTML fixture
+        let html = r#"
+<div class="serp__results">
+  <div class="result results_links results_links_deep web-result">
+    <div class="result__body links_main links_deep">
+      <h2 class="result__title">
+        <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.rust-lang.org%2F&amp;rut=abc">Rust Programming Language</a>
+      </h2>
+      <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.rust-lang.org%2F&amp;rut=abc">A language empowering everyone to build <b>reliable</b> and efficient software.</a>
+    </div>
+  </div>
+  <div class="result results_links results_links_deep web-result">
+    <div class="result__body links_main links_deep">
+      <h2 class="result__title">
+        <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdoc.rust-lang.org%2Fbook%2F&amp;rut=def">The Rust Programming Language - Book</a>
+      </h2>
+      <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdoc.rust-lang.org%2Fbook%2F&amp;rut=def">An introductory book about Rust.</a>
+    </div>
+  </div>
+  <div class="result results_links results_links_deep web-result">
+    <div class="result__body links_main links_deep">
+      <h2 class="result__title">
+        <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fcrates.io%2F&amp;rut=ghi">crates.io: Rust Package Registry</a>
+      </h2>
+      <td class="result__snippet">The Rust community&apos;s crate registry.</td>
+    </div>
+  </div>
+</div>
+"#;
+
+        let results = parse_ddg_results(html, 10);
+        assert_eq!(results.len(), 3);
+
+        assert_eq!(results[0].title, "Rust Programming Language");
+        assert_eq!(results[0].url, "https://www.rust-lang.org/");
+        assert!(results[0].snippet.contains("reliable"));
+        assert!(results[0].snippet.contains("efficient software"));
+
+        assert_eq!(results[1].title, "The Rust Programming Language - Book");
+        assert_eq!(results[1].url, "https://doc.rust-lang.org/book/");
+        assert_eq!(results[1].snippet, "An introductory book about Rust.");
+
+        assert_eq!(results[2].title, "crates.io: Rust Package Registry");
+        assert_eq!(results[2].url, "https://crates.io/");
+        // Snippet from <td> tag with entity decoding
+        assert!(results[2].snippet.contains("Rust community"));
+        assert!(results[2].snippet.contains("crate registry"));
+    }
+
+    #[test]
+    fn test_parse_ddg_results_max_results_cap() {
+        // Build HTML with many results
+        let mut html = String::from("<div>");
+        for i in 0..25 {
+            html.push_str(&format!(
+                "<a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2F{i}\">Result {i}</a>\n\
+                 <a class=\"result__snippet\" href=\"x\">Snippet {i}</a>\n"
+            ));
+        }
+        html.push_str("</div>");
+
+        // Request 5
+        let results = parse_ddg_results(&html, 5);
+        assert_eq!(results.len(), 5);
+
+        // Request 30 — should cap at 20
+        let results = parse_ddg_results(&html, 30);
+        assert_eq!(results.len(), 20);
+    }
+
+    #[test]
+    fn test_parse_ddg_results_empty_html() {
+        let html = "<html><body><p>No results</p></body></html>";
+        let results = parse_ddg_results(html, 10);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_parse_ddg_results_no_snippet() {
+        let html = r#"
+<div class="result">
+  <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com">Example Title</a>
+</div>
+"#;
+        let results = parse_ddg_results(html, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Example Title");
+        assert_eq!(results[0].url, "https://example.com");
+        assert!(results[0].snippet.is_empty());
+    }
+
+    #[test]
+    fn test_format_search_results_basic() {
+        let results = vec![
+            WebSearchResult {
+                title: "Rust Lang".to_string(),
+                url: "https://www.rust-lang.org/".to_string(),
+                snippet: "A systems programming language.".to_string(),
+            },
+            WebSearchResult {
+                title: "Crates.io".to_string(),
+                url: "https://crates.io/".to_string(),
+                snippet: "The Rust package registry.".to_string(),
+            },
+        ];
+
+        let formatted = format_search_results(&results);
+        assert!(formatted.contains("1. Rust Lang"));
+        assert!(formatted.contains("   https://www.rust-lang.org/"));
+        assert!(formatted.contains("   A systems programming language."));
+        assert!(formatted.contains("2. Crates.io"));
+        assert!(formatted.contains("   https://crates.io/"));
+        assert!(formatted.contains("   The Rust package registry."));
+    }
+
+    #[test]
+    fn test_format_search_results_empty() {
+        let results: Vec<WebSearchResult> = vec![];
+        let formatted = format_search_results(&results);
+        assert_eq!(formatted, "No results found.");
+    }
+
+    #[test]
+    fn test_format_search_results_no_snippet() {
+        let results = vec![WebSearchResult {
+            title: "Example".to_string(),
+            url: "https://example.com".to_string(),
+            snippet: String::new(),
+        }];
+        let formatted = format_search_results(&results);
+        assert!(formatted.contains("1. Example"));
+        assert!(formatted.contains("   https://example.com"));
+        // Should not have a third indented line for empty snippet
+        let lines: Vec<&str> = formatted.lines().collect();
+        assert_eq!(lines.len(), 2); // title + url only
+    }
+
+    #[test]
+    fn test_url_encode_roundtrip() {
+        let original = "rust programming language + guide";
+        let encoded = url_encode(original);
+        let decoded = url_decode(&encoded);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn test_parse_ddg_results_with_bold_in_snippet() {
+        // DDG often wraps search terms in <b> tags within snippets
+        let html = r##"
+<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com">Test Page</a>
+<a class="result__snippet" href="#">This is a <b>test</b> snippet with <b>bold</b> words.</a>
+"##;
+        let results = parse_ddg_results(html, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].snippet,
+            "This is a test snippet with bold words."
+        );
     }
 }
