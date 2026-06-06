@@ -119,10 +119,13 @@ export YOYO_AUDIT=1
 export YOYO_HARNESS_INTERNAL=1
 export YOYO_STATE=1
 SESSION_STAGING=".yoyo/session_staging"
+STATE_EVENTS=".yoyo/state/events.jsonl"
+STATE_REPLAY_MANIFEST="$SESSION_STAGING/state_replay.json"
+STATE_BASE_LINES=0
 rm -rf "$SESSION_STAGING"
 mkdir -p "$SESSION_STAGING/transcripts"
 mkdir -p .yoyo/state
-: > .yoyo/state/events.jsonl
+: > "$STATE_EVENTS"
 rm -f .yoyo/state/state.sqlite .yoyo/state/events.sqlite 2>/dev/null || true
 # Track session-level outcome flags (read by Step 7c2 to populate outcome.json).
 SESSION_BUILD_OK="false"
@@ -159,6 +162,18 @@ if git fetch --depth 50 origin audit-log:audit-log 2>>"$TRAJ_STDERR"; then
         YOYO_TRAJECTORY_OUT="$TRAJECTORY_FILE" \
         python3 scripts/extract_trajectory.py 2>>"$TRAJ_STDERR" && \
         YOYO_TRAJECTORY=$(cat "$TRAJECTORY_FILE" 2>/dev/null || echo "")
+        if python3 scripts/replay_state_events.py \
+            --sessions-dir "$TRAJ_WT/sessions" \
+            --output "$STATE_EVENTS" \
+            --manifest "$STATE_REPLAY_MANIFEST" \
+            >>"$TRAJ_STDERR" 2>&1; then
+            STATE_BASE_LINES=$(wc -l < "$STATE_EVENTS" | tr -d '[:space:]')
+            STATE_BASE_LINES="${STATE_BASE_LINES:-0}"
+        else
+            echo "  state: replay failed (will run with empty live state)" >&2
+            : > "$STATE_EVENTS"
+            STATE_BASE_LINES=0
+        fi
     else
         echo "  trajectory: worktree add failed (will run without trajectory data)" >&2
     fi
@@ -185,6 +200,14 @@ fi
 # where the extractor wrote only newlines.
 if [ -z "$(echo "$YOYO_TRAJECTORY" | tr -d '[:space:]')" ]; then
     YOYO_TRAJECTORY="(no trajectory data yet)"
+fi
+
+STATE_BASE_LINES=$(wc -l < "$STATE_EVENTS" 2>/dev/null | tr -d '[:space:]')
+STATE_BASE_LINES="${STATE_BASE_LINES:-0}"
+if "$YOYO_BIN" state project --rebuild >>"$TRAJ_STDERR" 2>&1; then
+    echo "  state: replayed $STATE_BASE_LINES prior event(s) into live yoagent-state."
+else
+    echo "  state: sqlite projection rebuild failed (state JSONL remains available)" >&2
 fi
 
 # ── Helper: refresh GitHub App token (tokens expire after 1 hour) ──
@@ -1914,14 +1937,22 @@ if [ -d "$SESSION_STAGING" ]; then
         : > .yoyo/audit.jsonl
     fi
 
-    # Persist harness gnome state as compact evidence. Raw code changes remain
-    # referenced by patch/commit/PR metadata, not embedded in the state summary.
-    if [ -f .yoyo/state/events.jsonl ]; then
+    # Persist only this session's state delta as compact evidence. The live
+    # `.yoyo/state/events.jsonl` is rebuilt from prior audit-log deltas at
+    # startup; SQLite is a generated projection and is intentionally not
+    # committed to audit-log.
+    if [ -f "$STATE_EVENTS" ]; then
         mkdir -p "$SESSION_STAGING/state"
-        cp .yoyo/state/events.jsonl "$SESSION_STAGING/state/events.jsonl" 2>/dev/null || true
-        cp .yoyo/state/state.sqlite "$SESSION_STAGING/state/state.sqlite" 2>/dev/null || true
+        STATE_TOTAL_LINES=$(wc -l < "$STATE_EVENTS" 2>/dev/null | tr -d '[:space:]')
+        STATE_TOTAL_LINES="${STATE_TOTAL_LINES:-0}"
+        STATE_BASE_LINES="${STATE_BASE_LINES:-0}"
+        if [ "$STATE_TOTAL_LINES" -gt "$STATE_BASE_LINES" ]; then
+            tail -n +"$((STATE_BASE_LINES + 1))" "$STATE_EVENTS" > "$SESSION_STAGING/state/events.jsonl" 2>/dev/null || : > "$SESSION_STAGING/state/events.jsonl"
+        else
+            : > "$SESSION_STAGING/state/events.jsonl"
+        fi
         if ! python3 scripts/summarize_state_gnomes.py \
-            --events .yoyo/state/events.jsonl \
+            --events "$SESSION_STAGING/state/events.jsonl" \
             --output "$SESSION_STAGING/state/summary.json"; then
             echo "  WARNING: state gnome summary write failed — continuing session-end cleanup anyway" >&2
         fi
