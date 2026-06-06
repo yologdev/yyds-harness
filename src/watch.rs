@@ -1925,7 +1925,18 @@ mod tests {
     #[test]
     fn handle_watch_all_sets_combined_command() {
         with_clean_watch_state(|| {
-            // Run /watch all — since we're in a Rust project, it should set separate phases
+            // Create a temp Rust project so the test doesn't depend on CWD
+            let tmp = std::env::temp_dir().join("yoyo_test_watch_all_combined");
+            let _ = std::fs::create_dir_all(&tmp);
+            std::fs::write(
+                tmp.join("Cargo.toml"),
+                "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write temp Cargo.toml");
+
+            let orig = std::env::current_dir().expect("get cwd");
+            std::env::set_current_dir(&tmp).expect("set cwd to temp");
+
             handle_watch("/watch all");
             let cmd = get_watch_command();
             assert!(
@@ -1954,6 +1965,9 @@ mod tests {
                 "second phase should be test: {}",
                 phases[1]
             );
+
+            std::env::set_current_dir(&orig).expect("restore cwd");
+            let _ = std::fs::remove_dir_all(&tmp);
         });
     }
 
@@ -1969,7 +1983,18 @@ mod tests {
     #[test]
     fn handle_watch_lint_sets_lint_only_command() {
         with_clean_watch_state(|| {
-            // Run /watch lint — since we're in a Rust project, it should set clippy only
+            // Create a temp Rust project so the test doesn't depend on CWD
+            let tmp = std::env::temp_dir().join("yoyo_test_watch_lint_only");
+            let _ = std::fs::create_dir_all(&tmp);
+            std::fs::write(
+                tmp.join("Cargo.toml"),
+                "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write temp Cargo.toml");
+
+            let orig = std::env::current_dir().expect("get cwd");
+            std::env::set_current_dir(&tmp).expect("set cwd to temp");
+
             handle_watch("/watch lint");
             let cmd = get_watch_command();
             assert!(
@@ -1985,6 +2010,9 @@ mod tests {
                 !cmd.contains("cargo test"),
                 "watch lint should NOT include test: {cmd}"
             );
+
+            std::env::set_current_dir(&orig).expect("restore cwd");
+            let _ = std::fs::remove_dir_all(&tmp);
         });
     }
 
@@ -1992,10 +2020,18 @@ mod tests {
     #[test]
     fn handle_watch_bare_sets_lint_and_test() {
         with_clean_watch_state(|| {
-            // Run bare /watch — should now set lint+test as separate phases.
-            // NOTE: This test depends on detect_project_type(CWD), so it detects
-            // whatever project type the CWD is. In CI that's a Rust project.
-            // We make assertions lenient to tolerate minor detection differences.
+            // Create a temp Rust project so the test doesn't depend on CWD
+            let tmp = std::env::temp_dir().join("yoyo_test_watch_bare");
+            let _ = std::fs::create_dir_all(&tmp);
+            std::fs::write(
+                tmp.join("Cargo.toml"),
+                "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write temp Cargo.toml");
+
+            let orig = std::env::current_dir().expect("get cwd");
+            std::env::set_current_dir(&tmp).expect("set cwd to temp");
+
             handle_watch("/watch");
             let cmd = get_watch_command();
             assert!(
@@ -2017,6 +2053,9 @@ mod tests {
                 2,
                 "bare /watch should set 2 phases: {phases:?}"
             );
+
+            std::env::set_current_dir(&orig).expect("restore cwd");
+            let _ = std::fs::remove_dir_all(&tmp);
         });
     }
 
