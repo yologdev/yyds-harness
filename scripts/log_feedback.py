@@ -32,6 +32,10 @@ PROVIDER_ERROR_RE = re.compile(
     r"(provider_error|rate_limit|rate limit|\b(?:http\s*)?(?:429|5\d\d)\b|api error|overloaded)",
     re.IGNORECASE,
 )
+EXPLICIT_PROVIDER_SIGNAL_RE = re.compile(
+    r"(provider_error|rate_limit|rate limit|\b(?:http\s*)?(?:429|5\d\d)\b|overloaded)",
+    re.IGNORECASE,
+)
 JSON_ERROR_RE = re.compile(r"(json|schema|deserialize|parse).*(error|fail)", re.IGNORECASE)
 TOOL_ERROR_RE = re.compile(r"(tool call|tool schema|malformed tool|invalid tool)", re.IGNORECASE)
 STATE_ERROR_RE = re.compile(r"(state|audit-log|events\.jsonl|state\.sqlite).*(error|fail|missing)", re.IGNORECASE)
@@ -104,6 +108,10 @@ def is_noise_failure_message(message: str) -> bool:
     if lower.startswith(("ok:", "warning:", "compiling ", "checking ", "finished ")):
         return True
     if lower.startswith(("curl ", "echo ", "rtk ", "xurl ", "git ", "python3 ", "cargo ", "chmod ", "./scripts/")):
+        return True
+    if re.match(r"^\d+\.\s", lower):
+        return True
+    if "format!(" in lower or re.match(r"^[a-z_][\w:<>]*\s*=", lower):
         return True
     if "|| echo" in lower or "continue-on-error" in lower or "non-fatal" in lower or "fail-soft" in lower:
         return True
@@ -190,15 +198,16 @@ def parse_log(log_text: str) -> dict[str, Any]:
             repair_loop_count += 1
         if is_noise_failure_message(message):
             continue
-        if PROVIDER_ERROR_RE.search(message):
+        is_failure = bool(ERROR_LINE_RE.search(message))
+        if PROVIDER_ERROR_RE.search(message) and (is_failure or EXPLICIT_PROVIDER_SIGNAL_RE.search(message)):
             provider_errors += 1
-        if JSON_ERROR_RE.search(message):
+        if is_failure and JSON_ERROR_RE.search(message):
             json_errors += 1
-        if TOOL_ERROR_RE.search(message):
+        if is_failure and TOOL_ERROR_RE.search(message):
             tool_errors += 1
-        if STATE_ERROR_RE.search(message):
+        if is_failure and STATE_ERROR_RE.search(message):
             state_errors += 1
-        if not ERROR_LINE_RE.search(message):
+        if not is_failure:
             continue
         fp = fingerprint_error_line(message)
         if not fp:
@@ -618,6 +627,8 @@ def run_self_tests() -> int:
                 "evolve\tRun evolution session\t2026-06-06T15:17:55.6946402Z   Events: 265 total (48 runs, 0 failures)",
                 "evolve\tTests\t2026-06-06T15:00:44.7238078Z test result: ok. 0 passed; 0 failed; finished in 0.00s",
                 "evolve\tInstall xurl\t2026-06-06T14:57:41.9956725Z Compiling proc-macro-error v1.0.4",
+                "evolve\tRun evolution session\t2026-06-06T15:39:56.0227640Z store_schema = format!(\"SQLite integrity OK, schema version error: {e}\");",
+                "evolve\tRun evolution session\t2026-06-06T15:10:45.1599289Z 1. The `context explain` timed out - that might be a real bug worth fixing",
             ]
         )
     )
