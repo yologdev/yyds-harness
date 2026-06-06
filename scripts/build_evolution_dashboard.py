@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,78 @@ def compact_list(values: list[str], limit: int) -> list[str]:
         if len(out) >= limit:
             break
     return out
+
+
+def source_file(path: str) -> bool:
+    if not path:
+        return False
+    if path.startswith("journals/"):
+        return False
+    if path.startswith("sessions/"):
+        return False
+    if path.startswith("site/"):
+        return False
+    return path != ".skill_evolve_counter"
+
+
+def session_commit_prefix(outcome: dict[str, Any]) -> str:
+    day = outcome.get("day")
+    session_time = outcome.get("session_time")
+    if day is None or not session_time:
+        return ""
+    return f"Day {day} ({session_time}):"
+
+
+def session_commits(outcome: dict[str, Any], repo_root: Path) -> list[dict[str, Any]]:
+    prefix = session_commit_prefix(outcome)
+    if not prefix:
+        return []
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "log",
+                "--all",
+                "--fixed-strings",
+                "--grep",
+                prefix,
+                "--format=%x1e%H%x00%s",
+                "--name-only",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+
+    commits: list[dict[str, Any]] = []
+    for raw_record in result.stdout.split("\x1e"):
+        record = raw_record.strip()
+        if not record:
+            continue
+        lines = [line for line in record.splitlines() if line.strip()]
+        if not lines or "\x00" not in lines[0]:
+            continue
+        sha, subject = lines[0].split("\x00", 1)
+        files = compact_list(lines[1:], 40)
+        commits.append(
+            {
+                "sha": sha,
+                "short_sha": sha[:7],
+                "subject": subject,
+                "files": files,
+                "source_files": [path for path in files if source_file(path)],
+            }
+        )
+    commits.reverse()
+    return commits
 
 
 def transcript_summary(session_dir: Path) -> dict[str, Any]:
@@ -159,9 +232,19 @@ def work_summary(
     summary: dict[str, Any],
     evals: list[dict[str, Any]],
     blockers: list[dict[str, Any]],
+    commits: list[dict[str, Any]],
 ) -> dict[str, Any]:
     transcript_data = transcript_summary(session_dir)
     event_data = summarize_events_for_work(load_jsonl(session_dir / "state" / "events.jsonl"))
+    source_files = compact_list(
+        [
+            path
+            for commit in commits
+            for path in (commit.get("source_files") or [])
+            if isinstance(path, str)
+        ],
+        16,
+    )
     attempted = int(outcome.get("tasks_attempted") or 0)
     succeeded = int(outcome.get("tasks_succeeded") or 0)
     patches = summary.get("patches", []) if isinstance(summary.get("patches"), list) else []
@@ -170,7 +253,9 @@ def work_summary(
     labels: list[str] = []
     if attempted:
         labels.append(f"{succeeded}/{attempted} tasks completed")
-    if event_data["edited_files"]:
+    if source_files:
+        labels.append(f"{len(source_files)} source file(s) changed")
+    elif event_data["edited_files"]:
         labels.append(f"{len(event_data['edited_files'])} file(s) edited")
     if event_data["command_count"]:
         labels.append(f"{event_data['command_count']} command event(s)")
@@ -186,6 +271,17 @@ def work_summary(
         "labels": labels,
         "transcripts": transcript_data,
         "edited_files": event_data["edited_files"],
+        "source_changed_files": source_files,
+        "commits": [
+            {
+                "sha": commit.get("sha"),
+                "short_sha": commit.get("short_sha"),
+                "subject": commit.get("subject"),
+                "files": commit.get("files") or [],
+                "source_files": commit.get("source_files") or [],
+            }
+            for commit in commits
+        ],
         "read_files": event_data["read_files"],
         "commands": event_data["commands"],
         "failed_commands": event_data["failed_commands"],
@@ -236,7 +332,7 @@ def dedupe_evals(evals: Any) -> list[dict[str, Any]]:
     return [latest_by_key[key] for key in order]
 
 
-def load_sessions(audit_sessions: Path) -> list[dict[str, Any]]:
+def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]:
     sessions: list[dict[str, Any]] = []
     if not audit_sessions.is_dir():
         return sessions
@@ -256,7 +352,8 @@ def load_sessions(audit_sessions: Path) -> list[dict[str, Any]]:
             for blocker in (summary.get("blockers", []) if isinstance(summary.get("blockers"), list) else [])
             if isinstance(blocker, dict) and is_real_blocker(blocker)
         ]
-        work = work_summary(session_dir, outcome, summary, evals, blockers)
+        commits = session_commits(outcome, repo_root)
+        work = work_summary(session_dir, outcome, summary, evals, blockers, commits)
         sessions.append(
             {
                 "id": session_dir.name,
@@ -1263,6 +1360,16 @@ HTML = r"""<!doctype html>
       return `<ul class="mini-list">${rows.map(value => `<li>${text(value)}</li>`).join("")}</ul>`;
     }
 
+    function commitItems(commits) {
+      const rows = (commits || []).slice(0, 6);
+      if (!rows.length) return `<p class="muted">No landed commits matched this session.</p>`;
+      return `<ul class="mini-list">${rows.map(commit => {
+        const files = (commit.source_files || commit.files || []).length;
+        const count = files ? ` (${text(files)} files)` : "";
+        return `<li>${text(commit.short_sha || "")} ${text(commit.subject || "")}${count}</li>`;
+      }).join("")}</ul>`;
+    }
+
     function renderSessionWork(sessions) {
       const panel = document.getElementById("sessionWork");
       if (!sessions.length) {
@@ -1272,6 +1379,7 @@ HTML = r"""<!doctype html>
       panel.innerHTML = sessions.slice().reverse().slice(0, 12).map(session => {
         const work = session.work_summary || {};
         const transcripts = work.transcripts || {};
+        const sourceFiles = (work.source_changed_files || []).length ? work.source_changed_files : work.edited_files;
         const phaseText = Object.entries(transcripts.phase_counts || {}).map(([phase, count]) => `${phase} ${count}`).join(", ");
         return `<article class="item work-row">
           <div>
@@ -1289,8 +1397,10 @@ HTML = r"""<!doctype html>
             <details class="work-details">
               <summary>Show work evidence</summary>
               <div class="detail-grid">
-                <div><strong>Files edited</strong>${listItems(work.edited_files, "No file edits recorded.")}</div>
+                <div><strong>Source files changed</strong>${listItems(sourceFiles, "No source changes recorded.")}</div>
+                <div><strong>Landed commits</strong>${commitItems(work.commits)}</div>
                 <div><strong>Commands/checks</strong>${listItems(work.commands, "No command events recorded.")}</div>
+                <div><strong>State edit events</strong>${listItems(work.edited_files, "No FileEdited events recorded.")}</div>
                 <div><strong>Files read</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
                 <div><strong>Failures</strong>${listItems(work.failed_commands, "No failed commands recorded.")}</div>
               </div>
@@ -1397,8 +1507,8 @@ HTML = r"""<!doctype html>
 """
 
 
-def build(audit_sessions: Path, output_dir: Path) -> dict[str, Any]:
-    sessions = load_sessions(audit_sessions)
+def build(audit_sessions: Path, output_dir: Path, repo_root: Path | None = None) -> dict[str, Any]:
+    sessions = load_sessions(audit_sessions, repo_root or Path.cwd())
     gnome_history, gnome_numeric_keys = build_gnome_history(sessions)
     data = {
         "schema_version": 2,
@@ -1418,10 +1528,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--audit-sessions", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--repo-root", default=Path.cwd(), type=Path)
     parser.add_argument("--copy-to", type=Path, help="Optional second output directory.")
     args = parser.parse_args()
 
-    data = build(args.audit_sessions, args.output_dir)
+    data = build(args.audit_sessions, args.output_dir, args.repo_root)
     if args.copy_to:
         if args.copy_to.exists():
             shutil.rmtree(args.copy_to)

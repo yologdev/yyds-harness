@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -99,6 +100,50 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["transcripts"]["phase_counts"], {"plan": 1, "task": 1})
             self.assertEqual(work["patch_count"], 1)
             self.assertEqual(work["decision_count"], 1)
+
+    def test_derives_source_changes_from_matching_session_commits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+                check=True,
+            )
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "src").mkdir()
+            (repo / "src/lib.rs").write_text("pub fn ok() {}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-m", "Day 1 (00:00): implement source"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "session_time": "00:00",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                },
+            )
+            write_json(session / "state/summary.json", {})
+            write_events(
+                session / "state/events.jsonl",
+                [{"kind": "FileEdited", "payload": {"path": "journals/JOURNAL.md"}}],
+            )
+
+            data = build(root / "sessions", root / "out", repo)
+
+            work = data["sessions"][0]["work_summary"]
+            self.assertEqual(work["source_changed_files"], ["src/lib.rs"])
+            self.assertEqual(work["edited_files"], ["journals/JOURNAL.md"])
+            self.assertIn("1 source file(s) changed", work["headline"])
+            self.assertEqual(work["commits"][0]["subject"], "Day 1 (00:00): implement source")
 
     def test_missing_optional_artifacts_do_not_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
