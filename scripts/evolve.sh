@@ -55,7 +55,6 @@ git pull --rebase --quiet 2>/dev/null || true
 
 echo "=== Day $DAY ($DATE $SESSION_TIME) ==="
 echo "Model: $MODEL"
-echo "yoagent upstream: ${YOAGENT_REPO:-not configured}"
 echo "Plan timeout: ${TIMEOUT}s (assess: $((TIMEOUT/2))s + plan: $((TIMEOUT/2))s) | Impl timeout: 1200s/task"
 echo ""
 
