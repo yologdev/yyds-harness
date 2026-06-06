@@ -21,6 +21,183 @@ def load_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    if not path.is_file():
+        return events
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return events
+    for line in lines:
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            events.append(value)
+    return events
+
+
+def event_kind(event: dict[str, Any]) -> str:
+    value = event.get("event_type") or event.get("kind")
+    if isinstance(value, str):
+        return value
+    raw_payload = event.get("payload")
+    if isinstance(raw_payload, dict):
+        meta = raw_payload.get("_yoyo")
+        if isinstance(meta, dict) and isinstance(meta.get("event_type"), str):
+            return str(meta["event_type"])
+    return ""
+
+
+def event_payload(event: dict[str, Any]) -> dict[str, Any]:
+    value = event.get("payload")
+    if not isinstance(value, dict):
+        return {}
+    wrapped = value.get("value")
+    if set(value.keys()).issubset({"_yoyo", "value"}) and isinstance(wrapped, dict):
+        return wrapped
+    return value
+
+
+def compact_list(values: list[str], limit: int) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        text = " ".join(str(value).split())
+        if text and text not in out:
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def transcript_summary(session_dir: Path) -> dict[str, Any]:
+    transcript_dir = session_dir / "transcripts"
+    files = sorted(transcript_dir.glob("*.log")) if transcript_dir.is_dir() else []
+    phase_counts = {
+        "assess": 0,
+        "plan": 0,
+        "task": 0,
+        "fix": 0,
+        "eval": 0,
+        "other": 0,
+    }
+    transcript_rows: list[dict[str, str]] = []
+    for path in files:
+        name = path.name
+        if name.startswith("assess"):
+            phase = "assess"
+        elif name.startswith("plan"):
+            phase = "plan"
+        elif name.startswith("task_"):
+            phase = "task"
+        elif name.startswith("fix_"):
+            phase = "fix"
+        elif name.startswith("eval_"):
+            phase = "eval"
+        else:
+            phase = "other"
+        phase_counts[phase] += 1
+        transcript_rows.append({"name": name, "phase": phase, "path": f"transcripts/{name}"})
+    return {
+        "count": len(files),
+        "phase_counts": {key: value for key, value in phase_counts.items() if value},
+        "files": transcript_rows[:16],
+    }
+
+
+def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
+    edited_files: list[str] = []
+    read_files: list[str] = []
+    commands: list[str] = []
+    failed_commands: list[str] = []
+    tool_names: dict[str, int] = {}
+
+    for event in events:
+        kind = event_kind(event)
+        data = event_payload(event)
+        if kind == "FileEdited":
+            path = data.get("path") or data.get("file") or data.get("target_path")
+            if isinstance(path, str):
+                edited_files.append(path)
+        elif kind == "FileRead":
+            path = data.get("path")
+            if isinstance(path, str):
+                read_files.append(path)
+        elif kind == "CommandStarted":
+            command = data.get("command")
+            if isinstance(command, str):
+                commands.append(command)
+        elif kind == "CommandCompleted":
+            command = data.get("command")
+            if isinstance(command, str):
+                commands.append(command)
+            if data.get("is_error") is True and isinstance(command, str):
+                failed_commands.append(command)
+        if kind in {"ToolCallStarted", "ToolCallCompleted"}:
+            tool = data.get("tool_name")
+            if isinstance(tool, str) and kind == "ToolCallStarted":
+                tool_names[tool] = tool_names.get(tool, 0) + 1
+
+    return {
+        "edited_files": compact_list(edited_files, 12),
+        "read_files": compact_list(read_files, 12),
+        "commands": compact_list(commands, 12),
+        "failed_commands": compact_list(failed_commands, 8),
+        "tool_counts": dict(sorted(tool_names.items(), key=lambda item: (-item[1], item[0]))[:8]),
+        "command_count": len(commands),
+    }
+
+
+def work_summary(
+    session_dir: Path,
+    outcome: dict[str, Any],
+    summary: dict[str, Any],
+    evals: list[dict[str, Any]],
+    blockers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    transcript_data = transcript_summary(session_dir)
+    event_data = summarize_events_for_work(load_jsonl(session_dir / "state" / "events.jsonl"))
+    attempted = int(outcome.get("tasks_attempted") or 0)
+    succeeded = int(outcome.get("tasks_succeeded") or 0)
+    patches = summary.get("patches", []) if isinstance(summary.get("patches"), list) else []
+    decisions = summary.get("decisions", []) if isinstance(summary.get("decisions"), list) else []
+    latest_eval = evals[-1] if evals else {}
+    labels: list[str] = []
+    if attempted:
+        labels.append(f"{succeeded}/{attempted} tasks completed")
+    if event_data["edited_files"]:
+        labels.append(f"{len(event_data['edited_files'])} file(s) edited")
+    if event_data["command_count"]:
+        labels.append(f"{event_data['command_count']} command event(s)")
+    if evals:
+        labels.append(f"{len(evals)} eval record(s)")
+    if blockers:
+        labels.append(f"{len(blockers)} blocker(s)")
+    if not labels:
+        labels.append("No detailed work signals captured")
+
+    return {
+        "headline": "; ".join(labels[:4]),
+        "labels": labels,
+        "transcripts": transcript_data,
+        "edited_files": event_data["edited_files"],
+        "read_files": event_data["read_files"],
+        "commands": event_data["commands"],
+        "failed_commands": event_data["failed_commands"],
+        "tool_counts": event_data["tool_counts"],
+        "patch_count": len(patches),
+        "decision_count": len(decisions),
+        "eval_count": len(evals),
+        "latest_eval_status": latest_eval.get("status"),
+        "latest_eval_score": latest_eval.get("score"),
+    }
+
+
 def session_sort_key(path: Path) -> str:
     return path.name
 
@@ -79,6 +256,7 @@ def load_sessions(audit_sessions: Path) -> list[dict[str, Any]]:
             for blocker in (summary.get("blockers", []) if isinstance(summary.get("blockers"), list) else [])
             if isinstance(blocker, dict) and is_real_blocker(blocker)
         ]
+        work = work_summary(session_dir, outcome, summary, evals, blockers)
         sessions.append(
             {
                 "id": session_dir.name,
@@ -101,6 +279,7 @@ def load_sessions(audit_sessions: Path) -> list[dict[str, Any]]:
                 "decisions": summary.get("decisions", []),
                 "blockers": blockers,
                 "code_refs": summary.get("code_refs", []),
+                "work_summary": work,
                 "audit_url": f"{REPO_URL}/tree/audit-log/sessions/{session_dir.name}",
             }
         )
@@ -169,6 +348,46 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         "gnome_keys": gnome_keys,
         "latest_ts": sessions[-1].get("ts") if sessions else None,
     }
+
+
+def numeric_gnome_values(session: dict[str, Any]) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for eval_data in session.get("evals") or []:
+        gnomes = eval_data.get("gnomes") if isinstance(eval_data, dict) else None
+        if not isinstance(gnomes, dict):
+            continue
+        for key, value in gnomes.items():
+            if isinstance(value, bool) or value is None:
+                continue
+            if isinstance(value, (int, float)):
+                values[str(key)] = float(value)
+    for key, value in (session.get("latest_gnomes") or {}).items():
+        if isinstance(value, bool) or value is None:
+            continue
+        if isinstance(value, (int, float)) and key not in values:
+            values[str(key)] = float(value)
+    return values
+
+
+def build_gnome_history(sessions: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    history: list[dict[str, Any]] = []
+    keys: list[str] = []
+    for session in sessions:
+        values = numeric_gnome_values(session)
+        for key in values:
+            if key not in keys:
+                keys.append(key)
+        history.append(
+            {
+                "session_id": session.get("id"),
+                "day": session.get("day"),
+                "ts": session.get("ts"),
+                "health": run_health(session),
+                "values": values,
+            }
+        )
+    keys.sort()
+    return history, keys
 
 
 HTML = r"""<!doctype html>
@@ -407,6 +626,105 @@ HTML = r"""<!doctype html>
       gap: 10px;
     }
 
+    .mini-list {
+      margin: 8px 0 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .mini-list li {
+      overflow-wrap: anywhere;
+    }
+
+    .work-row {
+      display: grid;
+      grid-template-columns: minmax(180px, 0.7fr) minmax(260px, 1.3fr);
+      gap: 12px;
+      align-items: start;
+    }
+
+    details.work-details {
+      margin-top: 8px;
+    }
+
+    details.work-details summary {
+      cursor: pointer;
+      color: var(--blue);
+      font-weight: 800;
+    }
+
+    .sparkline {
+      width: 100%;
+      min-height: 210px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background:
+        linear-gradient(rgba(21, 20, 15, 0.04) 1px, transparent 1px),
+        #fffdf7;
+      background-size: 100% 25%;
+      overflow: hidden;
+    }
+
+    .sparkline svg {
+      display: block;
+      width: 100%;
+      height: 210px;
+    }
+
+    .sparkline text {
+      fill: var(--muted);
+      font-size: 11px;
+    }
+
+    .dot {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      margin-right: 6px;
+      background: var(--blue);
+    }
+
+    .heatmap {
+      display: grid;
+      gap: 8px;
+      overflow-x: auto;
+    }
+
+    .heat-row {
+      display: grid;
+      grid-template-columns: minmax(180px, 0.7fr) minmax(240px, 1.3fr);
+      gap: 10px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .heat-cells {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 12px;
+      gap: 3px;
+      min-width: max-content;
+    }
+
+    .heat-cell {
+      width: 12px;
+      height: 12px;
+      border-radius: 2px;
+      border: 1px solid var(--line);
+      background: #eef2ed;
+    }
+
+    .heat-cell.on {
+      background: var(--green);
+      border-color: rgba(27, 122, 88, 0.35);
+    }
+
     .table-wrap { overflow-x: auto; }
     table {
       width: 100%;
@@ -562,6 +880,27 @@ HTML = r"""<!doctype html>
         </div>
       </section>
     </section>
+    <section class="chart-grid">
+      <section class="panel">
+        <h2>Gnome Trends</h2>
+        <div class="panel-body">
+          <p class="explain">Numeric gnome values over sessions. Missing values are gaps, not zeroes.</p>
+          <select id="gnomeMetric" aria-label="Gnome metric"></select>
+          <div id="gnomeTrend"></div>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Gnome Availability</h2>
+        <div class="panel-body">
+          <p class="explain">Which sessions emitted each metric. This explains why a trend may have gaps.</p>
+          <div id="gnomeAvailability"></div>
+        </div>
+      </section>
+    </section>
+    <section class="panel">
+      <h2>Session Work</h2>
+      <div class="stack" id="sessionWork"></div>
+    </section>
     <section class="split">
       <section class="panel">
         <h2>Session Timeline</h2>
@@ -588,7 +927,7 @@ HTML = r"""<!doctype html>
   </main>
   <script>
     const fmt = new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 });
-    const state = { data: null, query: "", status: "all" };
+    const state = { data: null, query: "", status: "all", selectedGnome: "" };
     const gnomeLabels = {
       cost_usd: "Estimated cost",
       cost_per_successful_task_usd: "Cost per successful task",
@@ -599,12 +938,24 @@ HTML = r"""<!doctype html>
       context_miss_rate: "Context misses",
       repair_loop_count: "Repair loops",
       state_failure_count: "State failures",
+      fixture_agent_attempts: "Fixture agent attempts",
+      fixture_agent_mutation_scope_failure_rate: "Mutation scope failures",
+      fixture_agent_unexpected_changed_file_count: "Unexpected changed files",
+      fim_compile_success_rate: "FIM compile success",
+      fim_rollback_rate: "FIM rollback rate",
+      fim_token_savings: "FIM token savings",
+      deepseek_streaming_protocol_checks: "Streaming protocol checks",
+      deepseek_prefix_cache_checks: "Prefix cache checks",
+      deepseek_thinking_protocol_checks: "Thinking protocol checks",
       coding_log_score: "Coding log score",
       coding_log_confidence: "Coding log confidence",
+      coding_log_available: "Coding log available",
       workflow_success_rate: "Workflow success",
       session_success_rate: "Session success",
       task_success_rate: "Task success",
+      retry_success_rate: "Retry success",
       recurring_failure_count: "Recurring failures",
+      max_failure_fingerprint_recurrence: "Max failure recurrence",
       state_capture_coverage: "State capture",
       audit_capture_coverage: "Audit capture",
       closed_loop_fix_rate: "Closed-loop fix rate"
@@ -798,6 +1149,157 @@ HTML = r"""<!doctype html>
           : `<div class="empty">No gnome KPI values captured yet. This is expected until eval or log-feedback events emit metrics.</div>`;
     }
 
+    function gnomeRowsForFilteredSessions(sessions) {
+      const visible = new Set(sessions.map(session => session.id));
+      return ((state.data && state.data.gnome_history) || []).filter(row => visible.has(row.session_id));
+    }
+
+    function availableGnomeKeys(rows) {
+      const keys = [];
+      rows.forEach(row => {
+        Object.entries(row.values || {}).forEach(([key, value]) => {
+          if (value === null || value === undefined || Number.isNaN(Number(value))) return;
+          if (!keys.includes(key)) keys.push(key);
+        });
+      });
+      keys.sort();
+      const preferred = ["coding_log_score", "task_success_rate", "workflow_success_rate", "cache_hit_ratio"];
+      preferred.reverse().forEach(key => {
+        const idx = keys.indexOf(key);
+        if (idx >= 0) {
+          keys.splice(idx, 1);
+          keys.unshift(key);
+        }
+      });
+      return keys;
+    }
+
+    function renderGnomeMetricSelect(keys) {
+      const select = document.getElementById("gnomeMetric");
+      if (!keys.length) {
+        select.innerHTML = `<option value="">No numeric gnomes</option>`;
+        state.selectedGnome = "";
+        return;
+      }
+      if (!state.selectedGnome || !keys.includes(state.selectedGnome)) {
+        state.selectedGnome = keys[0];
+      }
+      select.innerHTML = keys.map(key => `<option value="${escapeHtml(key)}"${key === state.selectedGnome ? " selected" : ""}>${text(gnomeLabels[key] || key)}</option>`).join("");
+    }
+
+    function renderSparkline(rows, key) {
+      const points = rows
+        .map((row, index) => ({ row, index, value: row.values ? row.values[key] : undefined }))
+        .filter(point => point.value !== null && point.value !== undefined && !Number.isNaN(Number(point.value)))
+        .map(point => ({ ...point, value: Number(point.value) }));
+      if (!key || points.length < 2) {
+        return `<div class="empty">Need at least two sessions with numeric values for a trend.</div>`;
+      }
+      const width = 720;
+      const height = 210;
+      const pad = 26;
+      const values = points.map(point => point.value);
+      let min = Math.min(...values);
+      let max = Math.max(...values);
+      if (min === max) {
+        min -= 1;
+        max += 1;
+      }
+      const maxIndex = Math.max(rows.length - 1, 1);
+      const xy = point => {
+        const x = pad + (point.index / maxIndex) * (width - pad * 2);
+        const y = height - pad - ((point.value - min) / (max - min)) * (height - pad * 2);
+        return [x, y];
+      };
+      const path = points.map((point, idx) => {
+        const [x, y] = xy(point);
+        return `${idx === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`;
+      }).join(" ");
+      const circles = points.map(point => {
+        const [x, y] = xy(point);
+        return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4"><title>${text(point.row.session_id)}: ${text(point.value)}</title></circle>`;
+      }).join("");
+      return `<div class="sparkline">
+        <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${text(key)} trend">
+          <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}" stroke="#cbd5cf" />
+          <line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" stroke="#cbd5cf" />
+          <text x="${pad}" y="16">${text(max)}</text>
+          <text x="${pad}" y="${height - 6}">${text(min)}</text>
+          <path d="${path}" fill="none" stroke="#285c92" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          <g fill="#1b7a58" stroke="#fffdfa" stroke-width="2">${circles}</g>
+        </svg>
+      </div>
+      <div class="legend"><span><span class="dot"></span>${text(gnomeLabels[key] || key)}</span><span>${text(points.length)} of ${text(rows.length)} visible sessions emitted this metric</span></div>`;
+    }
+
+    function renderGnomeAvailability(rows, keys) {
+      const panel = document.getElementById("gnomeAvailability");
+      if (!rows.length || !keys.length) {
+        panel.innerHTML = `<div class="empty">No gnome history in the current filter.</div>`;
+        return;
+      }
+      panel.innerHTML = `<div class="heatmap">${keys.slice(0, 12).map(key => `
+        <div class="heat-row">
+          <strong>${text(gnomeLabels[key] || key)}</strong>
+          <div class="heat-cells">${rows.map(row => {
+            const on = row.values && row.values[key] !== null && row.values[key] !== undefined;
+            return `<span class="heat-cell ${on ? "on" : ""}" title="${text(row.session_id)} ${on ? text(row.values[key]) : "missing"}"></span>`;
+          }).join("")}</div>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    function renderGnomeHistory(sessions) {
+      const rows = gnomeRowsForFilteredSessions(sessions);
+      const keys = availableGnomeKeys(rows);
+      renderGnomeMetricSelect(keys);
+      document.getElementById("gnomeTrend").innerHTML = renderSparkline(rows, state.selectedGnome);
+      renderGnomeAvailability(rows, keys);
+    }
+
+    function listItems(values, emptyText) {
+      const rows = (values || []).filter(Boolean).slice(0, 6);
+      if (!rows.length) return `<p class="muted">${text(emptyText)}</p>`;
+      return `<ul class="mini-list">${rows.map(value => `<li>${text(value)}</li>`).join("")}</ul>`;
+    }
+
+    function renderSessionWork(sessions) {
+      const panel = document.getElementById("sessionWork");
+      if (!sessions.length) {
+        panel.innerHTML = `<div class="empty">No sessions match the current filter.</div>`;
+        return;
+      }
+      panel.innerHTML = sessions.slice().reverse().slice(0, 12).map(session => {
+        const work = session.work_summary || {};
+        const transcripts = work.transcripts || {};
+        const phaseText = Object.entries(transcripts.phase_counts || {}).map(([phase, count]) => `${phase} ${count}`).join(", ");
+        return `<article class="item work-row">
+          <div>
+            <span class="pill ${healthClass(healthOf(session))}">${text(healthOf(session))}</span>
+            <strong>${text(session.id)}</strong>
+            <p class="muted">${text(work.headline || "No detailed work signals captured")}</p>
+          </div>
+          <div>
+            <div class="legend">
+              <span>${text(phaseText || "no transcripts")}</span>
+              <span>${text(work.eval_count || 0)} evals</span>
+              <span>${text(work.patch_count || 0)} patches</span>
+              <span>${text(work.decision_count || 0)} decisions</span>
+            </div>
+            <details class="work-details">
+              <summary>Show work evidence</summary>
+              <div class="detail-grid">
+                <div><strong>Files edited</strong>${listItems(work.edited_files, "No file edits recorded.")}</div>
+                <div><strong>Commands/checks</strong>${listItems(work.commands, "No command events recorded.")}</div>
+                <div><strong>Files read</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
+                <div><strong>Failures</strong>${listItems(work.failed_commands, "No failed commands recorded.")}</div>
+              </div>
+            </details>
+          </div>
+        </article>`;
+      }).join("");
+    }
+
     function renderSessions(sessions) {
       const body = document.getElementById("sessions");
       if (!sessions.length) {
@@ -809,9 +1311,10 @@ HTML = r"""<!doctype html>
         const decision = session.latest_decision || {};
         const health = healthOf(session);
         const events = session.event_count || 0;
+        const work = session.work_summary || {};
         return `<tr>
           <td><strong>${text(session.id)}</strong><div class="muted">Day ${text(session.day)} at ${text(session.session_time)}<br>${text(session.ts)}</div></td>
-          <td><span class="pill ${healthClass(health)}">${text(health)}</span><div class="muted">build ${text(session.build_ok)} / test ${text(session.test_ok)}<br>tasks ${text(session.tasks_succeeded)}/${text(session.tasks_attempted)}</div></td>
+          <td><span class="pill ${healthClass(health)}">${text(health)}</span><div class="muted">build ${text(session.build_ok)} / test ${text(session.test_ok)}<br>tasks ${text(session.tasks_succeeded)}/${text(session.tasks_attempted)}<br>${text(work.headline)}</div></td>
           <td><span class="${decisionClass(decision)}">${text(decision.criterion || decision.decision || decision.decision_type)}</span><div class="muted">${text(decision.reason)}</div></td>
           <td><span class="pill soft">${text(events)} events</span><div class="muted">eval ${text(evalData.status)} ${evalData.score === undefined ? "" : `score ${text(evalData.score)}`}</div></td>
           <td><a href="${text(session.audit_url)}">audit files</a><div class="muted">${text((session.blockers || []).length)} blockers / ${text((session.evals || []).length)} evals / ${text((session.patches || []).length)} patches / ${text((session.code_refs || []).length)} refs</div></td>
@@ -855,6 +1358,8 @@ HTML = r"""<!doctype html>
       const visibleAgg = aggregateSessions(filtered, data.aggregate || {});
       renderSummary(visibleAgg);
       renderCharts(visibleAgg);
+      renderGnomeHistory(filtered);
+      renderSessionWork(filtered);
       renderSessions(filtered);
       renderEvidence(filtered);
     }
@@ -875,6 +1380,10 @@ HTML = r"""<!doctype html>
       state.status = event.target.value;
       render();
     });
+    document.getElementById("gnomeMetric").addEventListener("change", event => {
+      state.selectedGnome = event.target.value;
+      render();
+    });
     document.getElementById("reset").addEventListener("click", () => {
       state.query = "";
       state.status = "all";
@@ -890,10 +1399,13 @@ HTML = r"""<!doctype html>
 
 def build(audit_sessions: Path, output_dir: Path) -> dict[str, Any]:
     sessions = load_sessions(audit_sessions)
+    gnome_history, gnome_numeric_keys = build_gnome_history(sessions)
     data = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source": str(audit_sessions),
         "aggregate": aggregate(sessions),
+        "gnome_history": gnome_history,
+        "gnome_numeric_keys": gnome_numeric_keys,
         "sessions": sessions,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
