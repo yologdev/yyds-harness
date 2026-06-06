@@ -2577,6 +2577,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_project_context_includes_git_status() {
         // In a git repo, load_project_context should include git status
         let result = load_project_context();

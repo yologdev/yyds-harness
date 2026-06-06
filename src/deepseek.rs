@@ -3611,4 +3611,225 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("security-sensitive"));
     }
+
+    // ── classify_deepseek_transport_failure ──────────────────────────
+
+    #[test]
+    fn transport_failure_classifies_401_as_authentication() {
+        let policy = DeepSeekTransportPolicy {
+            max_retries: 2,
+            retry_statuses: vec![429],
+            ..default_transport_policy()
+        };
+        let decision = classify_deepseek_transport_failure(Some(401), "", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::Authentication);
+        assert!(!decision.retryable);
+        assert_eq!(decision.status, Some(401));
+        assert!(decision.next_backoff_ms.is_none());
+    }
+
+    #[test]
+    fn transport_failure_classifies_403_as_permission_denied() {
+        let policy = default_transport_policy();
+        let decision = classify_deepseek_transport_failure(Some(403), "", 0, &policy);
+        assert_eq!(
+            decision.class,
+            DeepSeekTransportErrorClass::PermissionDenied
+        );
+        assert!(!decision.retryable);
+    }
+
+    #[test]
+    fn transport_failure_classifies_429_as_rate_limited_and_retryable() {
+        let policy = default_transport_policy();
+        let decision = classify_deepseek_transport_failure(Some(429), "", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::RateLimited);
+        assert!(decision.retryable);
+        assert!(decision.next_backoff_ms.is_some());
+        assert!(decision.reason.contains("rate limit"));
+    }
+
+    #[test]
+    fn transport_failure_classifies_5xx_as_server_error_and_retryable() {
+        let policy = default_transport_policy();
+        for status in [500, 502, 503, 504] {
+            let decision = classify_deepseek_transport_failure(Some(status), "", 1, &policy);
+            assert_eq!(decision.class, DeepSeekTransportErrorClass::ServerError);
+            assert!(decision.retryable);
+            assert!(decision.next_backoff_ms.is_some());
+        }
+    }
+
+    #[test]
+    fn transport_failure_classifies_404_as_not_found_not_retryable() {
+        let policy = default_transport_policy();
+        let decision = classify_deepseek_transport_failure(Some(404), "", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::NotFound);
+        assert!(!decision.retryable);
+        assert!(decision.reason.contains("not safe to retry"));
+    }
+
+    #[test]
+    fn transport_failure_classifies_timeout_from_error_text() {
+        let policy = DeepSeekTransportPolicy {
+            max_retries: 3,
+            ..default_transport_policy()
+        };
+        // Timeout in error text overrides None status
+        let decision = classify_deepseek_transport_failure(None, "request timed out", 1, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::Timeout);
+        assert!(decision.retryable);
+    }
+
+    #[test]
+    fn transport_failure_classifies_connection_refused_as_network() {
+        let policy = default_transport_policy();
+        let decision = classify_deepseek_transport_failure(None, "connection refused", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::Network);
+        assert!(decision.retryable);
+    }
+
+    #[test]
+    fn transport_failure_classifies_context_length_as_non_retryable() {
+        let policy = default_transport_policy();
+        let decision =
+            classify_deepseek_transport_failure(None, "context length exceeded", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::ContextLength);
+        assert!(!decision.retryable);
+    }
+
+    #[test]
+    fn transport_failure_retry_budget_exhausted_stops_retrying() {
+        let policy = DeepSeekTransportPolicy {
+            max_retries: 2,
+            ..default_transport_policy()
+        };
+        // 429 is transient, but attempt == max_retries, so no more retries
+        let decision = classify_deepseek_transport_failure(Some(429), "", 2, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::RateLimited);
+        assert!(!decision.retryable);
+        assert!(decision.reason.contains("retry budget exhausted"));
+        assert!(decision.next_backoff_ms.is_none());
+    }
+
+    // ── extract_deepseek_transport_status ────────────────────────────
+
+    #[test]
+    fn extract_status_from_http_error_message() {
+        assert_eq!(
+            extract_deepseek_transport_status("HTTP 429 Too Many Requests"),
+            Some(429)
+        );
+        assert_eq!(
+            extract_deepseek_transport_status("status code 500 server error"),
+            Some(500)
+        );
+        assert_eq!(
+            extract_deepseek_transport_status("got 503 Service Unavailable"),
+            Some(503)
+        );
+    }
+
+    #[test]
+    fn extract_status_returns_none_when_no_valid_http_code() {
+        assert_eq!(
+            extract_deepseek_transport_status("connection reset by peer"),
+            None
+        );
+        assert_eq!(
+            extract_deepseek_transport_status("timeout after 30000ms"),
+            None
+        );
+        assert_eq!(extract_deepseek_transport_status(""), None);
+    }
+
+    #[test]
+    fn extract_status_prefers_first_valid_http_range_code() {
+        // "666" and "999" are not valid HTTP status codes, "500" is
+        assert_eq!(
+            extract_deepseek_transport_status("error 666 then 500 then 999"),
+            Some(500)
+        );
+    }
+
+    // ── normalize_scope ──────────────────────────────────────────────
+
+    #[test]
+    fn normalize_scope_trims_and_lowercases() {
+        assert_eq!(
+            normalize_scope("  Localized-Completion "),
+            "localized_completion"
+        );
+        assert_eq!(
+            normalize_scope("SINGLE_FUNCTION_BODY"),
+            "single_function_body"
+        );
+    }
+
+    #[test]
+    fn normalize_scope_replaces_hyphens_and_spaces_with_underscores() {
+        assert_eq!(
+            normalize_scope("multi-file-refactor"),
+            "multi_file_refactor"
+        );
+        assert_eq!(normalize_scope("one method repair"), "one_method_repair");
+    }
+
+    #[test]
+    fn normalize_scope_handles_mixed_input() {
+        assert_eq!(
+            normalize_scope("  Multi-File Refactor "),
+            "multi_file_refactor"
+        );
+    }
+
+    // ── validate_strict_tool_arguments (additional edge cases) ────────
+
+    #[test]
+    fn strict_tool_arguments_missing_required_fields() {
+        let report = validate_strict_tool_arguments(
+            "record_failure",
+            &json!({
+                "schema_version": STRICT_SCHEMA_VERSION
+                // missing: failure_summary, hypothesis, evidence_event_ids,
+                //          affected_component, next_repair_step
+            }),
+        )
+        .unwrap();
+        assert!(!report.valid);
+        assert!(!report.missing_required.is_empty());
+        assert!(report
+            .missing_required
+            .contains(&"failure_summary".to_string()));
+        assert!(report.missing_required.contains(&"hypothesis".to_string()));
+    }
+
+    #[test]
+    fn strict_tool_arguments_rejects_non_object_input() {
+        let report =
+            validate_strict_tool_arguments("propose_edit", &json!("not an object")).unwrap();
+        assert!(!report.valid);
+        assert!(report
+            .type_errors
+            .iter()
+            .any(|e| e.contains("must be a JSON object")));
+        assert!(report.repair_instruction.is_some());
+    }
+
+    #[test]
+    fn strict_tool_arguments_rejects_unknown_schema_name() {
+        let err = validate_strict_tool_arguments("nonexistent_schema", &json!({})).unwrap_err();
+        assert!(err.contains("unknown strict schema"));
+    }
+
+    fn default_transport_policy() -> DeepSeekTransportPolicy {
+        DeepSeekTransportPolicy {
+            connect_timeout_ms: 10_000,
+            request_timeout_ms: 120_000,
+            max_retries: 2,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 20_000,
+            retry_statuses: vec![408, 409, 425, 429, 500, 502, 503, 504],
+        }
+    }
 }

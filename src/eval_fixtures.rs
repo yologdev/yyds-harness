@@ -710,4 +710,435 @@ mod tests {
         assert!(!redacted.contains("sk-testsecret123456789"));
         assert!(redacted.contains("[redacted]") || redacted.contains("sk-[redacted]"));
     }
+
+    // ── DeepSeek protocol compliance fixtures ───────────────────────
+
+    fn ds_transport_policy() -> crate::deepseek::DeepSeekTransportPolicy {
+        crate::deepseek::DeepSeekTransportPolicy {
+            connect_timeout_ms: 10_000,
+            request_timeout_ms: 120_000,
+            max_retries: 2,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 20_000,
+            retry_statuses: vec![408, 409, 425, 429, 500, 502, 503, 504],
+        }
+    }
+
+    fn ds_repair_policy() -> crate::deepseek::RepairPolicy {
+        crate::deepseek::RepairPolicy {
+            max_repair_turns: 2,
+            record_failure_hypotheses: true,
+        }
+    }
+
+    /// Feed valid tool-calls through validate_strict_tool_arguments for
+    /// every strict schema.  All must pass to guard against schema-regression.
+    #[test]
+    fn deepseek_schema_validate_valid_all_schemas_pass() {
+        use crate::deepseek::validate_strict_tool_arguments;
+        use serde_json::json;
+
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "plan_task",
+                json!({
+                    "task_summary": "Fix bug",
+                    "required_context": ["src/foo.rs"],
+                    "risk_level": "low",
+                    "verification_steps": ["cargo test"],
+                    "schema_version": 1
+                }),
+            ),
+            (
+                "request_context",
+                json!({
+                    "paths": ["src/main.rs"],
+                    "symbols": ["main"],
+                    "recent_event_ids": ["evt-1"],
+                    "why": "need context",
+                    "schema_version": 1
+                }),
+            ),
+            (
+                "inspect_file",
+                json!({
+                    "path": "src/main.rs",
+                    "line_start": 1,
+                    "line_end": 42,
+                    "reason": "check function body",
+                    "schema_version": 1
+                }),
+            ),
+            (
+                "propose_edit",
+                json!({
+                    "path": "src/main.rs",
+                    "intent": "Fix typo",
+                    "expected_effect": "Typo fixed",
+                    "risk_level": "low",
+                    "verification_steps": ["cargo test"],
+                    "schema_version": 1
+                }),
+            ),
+            (
+                "record_failure",
+                json!({
+                    "failure_summary": "Unexpected None",
+                    "hypothesis": "Race with background task",
+                    "evidence_event_ids": ["evt-a"],
+                    "affected_component": "repl",
+                    "next_repair_step": "Wrap in Arc<Mutex<>>",
+                    "schema_version": 1
+                }),
+            ),
+            (
+                "propose_harness_patch",
+                json!({
+                    "target_component": "repair_policy",
+                    "problem_summary": "Max repair turns too low",
+                    "evidence_event_ids": ["evt-2"],
+                    "proposed_change": "Increase max_repair_turns 2→3",
+                    "expected_effect": "Fewer aborts",
+                    "risk_level": "low",
+                    "eval_plan": "Run eval suite 3x",
+                    "schema_version": 1
+                }),
+            ),
+            (
+                "record_eval_result",
+                json!({
+                    "eval_id": "eval-001",
+                    "harness_version": "ds-harness-genome-v1",
+                    "patch_id": "patch-001",
+                    "suite": "local-smoke",
+                    "status": "passed",
+                    "score": 0.98,
+                    "passed": 12,
+                    "failed": 0,
+                    "failure_event_ids": [],
+                    "schema_version": 1
+                }),
+            ),
+            (
+                "promote_or_reject_patch",
+                json!({
+                    "patch_id": "patch-001",
+                    "decision": "promote",
+                    "baseline_eval_id": "eval-001",
+                    "candidate_eval_id": "eval-002",
+                    "criterion": "regression",
+                    "rationale": "All tests pass, no regressions",
+                    "risk_level": "low",
+                    "approval_event_ids": [],
+                    "schema_version": 1
+                }),
+            ),
+            (
+                "request_human_approval",
+                json!({
+                    "approval_scope": "tool_execution",
+                    "patch_id": "patch-001",
+                    "tool_name": "bash",
+                    "risk_level": "medium",
+                    "reason": "Command requires sudo",
+                    "evidence_event_ids": [],
+                    "schema_version": 1
+                }),
+            ),
+        ];
+
+        for (schema_name, args) in &cases {
+            let report = validate_strict_tool_arguments(schema_name, args)
+                .unwrap_or_else(|e| panic!("{schema_name}: {e}"));
+            assert!(
+                report.valid,
+                "schema '{schema_name}' should be valid but missing={:?} unexpected={:?} type_errors={:?} enum_errors={:?}",
+                report.missing_required,
+                report.unexpected_fields,
+                report.type_errors,
+                report.enum_errors,
+            );
+        }
+    }
+
+    /// Feed intentionally broken tool-calls and verify they fail with
+    /// appropriate errors (missing required, wrong type, bad enum, extra key).
+    #[test]
+    fn deepseek_schema_validate_invalid_catches_errors() {
+        use crate::deepseek::validate_strict_tool_arguments;
+        use serde_json::json;
+
+        // missing required field
+        let report = validate_strict_tool_arguments(
+            "plan_task",
+            &json!({
+                "risk_level": "low",
+                "schema_version": 1
+                // missing: task_summary, required_context, verification_steps
+            }),
+        )
+        .unwrap();
+        assert!(!report.valid);
+        assert!(report
+            .missing_required
+            .contains(&"task_summary".to_string()));
+
+        // wrong enum value
+        let report = validate_strict_tool_arguments(
+            "plan_task",
+            &json!({
+                "task_summary": "Fix",
+                "required_context": [],
+                "risk_level": "critical",
+                "verification_steps": [],
+                "schema_version": 1
+            }),
+        )
+        .unwrap();
+        assert!(!report.valid);
+        assert!(report.enum_errors.iter().any(|e| e.contains("risk_level")));
+
+        // wrong type (integer where string expected)
+        let report = validate_strict_tool_arguments(
+            "record_failure",
+            &json!({
+                "failure_summary": 42,
+                "hypothesis": "ok",
+                "evidence_event_ids": [],
+                "affected_component": "ok",
+                "next_repair_step": "ok",
+                "schema_version": 1
+            }),
+        )
+        .unwrap();
+        assert!(!report.valid);
+        assert!(report
+            .type_errors
+            .iter()
+            .any(|e| e.contains("failure_summary") && e.contains("string")));
+
+        // extra unknown field
+        let report = validate_strict_tool_arguments(
+            "inspect_file",
+            &json!({
+                "path": "src/main.rs",
+                "line_start": 1,
+                "line_end": 10,
+                "reason": "inspect",
+                "extra_unknown_field": true,
+                "schema_version": 1
+            }),
+        )
+        .unwrap();
+        assert!(!report.valid);
+        assert!(report
+            .unexpected_fields
+            .contains(&"extra_unknown_field".to_string()));
+
+        // wrong schema_version enum value
+        let report = validate_strict_tool_arguments(
+            "propose_edit",
+            &json!({
+                "path": "src/main.rs",
+                "intent": "fix",
+                "expected_effect": "done",
+                "risk_level": "low",
+                "verification_steps": [],
+                "schema_version": 99
+            }),
+        )
+        .unwrap();
+        assert!(!report.valid);
+        assert!(report
+            .enum_errors
+            .iter()
+            .any(|e| e.contains("schema_version")));
+
+        // non-object input
+        let report =
+            validate_strict_tool_arguments("request_context", &json!("not an object")).unwrap();
+        assert!(!report.valid);
+        assert!(report
+            .type_errors
+            .iter()
+            .any(|e| e.contains("must be a JSON object")));
+
+        // unknown schema name → Err
+        assert!(validate_strict_tool_arguments("no_such_schema", &json!({})).is_err());
+    }
+
+    /// Exercise classify_deepseek_transport_failure with representative
+    /// HTTP status codes and error texts.
+    #[test]
+    fn deepseek_transport_classify_http_errors() {
+        use crate::deepseek::{classify_deepseek_transport_failure, DeepSeekTransportErrorClass};
+
+        let policy = ds_transport_policy();
+
+        // 401 → Authentication (not retryable)
+        let decision = classify_deepseek_transport_failure(Some(401), "", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::Authentication);
+        assert!(!decision.retryable);
+
+        // 429 → RateLimited (retryable)
+        let decision = classify_deepseek_transport_failure(Some(429), "", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::RateLimited);
+        assert!(decision.retryable);
+        assert!(decision.next_backoff_ms.is_some());
+
+        // 500 → ServerError (retryable)
+        let decision = classify_deepseek_transport_failure(Some(500), "", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::ServerError);
+        assert!(decision.retryable);
+
+        // 503 → ServerError (retryable)
+        let decision = classify_deepseek_transport_failure(Some(503), "", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::ServerError);
+        assert!(decision.retryable);
+
+        // timeout text → Timeout (retryable)
+        let decision =
+            classify_deepseek_transport_failure(None, "request timed out after 30s", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::Timeout);
+        assert!(decision.retryable);
+
+        // network error → Network (retryable)
+        let decision =
+            classify_deepseek_transport_failure(None, "connection reset by peer", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::Network);
+        assert!(decision.retryable);
+
+        // 422 → InvalidRequest (not retryable)
+        let decision = classify_deepseek_transport_failure(Some(422), "", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::InvalidRequest);
+        assert!(!decision.retryable);
+
+        // 404 → NotFound (not retryable)
+        let decision = classify_deepseek_transport_failure(Some(404), "", 0, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::NotFound);
+        assert!(!decision.retryable);
+
+        // retries exhausted (attempt >= max_retries for transient error)
+        let decision = classify_deepseek_transport_failure(Some(429), "", 2, &policy);
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::RateLimited);
+        assert!(!decision.retryable);
+        assert!(decision.reason.contains("budget exhausted"));
+    }
+
+    /// Test parse_json_output_attempts with valid JSON, malformed JSON,
+    /// JSON with extra noise, empty responses, and retry scenarios.
+    #[test]
+    fn deepseek_json_output_parse_handles_all_statuses() {
+        use crate::deepseek::{
+            parse_json_output_attempts, JsonOutputAttemptStatus, JsonOutputParseOptions,
+        };
+
+        let options = JsonOutputParseOptions {
+            source: "test".to_string(),
+            schema_name: None,
+            retry_once_on_invalid_or_empty: true,
+        };
+
+        // valid JSON
+        let result = parse_json_output_attempts([r#"{"ok":true}"#], options.clone()).unwrap();
+        assert_eq!(result.value, serde_json::json!({"ok": true}));
+        assert!(!result.retry_used);
+        assert_eq!(result.attempts.len(), 1);
+        assert_eq!(result.attempts[0].status, JsonOutputAttemptStatus::Parsed);
+
+        // empty response → Err with Empty attempts (feed two to hit retry path)
+        let err = parse_json_output_attempts(["", ""], options.clone()).unwrap_err();
+        assert_eq!(err.attempts.len(), 2);
+        assert!(err
+            .attempts
+            .iter()
+            .all(|a| a.status == JsonOutputAttemptStatus::Empty));
+        assert!(err.retry_allowed);
+
+        // malformed JSON → Err with Invalid attempts (feed two to hit retry path)
+        let err = parse_json_output_attempts(["not json at all", "also bad"], options.clone())
+            .unwrap_err();
+        assert_eq!(err.attempts.len(), 2);
+        assert!(err
+            .attempts
+            .iter()
+            .all(|a| a.status == JsonOutputAttemptStatus::Invalid));
+        assert!(err.attempts.iter().all(|a| a.error_preview.is_some()));
+
+        // first invalid, second valid → retry_used = true
+        let result = parse_json_output_attempts(["bad", r#"{"x":1}"#], options.clone()).unwrap();
+        assert!(result.retry_used);
+        assert_eq!(result.attempts.len(), 2);
+        assert_eq!(result.attempts[0].status, JsonOutputAttemptStatus::Invalid);
+        assert_eq!(result.attempts[1].status, JsonOutputAttemptStatus::Parsed);
+        assert_eq!(result.value, serde_json::json!({"x": 1}));
+
+        // first empty, second valid → retry_used = true
+        let result = parse_json_output_attempts(["", r#"{"y":2}"#], options.clone()).unwrap();
+        assert!(result.retry_used);
+        assert_eq!(result.attempts[0].status, JsonOutputAttemptStatus::Empty);
+        assert_eq!(result.attempts[1].status, JsonOutputAttemptStatus::Parsed);
+
+        // retry disabled: only one attempt
+        let no_retry = JsonOutputParseOptions {
+            source: "test".to_string(),
+            schema_name: None,
+            retry_once_on_invalid_or_empty: false,
+        };
+        let err = parse_json_output_attempts(["garbage"], no_retry).unwrap_err();
+        assert_eq!(err.attempts.len(), 1);
+        assert!(!err.retry_allowed);
+    }
+
+    /// Exercise decide_tool_schema_repair with valid/invalid reports at
+    /// various attempt levels to verify Accept / Retry / Abort transitions.
+    #[test]
+    fn deepseek_repair_decision_handles_budget() {
+        use crate::deepseek::{
+            decide_tool_schema_repair, validate_strict_tool_arguments, ToolSchemaRepairAction,
+        };
+        use serde_json::json;
+
+        let policy = ds_repair_policy(); // max_repair_turns = 2
+
+        // valid report → Accept
+        let valid_report = validate_strict_tool_arguments(
+            "plan_task",
+            &json!({
+                "task_summary": "Fix",
+                "required_context": [],
+                "risk_level": "low",
+                "verification_steps": [],
+                "schema_version": 1
+            }),
+        )
+        .unwrap();
+        assert!(valid_report.valid);
+        let decision = decide_tool_schema_repair(&valid_report, 0, &policy);
+        assert_eq!(decision.action, ToolSchemaRepairAction::Accept);
+        assert!(!decision.should_record_failure);
+
+        // invalid report, attempt 1 (still within budget) → Retry
+        let invalid_report = validate_strict_tool_arguments(
+            "plan_task",
+            &json!({
+                "risk_level": "low",
+                "schema_version": 1
+            }),
+        )
+        .unwrap();
+        assert!(!invalid_report.valid);
+        let decision = decide_tool_schema_repair(&invalid_report, 1, &policy);
+        assert_eq!(decision.action, ToolSchemaRepairAction::Retry);
+        assert!(!decision.should_record_failure);
+        assert!(decision.instruction.is_some());
+
+        // invalid report, attempt 3 (budget exhausted for max_repair_turns=2) → Abort
+        let decision = decide_tool_schema_repair(&invalid_report, 3, &policy);
+        assert_eq!(decision.action, ToolSchemaRepairAction::Abort);
+        assert!(decision.should_record_failure);
+        assert!(decision.reason.contains("budget exhausted"));
+        // Abort should NOT carry a repair instruction
+        assert!(decision.instruction.is_none());
+    }
 }

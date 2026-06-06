@@ -480,11 +480,16 @@ pub fn handle_state_subcommand(args: &[String]) {
         "evals" => handle_evals(&args[3..]),
         "patches" => handle_patches(&args[3..]),
         "why" => {
-            let Some(id) = args.get(3) else {
-                eprintln!("{YELLOW}  Usage: yoyo state why <event-id|last-failure|patch-id|commit|run-id>{RESET}");
+            let summary = args.iter().any(|a| a == "--summary");
+            if summary && args.len() <= 4 {
+                handle_state_summary(args);
+                return;
+            }
+            let Some(id) = args.get(3).filter(|a| a.as_str() != "--summary") else {
+                eprintln!("{YELLOW}  Usage: yoyo state why <event-id|last-failure|patch-id|commit|run-id> [--summary]{RESET}");
                 return;
             };
-            handle_why(id);
+            handle_why(id, summary);
         }
         "lineage" => {
             let Some(id) = args.get(3) else {
@@ -1740,15 +1745,41 @@ fn handle_patches(args: &[String]) {
     }
 }
 
-fn handle_why(id: &str) {
+fn handle_why(id: &str, show_summary: bool) {
     let path = default_events_path();
     let Ok(events) = read_events(&path) else {
         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
         return;
     };
+    if show_summary {
+        println!("{}", build_state_summary(&events));
+        println!();
+    }
     match build_why_report(&events, id) {
         Ok(report) => println!("{report}"),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+    }
+}
+
+fn handle_state_summary(args: &[String]) {
+    let path = default_events_path();
+    let show_tail = args.iter().any(|a| a == "--tail");
+    let Ok(events) = read_events(&path) else {
+        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+        return;
+    };
+    println!("{}", build_state_summary(&events));
+    if show_tail && !events.is_empty() {
+        println!();
+        println!("Most recent events:");
+        for event in events.iter().rev().take(5) {
+            let ts = event_timestamp_ms(event)
+                .map(format_timestamp_ms)
+                .unwrap_or_else(|| "?".to_string());
+            let et = event_string(event, "event_type").unwrap_or("?");
+            let eid = event_string(event, "event_id").unwrap_or("?");
+            println!("  {ts}  {et}  {eid}");
+        }
     }
 }
 
@@ -2090,6 +2121,42 @@ fn current_time_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
+}
+
+fn format_timestamp_ms(ts_ms: i64) -> String {
+    let secs = ts_ms / 1000;
+    let d = std::time::Duration::from_secs(secs.max(0) as u64);
+    let since = std::time::UNIX_EPOCH
+        .checked_add(d)
+        .unwrap_or(std::time::UNIX_EPOCH);
+    // Format as ISO 8601-like: YYYY-MM-DD HH:MM:SS
+    let total_secs = since
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = total_secs / 86400;
+    let time_secs = total_secs % 86400;
+    let hours = time_secs / 3600;
+    let minutes = (time_secs % 3600) / 60;
+    let secs = time_secs % 60;
+    // Convert days since epoch to date (approximate, using civil calendar calculation)
+    let (y, m, d) = days_to_ymd(days as i64);
+    format!("{y:04}-{m:02}-{d:02} {hours:02}:{minutes:02}:{secs:02}")
+}
+
+fn days_to_ymd(days: i64) -> (i64, i64, i64) {
+    // Algorithm from Howard Hinnant
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m as i64, d as i64)
 }
 
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a String> {
@@ -3095,9 +3162,108 @@ fn context_included_block_names(payload: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn build_state_summary(events: &[Value]) -> String {
+    if events.is_empty() {
+        return "  State: empty (no events recorded yet)".to_string();
+    }
+
+    let total = events.len();
+
+    let run_completed_count = events
+        .iter()
+        .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+        .count();
+    let run_started_count = events
+        .iter()
+        .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
+        .count();
+
+    let mut event_types: BTreeMap<&str, usize> = BTreeMap::new();
+    for e in events {
+        if let Some(et) = event_string(e, "event_type") {
+            *event_types.entry(et).or_insert(0) += 1;
+        }
+    }
+
+    let failure_count = events
+        .iter()
+        .filter(|e| {
+            event_string(e, "event_type")
+                .map(is_failure_event_type)
+                .unwrap_or(false)
+        })
+        .count();
+
+    let first_ts = events.iter().filter_map(event_timestamp_ms).min();
+    let last_ts = events.iter().filter_map(event_timestamp_ms).max();
+
+    let mut out = String::new();
+    out.push_str("State summary:\n");
+    out.push_str(&format!("  events: {} total\n", total));
+    out.push_str(&format!(
+        "  runs: {} started, {} completed\n",
+        run_started_count, run_completed_count
+    ));
+    out.push_str(&format!("  failures: {} recorded\n", failure_count));
+
+    if let (Some(first), Some(last)) = (first_ts, last_ts) {
+        out.push_str(&format!(
+            "  range: {} to {}\n",
+            format_timestamp_ms(first),
+            format_timestamp_ms(last)
+        ));
+    } else {
+        out.push_str("  range: (no timestamps)\n");
+    }
+
+    out.push_str("  event types seen:\n");
+    for (et, count) in &event_types {
+        out.push_str(&format!("    {et}: {count}\n"));
+    }
+
+    out.trim_end().to_string()
+}
+
 fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
     let Some(target) = find_target_event(events, id) else {
-        return Err(format!("no state event found for '{id}'"));
+        let mut err = String::new();
+        err.push_str(&format!("no state event found for '{id}'\n"));
+        err.push('\n');
+        err.push_str(&build_state_summary(events));
+        err.push('\n');
+        err.push('\n');
+        // Add actionable guidance
+        let run_completed_count = events
+            .iter()
+            .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+            .count();
+        let failure_count = events
+            .iter()
+            .filter(|e| {
+                event_string(e, "event_type")
+                    .map(is_failure_event_type)
+                    .unwrap_or(false)
+            })
+            .count();
+        if events.is_empty() || run_completed_count == 0 {
+            err.push_str("State recording is active but no sessions have completed yet.\n");
+            err.push_str(
+                "Diagnostics become available after 2\u{2013}3 completed evolution sessions.",
+            );
+        } else if failure_count == 0 {
+            err.push_str(&format!(
+                "{} successful session{} recorded. No failure data to diagnose.",
+                run_completed_count,
+                if run_completed_count == 1 { "" } else { "s" }
+            ));
+        } else {
+            err.push_str(&format!(
+                "{} failure{} recorded but not enough to cluster into patterns.\nCheck back after 2\u{2013}3 more sessions.",
+                failure_count,
+                if failure_count == 1 { "" } else { "s" }
+            ));
+        }
+        return Err(err);
     };
 
     let event_id = event_string(target, "event_id").unwrap_or("?");
