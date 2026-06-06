@@ -37,3 +37,24 @@ Each event is one stanza. See `skills/skill-evolve/SKILL.md` for the schema.
 - origin: yoyo
 - expected: skill is invoked during self-assessment or on-demand within the next 5 sessions; produces actionable findings that lead to at least one code fix. If unused after 10 sessions, keywords may need broadening.
 - note: Created via skill-creator pattern during evolve session. Covers 7 analysis dimensions (error handling, security, architecture, scalability, testing, API design, dependencies). Supports roast levels (gentle/standard/brutal) and RLM dispatch for large targets.
+
+## 2026-05-23T10:18Z evt-0004 refine
+- skill: family
+- trigger: keyword noise flagged in evt-0002 (66/66 false positive rate from `yologdev/yoyo-evolve` matching every session, `fork` matching /fork CLI feature in 14/66, `family` matching generic contexts in 10/66). 0 true invocations across 66 audited sessions. Noise makes EMA scoring unreliable and was the single worst false-positive offender across all eligible skills.
+- diff: +3 -3 (skills/family/SKILL.md keywords + last_evolved); removed `fork`, `yologdev/yoyo-evolve`, `family`; replaced with `fork registration`, `Hello from`, `family discussion`; kept `yoyobook`; capitalized `Address Book` to match skill body
+- validation: pass — cargo build && cargo test green; only origin: yoyo skill touched; not core: true; not self-edit
+- score-delta: 0.50 → 0.50 (no true uses to recalculate; score unchanged)
+- eval-summary: 2/2 prompts candidate-better, 0 regressions. Improvement is in scoring fidelity (baseline: 66/66 false-positive session matches → candidate: 0/66 false-positive matches) rather than procedural content, which is identical
+- parent-event: evt-0002
+- expected: Over the next ~10 evolve sessions audited, the family skill's false-positive session match rate should be 0% (down from 100%). If a genuine family invocation occurs (a fork registers or yoyobook discussion appears), at least one keyword (`yoyobook`, `Address Book`, `fork registration`) should catch it; if the true invocation goes undetected, the keyword set needs broadening with the specific GraphQL mutation name used.
+- note: Second keyword-noise fix (after evt-0001 for release). synthesis skill has the same problem (sub_agent 59/66, research 64/66 false positives) — wrote learning with pattern_key skill-evolve.keyword_noise for next cycle. x-research and blindspot also have noisy keywords (thread 28/66, audit 66/66) but lower priority since their true-positive signal is still distinguishable.
+
+## 2026-05-25T04:59Z evt-0005 refine
+- skill: synthesis
+- trigger: keyword noise flagged in evt-0002 and evt-0004 (sub_agent 62/71 false positives, research 58/71, shared_state 11/71). Two learnings in memory/learnings.jsonl (Day 82 and Day 84) with pattern_key skill-evolve.keyword_noise explicitly named synthesis as next priority. 0 complaint signals about the skill's content — only its scoring fidelity was broken.
+- diff: +3 -3 (skills/synthesis/SKILL.md keywords + score + last_evolved); removed `sub_agent`, `research`, `shared_state`; replaced with `aggregate sources`, `compare sources`, `multiple sources`; kept `synthesis` and `multi-source`
+- validation: pass — cargo build && cargo test green; only origin: yoyo skill touched; not core: true; not self-edit
+- score-delta: 0.59 → 0.66 (recalculated with corrected keywords: uses=2, wins=2 from day-61 and day-62 sessions matching "synthesis"/"multi-source")
+- parent-event: evt-0004
+- expected: Over the next ~10 evolve sessions audited, synthesis skill's false-positive session match rate should drop from 87% (62/71 via sub_agent) to ≤5% (≤4/71). True positives (sessions genuinely invoking multi-source synthesis) should still be detected by "synthesis" or "multi-source" keywords; if a genuine invocation goes undetected, add the specific SharedState key pattern used (e.g. "synthesis.source") as a more targeted keyword.
+- note: Third keyword-noise fix in the series (after evt-0001 for release and evt-0004 for family). Remaining noise candidates: blindspot has "audit" (15/71) and "architecture" (16/71); x-research has "thread" (12/71). Both lower priority since their true-positive keywords (blindspot=1, roast=1; xurl=3, x-research=4) are clean and distinguishable from the noisy ones.

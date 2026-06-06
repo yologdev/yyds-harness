@@ -8,12 +8,48 @@ use crate::prompt_budget::{audit_log_tool_call, is_audit_enabled};
 use yoagent::types::{AgentTool, ToolError, ToolResult};
 use yoagent::Content;
 
+/// Result returned by a post-hook, carrying both the (possibly modified) output
+/// and optional feedback that will be injected into the agent's context.
+///
+/// Feedback is additional context from the hook — e.g. linter warnings, security
+/// scan results — that the agent should see on its next turn. It's separate from
+/// the tool output itself so hooks can add information without modifying what the
+/// tool actually returned.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PostHookResult {
+    /// The (possibly modified) tool output, threaded through the hook chain.
+    pub output: String,
+    /// Optional feedback to inject into the agent's context. `None` means the hook
+    /// has nothing extra to say; the tool result passes through unchanged.
+    pub feedback: Option<String>,
+}
+
+impl PostHookResult {
+    /// Convenience: wrap output with no feedback.
+    pub fn passthrough(output: &str) -> Self {
+        Self {
+            output: output.to_string(),
+            feedback: None,
+        }
+    }
+
+    /// Convenience: wrap output with feedback.
+    #[allow(dead_code)] // Public API for hook implementors; used in tests
+    pub fn with_feedback(output: &str, feedback: String) -> Self {
+        Self {
+            output: output.to_string(),
+            feedback: Some(feedback),
+        }
+    }
+}
+
 /// Hook that runs before/after tool execution.
 ///
 /// Hooks form a pipeline: pre-hooks run first-to-last before the tool executes,
 /// post-hooks run first-to-last after execution. A pre-hook can block execution
 /// (return Err) or short-circuit with a cached result (return Ok(Some(...))).
-/// A post-hook can inspect or modify the tool's output.
+/// A post-hook can inspect or modify the tool's output, and optionally return
+/// feedback that gets injected into the agent's context.
 pub trait Hook: Send + Sync {
     /// Human-readable name for this hook (used in diagnostics/logging).
     fn name(&self) -> &str;
@@ -27,14 +63,19 @@ pub trait Hook: Send + Sync {
         Ok(None)
     }
 
-    /// Post-execute: can inspect/log the result. Return modified output or pass through.
+    /// Post-execute: can inspect/modify the result and optionally return feedback.
+    ///
+    /// The `output` field in [`PostHookResult`] threads through the hook chain (each
+    /// hook sees the previous hook's output). The `feedback` field is collected across
+    /// all hooks and concatenated — it's injected into the agent's context as an
+    /// additional `Content::Text` block after the tool result.
     fn post_execute(
         &self,
         _tool_name: &str,
         _params: &serde_json::Value,
         output: &str,
-    ) -> Result<String, String> {
-        Ok(output.to_string())
+    ) -> Result<PostHookResult, String> {
+        Ok(PostHookResult::passthrough(output))
     }
 }
 
@@ -84,18 +125,34 @@ impl HookRegistry {
     }
 
     /// Run all post-hooks in order, threading output through each.
-    /// Returns the final (possibly modified) output, or Err if a hook fails.
+    /// Collects feedback from all hooks. Returns the final (possibly modified) output
+    /// plus any concatenated feedback, or Err if a hook fails.
     pub fn run_post_hooks(
         &self,
         tool_name: &str,
         params: &serde_json::Value,
         output: &str,
-    ) -> Result<String, String> {
+    ) -> Result<PostHookResult, String> {
         let mut current = output.to_string();
+        let mut all_feedback: Vec<String> = Vec::new();
         for hook in &self.hooks {
-            current = hook.post_execute(tool_name, params, &current)?;
+            let result = hook.post_execute(tool_name, params, &current)?;
+            current = result.output;
+            if let Some(fb) = result.feedback {
+                if !fb.is_empty() {
+                    all_feedback.push(fb);
+                }
+            }
         }
-        Ok(current)
+        let feedback = if all_feedback.is_empty() {
+            None
+        } else {
+            Some(all_feedback.join("\n"))
+        };
+        Ok(PostHookResult {
+            output: current,
+            feedback,
+        })
     }
 
     /// Number of registered hooks.
@@ -129,7 +186,7 @@ impl Hook for AuditHook {
         tool_name: &str,
         params: &serde_json::Value,
         output: &str,
-    ) -> Result<String, String> {
+    ) -> Result<PostHookResult, String> {
         // Only log if audit mode is enabled
         if is_audit_enabled() {
             // We don't have precise duration here (the HookedTool wrapper measures it),
@@ -137,7 +194,8 @@ impl Hook for AuditHook {
             // Log with duration=0 — the actual timing is handled by the event stream.
             audit_log_tool_call(tool_name, params, 0, true);
         }
-        Ok(output.to_string())
+        // AuditHook is observe-only — no feedback
+        Ok(PostHookResult::passthrough(output))
     }
 }
 
@@ -175,8 +233,10 @@ impl ShellHook {
     }
 
     /// Run the shell command with the given environment variables.
-    /// Returns Ok(exit code) or Err on timeout/spawn failure.
-    fn run_command(&self, env_vars: &[(&str, &str)]) -> Result<i32, String> {
+    /// Returns Ok((exit_code, stderr_output)) or Err on timeout/spawn failure.
+    /// Stderr is captured so post-hooks can use it as feedback to the agent.
+    fn run_command(&self, env_vars: &[(&str, &str)]) -> Result<(i32, String), String> {
+        use std::io::Read;
         use std::process::Command;
         use std::time::Duration;
 
@@ -198,7 +258,14 @@ impl ShellHook {
 
         loop {
             match child.try_wait() {
-                Ok(Some(status)) => return Ok(status.code().unwrap_or(1)),
+                Ok(Some(status)) => {
+                    // Capture stderr output for feedback
+                    let mut stderr_buf = String::new();
+                    if let Some(mut stderr) = child.stderr.take() {
+                        let _ = stderr.read_to_string(&mut stderr_buf);
+                    }
+                    return Ok((status.code().unwrap_or(1), stderr_buf));
+                }
                 Ok(None) => {
                     if start.elapsed() >= timeout {
                         let _ = child.kill();
@@ -233,8 +300,8 @@ impl Hook for ShellHook {
         ];
 
         match self.run_command(&env_vars) {
-            Ok(0) => Ok(None), // Success — proceed with tool execution
-            Ok(code) => Err(format!("Pre-hook '{}' exited with code {code}", self.name)),
+            Ok((0, _)) => Ok(None), // Success — proceed with tool execution
+            Ok((code, _)) => Err(format!("Pre-hook '{}' exited with code {code}", self.name)),
             Err(e) => Err(e),
         }
     }
@@ -244,9 +311,9 @@ impl Hook for ShellHook {
         tool_name: &str,
         params: &serde_json::Value,
         output: &str,
-    ) -> Result<String, String> {
+    ) -> Result<PostHookResult, String> {
         if self.phase != HookPhase::Post || !self.matches_tool(tool_name) {
-            return Ok(output.to_string());
+            return Ok(PostHookResult::passthrough(output));
         }
 
         let params_str = params.to_string();
@@ -258,9 +325,21 @@ impl Hook for ShellHook {
             ("TOOL_OUTPUT", truncated_output.as_str()),
         ];
 
-        // Post-hooks observe but don't modify — always pass through original output
+        // Post-hooks pass through original output; stderr becomes feedback
         match self.run_command(&env_vars) {
-            Ok(_) | Err(_) => Ok(output.to_string()),
+            Ok((_, stderr)) => {
+                let feedback = if stderr.trim().is_empty() {
+                    None
+                } else {
+                    Some(stderr.trim().to_string())
+                };
+                Ok(PostHookResult {
+                    output: output.to_string(),
+                    feedback,
+                })
+            }
+            // On failure, still pass through output with no feedback
+            Err(_) => Ok(PostHookResult::passthrough(output)),
         }
     }
 }
@@ -377,16 +456,20 @@ impl AgentTool for HookedTool {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // Run post-hooks (they can inspect/modify the output)
+        // Run post-hooks (they can inspect/modify the output and provide feedback)
         match self
             .hooks
             .run_post_hooks(self.inner.name(), &params, &output_text)
         {
-            Ok(_modified) => {
-                // Post-hooks ran successfully. We pass through the original result
-                // unchanged — post-hooks are for observation/logging, not mutation
-                // of the ToolResult structure (which may contain non-text content).
-                Ok(result)
+            Ok(post_result) => {
+                let mut final_result = result;
+                // If any post-hook returned feedback, append it as additional context
+                if let Some(feedback) = post_result.feedback {
+                    final_result.content.push(Content::Text {
+                        text: format!("\n[Hook feedback]\n{feedback}"),
+                    });
+                }
+                Ok(final_result)
             }
             Err(reason) => Err(ToolError::Failed(format!("Post-hook error: {reason}"))),
         }
@@ -438,7 +521,7 @@ mod tests {
         let registry = HookRegistry::new();
         let params = serde_json::json!({});
         let result = registry.run_post_hooks("bash", &params, "hello world");
-        assert_eq!(result, Ok("hello world".to_string()));
+        assert_eq!(result, Ok(PostHookResult::passthrough("hello world")));
     }
 
     /// A test hook that blocks all tool execution.
@@ -505,8 +588,8 @@ mod tests {
             _tool_name: &str,
             _params: &serde_json::Value,
             output: &str,
-        ) -> Result<String, String> {
-            Ok(output.to_uppercase())
+        ) -> Result<PostHookResult, String> {
+            Ok(PostHookResult::passthrough(&output.to_uppercase()))
         }
     }
 
@@ -516,7 +599,7 @@ mod tests {
         registry.register(Box::new(UppercaseHook));
         let params = serde_json::json!({});
         let result = registry.run_post_hooks("bash", &params, "hello");
-        assert_eq!(result, Ok("HELLO".to_string()));
+        assert_eq!(result, Ok(PostHookResult::passthrough("HELLO")));
     }
 
     /// A test hook that appends a tag to output.
@@ -532,8 +615,11 @@ mod tests {
             _tool_name: &str,
             _params: &serde_json::Value,
             output: &str,
-        ) -> Result<String, String> {
-            Ok(format!("{output}:{}", self.tag))
+        ) -> Result<PostHookResult, String> {
+            Ok(PostHookResult::passthrough(&format!(
+                "{output}:{}",
+                self.tag
+            )))
         }
     }
 
@@ -552,7 +638,10 @@ mod tests {
         let params = serde_json::json!({});
         let result = registry.run_post_hooks("bash", &params, "start");
         // Each hook appends its tag in order
-        assert_eq!(result, Ok("start:first:second:third".to_string()));
+        assert_eq!(
+            result,
+            Ok(PostHookResult::passthrough("start:first:second:third"))
+        );
     }
 
     /// A pass-through hook that increments a counter.
@@ -634,7 +723,7 @@ mod tests {
         // post_execute should pass through output unchanged
         // (audit logging won't fire since is_audit_enabled() is false in tests)
         let post = hook.post_execute("bash", &params, "file1.rs\nfile2.rs");
-        assert_eq!(post, Ok("file1.rs\nfile2.rs".to_string()));
+        assert_eq!(post, Ok(PostHookResult::passthrough("file1.rs\nfile2.rs")));
     }
 
     #[test]
@@ -765,7 +854,10 @@ mod tests {
 
         let params = serde_json::json!({"command": "ls"});
         let result = hook.post_execute("bash", &params, "file1.rs\nfile2.rs");
-        assert_eq!(result, Ok("file1.rs\nfile2.rs".to_string()));
+        assert_eq!(
+            result,
+            Ok(PostHookResult::passthrough("file1.rs\nfile2.rs"))
+        );
     }
 
     #[test]
@@ -796,7 +888,7 @@ mod tests {
 
         let params = serde_json::json!({});
         let result = hook.post_execute("read_file", &params, "content");
-        assert_eq!(result, Ok("content".to_string()));
+        assert_eq!(result, Ok(PostHookResult::passthrough("content")));
     }
 
     #[test]
@@ -812,7 +904,7 @@ mod tests {
         let params = serde_json::json!({});
         // post_execute should pass through because phase is Pre
         let result = hook.post_execute("bash", &params, "output");
-        assert_eq!(result, Ok("output".to_string()));
+        assert_eq!(result, Ok(PostHookResult::passthrough("output")));
     }
 
     #[test]
@@ -840,7 +932,7 @@ mod tests {
         let dirs = crate::config::DirectoryRestrictions::default();
         // Build with audit=false => hooks is empty => tools are NOT wrapped
         let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
-        assert_eq!(tools.len(), 8, "Tool count should be 8 without audit hooks");
+        assert_eq!(tools.len(), 9, "Tool count should be 9 without audit hooks");
     }
 
     #[test]
@@ -872,5 +964,89 @@ mod tests {
             names_no, names_yes,
             "Tool names should be identical with/without audit"
         );
+    }
+
+    // --- PostHookResult feedback tests ---
+
+    /// A test hook that returns feedback alongside the output.
+    struct FeedbackHook {
+        feedback: String,
+    }
+    impl Hook for FeedbackHook {
+        fn name(&self) -> &str {
+            "feedback"
+        }
+        fn post_execute(
+            &self,
+            _tool_name: &str,
+            _params: &serde_json::Value,
+            output: &str,
+        ) -> Result<PostHookResult, String> {
+            Ok(PostHookResult::with_feedback(output, self.feedback.clone()))
+        }
+    }
+
+    #[test]
+    fn test_hook_with_feedback_returns_it_in_result() {
+        let mut registry = HookRegistry::new();
+        registry.register(Box::new(FeedbackHook {
+            feedback: "lint: 2 warnings".to_string(),
+        }));
+        let params = serde_json::json!({});
+        let result = registry.run_post_hooks("bash", &params, "ok");
+        let expected = PostHookResult {
+            output: "ok".to_string(),
+            feedback: Some("lint: 2 warnings".to_string()),
+        };
+        assert_eq!(result, Ok(expected));
+    }
+
+    #[test]
+    fn test_hook_without_feedback_no_extra_content() {
+        let mut registry = HookRegistry::new();
+        registry.register(Box::new(UppercaseHook)); // returns passthrough (no feedback)
+        let params = serde_json::json!({});
+        let result = registry.run_post_hooks("bash", &params, "hello");
+        assert_eq!(result.unwrap().feedback, None);
+    }
+
+    #[test]
+    fn test_multiple_hooks_feedback_concatenated() {
+        let mut registry = HookRegistry::new();
+        registry.register(Box::new(FeedbackHook {
+            feedback: "hook-a says hi".to_string(),
+        }));
+        registry.register(Box::new(FeedbackHook {
+            feedback: "hook-b says hi".to_string(),
+        }));
+        let params = serde_json::json!({});
+        let result = registry.run_post_hooks("bash", &params, "output").unwrap();
+        assert_eq!(
+            result.feedback,
+            Some("hook-a says hi\nhook-b says hi".to_string())
+        );
+    }
+
+    #[test]
+    fn test_shell_hook_stderr_becomes_feedback() {
+        // A post-hook that writes to stderr — stderr should appear as feedback
+        let hook = ShellHook {
+            name: "post:bash".to_string(),
+            phase: HookPhase::Post,
+            tool_pattern: "bash".to_string(),
+            command: "echo 'lint warning: unused var' >&2".to_string(),
+        };
+
+        let params = serde_json::json!({"command": "ls"});
+        let result = hook.post_execute("bash", &params, "file1.rs").unwrap();
+        // Output should be unchanged
+        assert_eq!(result.output, "file1.rs");
+        // Feedback should contain the stderr content
+        assert!(result.feedback.is_some());
+        assert!(result
+            .feedback
+            .as_ref()
+            .unwrap()
+            .contains("lint warning: unused var"));
     }
 }

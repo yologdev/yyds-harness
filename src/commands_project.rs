@@ -1485,67 +1485,81 @@ mod tests {
 
     #[test]
     fn test_detect_project_type_node() {
-        let tmp = std::env::temp_dir().join("yoyo_test_node");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         std::fs::write(tmp.join("package.json"), "{}").unwrap();
         assert_eq!(detect_project_type(&tmp), ProjectType::Node);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_detect_project_type_python_pyproject() {
-        let tmp = std::env::temp_dir().join("yoyo_test_python_pyproject");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         std::fs::write(tmp.join("pyproject.toml"), "[project]").unwrap();
         assert_eq!(detect_project_type(&tmp), ProjectType::Python);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_detect_project_type_python_setup_py() {
-        let tmp = std::env::temp_dir().join("yoyo_test_python_setup");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         std::fs::write(tmp.join("setup.py"), "").unwrap();
         assert_eq!(detect_project_type(&tmp), ProjectType::Python);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_detect_project_type_go() {
-        let tmp = std::env::temp_dir().join("yoyo_test_go");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         std::fs::write(tmp.join("go.mod"), "module example.com/test").unwrap();
         assert_eq!(detect_project_type(&tmp), ProjectType::Go);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_detect_project_type_makefile() {
-        let tmp = std::env::temp_dir().join("yoyo_test_make");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         std::fs::write(tmp.join("Makefile"), "test:\n\techo ok").unwrap();
         assert_eq!(detect_project_type(&tmp), ProjectType::Make);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_detect_project_type_unknown() {
-        let tmp = std::env::temp_dir().join("yoyo_test_unknown");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         // Empty dir — no marker files
         assert_eq!(detect_project_type(&tmp), ProjectType::Unknown);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_detect_project_type_priority_rust_over_makefile() {
         // If both Cargo.toml and Makefile exist, Rust wins
-        let tmp = std::env::temp_dir().join("yoyo_test_priority");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         std::fs::write(tmp.join("Cargo.toml"), "[package]").unwrap();
         std::fs::write(tmp.join("Makefile"), "test:").unwrap();
         assert_eq!(detect_project_type(&tmp), ProjectType::Rust);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -1571,17 +1585,22 @@ mod tests {
 
     #[test]
     fn test_scan_important_files_empty_dir() {
-        let tmp = std::env::temp_dir().join("yoyo_test_init_empty");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         let files = scan_important_files(&tmp);
         assert!(files.is_empty(), "Empty dir should have no important files");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_scan_important_files_with_readme() {
-        let tmp = std::env::temp_dir().join("yoyo_test_init_readme");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         std::fs::write(tmp.join("README.md"), "# Hello").unwrap();
         std::fs::write(tmp.join("package.json"), "{}").unwrap();
         let files = scan_important_files(&tmp);
@@ -1593,7 +1612,6 @@ mod tests {
             files.contains(&"package.json".to_string()),
             "Should find package.json"
         );
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -1609,16 +1627,22 @@ mod tests {
 
     #[test]
     fn test_scan_important_dirs_empty_dir() {
-        let tmp = std::env::temp_dir().join("yoyo_test_init_dirs_empty");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         let dirs = scan_important_dirs(&tmp);
         assert!(dirs.is_empty(), "Empty dir should have no important dirs");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_scan_important_dirs_with_subdirs() {
-        let tmp = std::env::temp_dir().join("yoyo_test_init_subdirs");
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         let _ = std::fs::create_dir_all(tmp.join("src"));
         let _ = std::fs::create_dir_all(tmp.join("tests"));
         let _ = std::fs::create_dir_all(tmp.join("docs"));
@@ -1626,7 +1650,6 @@ mod tests {
         assert!(dirs.contains(&"src".to_string()), "Should find src/");
         assert!(dirs.contains(&"tests".to_string()), "Should find tests/");
         assert!(dirs.contains(&"docs".to_string()), "Should find docs/");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -1669,33 +1692,40 @@ mod tests {
 
     #[test]
     fn test_detect_project_name_fallback_to_dir() {
-        let tmp = std::env::temp_dir().join("yoyo_test_name_fallback");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         let name = detect_project_name(&tmp);
-        assert_eq!(
-            name, "yoyo_test_name_fallback",
-            "Should fall back to directory name"
+        assert!(
+            name.starts_with("yoyo_test_"),
+            "Should fall back to directory name, got: {name}"
         );
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_detect_project_name_from_readme() {
-        let tmp = std::env::temp_dir().join("yoyo_test_name_readme");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         std::fs::write(tmp.join("README.md"), "# My Awesome Project\n\nSome text.").unwrap();
         let name = detect_project_name(&tmp);
         assert_eq!(
             name, "My Awesome Project",
             "Should extract name from README title"
         );
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_detect_project_name_from_package_json() {
-        let tmp = std::env::temp_dir().join("yoyo_test_name_pkg");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         std::fs::write(
             tmp.join("package.json"),
             "{\n  \"name\": \"cool-app\",\n  \"version\": \"1.0.0\"\n}",
@@ -1703,7 +1733,6 @@ mod tests {
         .unwrap();
         let name = detect_project_name(&tmp);
         assert_eq!(name, "cool-app", "Should extract name from package.json");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -1714,7 +1743,7 @@ mod tests {
         assert!(
             content.contains("yoyo"),
             "Should contain project name: {}",
-            &content[..200.min(content.len())]
+            crate::format::safe_truncate(&content, 200)
         );
         // Should detect Rust
         assert!(content.contains("Rust"), "Should mention Rust project type");
@@ -1754,8 +1783,11 @@ mod tests {
 
     #[test]
     fn test_generate_init_content_empty_dir() {
-        let tmp = std::env::temp_dir().join("yoyo_test_init_gen_empty");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         let content = generate_init_content(&tmp);
         // Should still have sections even for empty/unknown project
         assert!(content.contains("# Project Context"));
@@ -1763,13 +1795,15 @@ mod tests {
         assert!(content.contains("## Build & Test"));
         assert!(content.contains("## Coding Conventions"));
         assert!(content.contains("## Important Files"));
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_generate_init_content_node_project() {
-        let tmp = std::env::temp_dir().join("yoyo_test_init_gen_node");
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path().to_path_buf();
         std::fs::write(
             tmp.join("package.json"),
             "{\n  \"name\": \"my-app\",\n  \"version\": \"1.0.0\"\n}",
@@ -1783,7 +1817,6 @@ mod tests {
         );
         assert!(content.contains("Node"), "Should detect Node project type");
         assert!(content.contains("npm"), "Should include npm commands");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // ── Tests moved from commands.rs — /docs command tests ──────────────

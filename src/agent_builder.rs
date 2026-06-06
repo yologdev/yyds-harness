@@ -45,6 +45,7 @@ pub(crate) const BUILTIN_TOOL_NAMES: &[&str] = &[
     "rename_symbol",
     "ask_user",
     "todo",
+    "web_search",
     "sub_agent",
     "shared_state",
 ];
@@ -278,7 +279,7 @@ pub fn create_model_config(provider: &str, model: &str, base_url: Option<&str>) 
         }
         "ollama" => {
             let url = base_url.unwrap_or("http://localhost:11434/v1");
-            ModelConfig::local(url, model)
+            ModelConfig::ollama(url, model)
         }
         "openrouter" => {
             let mut config = ModelConfig::openai(model, model);
@@ -406,8 +407,10 @@ pub struct AgentConfig {
     pub fallback_provider: Option<String>,
     pub fallback_model: Option<String>,
     pub auto_watch: bool,
+    pub allowed_tools: Vec<String>,
     pub disallowed_tools: Vec<String>,
     pub no_tools: bool,
+    pub lite: bool,
 }
 
 impl AgentConfig {
@@ -450,13 +453,30 @@ impl AgentConfig {
                 self.shell_hooks.clone(),
             );
 
-            // Filter out disallowed tools (--disallowed-tools flag)
+            // Filter to only allowed tools (--allowed-tools whitelist)
+            if !self.allowed_tools.is_empty() {
+                tools.retain(|t| self.allowed_tools.contains(&t.name().to_string()));
+                eprintln!(
+                    "{DIM}  🔒 Allowed tools: {}{RESET}",
+                    self.allowed_tools.join(", ")
+                );
+            }
+
+            // Filter out disallowed tools (--disallowed-tools flag or --lite)
             if !self.disallowed_tools.is_empty() {
                 tools.retain(|t| !self.disallowed_tools.contains(&t.name().to_string()));
-                eprintln!(
-                    "{DIM}  🔒 Disabled tools: {}{RESET}",
-                    self.disallowed_tools.join(", ")
-                );
+                if self.lite {
+                    eprintln!(
+                        "{DIM}  🪶 Lite mode: {} tools ({}){RESET}",
+                        cli::LITE_TOOLS.len(),
+                        cli::LITE_TOOLS.join(", ")
+                    );
+                } else {
+                    eprintln!(
+                        "{DIM}  🔒 Disabled tools: {}{RESET}",
+                        self.disallowed_tools.join(", ")
+                    );
+                }
             }
 
             agent = agent.with_tools(tools);
@@ -557,6 +577,39 @@ impl AgentConfig {
             let context_window = model_config.context_window;
             let agent = Agent::new(OpenAiCompatProvider).with_model_config(model_config);
             self.configure_agent(agent, context_window)
+        }
+    }
+
+    /// Rebuild `agent` with the current config, preserving conversation history.
+    ///
+    /// Returns `true` if the conversation was fully preserved, `false` if
+    /// messages could not be saved or restored (the agent is still rebuilt
+    /// either way — it just starts with a blank conversation).
+    ///
+    /// This is the single call-site for the save→rebuild→restore pattern that
+    /// was previously duplicated across dispatch.rs, commands.rs,
+    /// commands_config.rs, and prompt.rs.
+    pub fn rebuild_preserving_messages(&self, agent: &mut Agent) -> bool {
+        let saved = match agent.save_messages() {
+            Ok(json) => Some(json),
+            Err(e) => {
+                eprintln!("{DIM}  ⚠ could not preserve conversation: {e}{RESET}");
+                None
+            }
+        };
+        *agent = self.build_agent();
+        if let Some(json) = saved {
+            match agent.restore_messages(&json) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!(
+                        "{YELLOW}  ⚠ conversation could not be restored after rebuild: {e}{RESET}"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
         }
     }
 
@@ -670,8 +723,10 @@ impl AgentConfig {
             fallback_provider: self.fallback_provider.clone(),
             fallback_model: self.fallback_model.clone(),
             auto_watch: self.auto_watch,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         editor_config.build_agent()
     }
@@ -808,8 +863,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         }
     }
 
@@ -837,8 +894,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         assert_eq!(config.model, "claude-opus-4-6");
         assert_eq!(config.api_key, "test-key");
@@ -877,8 +936,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         let agent = config.build_agent();
         // Agent should have 6 tools (bash, read, write, edit, list, search)
@@ -911,8 +972,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         let agent = config.build_agent();
         // Agent created successfully — verify it has empty message history
@@ -945,8 +1008,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         let agent = config.build_agent();
         // Agent created successfully — verify it has empty message history
@@ -978,8 +1043,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         let agent = config.build_agent();
         // Agent created successfully — verify it has empty message history
@@ -1011,8 +1078,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         let agent1 = config.build_agent();
         let agent2 = config.build_agent();
@@ -1100,8 +1169,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         assert_eq!(config.model, "claude-opus-4-6");
         config.model = "claude-haiku-35".to_string();
@@ -1134,8 +1205,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         assert_eq!(config.thinking, ThinkingLevel::Off);
         config.thinking = ThinkingLevel::High;
@@ -1230,6 +1303,32 @@ mod tests {
     }
 
     #[test]
+    fn test_create_model_config_ollama_uses_ollama_compat() {
+        let config = create_model_config("ollama", "llama3", None);
+        assert_eq!(config.provider, "ollama");
+        assert_eq!(config.id, "llama3");
+        assert_eq!(config.base_url, "http://localhost:11434/v1");
+        let compat = config.compat.as_ref().expect("ollama should have compat");
+        assert!(
+            compat.requires_assistant_after_tool_result,
+            "Ollama compat must set requires_assistant_after_tool_result = true"
+        );
+    }
+
+    #[test]
+    fn test_create_model_config_ollama_custom_base_url() {
+        let config = create_model_config("ollama", "mistral", Some("http://myhost:11434/v1"));
+        assert_eq!(config.provider, "ollama");
+        assert_eq!(config.id, "mistral");
+        assert_eq!(config.base_url, "http://myhost:11434/v1");
+        let compat = config.compat.as_ref().expect("ollama should have compat");
+        assert!(
+            compat.requires_assistant_after_tool_result,
+            "Ollama compat must set requires_assistant_after_tool_result = true"
+        );
+    }
+
+    #[test]
 
     fn test_create_model_config_zai_defaults() {
         let config = create_model_config("zai", "glm-4-plus", None);
@@ -1276,8 +1375,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         let agent = config.build_agent();
         assert_eq!(agent.messages().len(), 0);
@@ -1362,8 +1463,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         let agent = config.build_agent();
         assert_eq!(agent.messages().len(), 0);
@@ -1421,8 +1524,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         let agent = config.build_agent();
         // If this compiles and runs, BedrockProvider is correctly wired
@@ -1454,8 +1559,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         // Verify the anthropic ModelConfig would have headers set
         // (We test the helper directly since Agent doesn't expose model_config)
@@ -1550,8 +1657,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         // This should not panic — context config and execution limits are wired
         let agent =
@@ -1585,8 +1694,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         // Should not panic — limits are set with defaults
         let agent = config_no_turns
@@ -1615,8 +1726,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         };
         let agent = config_with_turns
             .configure_agent(Agent::new(yoagent::provider::AnthropicProvider), 200_000);
@@ -1978,5 +2091,70 @@ mod tests {
             };
             let _agent = config.build_agent();
         }
+    }
+
+    #[test]
+    fn test_allowed_tools_filters_to_whitelist() {
+        // Test the allowed_tools filtering logic: build the full tool list,
+        // then apply the same retain() filter that build_agent uses. Verify
+        // that only whitelisted tools survive.
+        use crate::tools::build_tools;
+
+        let mut tools = build_tools(
+            true,
+            &cli::PermissionConfig::default(),
+            &cli::DirectoryRestrictions::default(),
+            8000,
+            false,
+            vec![],
+        );
+
+        let all_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+        // Sanity: the full tool list should have bash, write_file, etc.
+        assert!(
+            all_names.contains(&"bash".to_string()),
+            "full tool list should contain bash: {all_names:?}"
+        );
+        assert!(
+            all_names.contains(&"write_file".to_string()),
+            "full tool list should contain write_file: {all_names:?}"
+        );
+
+        // Apply the same allowed_tools filter as build_agent
+        let allowed = ["read_file".to_string(), "search".to_string()];
+        tools.retain(|t| allowed.contains(&t.name().to_string()));
+
+        let filtered_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+
+        // Whitelisted tools must be present
+        assert!(
+            filtered_names.contains(&"read_file".to_string()),
+            "read_file should survive allowed_tools filter: {filtered_names:?}"
+        );
+        assert!(
+            filtered_names.contains(&"search".to_string()),
+            "search should survive allowed_tools filter: {filtered_names:?}"
+        );
+
+        // Non-whitelisted tools must be absent
+        assert!(
+            !filtered_names.contains(&"bash".to_string()),
+            "bash should NOT survive allowed_tools filter: {filtered_names:?}"
+        );
+        assert!(
+            !filtered_names.contains(&"write_file".to_string()),
+            "write_file should NOT survive allowed_tools filter: {filtered_names:?}"
+        );
+        assert!(
+            !filtered_names.contains(&"edit_file".to_string()),
+            "edit_file should NOT survive allowed_tools filter: {filtered_names:?}"
+        );
+
+        // Only the 2 whitelisted tools should remain
+        assert_eq!(
+            filtered_names.len(),
+            2,
+            "exactly 2 tools should survive: {filtered_names:?}"
+        );
     }
 }

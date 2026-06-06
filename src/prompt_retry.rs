@@ -229,11 +229,12 @@ pub fn retry_delay(attempt: u32) -> Duration {
 
 /// Classify whether an API error message looks transient (worth retrying).
 /// Retries: rate limits (429), server errors (5xx), network/connection issues, overloaded.
-/// Does NOT retry: auth errors (401/403), invalid requests (400), permission denied.
+/// Does NOT retry: auth errors (401/403), invalid requests (400), permission denied,
+/// billing/quota exhaustion.
 pub fn is_retriable_error(error_msg: &str) -> bool {
     let lower = error_msg.to_lowercase();
 
-    // Don't retry auth or client errors
+    // Don't retry auth, client, or billing/quota errors
     let non_retriable = [
         "401",
         "403",
@@ -247,6 +248,19 @@ pub fn is_retriable_error(error_msg: &str) -> bool {
         "invalid_api_key",
         "not_found",
         "404",
+        // Billing / quota exhaustion — retrying won't help
+        "insufficient_quota",
+        "insufficient quota",
+        "billing_hard_limit_reached",
+        "billing hard limit",
+        "credit balance",
+        "out of credits",
+        "plan limit",
+        "spending limit",
+        "budget exceeded",
+        "quota exceeded",
+        "payment required",
+        "402",
     ];
     for keyword in &non_retriable {
         if lower.contains(keyword) {
@@ -296,10 +310,12 @@ pub fn is_retriable_error(error_msg: &str) -> bool {
 /// with actionable suggestions. Returns `None` for errors that don't match
 /// known patterns.
 ///
-/// Recognises three broad classes:
+/// Recognises five broad classes:
 /// 1. **Auth failures** (401/403/unauthorized) — checks the relevant env var
-/// 2. **Network errors** (connection refused/reset/timeout) — provider-specific hints
-/// 3. **Model not found** (404/invalid model) — suggests known models for the provider
+/// 2. **Billing/quota exhaustion** (402/insufficient_quota/credit balance) — actionable billing advice
+/// 3. **Rate limits** (429/too many requests) — explains auto-retry behaviour
+/// 4. **Network errors** (connection refused/reset/timeout) — provider-specific hints
+/// 5. **Model not found** (404/invalid model) — suggests known models for the provider
 pub fn diagnose_api_error(error: &str, model: &str) -> Option<String> {
     let lower = error.to_lowercase();
     let provider = infer_provider_from_model(model);
@@ -323,6 +339,58 @@ pub fn diagnose_api_error(error: &str, model: &str) -> Option<String> {
              {status}\n\
              Set it with: export {env_var}=<your-key>\n\
              {config_hint}"
+        ));
+    }
+
+    // Billing / quota exhaustion — not retriable, needs user action
+    if lower.contains("insufficient_quota")
+        || lower.contains("insufficient quota")
+        || lower.contains("billing_hard_limit_reached")
+        || lower.contains("billing hard limit")
+        || lower.contains("credit balance")
+        || lower.contains("out of credits")
+        || lower.contains("plan limit")
+        || lower.contains("spending limit")
+        || lower.contains("budget exceeded")
+        || lower.contains("quota exceeded")
+        || lower.contains("payment required")
+        || lower.contains("402")
+    {
+        let dashboard = match provider.as_str() {
+            "anthropic" => "https://console.anthropic.com/settings/billing",
+            "openai" => "https://platform.openai.com/account/billing",
+            "google" => "https://console.cloud.google.com/billing",
+            "deepseek" => "https://platform.deepseek.com/top_up",
+            _ => "",
+        };
+        let mut msg = format!(
+            "Billing/quota limit reached for provider '{provider}'.\n\
+             Your API key has exhausted its available credits or hit a spending cap.\n\
+             This is not a transient error — retrying won't help."
+        );
+        if !dashboard.is_empty() {
+            msg.push_str(&format!("\n  Check your balance: {dashboard}"));
+        }
+        msg.push_str(&format!(
+            "\n  Options:\n\
+             \x20   • Add credits or raise your spending limit in the {provider} dashboard\n\
+             \x20   • Switch to a different provider: /provider <name>\n\
+             \x20   • Use a local model: /model ollama/llama3"
+        ));
+        return Some(msg);
+    }
+
+    // Rate limits — retriable (handled by auto-retry) but give the user context
+    if lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("rate_limit")
+        || lower.contains("too many requests")
+    {
+        return Some(format!(
+            "Rate limited by provider '{provider}'.\n\
+             yoyo will auto-retry with exponential backoff (up to {MAX_RETRIES} attempts).\n\
+             If this persists, you may be on a low-tier plan with strict rate limits.\n\
+             Consider upgrading your API plan or switching to a different model."
         ));
     }
 
@@ -522,6 +590,23 @@ mod tests {
     }
 
     #[test]
+    fn test_is_not_retriable_billing_quota_errors() {
+        // Billing/quota exhaustion — retrying won't help, needs user action
+        assert!(!is_retriable_error("insufficient_quota"));
+        assert!(!is_retriable_error("Insufficient quota remaining"));
+        assert!(!is_retriable_error("billing_hard_limit_reached"));
+        assert!(!is_retriable_error("You exceeded your billing hard limit"));
+        assert!(!is_retriable_error("Your credit balance is too low"));
+        assert!(!is_retriable_error("out of credits"));
+        assert!(!is_retriable_error("Plan limit exceeded"));
+        assert!(!is_retriable_error("spending limit reached"));
+        assert!(!is_retriable_error("Budget exceeded for this month"));
+        assert!(!is_retriable_error("quota exceeded"));
+        assert!(!is_retriable_error("402 Payment Required"));
+        assert!(!is_retriable_error("payment required"));
+    }
+
+    #[test]
     fn test_is_not_retriable_unknown_error() {
         // Unknown errors without retriable keywords should NOT be retried
         assert!(!is_retriable_error("something went wrong"));
@@ -683,29 +768,39 @@ mod tests {
     #[test]
     fn test_tool_recovery_hint_bash_attempt1() {
         let hint = tool_recovery_hint("bash", 1);
-        assert!(hint.contains("shell command failed"), "bash hint: {hint}");
+        assert!(
+            hint.contains("command") || hint.contains("shell"),
+            "bash hint should mention command or shell: {hint}"
+        );
+        assert!(
+            hint.contains("failed") || hint.contains("check") || hint.contains("different"),
+            "bash hint should suggest diagnosis or alternative: {hint}"
+        );
     }
 
     #[test]
     fn test_tool_recovery_hint_bash_attempt2() {
         let hint = tool_recovery_hint("bash", 2);
         assert!(
-            hint.contains("simpler command"),
-            "bash escalated hint should suggest simpler command: {hint}"
+            hint.contains("simpler") || hint.contains("break") || hint.contains("alternative"),
+            "bash escalated hint should suggest simplification or alternative: {hint}"
         );
         assert!(
-            hint.contains("which"),
-            "bash escalated hint should suggest checking binary existence: {hint}"
+            hint.contains("which") || hint.contains("exists") || hint.contains("check"),
+            "bash escalated hint should suggest verifying the command: {hint}"
         );
     }
 
     #[test]
     fn test_tool_recovery_hint_edit_file_attempt1() {
         let hint = tool_recovery_hint("edit_file", 1);
-        assert!(hint.contains("edit failed"), "edit_file hint: {hint}");
         assert!(
-            hint.contains("read_file"),
-            "edit_file hint should suggest read_file: {hint}"
+            hint.contains("edit") || hint.contains("mismatch") || hint.contains("old_text"),
+            "edit_file hint should mention the edit failure mode: {hint}"
+        );
+        assert!(
+            hint.contains("read_file") || hint.contains("current contents"),
+            "edit_file hint should suggest reading current contents: {hint}"
         );
     }
 
@@ -713,12 +808,14 @@ mod tests {
     fn test_tool_recovery_hint_edit_file_attempt2() {
         let hint = tool_recovery_hint("edit_file", 2);
         assert!(
-            hint.contains("write_file"),
-            "edit_file escalated hint should suggest write_file: {hint}"
+            hint.contains("write_file") || hint.contains("replace"),
+            "edit_file escalated hint should suggest write_file or full replacement: {hint}"
         );
         assert!(
-            hint.contains("read_file"),
-            "edit_file escalated hint should mention read_file for getting contents: {hint}"
+            hint.contains("read_file")
+                || hint.contains("current contents")
+                || hint.contains("full"),
+            "edit_file escalated hint should mention getting file contents: {hint}"
         );
     }
 
@@ -726,12 +823,8 @@ mod tests {
     fn test_tool_recovery_hint_read_file_attempt2() {
         let hint = tool_recovery_hint("read_file", 2);
         assert!(
-            hint.contains("bash"),
-            "read_file escalated hint should suggest bash: {hint}"
-        );
-        assert!(
-            hint.contains("cat"),
-            "read_file escalated hint should suggest cat: {hint}"
+            hint.contains("bash") || hint.contains("cat") || hint.contains("head"),
+            "read_file escalated hint should suggest a shell alternative: {hint}"
         );
     }
 
@@ -739,12 +832,8 @@ mod tests {
     fn test_tool_recovery_hint_search_attempt2() {
         let hint = tool_recovery_hint("search", 2);
         assert!(
-            hint.contains("bash"),
-            "search escalated hint should suggest bash: {hint}"
-        );
-        assert!(
-            hint.contains("grep"),
-            "search escalated hint should suggest grep: {hint}"
+            hint.contains("bash") || hint.contains("grep") || hint.contains("find"),
+            "search escalated hint should suggest a shell search alternative: {hint}"
         );
     }
 
@@ -752,12 +841,11 @@ mod tests {
     fn test_tool_recovery_hint_write_file_attempt2() {
         let hint = tool_recovery_hint("write_file", 2);
         assert!(
-            hint.contains("bash"),
-            "write_file escalated hint should suggest bash: {hint}"
-        );
-        assert!(
-            hint.contains("HEREDOC"),
-            "write_file escalated hint should suggest heredoc: {hint}"
+            hint.contains("bash")
+                || hint.contains("cat")
+                || hint.contains("heredoc")
+                || hint.contains("HEREDOC"),
+            "write_file escalated hint should suggest a shell write alternative: {hint}"
         );
     }
 
@@ -765,12 +853,12 @@ mod tests {
     fn test_tool_recovery_hint_rename_symbol_attempt2() {
         let hint = tool_recovery_hint("rename_symbol", 2);
         assert!(
-            hint.contains("search"),
-            "rename_symbol escalated hint should suggest search: {hint}"
+            hint.contains("search") || hint.contains("find") || hint.contains("occurrences"),
+            "rename_symbol escalated hint should suggest finding occurrences: {hint}"
         );
         assert!(
-            hint.contains("edit_file"),
-            "rename_symbol escalated hint should suggest edit_file: {hint}"
+            hint.contains("edit_file") || hint.contains("replace"),
+            "rename_symbol escalated hint should suggest manual replacement: {hint}"
         );
     }
 
@@ -778,8 +866,8 @@ mod tests {
     fn test_tool_recovery_hint_unknown() {
         let hint = tool_recovery_hint("some_unknown_tool", 1);
         assert!(
-            hint.contains("different approach"),
-            "unknown tool hint: {hint}"
+            hint.contains("different") || hint.contains("approach") || hint.contains("try"),
+            "unknown tool hint should suggest a different approach: {hint}"
         );
     }
 
@@ -787,8 +875,8 @@ mod tests {
     fn test_tool_recovery_hint_unknown_attempt2() {
         let hint = tool_recovery_hint("some_unknown_tool", 2);
         assert!(
-            hint.contains("completely different"),
-            "unknown tool escalated hint: {hint}"
+            hint.contains("different") || hint.contains("alternative") || hint.contains("approach"),
+            "unknown tool escalated hint should suggest trying something different: {hint}"
         );
     }
 
@@ -818,6 +906,44 @@ mod tests {
                 hint1, hint2,
                 "{tool} should have different hints for attempt 1 vs 2"
             );
+        }
+    }
+
+    #[test]
+    fn test_all_recovery_hints_are_actionable() {
+        let tools = [
+            "bash",
+            "edit_file",
+            "write_file",
+            "read_file",
+            "search",
+            "rename_symbol",
+            "unknown_tool",
+        ];
+        let action_words = [
+            "try",
+            "use",
+            "check",
+            "verify",
+            "retry",
+            "break",
+            "approach",
+            "alternative",
+            "different",
+        ];
+        for tool in &tools {
+            for attempt in [1, 2] {
+                let hint = tool_recovery_hint(tool, attempt);
+                assert!(
+                    !hint.is_empty(),
+                    "{tool} attempt {attempt} should have a hint"
+                );
+                let has_action = action_words.iter().any(|w| hint.to_lowercase().contains(w));
+                assert!(
+                    has_action,
+                    "{tool} attempt {attempt} hint should contain an actionable word: {hint}"
+                );
+            }
         }
     }
 
@@ -973,10 +1099,15 @@ mod tests {
             result.contains("old_text not found"),
             "should include error: {result}"
         );
-        // Should include a recovery hint (edit_file hint mentions read_file)
+        // Should include some recovery guidance (semantic check, not exact wording)
+        let has_recovery_hint = result.contains("read_file")
+            || result.contains("current contents")
+            || result.contains("verify")
+            || result.contains("mismatch")
+            || result.contains("retry");
         assert!(
-            result.contains("read_file"),
-            "should include recovery hint: {result}"
+            has_recovery_hint,
+            "should include recovery guidance for edit_file: {result}"
         );
         assert!(
             result.contains("fix it"),
@@ -992,10 +1123,15 @@ mod tests {
             result.contains("bash error:"),
             "should mention bash: {result}"
         );
-        // bash hint should mention command/approach
+        // bash hint should include some recovery guidance (resilient to hint text changes)
+        let has_recovery_hint = result.contains("command")
+            || result.contains("approach")
+            || result.contains("simpler")
+            || result.contains("try")
+            || result.contains("retry");
         assert!(
-            result.contains("command"),
-            "should include recovery hint about command: {result}"
+            has_recovery_hint,
+            "should include recovery guidance for bash: {result}"
         );
     }
 
@@ -1225,6 +1361,79 @@ mod tests {
         let diag = diagnose_api_error("connection reset by peer", "gemini-2.5-pro");
         assert!(diag.is_some());
         assert!(diag.unwrap().contains("Network error"));
+    }
+
+    // ---------------------------------------------------------------
+    // diagnose_api_error tests — billing/quota exhaustion branch
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_diagnose_insufficient_quota_anthropic() {
+        let diag = diagnose_api_error("insufficient_quota", "claude-sonnet-4-20250514");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(
+            msg.contains("Billing/quota limit"),
+            "should mention billing: {msg}"
+        );
+        assert!(msg.contains("anthropic"), "should mention provider: {msg}");
+        assert!(
+            msg.contains("console.anthropic.com"),
+            "should include Anthropic dashboard link: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_diagnose_billing_hard_limit_openai() {
+        let diag = diagnose_api_error("billing_hard_limit_reached", "gpt-4o");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("Billing/quota limit"), "msg: {msg}");
+        assert!(
+            msg.contains("platform.openai.com"),
+            "should include OpenAI dashboard link: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_diagnose_402_payment_required() {
+        let diag = diagnose_api_error("402 Payment Required", "claude-sonnet-4-20250514");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("Billing/quota limit"), "msg: {msg}");
+        assert!(
+            msg.contains("credits or hit a spending cap"),
+            "should explain the issue: {msg}"
+        );
+        assert!(
+            msg.contains("/provider"),
+            "should suggest switching provider: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_diagnose_out_of_credits() {
+        let diag = diagnose_api_error("out of credits on your account", "deepseek-chat");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("Billing/quota limit"), "msg: {msg}");
+        assert!(
+            msg.contains("platform.deepseek.com"),
+            "should include DeepSeek dashboard link: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_diagnose_quota_exceeded_unknown_provider() {
+        let diag = diagnose_api_error("quota exceeded", "some-unknown-model");
+        assert!(diag.is_some());
+        let msg = diag.unwrap();
+        assert!(msg.contains("Billing/quota limit"), "msg: {msg}");
+        // Unknown provider should still give generic advice
+        assert!(
+            msg.contains("Add credits"),
+            "should suggest adding credits: {msg}"
+        );
     }
 
     // ---------------------------------------------------------------

@@ -50,6 +50,7 @@ All commands start with `/`. Type `/help` inside yoyo to see the full list.
 | `/clear` | Clear conversation history and start fresh |
 | `/compact` | Compress conversation to save context space (see [Context Management](../features/context.md)) |
 | `/retry` | Re-send your last input — useful when a response gets cut off or you want to try again |
+| `/retry --with "..."` | Re-run with additional instructions appended (iterative refinement) |
 | `/history` | Show a summary of all messages in the conversation |
 | `/history detail` | Per-turn breakdown with tools used and token counts |
 | `/search <query>` | Search conversation history for messages containing the query (case-insensitive) |
@@ -114,7 +115,7 @@ See [Session Persistence](../features/sessions.md) for details.
 
 | Command | Description |
 |---------|-------------|
-| `/status` | Show current model, git branch, working directory, and session token totals |
+| `/status` | Show session dashboard: model, git branch, active modes, goal, watch command, file changes, tokens, and context usage |
 | `/tokens` | Show detailed token usage: context window fill level, per-category breakdown, session totals, and estimated cost |
 | `/cost` | Show estimated session cost |
 | `/changelog [N]` | Show recent git commit history (default: 15, max: 100) |
@@ -341,6 +342,7 @@ The subagent has access to the same tools (bash, file operations, etc.) and uses
 | `/git stash show [n]` | Show diff of stash entry (default: latest) |
 | `/git stash drop [n]` | Drop a stash entry (default: latest) |
 | `/commit [msg]` | Commit staged changes — generates a conventional commit message if no msg provided |
+| `/commit --amend [msg]` | Amend last commit — replace message, or keep existing with `--no-edit` |
 | `/diff` | Show colored file summary, change stats, and full diff of uncommitted changes |
 | `/blame <file>` | Show colorized git blame output (`/blame file:10-20` for line ranges) |
 | `/undo` | Revert all uncommitted changes (`git checkout -- .` and `git clean -fd`) |
@@ -376,6 +378,9 @@ The `/git` command is a convenience wrapper for common git operations without bu
 The `/commit` command helps you commit staged changes quickly:
 - `/commit` (no arguments): reads your staged diff, generates a conventional commit message (e.g., `feat(main): add changes`), and asks for confirmation — press `y` to accept, `n` to cancel, or `e` to edit
 - `/commit fix: typo in README`: commits directly with your provided message
+- `/commit --amend new message`: amend the last commit with a new message
+- `/commit --amend`: amend with staged changes — shows current message and asks to keep or edit
+- `/commit -a --amend`: auto-stage tracked files and amend the last commit
 - If nothing is staged, it reminds you to `git add` first
 
 The `/undo` command shows you what will be reverted before doing it.

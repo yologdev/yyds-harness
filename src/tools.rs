@@ -14,12 +14,14 @@
 use crate::cli;
 use crate::commands_project;
 use crate::commands_todo;
+use crate::commands_web;
 use crate::format::*;
 use crate::hooks::{self, maybe_hook, AuditHook, HookRegistry};
 use crate::safety::analyze_bash_command;
+use crate::smart_edit::with_smart_edit;
 use crate::tool_wrappers::{
-    maybe_confirm, maybe_guard, maybe_guard_arc, with_auto_check, with_recovery_hints,
-    with_smart_edit, with_truncation, ToolFailureTracker,
+    maybe_confirm, maybe_guard, maybe_guard_arc, with_auto_check, with_lite_description,
+    with_recovery_hints, with_truncation, ToolFailureTracker,
 };
 use crate::AgentConfig;
 
@@ -657,6 +659,76 @@ impl AgentTool for TodoTool {
 }
 
 // ---------------------------------------------------------------------------
+// WebSearchTool — agent-callable web search via DuckDuckGo
+// ---------------------------------------------------------------------------
+
+/// Search the web and return results the agent can use during problem-solving.
+pub(crate) struct WebSearchTool;
+
+#[async_trait::async_trait]
+impl AgentTool for WebSearchTool {
+    fn name(&self) -> &str {
+        "web_search"
+    }
+
+    fn label(&self) -> &str {
+        "WebSearch"
+    }
+
+    fn description(&self) -> &str {
+        "Search the web using DuckDuckGo. Returns a list of search results with titles, \
+         URLs, and snippets. Use this when you need to look up documentation, find solutions \
+         to errors, or research unfamiliar topics."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query"
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return (default: 5, max: 20)"
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        _ctx: yoagent::types::ToolContext,
+    ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+        use yoagent::types::{Content, ToolError, ToolResult as TR};
+
+        let query = params["query"]
+            .as_str()
+            .ok_or_else(|| ToolError::InvalidArgs("missing 'query' parameter".into()))?;
+
+        if query.trim().is_empty() {
+            return Err(ToolError::InvalidArgs(
+                "'query' parameter must not be empty".into(),
+            ));
+        }
+
+        let max_results = params["max_results"]
+            .as_u64()
+            .map(|n| n.min(20) as usize)
+            .unwrap_or(5);
+
+        let result = commands_web::web_search_and_read(query, max_results);
+        Ok(TR {
+            content: vec![Content::Text { text: result }],
+            details: serde_json::json!({}),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Permission persistence — offer to save "always" approvals to .yoyo.toml
 // ---------------------------------------------------------------------------
 
@@ -909,6 +981,21 @@ pub fn build_tools(
     // TodoTool is always available — it only modifies in-memory state, not filesystem
     tools.push(maybe_hook(Box::new(TodoTool), &hooks));
 
+    // WebSearchTool — agent-callable web search (always available)
+    tools.push(maybe_hook(
+        with_recovery_hints(
+            with_truncation(Box::new(WebSearchTool), max_tool_output),
+            &failure_tracker,
+        ),
+        &hooks,
+    ));
+
+    // In lite mode (small context window), augment tool descriptions with
+    // JSON format examples so small/local LLMs can produce valid tool calls.
+    if crate::cli_config::effective_context_tokens() <= 16_000 {
+        tools = tools.into_iter().map(with_lite_description).collect();
+    }
+
     tools
 }
 
@@ -935,6 +1022,7 @@ pub(crate) fn build_sub_agent_tool(config: &AgentConfig) -> (SubAgentTool, Share
         maybe_guard_arc(Arc::new(EditFileTool::new()), restrictions),
         maybe_guard_arc(Arc::new(ListFilesTool::default()), restrictions),
         maybe_guard_arc(Arc::new(SearchTool::default()), restrictions),
+        Arc::new(WebSearchTool),
     ];
 
     // Select the right provider
@@ -998,8 +1086,10 @@ mod tests {
             fallback_provider: None,
             fallback_model: None,
             auto_watch: true,
+            allowed_tools: vec![],
             disallowed_tools: vec![],
             no_tools: false,
+            lite: false,
         }
     }
 
@@ -1010,8 +1100,8 @@ mod tests {
         let dirs = cli::DirectoryRestrictions::default();
         let tools_approved = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
         let tools_confirm = build_tools(false, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
-        assert_eq!(tools_approved.len(), 8);
-        assert_eq!(tools_confirm.len(), 8);
+        assert_eq!(tools_approved.len(), 9);
+        assert_eq!(tools_confirm.len(), 9);
     }
 
     #[test]
@@ -1074,14 +1164,14 @@ mod tests {
 
     #[test]
     fn test_build_tools_count_unchanged_with_sub_agent() {
-        // Verify build_tools still returns exactly 8 — SubAgentTool is added via with_sub_agent
+        // Verify build_tools still returns exactly 9 — SubAgentTool is added via with_sub_agent
         let perms = cli::PermissionConfig::default();
         let dirs = cli::DirectoryRestrictions::default();
         let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
         assert_eq!(
             tools.len(),
-            8,
-            "build_tools must stay at 8 — SubAgentTool is added via with_sub_agent"
+            9,
+            "build_tools must stay at 9 — SubAgentTool is added via with_sub_agent"
         );
     }
 
@@ -1136,7 +1226,7 @@ mod tests {
         let perms = cli::PermissionConfig::default();
         let dirs = cli::DirectoryRestrictions::default();
         let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), 9);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"edit_file"));
@@ -1150,7 +1240,7 @@ mod tests {
         let perms = cli::PermissionConfig::default();
         let dirs = cli::DirectoryRestrictions::default();
         let tools = build_tools(false, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), 9);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"edit_file"));
@@ -1590,7 +1680,7 @@ mod tests {
             false,
             vec![],
         );
-        assert_eq!(tools.len(), 8, "Should still have 8 tools with piped limit");
+        assert_eq!(tools.len(), 9, "Should still have 9 tools with piped limit");
     }
 
     #[test]
@@ -2025,7 +2115,7 @@ mod tests {
         let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
         assert_eq!(
             tools.len(),
-            8,
+            9,
             "Directory restrictions should not change tool count"
         );
     }
@@ -2037,7 +2127,7 @@ mod tests {
         let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, true, vec![]);
         assert_eq!(
             tools.len(),
-            8,
+            9,
             "Audit wrapping should not change tool count"
         );
         // Verify tool names survive wrapping
@@ -2361,7 +2451,7 @@ mod tests {
         let dirs = cli::DirectoryRestrictions::default();
         let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        // In non-terminal mode (test env), there should be exactly these 8 tools
+        // In non-terminal mode (test env), there should be exactly these 9 tools
         let expected = [
             "bash",
             "read_file",
@@ -2371,6 +2461,7 @@ mod tests {
             "search",
             "rename_symbol",
             "todo",
+            "web_search",
         ];
         for name in &expected {
             assert!(
@@ -2507,5 +2598,86 @@ mod tests {
         let config = test_agent_config("deepseek", "deepseek-chat");
         let (tool, _) = build_sub_agent_tool(&config);
         assert_eq!(tool.name(), "sub_agent");
+    }
+
+    // -----------------------------------------------------------------------
+    // WebSearchTool — schema, parameter validation, BUILTIN_TOOL_NAMES
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_web_search_tool_name() {
+        let tool = WebSearchTool;
+        assert_eq!(tool.name(), "web_search");
+    }
+
+    #[test]
+    fn test_web_search_tool_in_builtin_names() {
+        use crate::agent_builder::BUILTIN_TOOL_NAMES;
+        assert!(
+            BUILTIN_TOOL_NAMES.contains(&"web_search"),
+            "BUILTIN_TOOL_NAMES must include 'web_search' to guard against MCP collisions"
+        );
+    }
+
+    #[test]
+    fn test_web_search_tool_schema_has_query_required() {
+        let tool = WebSearchTool;
+        let schema = tool.parameters_schema();
+        let props = &schema["properties"];
+        assert!(props["query"].is_object(), "Should have 'query' property");
+        assert_eq!(props["query"]["type"], "string");
+        let required = schema["required"].as_array().unwrap();
+        assert!(
+            required.contains(&serde_json::json!("query")),
+            "query should be required"
+        );
+    }
+
+    #[test]
+    fn test_web_search_tool_schema_has_max_results_optional() {
+        let tool = WebSearchTool;
+        let schema = tool.parameters_schema();
+        let props = &schema["properties"];
+        assert!(
+            props["max_results"].is_object(),
+            "Should have 'max_results' property"
+        );
+        assert_eq!(props["max_results"]["type"], "integer");
+        let required = schema["required"].as_array().unwrap();
+        assert!(
+            !required.contains(&serde_json::json!("max_results")),
+            "max_results should NOT be required"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_web_search_tool_missing_query_returns_error() {
+        let tool = WebSearchTool;
+        let ctx = test_tool_context(None);
+        let result = tool.execute(serde_json::json!({}), ctx).await;
+        assert!(result.is_err(), "Missing query should return error");
+    }
+
+    #[tokio::test]
+    async fn test_web_search_tool_empty_query_returns_error() {
+        let tool = WebSearchTool;
+        let ctx = test_tool_context(None);
+        let result = tool.execute(serde_json::json!({"query": "   "}), ctx).await;
+        assert!(
+            result.is_err(),
+            "Empty/whitespace query should return error"
+        );
+    }
+
+    #[test]
+    fn test_web_search_tool_in_build_tools() {
+        let perms = cli::PermissionConfig::default();
+        let dirs = cli::DirectoryRestrictions::default();
+        let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(
+            names.contains(&"web_search"),
+            "web_search should be in build_tools output, got: {names:?}"
+        );
     }
 }

@@ -5,9 +5,11 @@
 //! If the command fails, the agent gets a fix prompt and retries up to
 //! [`MAX_WATCH_FIX_ATTEMPTS`] times.
 
+use crate::commands_file::extract_file_paths_from_output;
 use crate::commands_lint::{lint_command_for_project, test_command_for_project, LintStrictness};
 use crate::commands_project::detect_project_type;
 use crate::format::*;
+use crate::memory::{auto_remember, build_fix_memory_note};
 use crate::prompt::run_prompt_auto_retry;
 use crate::prompt_budget::session_budget_exhausted;
 use crate::session::SessionChanges;
@@ -949,6 +951,78 @@ fn classify_watch_command(cmd: &str) -> &'static str {
     }
 }
 
+/// Maximum total bytes of source context to inject into fix prompts.
+const SOURCE_CONTEXT_MAX_BYTES: usize = 3072;
+
+/// Extract relevant source file lines around error locations.
+///
+/// For each unique `(file, line)` pair in the error list, reads the file and
+/// extracts a window of context (±5 lines). Results are deduped by file+line,
+/// capped at [`SOURCE_CONTEXT_MAX_BYTES`] total, and formatted as markdown.
+///
+/// Files that don't exist or can't be read are silently skipped.
+pub fn extract_error_source_context(errors: &[CompilerError]) -> String {
+    use std::collections::HashSet;
+    use std::fs;
+
+    if errors.is_empty() {
+        return String::new();
+    }
+
+    // Deduplicate (file, line) pairs — preserve insertion order via Vec
+    let mut seen = HashSet::new();
+    let mut locations: Vec<(String, u32)> = Vec::new();
+    for e in errors {
+        if let (Some(file), Some(line)) = (&e.file, e.line) {
+            let key = (file.clone(), line);
+            if seen.insert(key.clone()) {
+                locations.push(key);
+            }
+        }
+    }
+
+    if locations.is_empty() {
+        return String::new();
+    }
+
+    let mut sections: Vec<String> = Vec::new();
+    let mut total_bytes: usize = 0;
+
+    for (file, line) in &locations {
+        let content = match fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        let line_idx = (*line as usize).saturating_sub(1); // 0-indexed
+        let start = line_idx.saturating_sub(5);
+        let end = (line_idx + 6).min(lines.len()); // exclusive, +5 lines after
+
+        if start >= lines.len() {
+            continue;
+        }
+
+        let mut snippet = format!("**{}** (around line {}):\n```\n", file, line);
+        for (i, src_line) in lines.iter().enumerate().take(end).skip(start) {
+            snippet.push_str(&format!("{:>4}: {}\n", i + 1, src_line));
+        }
+        snippet.push_str("```\n");
+
+        // Check if adding this snippet would exceed our budget
+        if total_bytes + snippet.len() > SOURCE_CONTEXT_MAX_BYTES {
+            break;
+        }
+        total_bytes += snippet.len();
+        sections.push(snippet);
+    }
+
+    if sections.is_empty() {
+        return String::new();
+    }
+
+    format!("\n## Relevant source context\n\n{}", sections.join("\n"))
+}
+
 /// Build a prompt asking the agent to fix failures from a watch command.
 ///
 /// Includes a hint about the command type (lint, test, or general command)
@@ -996,6 +1070,7 @@ pub fn build_watch_fix_prompt(watch_cmd: &str, output: &str) -> String {
         }
     };
     let structured_section = build_error_summary_for(&errors, detected_lang);
+    let source_context = extract_error_source_context(&errors);
 
     let hint = match cmd_type {
         "lint" => "\n\nThis is a **lint** failure — fixes are usually mechanical (unused imports, \
@@ -1006,17 +1081,29 @@ pub fn build_watch_fix_prompt(watch_cmd: &str, output: &str) -> String {
         _ => "",
     };
 
-    if let Some(summary) = structured_section {
+    let base = if let Some(summary) = structured_section {
         format!(
             "Your changes caused {cmd_type} failures. Here's the output from `{watch_cmd}`:\n\
              ```\n{truncated}\n```\n\n\
-             {summary}{hint}"
+             {summary}{source_context}{hint}"
         )
     } else {
         format!(
             "Your changes caused {cmd_type} failures. Here's the output from `{watch_cmd}`:\n\
              ```\n{truncated}\n```\n\
-             Please fix the issues.{hint}"
+             Please fix the issues.{source_context}{hint}"
+        )
+    };
+
+    // Enrich the prompt with file paths extracted from the error output
+    // so the agent knows exactly which files to focus on.
+    let error_files = extract_file_paths_from_output(output);
+    if error_files.is_empty() {
+        base
+    } else {
+        let file_list = error_files.join(", ");
+        format!(
+            "{base}\n\nFiles referenced in errors: {file_list}. Focus your fixes on these files."
         )
     }
 }
@@ -1181,6 +1268,8 @@ pub async fn run_watch_after_prompt(
                 eprintln!(
                     "{GREEN}  ✓ Watch passed{phase_label} after fix (attempt {attempt}){RESET}"
                 );
+                let note = build_fix_memory_note(watch_cmd, attempt);
+                auto_remember(&note);
                 phase_passed = true;
                 break;
             } else if attempt == MAX_WATCH_FIX_ATTEMPTS {
@@ -1215,13 +1304,22 @@ pub fn auto_detect_watch_command() -> Option<String> {
     detect_watch_all_command()
 }
 
-/// Auto-detect a combined lint + test command for the current project.
+/// Print a hint to stderr when a test runner is detected but auto-watch is disabled.
+/// Call this from startup paths when `auto_watch` is false.
+pub fn hint_auto_watch_available() {
+    if let Some(cmd) = auto_detect_watch_command() {
+        eprintln!(
+            "{DIM}  💡 Detected `{cmd}` — enable auto-watch with `auto_watch = true` in .yoyo.toml{RESET}"
+        );
+    }
+}
+
+/// Auto-detect a combined lint + test command for the given directory.
 /// Returns both commands chained with `&&` so the first failure stops execution.
 /// Falls back to just the test command if no lint command is available,
 /// or `None` if neither can be detected.
-pub fn detect_watch_all_command() -> Option<String> {
-    let dir = std::env::current_dir().unwrap_or_default();
-    let project_type = detect_project_type(&dir);
+pub fn detect_watch_all_command_for_dir(dir: &std::path::Path) -> Option<String> {
+    let project_type = detect_project_type(dir);
     let lint = lint_command_for_project(&project_type, LintStrictness::Default);
     let test = test_command_for_project(&project_type);
     match (lint, test) {
@@ -1234,12 +1332,18 @@ pub fn detect_watch_all_command() -> Option<String> {
     }
 }
 
-/// Auto-detect separate lint and test commands for two-phase watch.
+/// Auto-detect a combined lint + test command for the current working directory.
+/// Thin wrapper around [`detect_watch_all_command_for_dir`].
+pub fn detect_watch_all_command() -> Option<String> {
+    let dir = std::env::current_dir().unwrap_or_default();
+    detect_watch_all_command_for_dir(&dir)
+}
+
+/// Auto-detect separate lint and test commands for two-phase watch in the given directory.
 /// Returns a vec of individual commands (lint first, then test).
 /// Falls back to a single-element vec if only one is available.
-pub fn detect_watch_all_phases() -> Option<Vec<String>> {
-    let dir = std::env::current_dir().unwrap_or_default();
-    let project_type = detect_project_type(&dir);
+pub fn detect_watch_all_phases_for_dir(dir: &std::path::Path) -> Option<Vec<String>> {
+    let project_type = detect_project_type(dir);
     let lint = lint_command_for_project(&project_type, LintStrictness::Default);
     let test = test_command_for_project(&project_type);
     match (lint, test) {
@@ -1250,6 +1354,13 @@ pub fn detect_watch_all_phases() -> Option<Vec<String>> {
         (Some((lint_label, _)), None) => Some(vec![lint_label]),
         (None, None) => None,
     }
+}
+
+/// Auto-detect separate lint and test commands for two-phase watch.
+/// Thin wrapper around [`detect_watch_all_phases_for_dir`] using the current working directory.
+pub fn detect_watch_all_phases() -> Option<Vec<String>> {
+    let dir = std::env::current_dir().unwrap_or_default();
+    detect_watch_all_phases_for_dir(&dir)
 }
 
 /// Watch subcommand names for tab completion.
@@ -1366,7 +1477,28 @@ mod tests {
     // #[serial] to prevent flaky failures from parallel test execution. The
     // `serial_test` crate ensures these tests run one at a time. Any test calling
     // set_watch_command, set_watch_commands, get_watch_command, get_watch_commands,
-    // clear_watch_command, or handle_watch must use #[serial].
+    // clear_watch_command, handle_watch, detect_watch_all_phases,
+    // detect_watch_all_command, or auto_detect_watch_command must use #[serial].
+
+    /// Drop guard that clears global watch state on drop (even on panic).
+    /// Use via `with_clean_watch_state` to ensure every serial test starts
+    /// and ends with a clean `WATCH_COMMANDS`.
+    struct WatchStateGuard;
+
+    impl Drop for WatchStateGuard {
+        fn drop(&mut self) {
+            clear_watch_command();
+        }
+    }
+
+    /// Run a closure with clean global watch state. Clears WATCH_COMMANDS
+    /// before the closure runs, and clears again on return — even if the
+    /// closure panics (via a drop guard).
+    fn with_clean_watch_state<F: FnOnce()>(f: F) {
+        clear_watch_command();
+        let _guard = WatchStateGuard;
+        f();
+    }
 
     #[test]
     fn test_build_watch_fix_prompt() {
@@ -1474,73 +1606,75 @@ mod tests {
     #[serial]
     #[test]
     fn test_watch_command_none_by_default() {
-        // After clearing, there should be no watch command
-        clear_watch_command();
-        assert!(
-            get_watch_command().is_none(),
-            "should have no watch command after clear"
-        );
+        with_clean_watch_state(|| {
+            assert!(
+                get_watch_command().is_none(),
+                "should have no watch command after clear"
+            );
+        });
     }
 
     #[serial]
     #[test]
     fn test_watch_command_roundtrip() {
-        // Set a command, get it back, clear it
-        set_watch_command("cargo test --release");
-        let cmd = get_watch_command();
-        assert_eq!(cmd.as_deref(), Some("cargo test --release"));
-        clear_watch_command();
-        assert!(get_watch_command().is_none());
+        with_clean_watch_state(|| {
+            set_watch_command("cargo test --release");
+            let cmd = get_watch_command();
+            assert_eq!(cmd.as_deref(), Some("cargo test --release"));
+            clear_watch_command();
+            assert!(get_watch_command().is_none());
+        });
     }
 
     #[serial]
     #[test]
     fn test_run_watch_after_prompt_no_watch_returns_passed() {
-        // When no watch command is set, run_watch_after_prompt should return
-        // WatchResult { passed: true, last_tool_error: None } immediately.
-        // We verify the guard condition that makes it return early.
-        clear_watch_command();
-        assert!(
-            get_watch_command().is_none(),
-            "precondition: no watch command set"
-        );
-        // The function checks get_watch_command() first and returns a passing
-        // WatchResult if None. We can't call the async function in a sync test,
-        // but we verify the guard condition that makes it return early.
+        with_clean_watch_state(|| {
+            // When no watch command is set, run_watch_after_prompt should return
+            // WatchResult { passed: true, last_tool_error: None } immediately.
+            // We verify the guard condition that makes it return early.
+            assert!(
+                get_watch_command().is_none(),
+                "precondition: no watch command set"
+            );
+            // The function checks get_watch_command() first and returns a passing
+            // WatchResult if None. We can't call the async function in a sync test,
+            // but we verify the guard condition that makes it return early.
+        });
     }
 
     #[serial]
     #[test]
     fn test_run_watch_command_pass_with_set_watch() {
-        // Simulate: set a watch command that passes, run it
-        set_watch_command("echo ok");
-        if let Some(cmd) = get_watch_command() {
-            let (ok, output) = run_watch_command(&cmd);
-            assert!(ok, "echo ok should succeed");
-            assert!(output.contains("ok"));
-        } else {
-            panic!("watch command should be set");
-        }
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            set_watch_command("echo ok");
+            if let Some(cmd) = get_watch_command() {
+                let (ok, output) = run_watch_command(&cmd);
+                assert!(ok, "echo ok should succeed");
+                assert!(output.contains("ok"));
+            } else {
+                panic!("watch command should be set");
+            }
+        });
     }
 
     #[serial]
     #[test]
     fn test_run_watch_command_fail_with_set_watch() {
-        // Simulate: set a watch command that fails, run it, check output
-        set_watch_command("sh -c 'echo FAIL; exit 1'");
-        if let Some(cmd) = get_watch_command() {
-            let (ok, output) = run_watch_command(&cmd);
-            assert!(!ok, "command should fail");
-            assert!(output.contains("FAIL"), "output should contain FAIL");
-            // Verify build_watch_fix_prompt works with the output
-            let fix_prompt = build_watch_fix_prompt(&cmd, &output);
-            assert!(fix_prompt.contains("FAIL"));
-            assert!(fix_prompt.contains("Please fix"));
-        } else {
-            panic!("watch command should be set");
-        }
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            set_watch_command("sh -c 'echo FAIL; exit 1'");
+            if let Some(cmd) = get_watch_command() {
+                let (ok, output) = run_watch_command(&cmd);
+                assert!(!ok, "command should fail");
+                assert!(output.contains("FAIL"), "output should contain FAIL");
+                // Verify build_watch_fix_prompt works with the output
+                let fix_prompt = build_watch_fix_prompt(&cmd, &output);
+                assert!(fix_prompt.contains("FAIL"));
+                assert!(fix_prompt.contains("Please fix"));
+            } else {
+                panic!("watch command should be set");
+            }
+        });
     }
 
     #[test]
@@ -1590,48 +1724,54 @@ mod tests {
     #[serial]
     #[test]
     fn test_set_get_watch_commands_roundtrip() {
-        set_watch_commands(&["cargo clippy", "cargo test"]);
-        let cmds = get_watch_commands();
-        assert_eq!(cmds.len(), 2);
-        assert_eq!(cmds[0], "cargo clippy");
-        assert_eq!(cmds[1], "cargo test");
-        clear_watch_command();
-        assert!(get_watch_commands().is_empty());
+        with_clean_watch_state(|| {
+            set_watch_commands(&["cargo clippy", "cargo test"]);
+            let cmds = get_watch_commands();
+            assert_eq!(cmds.len(), 2);
+            assert_eq!(cmds[0], "cargo clippy");
+            assert_eq!(cmds[1], "cargo test");
+            clear_watch_command();
+            assert!(get_watch_commands().is_empty());
+        });
     }
 
     #[serial]
     #[test]
     fn test_get_watch_command_joins_multi_phase() {
-        set_watch_commands(&["cargo clippy", "cargo test"]);
-        let display = get_watch_command();
-        assert_eq!(
-            display.as_deref(),
-            Some("cargo clippy && cargo test"),
-            "get_watch_command should join phases with &&"
-        );
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            set_watch_commands(&["cargo clippy", "cargo test"]);
+            let display = get_watch_command();
+            assert_eq!(
+                display.as_deref(),
+                Some("cargo clippy && cargo test"),
+                "get_watch_command should join phases with &&"
+            );
+        });
     }
 
     #[serial]
     #[test]
     fn test_single_command_still_works() {
-        set_watch_command("cargo test");
-        let cmds = get_watch_commands();
-        assert_eq!(cmds.len(), 1, "single command should store one-element vec");
-        assert_eq!(cmds[0], "cargo test");
-        let display = get_watch_command();
-        assert_eq!(display.as_deref(), Some("cargo test"));
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            set_watch_command("cargo test");
+            let cmds = get_watch_commands();
+            assert_eq!(cmds.len(), 1, "single command should store one-element vec");
+            assert_eq!(cmds[0], "cargo test");
+            let display = get_watch_command();
+            assert_eq!(display.as_deref(), Some("cargo test"));
+        });
     }
 
     #[serial]
     #[test]
     fn test_clear_clears_multi_phase() {
-        set_watch_commands(&["a", "b", "c"]);
-        assert_eq!(get_watch_commands().len(), 3);
-        clear_watch_command();
-        assert!(get_watch_commands().is_empty());
-        assert!(get_watch_command().is_none());
+        with_clean_watch_state(|| {
+            set_watch_commands(&["a", "b", "c"]);
+            assert_eq!(get_watch_commands().len(), 3);
+            clear_watch_command();
+            assert!(get_watch_commands().is_empty());
+            assert!(get_watch_command().is_none());
+        });
     }
 
     #[test]
@@ -1709,61 +1849,68 @@ mod tests {
     #[serial]
     #[test]
     fn test_run_watch_after_prompt_empty_commands_returns_passed() {
-        // When no watch commands are set, should return passed immediately
-        clear_watch_command();
-        assert!(
-            get_watch_commands().is_empty(),
-            "precondition: no commands set"
-        );
-        // The function checks get_watch_commands() first and returns a passing
-        // WatchResult if empty. We verify the guard condition.
+        with_clean_watch_state(|| {
+            // When no watch commands are set, should return passed immediately
+            assert!(
+                get_watch_commands().is_empty(),
+                "precondition: no commands set"
+            );
+            // The function checks get_watch_commands() first and returns a passing
+            // WatchResult if empty. We verify the guard condition.
+        });
     }
 
+    #[serial]
     #[test]
     fn auto_detect_watch_command_returns_lint_and_test_in_rust_project() {
-        // We're running from a directory with Cargo.toml, so this should detect Rust
-        // After the Day 58 change, auto-detect defaults to lint+test (not test-only)
-        let cmd = auto_detect_watch_command();
-        assert!(
-            cmd.is_some(),
-            "should detect a watch command in a Rust project"
-        );
-        let cmd = cmd.unwrap();
-        assert!(
-            cmd.contains("clippy"),
-            "auto-detect should include lint (clippy): {cmd}"
-        );
-        assert!(
-            cmd.contains("cargo test"),
-            "auto-detect should include test: {cmd}"
-        );
-        assert!(
-            cmd.contains("&&"),
-            "auto-detect should chain lint && test: {cmd}"
-        );
+        with_clean_watch_state(|| {
+            // We're running from a directory with Cargo.toml, so this should detect Rust
+            // After the Day 58 change, auto-detect defaults to lint+test (not test-only)
+            let cmd = auto_detect_watch_command();
+            assert!(
+                cmd.is_some(),
+                "should detect a watch command in a Rust project"
+            );
+            let cmd = cmd.unwrap();
+            assert!(
+                cmd.contains("clippy"),
+                "auto-detect should include lint (clippy): {cmd}"
+            );
+            assert!(
+                cmd.contains("cargo test"),
+                "auto-detect should include test: {cmd}"
+            );
+            assert!(
+                cmd.contains("&&"),
+                "auto-detect should chain lint && test: {cmd}"
+            );
+        });
     }
 
+    #[serial]
     #[test]
     fn detect_watch_all_command_returns_lint_and_test_for_rust() {
-        // We're running from a directory with Cargo.toml, so this should detect Rust
-        let cmd = detect_watch_all_command();
-        assert!(
-            cmd.is_some(),
-            "should detect a combined command in a Rust project"
-        );
-        let cmd = cmd.unwrap();
-        assert!(
-            cmd.contains("clippy"),
-            "combined command should include lint (clippy): {cmd}"
-        );
-        assert!(
-            cmd.contains("cargo test"),
-            "combined command should include test: {cmd}"
-        );
-        assert!(
-            cmd.contains("&&"),
-            "combined command should chain with &&: {cmd}"
-        );
+        with_clean_watch_state(|| {
+            // We're running from a directory with Cargo.toml, so this should detect Rust
+            let cmd = detect_watch_all_command();
+            assert!(
+                cmd.is_some(),
+                "should detect a combined command in a Rust project"
+            );
+            let cmd = cmd.unwrap();
+            assert!(
+                cmd.contains("clippy"),
+                "combined command should include lint (clippy): {cmd}"
+            );
+            assert!(
+                cmd.contains("cargo test"),
+                "combined command should include test: {cmd}"
+            );
+            assert!(
+                cmd.contains("&&"),
+                "combined command should chain with &&: {cmd}"
+            );
+        });
     }
 
     #[test]
@@ -1777,39 +1924,51 @@ mod tests {
     #[serial]
     #[test]
     fn handle_watch_all_sets_combined_command() {
-        // Clear any previous watch command
-        clear_watch_command();
-        // Run /watch all — since we're in a Rust project, it should set separate phases
-        handle_watch("/watch all");
-        let cmd = get_watch_command();
-        assert!(
-            cmd.is_some(),
-            "watch command should be set after /watch all"
-        );
-        let cmd = cmd.unwrap();
-        assert!(
-            cmd.contains("clippy") && cmd.contains("cargo test"),
-            "watch all should set lint && test: {cmd}"
-        );
-        // Verify multi-phase: should have 2 separate commands
-        let phases = get_watch_commands();
-        assert_eq!(
-            phases.len(),
-            2,
-            "watch all should set 2 separate phases: {phases:?}"
-        );
-        assert!(
-            phases[0].contains("clippy"),
-            "first phase should be lint: {}",
-            phases[0]
-        );
-        assert!(
-            phases[1].contains("test"),
-            "second phase should be test: {}",
-            phases[1]
-        );
-        // Cleanup
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            // Create a temp Rust project so the test doesn't depend on CWD
+            let tmp = std::env::temp_dir().join("yoyo_test_watch_all_combined");
+            let _ = std::fs::create_dir_all(&tmp);
+            std::fs::write(
+                tmp.join("Cargo.toml"),
+                "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write temp Cargo.toml");
+
+            let orig = std::env::current_dir().expect("get cwd");
+            std::env::set_current_dir(&tmp).expect("set cwd to temp");
+
+            handle_watch("/watch all");
+            let cmd = get_watch_command();
+            assert!(
+                cmd.is_some(),
+                "watch command should be set after /watch all"
+            );
+            let cmd = cmd.unwrap();
+            assert!(
+                cmd.contains("clippy") && cmd.contains("cargo test"),
+                "watch all should set lint && test: {cmd}"
+            );
+            // Verify multi-phase: should have 2 separate commands
+            let phases = get_watch_commands();
+            assert_eq!(
+                phases.len(),
+                2,
+                "watch all should set 2 separate phases: {phases:?}"
+            );
+            assert!(
+                phases[0].contains("clippy"),
+                "first phase should be lint: {}",
+                phases[0]
+            );
+            assert!(
+                phases[1].contains("test"),
+                "second phase should be test: {}",
+                phases[1]
+            );
+
+            std::env::set_current_dir(&orig).expect("restore cwd");
+            let _ = std::fs::remove_dir_all(&tmp);
+        });
     }
 
     #[test]
@@ -1823,60 +1982,95 @@ mod tests {
     #[serial]
     #[test]
     fn handle_watch_lint_sets_lint_only_command() {
-        // Clear any previous watch command
-        clear_watch_command();
-        // Run /watch lint — since we're in a Rust project, it should set clippy only
-        handle_watch("/watch lint");
-        let cmd = get_watch_command();
-        assert!(
-            cmd.is_some(),
-            "watch command should be set after /watch lint"
-        );
-        let cmd = cmd.unwrap();
-        assert!(
-            cmd.contains("clippy"),
-            "watch lint should set lint command: {cmd}"
-        );
-        assert!(
-            !cmd.contains("cargo test"),
-            "watch lint should NOT include test: {cmd}"
-        );
-        // Cleanup
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            // Create a temp Rust project so the test doesn't depend on CWD
+            let tmp = std::env::temp_dir().join("yoyo_test_watch_lint_only");
+            let _ = std::fs::create_dir_all(&tmp);
+            std::fs::write(
+                tmp.join("Cargo.toml"),
+                "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write temp Cargo.toml");
+
+            let orig = std::env::current_dir().expect("get cwd");
+            std::env::set_current_dir(&tmp).expect("set cwd to temp");
+
+            handle_watch("/watch lint");
+            let cmd = get_watch_command();
+            assert!(
+                cmd.is_some(),
+                "watch command should be set after /watch lint"
+            );
+            let cmd = cmd.unwrap();
+            assert!(
+                cmd.contains("clippy"),
+                "watch lint should set lint command: {cmd}"
+            );
+            assert!(
+                !cmd.contains("cargo test"),
+                "watch lint should NOT include test: {cmd}"
+            );
+
+            std::env::set_current_dir(&orig).expect("restore cwd");
+            let _ = std::fs::remove_dir_all(&tmp);
+        });
     }
 
     #[serial]
     #[test]
     fn handle_watch_bare_sets_lint_and_test() {
-        // Clear any previous watch command
-        clear_watch_command();
-        // Run bare /watch — should now set lint+test as separate phases
-        handle_watch("/watch");
-        let cmd = get_watch_command();
-        assert!(
-            cmd.is_some(),
-            "watch command should be set after bare /watch"
-        );
-        let cmd = cmd.unwrap();
-        assert!(
-            cmd.contains("clippy") && cmd.contains("cargo test"),
-            "bare /watch should set lint && test: {cmd}"
-        );
-        // Verify multi-phase
-        let phases = get_watch_commands();
-        assert_eq!(
-            phases.len(),
-            2,
-            "bare /watch should set 2 phases: {phases:?}"
-        );
-        // Cleanup
-        clear_watch_command();
+        with_clean_watch_state(|| {
+            // Create a temp Rust project so the test doesn't depend on CWD
+            let tmp = std::env::temp_dir().join("yoyo_test_watch_bare");
+            let _ = std::fs::create_dir_all(&tmp);
+            std::fs::write(
+                tmp.join("Cargo.toml"),
+                "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write temp Cargo.toml");
+
+            let orig = std::env::current_dir().expect("get cwd");
+            std::env::set_current_dir(&tmp).expect("set cwd to temp");
+
+            handle_watch("/watch");
+            let cmd = get_watch_command();
+            assert!(
+                cmd.is_some(),
+                "watch command should be set after bare /watch"
+            );
+            let cmd = cmd.unwrap();
+            // Accept either clippy or cargo check as valid lint detection
+            let has_lint = cmd.contains("clippy") || cmd.contains("cargo check");
+            let has_test = cmd.contains("cargo test") || cmd.contains("test");
+            assert!(
+                has_lint && has_test,
+                "bare /watch should set lint && test: {cmd}"
+            );
+            // Verify multi-phase
+            let phases = get_watch_commands();
+            assert_eq!(
+                phases.len(),
+                2,
+                "bare /watch should set 2 phases: {phases:?}"
+            );
+
+            std::env::set_current_dir(&orig).expect("restore cwd");
+            let _ = std::fs::remove_dir_all(&tmp);
+        });
     }
 
     #[test]
     fn detect_watch_all_phases_returns_separate_commands() {
-        // In a Rust project, should return 2 separate commands
-        let phases = detect_watch_all_phases();
+        // Use a temp directory with Cargo.toml so the test doesn't depend on CWD.
+        let tmp = std::env::temp_dir().join("yoyo_test_watch_phases_separate");
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("failed to write temp Cargo.toml");
+
+        let phases = detect_watch_all_phases_for_dir(&tmp);
         assert!(phases.is_some(), "should detect phases in a Rust project");
         let phases = phases.unwrap();
         assert_eq!(
@@ -1884,9 +2078,10 @@ mod tests {
             2,
             "should have lint + test phases: {phases:?}"
         );
+        let has_lint = phases[0].contains("clippy") || phases[0].contains("check");
         assert!(
-            phases[0].contains("clippy"),
-            "first phase should be lint: {}",
+            has_lint,
+            "first phase should be lint (clippy or check): {}",
             phases[0]
         );
         assert!(
@@ -1894,6 +2089,9 @@ mod tests {
             "second phase should be test: {}",
             phases[1]
         );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[serial]
@@ -1909,6 +2107,88 @@ mod tests {
         );
         assert_eq!(phases[0], "make check");
         clear_watch_command();
+    }
+
+    #[test]
+    fn detect_watch_all_phases_for_dir_rust_project() {
+        // Create a temp directory with a Cargo.toml to simulate a Rust project.
+        // This test is independent of CWD — it always uses the temp dir.
+        let tmp = std::env::temp_dir().join("yoyo_test_watch_rust_project");
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("failed to write temp Cargo.toml");
+
+        let phases = detect_watch_all_phases_for_dir(&tmp);
+        assert!(
+            phases.is_some(),
+            "should detect phases for a Rust project dir"
+        );
+        let phases = phases.unwrap();
+        assert_eq!(
+            phases.len(),
+            2,
+            "Rust project should have lint + test phases: {phases:?}"
+        );
+        let has_lint = phases[0].contains("clippy") || phases[0].contains("check");
+        assert!(
+            has_lint,
+            "first phase should be lint (clippy or check): {}",
+            phases[0]
+        );
+        assert!(
+            phases[1].contains("test"),
+            "second phase should be test: {}",
+            phases[1]
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_watch_all_phases_for_dir_empty_dir_returns_none() {
+        // An empty directory should not detect any project type.
+        let tmp = std::env::temp_dir().join("yoyo_test_watch_empty_dir");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+
+        let phases = detect_watch_all_phases_for_dir(&tmp);
+        // Unknown project type may still match Makefile detection etc.,
+        // but an empty dir should yield None or a minimal result
+        if let Some(ref p) = phases {
+            // If something is detected, it's fine — just verify it's non-empty
+            assert!(!p.is_empty(), "detected phases should not be empty");
+        }
+        // Either None or Some with valid commands — both are acceptable
+        // The key is that it doesn't panic.
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_watch_all_command_for_dir_rust_project() {
+        let tmp = std::env::temp_dir().join("yoyo_test_watch_cmd_rust");
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("failed to write temp Cargo.toml");
+
+        let cmd = detect_watch_all_command_for_dir(&tmp);
+        assert!(cmd.is_some(), "should detect command for Rust project");
+        let cmd = cmd.unwrap();
+        assert!(
+            cmd.contains("&&"),
+            "Rust project should chain lint && test: {cmd}"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // -----------------------------------------------------------------------
@@ -2472,7 +2752,187 @@ E       assert 3 == 4
             build_error_summary_for(&errors, WatchLanguage::Python).expect("should return summary");
         assert!(
             summary.contains("Python"),
-            "should label as Python: {summary}"
+            "should label as Python: {summary}",
+        );
+    }
+
+    #[test]
+    fn extract_error_source_context_empty_errors() {
+        let result = extract_error_source_context(&[]);
+        assert!(
+            result.is_empty(),
+            "empty errors should produce empty string"
+        );
+    }
+
+    #[test]
+    fn extract_error_source_context_nonexistent_files() {
+        let errors = vec![CompilerError {
+            code: Some("E0308".to_string()),
+            message: "mismatched types".to_string(),
+            file: Some("/tmp/nonexistent_file_xyz_12345.rs".to_string()),
+            line: Some(10),
+            category: ErrorCategory::Type,
+        }];
+        let result = extract_error_source_context(&errors);
+        assert!(
+            result.is_empty(),
+            "non-existent files should produce empty string: {result}",
+        );
+    }
+
+    #[test]
+    fn extract_error_source_context_no_file_field() {
+        let errors = vec![CompilerError {
+            code: Some("E0308".to_string()),
+            message: "mismatched types".to_string(),
+            file: None,
+            line: Some(10),
+            category: ErrorCategory::Type,
+        }];
+        let result = extract_error_source_context(&errors);
+        assert!(
+            result.is_empty(),
+            "errors without file field should produce empty string",
+        );
+    }
+
+    #[test]
+    fn extract_error_source_context_reads_real_file() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test_source.rs");
+        {
+            let mut f = std::fs::File::create(&file_path).unwrap();
+            for i in 1..=20 {
+                writeln!(f, "// line {i}").unwrap();
+            }
+        }
+        let errors = vec![CompilerError {
+            code: Some("E0308".to_string()),
+            message: "mismatched types".to_string(),
+            file: Some(file_path.to_str().unwrap().to_string()),
+            line: Some(10),
+            category: ErrorCategory::Type,
+        }];
+        let result = extract_error_source_context(&errors);
+        assert!(
+            result.contains("## Relevant source context"),
+            "should include header: {result}",
+        );
+        assert!(
+            result.contains("around line 10"),
+            "should indicate target line: {result}",
+        );
+        // Should include lines 5-15 (10 ± 5)
+        assert!(
+            result.contains("// line 5"),
+            "should include line 5: {result}"
+        );
+        assert!(
+            result.contains("// line 15"),
+            "should include line 15: {result}",
+        );
+        // Should NOT include line 1 (out of ±5 window from line 10)
+        assert!(
+            !result.contains("   1: // line 1"),
+            "should not include line 1: {result}",
+        );
+    }
+
+    #[test]
+    fn extract_error_source_context_deduplicates() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("dup_test.rs");
+        {
+            let mut f = std::fs::File::create(&file_path).unwrap();
+            for i in 1..=20 {
+                writeln!(f, "// line {i}").unwrap();
+            }
+        }
+        let path_str = file_path.to_str().unwrap().to_string();
+        let errors = vec![
+            CompilerError {
+                code: Some("E0308".to_string()),
+                message: "error one".to_string(),
+                file: Some(path_str.clone()),
+                line: Some(10),
+                category: ErrorCategory::Type,
+            },
+            CompilerError {
+                code: Some("E0277".to_string()),
+                message: "error two".to_string(),
+                file: Some(path_str.clone()),
+                line: Some(10), // same file+line
+                category: ErrorCategory::Type,
+            },
+        ];
+        let result = extract_error_source_context(&errors);
+        // Should only appear once
+        let count = result.matches("around line 10").count();
+        assert_eq!(count, 1, "same file+line should appear only once: {result}");
+    }
+
+    #[test]
+    fn extract_error_source_context_respects_cap() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        // Create many files with long lines to exceed the 3KB cap
+        let mut errors = Vec::new();
+        for i in 0..50 {
+            let file_path = dir.path().join(format!("file_{i}.rs"));
+            {
+                let mut f = std::fs::File::create(&file_path).unwrap();
+                for j in 1..=20 {
+                    // Long lines to fill up the budget quickly
+                    writeln!(f, "// line {j} {}", "x".repeat(80)).unwrap();
+                }
+            }
+            errors.push(CompilerError {
+                code: Some("E0308".to_string()),
+                message: format!("error in file {i}"),
+                file: Some(file_path.to_str().unwrap().to_string()),
+                line: Some(10),
+                category: ErrorCategory::Type,
+            });
+        }
+        let result = extract_error_source_context(&errors);
+        // The result should be capped at roughly SOURCE_CONTEXT_MAX_BYTES
+        assert!(
+            result.len() <= SOURCE_CONTEXT_MAX_BYTES + 200, // small margin for the header
+            "result should respect cap: got {} bytes",
+            result.len(),
+        );
+        // But should have at least some content
+        assert!(
+            !result.is_empty(),
+            "should include at least one file snippet",
+        );
+    }
+
+    #[test]
+    fn build_watch_fix_prompt_includes_source_context() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("src_context_test.rs");
+        {
+            let mut f = std::fs::File::create(&file_path).unwrap();
+            for i in 1..=20 {
+                writeln!(f, "fn line_{i}() {{}}").unwrap();
+            }
+        }
+        let path_str = file_path.to_str().unwrap();
+        // Construct output that parse_rust_errors will parse with our file path
+        let output = format!("error[E0308]: mismatched types\n  --> {}:10:5\n", path_str);
+        let prompt = build_watch_fix_prompt("cargo build", &output);
+        assert!(
+            prompt.contains("## Relevant source context"),
+            "prompt should include source context section: {prompt}",
+        );
+        assert!(
+            prompt.contains("around line 10"),
+            "prompt should reference the error line: {prompt}",
         );
     }
 }

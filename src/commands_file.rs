@@ -854,6 +854,224 @@ pub fn handle_open(input: &str) {
     }
 }
 
+/// Source file extensions eligible for related-file suggestions.
+const SOURCE_EXTENSIONS: &[&str] = &["rs", "py", "ts", "js", "go", "java", "rb", "cpp", "c", "h"];
+
+/// Check if a file path has a source-code extension eligible for suggestions.
+fn is_source_extension(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    if let Some(ext) = lower.rsplit('.').next() {
+        SOURCE_EXTENSIONS.contains(&ext)
+    } else {
+        false
+    }
+}
+
+/// Suggest related files the user might want to add alongside the given file.
+///
+/// Returns up to 3 related file paths, detected via:
+/// 1. Test file patterns (e.g. `tests/foo.rs`, `src/foo_test.rs`)
+/// 2. Module parent (`src/foo/bar.rs` → `src/foo/mod.rs`)
+/// 3. Corresponding module directory (`src/foo.rs` → `src/foo/mod.rs`)
+/// 4. Rust `use crate::` / `mod` declarations → sibling modules
+///
+/// Only works for source files. Skips paths in `already_added`.
+pub fn suggest_related_files(path: &str, already_added: &[String]) -> Vec<String> {
+    if !is_source_extension(path) {
+        return Vec::new();
+    }
+
+    let p = std::path::Path::new(path);
+    let canon_path = path.replace('\\', "/");
+    let mut suggestions: Vec<String> = Vec::new();
+
+    // Collect candidates, then filter and deduplicate
+    let mut candidates: Vec<String> = Vec::new();
+
+    // 1. Test file patterns
+    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+        if let Some(parent) = p.parent().and_then(|d| d.to_str()) {
+            // tests/<stem>.rs (relative to project root)
+            candidates.push(format!("tests/{stem}.rs"));
+
+            // <parent>/<stem>_test.rs
+            if parent.is_empty() {
+                candidates.push(format!("{stem}_test.rs"));
+            } else {
+                candidates.push(format!("{parent}/{stem}_test.rs"));
+            }
+        }
+    }
+
+    // 2. Module parent: src/foo/bar.rs → src/foo/mod.rs
+    if let Some(parent) = p.parent() {
+        let mod_rs = parent.join("mod.rs");
+        if let Some(s) = mod_rs.to_str() {
+            candidates.push(s.to_string());
+        }
+    }
+
+    // 3. Corresponding module dir: src/foo.rs → src/foo/mod.rs
+    if let (Some(parent), Some(stem)) = (
+        p.parent().and_then(|d| d.to_str()),
+        p.file_stem().and_then(|s| s.to_str()),
+    ) {
+        // Don't suggest for mod.rs or lib.rs or main.rs
+        if stem != "mod" && stem != "lib" && stem != "main" {
+            if parent.is_empty() {
+                candidates.push(format!("{stem}/mod.rs"));
+            } else {
+                candidates.push(format!("{parent}/{stem}/mod.rs"));
+            }
+        }
+    }
+
+    // 4. Rust-specific: parse `use crate::` and `mod` declarations
+    if path.ends_with(".rs") {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let src_prefix = detect_src_prefix(path);
+            for line in content.lines().take(50) {
+                let trimmed = line.trim();
+
+                // `use crate::foo` or `use crate::foo::bar`
+                if let Some(rest) = trimmed.strip_prefix("use crate::") {
+                    if let Some(module) = rest.split("::").next() {
+                        let module = module.trim_end_matches(';').trim();
+                        if !module.is_empty()
+                            && module.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        {
+                            candidates.push(format!("{src_prefix}{module}.rs"));
+                            candidates.push(format!("{src_prefix}{module}/mod.rs"));
+                        }
+                    }
+                }
+
+                // `mod foo;` (external module declaration)
+                if let Some(rest) = trimmed.strip_prefix("mod ") {
+                    let rest = rest.trim_end_matches(';').trim();
+                    if !rest.is_empty()
+                        && !rest.contains('{')
+                        && rest.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    {
+                        candidates.push(format!("{src_prefix}{rest}.rs"));
+                        candidates.push(format!("{src_prefix}{rest}/mod.rs"));
+                    }
+                }
+            }
+        }
+    }
+
+    // Filter: must exist, not self, not already added, deduplicated
+    for candidate in candidates {
+        if suggestions.len() >= 3 {
+            break;
+        }
+        let canon = candidate.replace('\\', "/");
+        if canon == canon_path {
+            continue;
+        }
+        if already_added.iter().any(|a| a.replace('\\', "/") == canon) {
+            continue;
+        }
+        if suggestions.contains(&canon) {
+            continue;
+        }
+        if std::path::Path::new(&candidate).exists() {
+            suggestions.push(canon);
+        }
+    }
+
+    suggestions
+}
+
+/// Detect the `src/` prefix from a file path.
+/// E.g., `src/commands_file.rs` → `src/`, `lib/foo.rs` → `lib/`.
+fn detect_src_prefix(path: &str) -> &str {
+    let normalized = path.replace('\\', "/");
+    // Find the last path component and return everything before it
+    if let Some(pos) = normalized.rfind('/') {
+        &path[..pos + 1]
+    } else {
+        ""
+    }
+}
+
+/// Extract file paths referenced in compiler/linter error output.
+///
+/// Recognises common formats:
+/// - Rust:       `--> src/foo.rs:42:10` or `src/foo.rs:42:10`
+/// - TypeScript: `src/foo.ts(42,10)` or `src/foo.ts:42:10`
+/// - Python:     `File "src/foo.py", line 42`
+/// - Go:         `./foo.go:42:10`
+/// - Generic:    `path/file.ext:LINE`
+///
+/// Results are deduplicated, sorted, and filtered to only files that
+/// exist on disk.
+pub fn extract_file_paths_from_output(output: &str) -> Vec<String> {
+    use regex::Regex;
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    // Lazy-build patterns.  We accept some overlap — the BTreeSet
+    // deduplicates anyway.
+    let patterns: &[Regex] = &[
+        // Rust: `--> src/foo.rs:42:10`
+        Regex::new(r"-->\s+([\w./_\-\\]+\.\w+):\d+").unwrap(),
+        // Python: `File "src/foo.py", line 42`
+        Regex::new(r#"File\s+"([\w./_\-\\]+\.\w+)",\s+line\s+\d+"#).unwrap(),
+        // TS paren style: `src/foo.ts(42,10)`
+        Regex::new(r"([\w./_\-\\]+\.\w+)\(\d+[,)]").unwrap(),
+        // Generic `path/file.ext:LINE` — must contain a `/` or `.\` to
+        // avoid matching random words like `error:1`.
+        Regex::new(r"([\w._\-\\]*[/\\][\w./_\-\\]+\.\w+):\d+").unwrap(),
+        // Go-style `./foo.go:42`
+        Regex::new(r"(\./[\w./_\-\\]+\.\w+):\d+").unwrap(),
+    ];
+
+    let mut seen = BTreeSet::new();
+    for pat in patterns {
+        for cap in pat.captures_iter(output) {
+            if let Some(m) = cap.get(1) {
+                let p = m.as_str().to_string();
+                seen.insert(p);
+            }
+        }
+    }
+
+    // Filter to files that actually exist.
+    seen.into_iter()
+        .filter(|p| Path::new(p).is_file())
+        .collect()
+}
+
+/// Internal helper: extract file-path candidates from output without
+/// the filesystem-existence filter.  Used by tests to verify regex
+/// matching independently of on-disk state.
+#[cfg(test)]
+fn extract_file_path_candidates(output: &str) -> Vec<String> {
+    use regex::Regex;
+    use std::collections::BTreeSet;
+
+    let patterns: &[Regex] = &[
+        Regex::new(r"-->\s+([\w./_\-\\]+\.\w+):\d+").unwrap(),
+        Regex::new(r#"File\s+"([\w./_\-\\]+\.\w+)",\s+line\s+\d+"#).unwrap(),
+        Regex::new(r"([\w./_\-\\]+\.\w+)\(\d+[,)]").unwrap(),
+        Regex::new(r"([\w._\-\\]*[/\\][\w./_\-\\]+\.\w+):\d+").unwrap(),
+        Regex::new(r"(\./[\w./_\-\\]+\.\w+):\d+").unwrap(),
+    ];
+
+    let mut seen = BTreeSet::new();
+    for pat in patterns {
+        for cap in pat.captures_iter(output) {
+            if let Some(m) = cap.get(1) {
+                seen.insert(m.as_str().to_string());
+            }
+        }
+    }
+
+    seen.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,6 +1086,125 @@ mod tests {
     // ── is_valid_url ────────────────────────────────────────────────
 
     // ── /add command tests ────────────────────────────────────────────
+
+    // --- extract_file_paths_from_output tests (regex matching only) ---
+
+    #[test]
+    fn extract_paths_rust_error() {
+        let output = "error[E0308]: mismatched types\n  --> src/main.rs:42:10\n";
+        let paths = extract_file_path_candidates(output);
+        assert!(paths.contains(&"src/main.rs".to_string()), "got: {paths:?}");
+    }
+
+    #[test]
+    fn extract_paths_rust_multiple() {
+        let output = "\
+error[E0308]: mismatched types
+  --> src/foo.rs:10:5
+  --> src/bar.rs:20:3
+";
+        let paths = extract_file_path_candidates(output);
+        assert!(paths.contains(&"src/foo.rs".to_string()));
+        assert!(paths.contains(&"src/bar.rs".to_string()));
+    }
+
+    #[test]
+    fn extract_paths_typescript_paren() {
+        let output = "src/index.ts(42,10): error TS2345: ...\n";
+        let paths = extract_file_path_candidates(output);
+        assert!(
+            paths.contains(&"src/index.ts".to_string()),
+            "got: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn extract_paths_typescript_colon() {
+        let output = "src/app.tsx:15:8 - error TS1005: ';' expected.\n";
+        let paths = extract_file_path_candidates(output);
+        assert!(paths.contains(&"src/app.tsx".to_string()), "got: {paths:?}");
+    }
+
+    #[test]
+    fn extract_paths_python_traceback() {
+        let output = r#"Traceback (most recent call last):
+  File "src/main.py", line 42, in <module>
+  File "lib/utils.py", line 10, in helper
+"#;
+        let paths = extract_file_path_candidates(output);
+        assert!(paths.contains(&"src/main.py".to_string()), "got: {paths:?}");
+        assert!(
+            paths.contains(&"lib/utils.py".to_string()),
+            "got: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn extract_paths_go_style() {
+        let output = "./cmd/server.go:42:10: undefined: foo\n";
+        let paths = extract_file_path_candidates(output);
+        assert!(
+            paths.contains(&"./cmd/server.go".to_string()),
+            "got: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn extract_paths_deduplication() {
+        let output = "\
+error[E0308]: first
+  --> src/foo.rs:10:5
+error[E0308]: second
+  --> src/foo.rs:20:3
+";
+        let paths = extract_file_path_candidates(output);
+        // Should appear only once despite two references
+        assert_eq!(
+            paths.iter().filter(|p| *p == "src/foo.rs").count(),
+            1,
+            "got: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn extract_paths_sorted() {
+        let output = "\
+  --> src/z.rs:1:1
+  --> src/a.rs:1:1
+  --> src/m.rs:1:1
+";
+        let paths = extract_file_path_candidates(output);
+        assert_eq!(paths, vec!["src/a.rs", "src/m.rs", "src/z.rs"]);
+    }
+
+    #[test]
+    fn extract_paths_filters_nonexistent() {
+        // The public fn filters by Path::exists(). With fake paths, we
+        // should get an empty vec.
+        let output = "  --> definitely/not/a/real/file.rs:42:10\n";
+        let paths = extract_file_paths_from_output(output);
+        assert!(
+            paths.is_empty(),
+            "non-existent file should be filtered: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn extract_paths_real_file() {
+        // Cargo.toml always exists in the project root during tests.
+        let _output = "  --> Cargo.toml:1:1\n";
+        // Cargo.toml doesn't have a `/` so generic won't match — but
+        // the Rust arrow pattern will.  Let's use src/main.rs which
+        // does exist.
+        let output2 = "  --> src/main.rs:1:1\n";
+        let paths = extract_file_paths_from_output(output2);
+        assert!(
+            paths.contains(&"src/main.rs".to_string()),
+            "existing file should pass filter: {paths:?}"
+        );
+    }
+
+    // --- original tests below ---
 
     #[test]
     fn parse_add_arg_simple_path() {
@@ -2074,5 +2411,172 @@ diff --git a/clean.txt b/clean.txt
         let est = estimate_tokens_simple("日本語");
         // 9 bytes / 4 = 2 — doesn't panic, gives reasonable result
         assert_eq!(est, 2);
+    }
+
+    // --- suggest_related_files tests ---
+
+    #[test]
+    fn test_suggest_related_non_source_returns_empty() {
+        // Non-source files should return no suggestions
+        let result = suggest_related_files("README.md", &[]);
+        assert!(
+            result.is_empty(),
+            "non-source file should have no suggestions"
+        );
+
+        let result = suggest_related_files("data.json", &[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn test_suggest_related_test_file_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        // Create src/foo.rs
+        std::fs::write(src.join("foo.rs"), "fn hello() {}").unwrap();
+        // Create src/foo_test.rs
+        std::fs::write(src.join("foo_test.rs"), "#[test] fn t() {}").unwrap();
+
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let suggestions = suggest_related_files("src/foo.rs", &[]);
+        assert!(
+            suggestions.contains(&"src/foo_test.rs".to_string()),
+            "should find test file, got: {suggestions:?}"
+        );
+
+        std::env::set_current_dir(orig_dir).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_suggest_related_module_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_foo = dir.path().join("src").join("foo");
+        std::fs::create_dir_all(&src_foo).unwrap();
+        std::fs::write(src_foo.join("bar.rs"), "fn bar() {}").unwrap();
+        std::fs::write(src_foo.join("mod.rs"), "mod bar;").unwrap();
+
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let suggestions = suggest_related_files("src/foo/bar.rs", &[]);
+        assert!(
+            suggestions.contains(&"src/foo/mod.rs".to_string()),
+            "should find module parent, got: {suggestions:?}"
+        );
+
+        std::env::set_current_dir(orig_dir).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_suggest_related_use_crate_parsing() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        // Create a file that uses crate::dispatch
+        std::fs::write(
+            src.join("commands.rs"),
+            "use crate::dispatch;\nuse crate::format;\nfn main() {}",
+        )
+        .unwrap();
+        // Create the referenced module
+        std::fs::write(src.join("dispatch.rs"), "pub fn run() {}").unwrap();
+        // format.rs does NOT exist — should not appear
+
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let suggestions = suggest_related_files("src/commands.rs", &[]);
+        assert!(
+            suggestions.contains(&"src/dispatch.rs".to_string()),
+            "should find crate dependency, got: {suggestions:?}"
+        );
+        // format.rs doesn't exist, so it shouldn't appear
+        assert!(
+            !suggestions.contains(&"src/format.rs".to_string()),
+            "non-existent files should not appear"
+        );
+
+        std::env::set_current_dir(orig_dir).unwrap();
+    }
+
+    #[test]
+    fn test_suggest_related_skips_already_added() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("foo.rs"), "fn foo() {}").unwrap();
+        std::fs::write(src.join("foo_test.rs"), "#[test] fn t() {}").unwrap();
+
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        // If the test file is already added, don't suggest it
+        let already = vec!["src/foo_test.rs".to_string()];
+        let suggestions = suggest_related_files("src/foo.rs", &already);
+        assert!(
+            !suggestions.contains(&"src/foo_test.rs".to_string()),
+            "already-added files should be excluded, got: {suggestions:?}"
+        );
+
+        std::env::set_current_dir(orig_dir).unwrap();
+    }
+
+    #[test]
+    fn test_suggest_related_cap_at_three() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        // Create a file with many use crate:: lines
+        let content = (0..10)
+            .map(|i| format!("use crate::mod_{i};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(src.join("main_file.rs"), &content).unwrap();
+        // Create all the referenced modules
+        for i in 0..10 {
+            std::fs::write(src.join(format!("mod_{i}.rs")), "pub fn f() {}").unwrap();
+        }
+        // Also create test file
+        std::fs::write(src.join("main_file_test.rs"), "#[test] fn t() {}").unwrap();
+
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let suggestions = suggest_related_files("src/main_file.rs", &[]);
+        assert!(
+            suggestions.len() <= 3,
+            "should cap at 3, got {} suggestions: {suggestions:?}",
+            suggestions.len()
+        );
+
+        std::env::set_current_dir(orig_dir).unwrap();
+    }
+
+    #[test]
+    fn test_is_source_extension() {
+        assert!(is_source_extension("foo.rs"));
+        assert!(is_source_extension("bar.py"));
+        assert!(is_source_extension("baz.ts"));
+        assert!(is_source_extension("qux.go"));
+        assert!(is_source_extension("thing.java"));
+        assert!(is_source_extension("lib.cpp"));
+        assert!(is_source_extension("header.h"));
+        assert!(!is_source_extension("readme.md"));
+        assert!(!is_source_extension("data.json"));
+        assert!(!is_source_extension("image.png"));
+        assert!(!is_source_extension("noextension"));
+    }
+
+    #[test]
+    fn test_detect_src_prefix() {
+        assert_eq!(detect_src_prefix("src/foo.rs"), "src/");
+        assert_eq!(detect_src_prefix("src/commands/file.rs"), "src/commands/");
+        assert_eq!(detect_src_prefix("foo.rs"), "");
     }
 }

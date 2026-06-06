@@ -54,8 +54,9 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `agent_builder.rs` — AgentConfig, build_agent, build_side_agent, create_model_config, MCP collision detection (BUILTIN_TOOL_NAMES, detect_mcp_collisions), connect_external_servers, fallback retry logic
 - `banner.rs` — startup banner, welcome text, git status summary display (extracted from `cli.rs`)
 - `hooks.rs` — Hook trait, HookRegistry, AuditHook, HookedTool wrapper, maybe_hook helper
-- `tools.rs` — StreamingBashTool, RenameSymbolTool, AskUserTool, TodoTool, tool builders, SharedState wiring for sub-agents
-- `tool_wrappers.rs` — Tool decorator types (GuardedTool, TruncatingTool, ConfirmTool, ArcGuardedTool, AutoCheckTool, SmartEditTool, RecoveryHintTool, ToolFailureTracker) and helper wrappers
+- `tools.rs` — StreamingBashTool, RenameSymbolTool, AskUserTool, TodoTool, WebSearchTool, tool builders, SharedState wiring for sub-agents
+- `smart_edit.rs` — SmartEditTool: fuzzy matching for edit_file errors, whitespace-only auto-fix retry, nearest-match line-number hints
+- `tool_wrappers.rs` — Tool decorator types (GuardedTool, TruncatingTool, ConfirmTool, ArcGuardedTool, AutoCheckTool, RecoveryHintTool, ToolFailureTracker, LiteDescriptionTool) and helper wrappers
 - `rtk.rs` — RTK (Rust Token Killer) detection, proxy integration, output compression
 - `update.rs` — version comparison (`version_is_newer`) and update checking (`check_for_update`) against GitHub releases
 - `safety.rs` — bash command safety analysis, destructive pattern detection
@@ -70,7 +71,7 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `context.rs` — project context loading (reads YOYO.md, CLAUDE.md, AGENTS.md, .cursorrules, .github/copilot-instructions.md), file listing, git status, recently changed files, project-type convention hints
 - `conversations.rs` — side, quick, and extended conversation handlers (extracted from `repl.rs`): `build_add_content_blocks`, `handle_side`, `handle_quick`, `handle_extended`
 - `providers.rs` — provider constants (KNOWN_PROVIDERS), API key env vars, default/known models per provider
-- `format/mod.rs` — Color, constants, utility functions, re-exports
+- `format/mod.rs` — Color, constants, utility functions, re-exports, contextual command hints (`HintContext`, `contextual_hint`)
 - `format/diff.rs` — LCS-based line diff algorithm, colored unified diff rendering
 - `format/output.rs` — tool output compression, filtering, truncation, batch summary, indentation
 - `format/highlight.rs` — syntax highlighting for code, JSON, YAML, TOML
@@ -78,7 +79,7 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 - `format/markdown.rs` — MarkdownRenderer for streaming markdown output
 - `format/tools.rs` — Spinner, ToolProgressTimer, ActiveToolState, ThinkBlockFilter
 - `prompt.rs` — prompt execution, agent interaction, streaming event handling, auto-retry logic
-- `repl.rs` — interactive REPL loop, tab-completion, multi-line input, auto-continue for incomplete responses (`looks_incomplete` heuristic, up to 5 follow-ups per user turn)
+- `repl.rs` — interactive REPL loop, tab-completion, multi-line input, auto-continue for incomplete responses (`looks_incomplete` heuristic, up to 5 follow-ups per user turn), contextual command hints after prompt turns
 - `watch.rs` — watch mode: set/get/clear watch command(s), run watch command with streaming output, multi-phase watch (lint → fix → test → fix), auto-fix loop after prompts with command-type-aware fix prompts and structured Rust compiler error parsing (`CompilerError`, `parse_rust_errors`, category-specific hints) (extracted from `prompt.rs`), `/watch` command handler and project-type detection for auto-watch
 - `prompt_budget.rs` — session wall-clock budget + audit log helpers (extracted from `prompt.rs`)
 - `prompt_retry.rs` — error diagnosis and retry logic: retry prompt construction, exponential backoff, error classification, API error diagnosis (extracted from `prompt.rs`)
@@ -211,7 +212,7 @@ For the broader capability roadmap (codebase archaeology, semantic git bisect, m
 
 ## MCP gotchas
 
-**Tool-name collisions (Day 39):** If an MCP server exposes a tool whose name matches one of yoyo's builtins (`bash`, `read_file`, `write_file`, `edit_file`, `list_files`, `search`, `rename_symbol`, `ask_user`, `todo`, `sub_agent`, `shared_state`), the Anthropic API will reject the first turn with `"Tool names must be unique"` and the session dies. The flagship reference server `@modelcontextprotocol/server-filesystem` collides on `read_file` AND `write_file`, so the common case was broken until the guard landed.
+**Tool-name collisions (Day 39):** If an MCP server exposes a tool whose name matches one of yoyo's builtins (`bash`, `read_file`, `write_file`, `edit_file`, `list_files`, `search`, `rename_symbol`, `ask_user`, `todo`, `web_search`, `sub_agent`, `shared_state`), the Anthropic API will reject the first turn with `"Tool names must be unique"` and the session dies. The flagship reference server `@modelcontextprotocol/server-filesystem` collides on `read_file` AND `write_file`, so the common case was broken until the guard landed.
 
 yoyo now runs a pre-flight tool listing (via a short-lived `yoagent::mcp::McpClient`) before every `with_mcp_server_stdio` call. If any MCP tool name appears in `BUILTIN_TOOL_NAMES` (defined in `src/agent_builder.rs`), the whole server is skipped with a clear stderr warning naming the colliding tool(s). Non-colliding servers connect normally. If the pre-flight itself fails (e.g. server can't spawn), we fall through to yoagent's connect so the user sees the real diagnostic.
 

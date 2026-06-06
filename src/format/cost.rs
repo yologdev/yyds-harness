@@ -287,6 +287,61 @@ pub fn context_bar(used: u64, max: u64) -> String {
     format!("{bar} {label}")
 }
 
+/// Estimate how many more turns fit before hitting the context limit.
+///
+/// Returns `None` if fewer than 2 assistant turns have occurred (not enough
+/// data for a meaningful average). Otherwise returns
+/// `Some((remaining_turns, avg_tokens_per_turn))`.
+pub fn estimate_remaining_turns(
+    messages: &[yoagent::AgentMessage],
+    max_context: u64,
+) -> Option<(usize, f64)> {
+    // Count assistant turns
+    let turn_count = messages
+        .iter()
+        .filter(|m| {
+            matches!(
+                m,
+                yoagent::AgentMessage::Llm(yoagent::Message::Assistant { .. })
+            )
+        })
+        .count();
+
+    if turn_count < 2 {
+        return None;
+    }
+
+    let context_used = yoagent::context::total_tokens(messages) as u64;
+    if context_used == 0 {
+        return None;
+    }
+
+    let avg_per_turn = context_used as f64 / turn_count as f64;
+    let remaining_capacity = max_context.saturating_sub(context_used);
+    let remaining_turns = (remaining_capacity as f64 / avg_per_turn).floor() as usize;
+
+    Some((remaining_turns, avg_per_turn))
+}
+
+/// Format estimated remaining turns for display.
+///
+/// Uses yellow for ≤3 remaining turns and red when context is nearly full.
+pub fn format_remaining_turns(remaining: usize, avg_per_turn: f64) -> String {
+    use super::{RED, RESET, YELLOW};
+
+    let avg_str = format_token_count(avg_per_turn as u64);
+    if remaining == 0 {
+        format!("{RED}⚠ Context nearly full (~{avg_str}/turn avg){RESET}")
+    } else if remaining <= 3 {
+        format!(
+            "{YELLOW}~{remaining} {} remaining (~{avg_str}/turn avg){RESET}",
+            if remaining == 1 { "turn" } else { "turns" }
+        )
+    } else {
+        format!("~{remaining} turns remaining (~{avg_str}/turn avg)")
+    }
+}
+
 /// Truncate a string with an ellipsis if it exceeds `max` characters.
 /// Return the correct singular or plural form of a word based on count.
 ///
@@ -373,6 +428,116 @@ pub fn format_turn_costs(costs: &[TurnCost]) -> String {
         format_token_count(total_input),
         format_token_count(total_output),
         total_cost_str,
+    ));
+
+    lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------
+// Per-tool call summary
+// ---------------------------------------------------------------------------
+
+/// Summary of tool usage during a session.
+pub struct ToolCallSummary {
+    pub name: String,
+    pub calls: usize,
+    pub errors: usize,
+}
+
+/// Extract per-tool call counts from conversation messages.
+///
+/// Iterates over all `ToolResult` messages, counts calls per tool name,
+/// and tracks error counts. Returns sorted by call count descending,
+/// then alphabetically by name for ties.
+pub fn extract_tool_call_summary(messages: &[yoagent::AgentMessage]) -> Vec<ToolCallSummary> {
+    use std::collections::HashMap;
+
+    let mut counts: HashMap<String, (usize, usize)> = HashMap::new();
+
+    for msg in messages {
+        if let yoagent::AgentMessage::Llm(yoagent::Message::ToolResult {
+            tool_name,
+            is_error,
+            ..
+        }) = msg
+        {
+            let entry = counts.entry(tool_name.clone()).or_insert((0, 0));
+            entry.0 += 1;
+            if *is_error {
+                entry.1 += 1;
+            }
+        }
+    }
+
+    let mut result: Vec<ToolCallSummary> = counts
+        .into_iter()
+        .map(|(name, (calls, errors))| ToolCallSummary {
+            name,
+            calls,
+            errors,
+        })
+        .collect();
+
+    // Sort by call count descending, then alphabetically for ties
+    result.sort_by(|a, b| b.calls.cmp(&a.calls).then_with(|| a.name.cmp(&b.name)));
+    result
+}
+
+/// Format tool call summary as a compact table.
+///
+/// Output looks like:
+/// ```text
+///     Tool usage:
+///       bash           12 calls
+///       edit_file       8 calls (1 error)
+///       read_file       5 calls
+/// ```
+pub fn format_tool_call_summary(summary: &[ToolCallSummary]) -> String {
+    if summary.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = Vec::new();
+    lines.push("    Tool usage:".to_string());
+
+    // Find max tool name length for alignment
+    let max_name_len = summary.iter().map(|s| s.name.len()).max().unwrap_or(0);
+
+    let total_calls: usize = summary.iter().map(|s| s.calls).sum();
+    let total_errors: usize = summary.iter().map(|s| s.errors).sum();
+
+    for s in summary {
+        let error_str = if s.errors > 0 {
+            format!(" ({} {})", s.errors, pluralize(s.errors, "error", "errors"))
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "      {:<width$}  {:>3} {}{}",
+            s.name,
+            s.calls,
+            pluralize(s.calls, "call", "calls"),
+            error_str,
+            width = max_name_len,
+        ));
+    }
+
+    // Total line
+    let total_error_str = if total_errors > 0 {
+        format!(
+            " ({} {})",
+            total_errors,
+            pluralize(total_errors, "error", "errors")
+        )
+    } else {
+        String::new()
+    };
+    lines.push(format!(
+        "      {:<width$}  {:>3} total{}",
+        "—",
+        total_calls,
+        total_error_str,
+        width = max_name_len,
     ));
 
     lines.join("\n")
@@ -1434,5 +1599,275 @@ mod tests {
         let (inp, _, _, out) = model_pricing("o4-mini-high").unwrap();
         assert!((inp - 1.10).abs() < 0.001);
         assert!((out - 4.40).abs() < 0.001);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool call summary tests
+    // -----------------------------------------------------------------------
+
+    fn make_tool_result(tool_name: &str, is_error: bool) -> yoagent::AgentMessage {
+        use yoagent::{AgentMessage, Content, Message};
+        AgentMessage::Llm(Message::ToolResult {
+            tool_call_id: "test-id".into(),
+            tool_name: tool_name.into(),
+            content: vec![Content::Text {
+                text: "result".into(),
+            }],
+            is_error,
+            timestamp: 0,
+        })
+    }
+
+    #[test]
+    fn test_extract_tool_call_summary_empty() {
+        let messages: Vec<yoagent::AgentMessage> = vec![];
+        let summary = extract_tool_call_summary(&messages);
+        assert!(summary.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tool_call_summary_counts() {
+        let messages = vec![
+            make_tool_result("bash", false),
+            make_tool_result("bash", false),
+            make_tool_result("bash", false),
+            make_tool_result("edit_file", false),
+            make_tool_result("edit_file", false),
+            make_tool_result("read_file", false),
+        ];
+        let summary = extract_tool_call_summary(&messages);
+        assert_eq!(summary.len(), 3);
+        assert_eq!(summary[0].name, "bash");
+        assert_eq!(summary[0].calls, 3);
+        assert_eq!(summary[0].errors, 0);
+        assert_eq!(summary[1].name, "edit_file");
+        assert_eq!(summary[1].calls, 2);
+        assert_eq!(summary[2].name, "read_file");
+        assert_eq!(summary[2].calls, 1);
+    }
+
+    #[test]
+    fn test_extract_tool_call_summary_errors() {
+        let messages = vec![
+            make_tool_result("bash", false),
+            make_tool_result("bash", true),
+            make_tool_result("edit_file", true),
+            make_tool_result("edit_file", true),
+        ];
+        let summary = extract_tool_call_summary(&messages);
+        assert_eq!(summary.len(), 2);
+        // Both have 2 calls each, sorted alphabetically for ties
+        assert_eq!(summary[0].name, "bash");
+        assert_eq!(summary[0].calls, 2);
+        assert_eq!(summary[0].errors, 1);
+        assert_eq!(summary[1].name, "edit_file");
+        assert_eq!(summary[1].calls, 2);
+        assert_eq!(summary[1].errors, 2);
+    }
+
+    #[test]
+    fn test_extract_tool_call_summary_sorted() {
+        let messages = vec![
+            make_tool_result("search", false),
+            make_tool_result("bash", false),
+            make_tool_result("bash", false),
+            make_tool_result("bash", false),
+            make_tool_result("edit_file", false),
+            make_tool_result("edit_file", false),
+        ];
+        let summary = extract_tool_call_summary(&messages);
+        assert_eq!(summary.len(), 3);
+        // Sorted by call count descending
+        assert_eq!(summary[0].name, "bash");
+        assert_eq!(summary[0].calls, 3);
+        assert_eq!(summary[1].name, "edit_file");
+        assert_eq!(summary[1].calls, 2);
+        assert_eq!(summary[2].name, "search");
+        assert_eq!(summary[2].calls, 1);
+    }
+
+    #[test]
+    fn test_extract_tool_call_summary_ignores_non_tool_messages() {
+        use yoagent::{AgentMessage, Content, Message};
+        let messages = vec![
+            AgentMessage::Llm(Message::User {
+                content: vec![Content::Text {
+                    text: "hello".into(),
+                }],
+                timestamp: 0,
+            }),
+            make_tool_result("bash", false),
+        ];
+        let summary = extract_tool_call_summary(&messages);
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].name, "bash");
+        assert_eq!(summary[0].calls, 1);
+    }
+
+    #[test]
+    fn test_format_tool_call_summary_empty() {
+        let output = format_tool_call_summary(&[]);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_format_tool_call_summary() {
+        let summary = vec![
+            ToolCallSummary {
+                name: "bash".into(),
+                calls: 12,
+                errors: 0,
+            },
+            ToolCallSummary {
+                name: "edit_file".into(),
+                calls: 8,
+                errors: 1,
+            },
+            ToolCallSummary {
+                name: "search".into(),
+                calls: 3,
+                errors: 0,
+            },
+        ];
+        let output = format_tool_call_summary(&summary);
+        assert!(output.contains("Tool usage:"));
+        assert!(output.contains("bash"));
+        assert!(output.contains("12 calls"));
+        assert!(output.contains("edit_file"));
+        assert!(output.contains("8 calls (1 error)"));
+        assert!(output.contains("search"));
+        assert!(output.contains("3 calls"));
+        assert!(output.contains("23 total"));
+        // Total should show the 1 error
+        assert!(output.contains("(1 error)"));
+    }
+
+    #[test]
+    fn test_format_tool_call_summary_multiple_errors() {
+        let summary = vec![ToolCallSummary {
+            name: "bash".into(),
+            calls: 5,
+            errors: 3,
+        }];
+        let output = format_tool_call_summary(&summary);
+        assert!(output.contains("(3 errors)"));
+    }
+
+    // ── estimate_remaining_turns / format_remaining_turns ──
+
+    #[test]
+    fn test_estimate_remaining_turns_empty() {
+        let messages: Vec<yoagent::AgentMessage> = vec![];
+        assert!(estimate_remaining_turns(&messages, 200_000).is_none());
+    }
+
+    #[test]
+    fn test_estimate_remaining_turns_one_turn() {
+        use yoagent::{AgentMessage, Content, Message, StopReason, Usage};
+
+        let messages = vec![AgentMessage::Llm(Message::Assistant {
+            content: vec![Content::Text { text: "hi".into() }],
+            stop_reason: StopReason::Stop,
+            model: "test".into(),
+            provider: "test".into(),
+            usage: Usage {
+                input: 1000,
+                output: 500,
+                cache_read: 0,
+                cache_write: 0,
+                total_tokens: 1500,
+            },
+            timestamp: 0,
+            error_message: None,
+        })];
+        // Only 1 turn — not enough data
+        assert!(estimate_remaining_turns(&messages, 200_000).is_none());
+    }
+
+    #[test]
+    fn test_estimate_remaining_turns_basic() {
+        use yoagent::{AgentMessage, Content, Message, StopReason, Usage};
+
+        let make_assistant = |input: u64, output: u64| {
+            AgentMessage::Llm(Message::Assistant {
+                content: vec![Content::Text { text: "hi".into() }],
+                stop_reason: StopReason::Stop,
+                model: "test".into(),
+                provider: "test".into(),
+                usage: Usage {
+                    input,
+                    output,
+                    cache_read: 0,
+                    cache_write: 0,
+                    total_tokens: input + output,
+                },
+                timestamp: 0,
+                error_message: None,
+            })
+        };
+        let user_msg = AgentMessage::Llm(Message::User {
+            content: vec![Content::Text { text: "q".into() }],
+            timestamp: 0,
+        });
+
+        // 3 assistant turns, each with ~1500 total tokens in usage
+        // total_tokens() estimates based on content, not usage fields,
+        // so the actual context size depends on message_tokens().
+        let messages = vec![
+            user_msg.clone(),
+            make_assistant(1000, 500),
+            user_msg.clone(),
+            make_assistant(1000, 500),
+            user_msg.clone(),
+            make_assistant(1000, 500),
+        ];
+
+        let result = estimate_remaining_turns(&messages, 200_000);
+        assert!(result.is_some());
+        let (remaining, avg) = result.unwrap();
+        // With 3 assistant turns and small messages, plenty of room left
+        assert!(remaining > 0, "expected remaining > 0, got {remaining}");
+        assert!(avg > 0.0, "expected avg > 0, got {avg}");
+    }
+
+    #[test]
+    fn test_format_remaining_turns_normal() {
+        let output = format_remaining_turns(12, 4200.0);
+        assert!(
+            output.contains("~12 turns remaining"),
+            "expected turn count in output: {output}"
+        );
+        assert!(
+            output.contains("~4.2k/turn avg"),
+            "expected avg in output: {output}"
+        );
+    }
+
+    #[test]
+    fn test_format_remaining_turns_low() {
+        let output = format_remaining_turns(2, 5000.0);
+        assert!(
+            output.contains("~2 turns remaining"),
+            "expected turn count: {output}"
+        );
+        // Should contain YELLOW ANSI escape for warning
+        assert!(
+            output.contains("\x1b["),
+            "expected ANSI color code for low remaining: {output}"
+        );
+    }
+
+    #[test]
+    fn test_format_remaining_turns_zero() {
+        let output = format_remaining_turns(0, 8000.0);
+        assert!(
+            output.contains("nearly full"),
+            "expected 'nearly full' warning: {output}"
+        );
+        // Should contain RED ANSI escape
+        assert!(
+            output.contains("\x1b["),
+            "expected ANSI color code for zero remaining: {output}"
+        );
     }
 }

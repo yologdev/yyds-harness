@@ -128,6 +128,39 @@ pub fn handle_version_verbose(provider: &str, model: &str) {
 
 // ── /status ──────────────────────────────────────────────────────────────
 
+/// Count uncommitted file changes via `git status --porcelain`.
+///
+/// Returns `(modified, added)` counts, or `None` if git is unavailable.
+fn count_session_file_changes() -> Option<(usize, usize)> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut modified = 0usize;
+    let mut added = 0usize;
+    for line in text.lines() {
+        if line.len() < 2 {
+            continue;
+        }
+        // git status --porcelain: first two chars are index/worktree status
+        let index = line.as_bytes()[0];
+        let worktree = line.as_bytes()[1];
+        match (index, worktree) {
+            (b'?', b'?') => added += 1,             // untracked
+            (b'A', _) => added += 1,                // added to index
+            (b'M', _) | (_, b'M') => modified += 1, // modified
+            (b'R', _) => modified += 1,             // renamed
+            (b'D', _) | (_, b'D') => modified += 1, // deleted counts as modified
+            _ => {}
+        }
+    }
+    Some((modified, added))
+}
+
 pub fn handle_status(
     model: &str,
     cwd: &str,
@@ -152,11 +185,40 @@ pub fn handle_status(
     if crate::commands_plan::is_plan_mode() {
         println!("  mode:    {GREEN}plan{DIM}");
     }
+    if crate::commands_config::is_read_mode() {
+        println!("  mode:    {GREEN}read-only{DIM}");
+    }
+    // Show active goal if set
+    if let Some(goal) = crate::commands_goal::load_goal() {
+        let goal_preview = if goal.len() > 60 {
+            format!("{}…", safe_truncate(&goal, 60))
+        } else {
+            goal
+        };
+        println!("  goal:    {goal_preview}");
+    }
+    // Show active watch command(s)
+    if let Some(cmd) = crate::watch::get_watch_command() {
+        println!("  watch:   {cmd}");
+    }
     println!(
         "  session: {} elapsed, {turns} turn{}",
         format_duration(elapsed),
         if turns == 1 { "" } else { "s" }
     );
+    // Show file changes
+    if let Some((modified, added)) = count_session_file_changes() {
+        if modified + added > 0 {
+            let mut parts = Vec::new();
+            if modified > 0 {
+                parts.push(format!("{modified} modified"));
+            }
+            if added > 0 {
+                parts.push(format!("{added} added"));
+            }
+            println!("  changes: {}", parts.join(", "));
+        }
+    }
     println!(
         "  tokens:  {} in / {} out (session total)",
         session_total.input, session_total.output
@@ -301,11 +363,23 @@ pub fn handle_tokens(agent: &Agent, session_total: &Usage, model: &str) {
     );
     println!("    {bar}");
 
+    // Estimated remaining turns
+    if let Some((remaining, avg)) = estimate_remaining_turns(&messages, max_context) {
+        println!("    {}", format_remaining_turns(remaining, avg));
+    }
+
     // Show per-category context breakdown
     if !messages.is_empty() {
         let breakdown = context_breakdown(&messages);
         println!();
         println!("{}", format_context_breakdown(&breakdown));
+    }
+
+    // Per-tool call summary
+    let tool_summary = extract_tool_call_summary(&messages);
+    if !tool_summary.is_empty() {
+        println!();
+        println!("{}", format_tool_call_summary(&tool_summary));
     }
 
     if session_total.input > context_used + 1000 {
@@ -381,6 +455,13 @@ pub fn handle_cost(session_total: &Usage, model: &str, messages: &[yoagent::Agen
         if !turn_costs.is_empty() {
             println!();
             println!("{}", format_turn_costs(&turn_costs));
+        }
+
+        // Per-tool call summary
+        let tool_summary = extract_tool_call_summary(messages);
+        if !tool_summary.is_empty() {
+            println!();
+            println!("{}", format_tool_call_summary(&tool_summary));
         }
 
         println!("{RESET}");
@@ -744,7 +825,20 @@ pub fn handle_profile(
         format!("{ctx_color}{ctx_plain}{DIM}"),
     ));
 
-    // Use fixed label column of 10 chars (longest key is "Provider" = 8 + ":  " = 11)
+    // Estimated remaining turns
+    let remaining_str = estimate_remaining_turns(messages, max_context)
+        .map(|(r, a)| format_remaining_turns(r, a))
+        .unwrap_or_default();
+    // Strip ANSI codes for width calculation
+    let remaining_plain = remaining_str
+        .replace("\x1b[33m", "")
+        .replace("\x1b[31m", "")
+        .replace("\x1b[0m", "");
+    if !remaining_str.is_empty() {
+        lines.push(("Remaining", &remaining_plain, remaining_str.clone()));
+    }
+
+    // Use fixed label column of 10 chars (longest key is "Remaining" = 9 + ":" = 10)
     let label_col = 10;
     // Find the longest value for box width
     let max_val_width = lines.iter().map(|(_, pv, _)| pv.len()).max().unwrap_or(20);
@@ -2121,23 +2215,24 @@ More text.
     #[test]
     fn test_compute_self_written_pct_not_in_git_repo() {
         // In a temp dir with no git repo, git ls-files should fail
-        let tmp = std::env::temp_dir().join("yoyo_test_no_git_sw");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp = tempfile::Builder::new()
+            .prefix("yoyo_test_no_git_sw_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp.path();
         std::fs::create_dir_all(tmp.join("src")).unwrap();
         std::fs::write(tmp.join("src/lib.rs"), "fn foo() {}\n").unwrap();
 
         // Run git ls-files in the temp dir — should fail (no .git)
         let output = std::process::Command::new("git")
             .args(["ls-files", "src/"])
-            .current_dir(&tmp)
+            .current_dir(tmp)
             .output()
             .unwrap();
         assert!(
             !output.status.success() || String::from_utf8_lossy(&output.stdout).trim().is_empty(),
             "git ls-files should fail or return nothing outside a git repo"
         );
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -2146,15 +2241,18 @@ More text.
         // We replicate compute_self_written_pct_inner's logic but with explicit
         // current_dir() calls, since set_current_dir is process-global and not
         // safe in parallel tests.
-        let tmp = std::env::temp_dir().join("yoyo_test_self_written");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_self_written_")
+            .tempdir()
+            .unwrap();
+        let tmp = tmp_dir.path();
         std::fs::create_dir_all(tmp.join("src")).unwrap();
 
         // Init repo
         let run = |args: &[&str]| {
             std::process::Command::new("git")
                 .args(args)
-                .current_dir(&tmp)
+                .current_dir(tmp)
                 .output()
                 .unwrap()
         };
@@ -2175,7 +2273,7 @@ More text.
         // Run git blame in the temp repo
         let output = std::process::Command::new("git")
             .args(["blame", "--line-porcelain", "src/main.rs"])
-            .current_dir(&tmp)
+            .current_dir(tmp)
             .output()
             .unwrap();
         assert!(output.status.success(), "git blame should succeed");
@@ -2206,7 +2304,7 @@ More text.
 
         let output = std::process::Command::new("git")
             .args(["blame", "--line-porcelain", "src/main.rs"])
-            .current_dir(&tmp)
+            .current_dir(tmp)
             .output()
             .unwrap();
         assert!(output.status.success());
@@ -2227,8 +2325,6 @@ More text.
 
         let pct = (self_written as f64 / total as f64) * 100.0;
         assert!(pct < 100.0, "percentage should be less than 100%");
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // --- Context breakdown tests ---
@@ -2495,5 +2591,107 @@ More text.
                 "DISCOVERY_TIPS entry should start with 💡: {tip}"
             );
         }
+    }
+
+    #[test]
+    fn test_count_session_file_changes_in_temp_repo() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path();
+
+        // Init a git repo with an initial commit
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(path)
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(path)
+            .output()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(path)
+            .output()
+            .expect("git config name");
+
+        fs::write(path.join("hello.txt"), "hello").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(path)
+            .output()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(path)
+            .output()
+            .expect("git commit");
+
+        // Now modify a file and add a new untracked file
+        fs::write(path.join("hello.txt"), "hello modified").unwrap();
+        fs::write(path.join("new_file.txt"), "new").unwrap();
+
+        // Run git status --porcelain from the temp dir to verify
+        let output = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(path)
+            .output()
+            .expect("git status");
+        let text = String::from_utf8_lossy(&output.stdout);
+
+        let mut modified = 0usize;
+        let mut added = 0usize;
+        for line in text.lines() {
+            if line.len() < 2 {
+                continue;
+            }
+            let index = line.as_bytes()[0];
+            let worktree = line.as_bytes()[1];
+            match (index, worktree) {
+                (b'?', b'?') => added += 1,
+                (b'A', _) => added += 1,
+                (b'M', _) | (_, b'M') => modified += 1,
+                (b'R', _) => modified += 1,
+                (b'D', _) | (_, b'D') => modified += 1,
+                _ => {}
+            }
+        }
+
+        assert_eq!(modified, 1, "should have 1 modified file");
+        assert_eq!(added, 1, "should have 1 added (untracked) file");
+    }
+
+    #[test]
+    fn test_handle_status_shows_enhanced_info() {
+        use std::time::Duration;
+        // Source-level check: handle_status should include goal, watch, and changes sections
+        let source = include_str!("commands_info.rs");
+        assert!(
+            source.contains("goal:"),
+            "/status should display goal when set"
+        );
+        assert!(
+            source.contains("watch:"),
+            "/status should display watch command when set"
+        );
+        assert!(
+            source.contains("changes:"),
+            "/status should display file changes"
+        );
+        assert!(
+            source.contains("read-only"),
+            "/status should display read-only mode"
+        );
+        // Should not panic
+        handle_status(
+            "test-model",
+            "/tmp",
+            &Usage::default(),
+            Duration::from_secs(30),
+            2,
+            10_000,
+            200_000,
+        );
     }
 }

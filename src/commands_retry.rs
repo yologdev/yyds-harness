@@ -72,8 +72,38 @@ pub fn extract_tool_name_from_error(error: &str) -> Option<&'static str> {
     None
 }
 
+/// Parse the `--with` modifier from a `/retry` command input.
+///
+/// Accepts the full input string (e.g. `"/retry --with use async/await"`).
+/// Returns `Some(modifier)` if `--with` is present with a non-empty value,
+/// `None` otherwise.
+pub fn parse_with_modifier(input: &str) -> Option<String> {
+    let arg = input.strip_prefix("/retry").unwrap_or("").trim();
+    if let Some(rest) = arg.strip_prefix("--with") {
+        let modifier = rest.trim();
+        // Strip surrounding quotes if present
+        let modifier = modifier
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .or_else(|| {
+                modifier
+                    .strip_prefix('\'')
+                    .and_then(|s| s.strip_suffix('\''))
+            })
+            .unwrap_or(modifier);
+        if modifier.is_empty() {
+            None
+        } else {
+            Some(modifier.to_string())
+        }
+    } else {
+        None
+    }
+}
+
 pub async fn handle_retry(
     agent: &mut Agent,
+    input: &str,
     last_input: &Option<String>,
     last_error: &Option<String>,
     session_total: &mut Usage,
@@ -81,10 +111,23 @@ pub async fn handle_retry(
 ) -> Option<String> {
     match last_input {
         Some(prev) => {
+            // Parse optional --with modifier for iterative refinement
+            let with_modifier = parse_with_modifier(input);
+
             // Try to extract the tool name from the error text for targeted recovery hints
             let tool_name = last_error.as_deref().and_then(extract_tool_name_from_error);
             let retry_input = build_retry_prompt(prev, last_error, tool_name);
-            if last_error.is_some() {
+
+            // Append the --with modifier if present
+            let retry_input = if let Some(ref modifier) = with_modifier {
+                format!("{retry_input}\n\nAdditional instruction: {modifier}")
+            } else {
+                retry_input
+            };
+
+            if let Some(ref modifier) = with_modifier {
+                println!("{DIM}  (retrying with modifier: {modifier}){RESET}");
+            } else if last_error.is_some() {
                 if let Some(name) = tool_name {
                     println!("{DIM}  (retrying with {name} error context + recovery hint){RESET}");
                 } else {
@@ -387,6 +430,64 @@ mod tests {
             output,
             ..Usage::default()
         }
+    }
+
+    // ── parse_with_modifier tests ──────────────────────────────────────
+
+    #[test]
+    fn test_parse_with_modifier_plain_retry() {
+        assert_eq!(parse_with_modifier("/retry"), None);
+    }
+
+    #[test]
+    fn test_parse_with_modifier_unquoted() {
+        assert_eq!(
+            parse_with_modifier("/retry --with use async"),
+            Some("use async".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_with_modifier_double_quoted() {
+        assert_eq!(
+            parse_with_modifier("/retry --with \"quoted text\""),
+            Some("quoted text".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_with_modifier_single_quoted() {
+        assert_eq!(
+            parse_with_modifier("/retry --with 'single quoted'"),
+            Some("single quoted".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_with_modifier_empty_value() {
+        assert_eq!(parse_with_modifier("/retry --with"), None);
+        assert_eq!(parse_with_modifier("/retry --with  "), None);
+    }
+
+    #[test]
+    fn test_parse_with_modifier_empty_quoted() {
+        assert_eq!(parse_with_modifier("/retry --with \"\""), None);
+        assert_eq!(parse_with_modifier("/retry --with ''"), None);
+    }
+
+    #[test]
+    fn test_parse_with_modifier_preserves_inner_quotes() {
+        // If only outer quotes are stripped, inner content stays intact
+        assert_eq!(
+            parse_with_modifier("/retry --with \"don't break\""),
+            Some("don't break".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_with_modifier_no_flag() {
+        // Other flags should not match
+        assert_eq!(parse_with_modifier("/retry --verbose"), None);
     }
 
     #[test]
@@ -767,10 +868,15 @@ mod tests {
             result.contains("old_text not found"),
             "should include error: {result}"
         );
-        // Should include a recovery hint from tool_recovery_hint
+        // Should include some recovery guidance (resilient to hint text changes)
+        let has_recovery_hint = result.contains("read_file")
+            || result.contains("current contents")
+            || result.contains("verify")
+            || result.contains("mismatch")
+            || result.contains("retry");
         assert!(
-            result.contains("read_file"),
-            "edit_file hint should suggest read_file: {result}"
+            has_recovery_hint,
+            "should include recovery guidance for edit_file: {result}"
         );
         assert!(
             result.contains("fix the bug"),

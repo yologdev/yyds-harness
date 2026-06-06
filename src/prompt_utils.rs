@@ -79,25 +79,64 @@ fn message_text(msg: &AgentMessage) -> String {
 
 /// Highlight all occurrences of `query` in `text` using BOLD ANSI codes (case-insensitive).
 /// Returns the text with matching substrings wrapped in BOLD..RESET.
+///
+/// Uses char-level comparison to avoid byte-offset mismatches between `text`
+/// and its lowercased form (which can differ in byte length for certain
+/// Unicode characters like Turkish İ → i̇).
 pub fn highlight_matches(text: &str, query: &str) -> String {
     if query.is_empty() {
         return text.to_string();
     }
-    let lower_text = text.to_lowercase();
     let lower_query = query.to_lowercase();
-    let mut result = String::with_capacity(text.len() + 32);
-    let mut last_end = 0;
+    let query_char_count = lower_query.chars().count();
 
-    for (match_start, _) in lower_text.match_indices(&lower_query) {
-        let match_end = match_start + query.len();
-        // Append text before this match (unmodified)
-        result.push_str(&text[last_end..match_start]);
-        // Append the matched portion with BOLD highlighting (preserving original case)
-        result.push_str(&format!("{BOLD}{}{RESET}", &text[match_start..match_end]));
-        last_end = match_end;
+    // Build char-index-to-byte-offset mapping for the original text
+    let char_starts: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    let lower_chars: Vec<char> = text.chars().flat_map(|c| c.to_lowercase()).collect();
+
+    // We need a mapping: for each char in lower_chars, which original char produced it?
+    // Since to_lowercase() can produce multiple chars from one original char, build
+    // a reverse map: lower_char_index → original_char_index.
+    let mut lower_to_orig: Vec<usize> = Vec::with_capacity(lower_chars.len());
+    for (orig_idx, ch) in text.chars().enumerate() {
+        let lc_count = ch.to_lowercase().count();
+        for _ in 0..lc_count {
+            lower_to_orig.push(orig_idx);
+        }
     }
-    // Append any remaining text after the last match
-    result.push_str(&text[last_end..]);
+
+    let lower_query_chars: Vec<char> = lower_query.chars().collect();
+    let mut result = String::with_capacity(text.len() + 32);
+    let mut last_orig_end: usize = 0; // byte offset in original text
+
+    let mut i = 0;
+    while i + query_char_count <= lower_chars.len() {
+        if lower_chars[i..i + query_char_count] == lower_query_chars[..] {
+            // Map back to original string byte boundaries
+            let orig_char_start = lower_to_orig[i];
+            let orig_char_end_exclusive = if i + query_char_count < lower_to_orig.len() {
+                lower_to_orig[i + query_char_count]
+            } else {
+                char_starts.len()
+            };
+            let byte_start = char_starts[orig_char_start];
+            let byte_end = if orig_char_end_exclusive < char_starts.len() {
+                char_starts[orig_char_end_exclusive]
+            } else {
+                text.len()
+            };
+
+            if byte_start >= last_orig_end {
+                result.push_str(&text[last_orig_end..byte_start]);
+                result.push_str(&format!("{BOLD}{}{RESET}", &text[byte_start..byte_end]));
+                last_orig_end = byte_end;
+            }
+            i += query_char_count;
+        } else {
+            i += 1;
+        }
+    }
+    result.push_str(&text[last_orig_end..]);
     result
 }
 
@@ -112,19 +151,38 @@ pub fn search_messages(messages: &[AgentMessage], query: &str) -> Vec<(usize, St
         if text.to_lowercase().contains(&query_lower) {
             let (role, _) = summarize_message(msg);
             // Find match context: show text around the first match
-            let lower = text.to_lowercase();
-            let match_pos = lower.find(&query_lower).unwrap_or(0);
-            let start = match_pos.saturating_sub(20);
-            // Get byte-safe boundaries
-            let start = text[..start]
-                .char_indices()
-                .last()
-                .map(|(idx, _)| idx)
+            // Use char-level search to avoid byte-offset mismatches between
+            // the original text and its lowercased form.
+            let lower_chars: Vec<char> = text.chars().flat_map(|c| c.to_lowercase()).collect();
+            let query_chars: Vec<char> = query_lower.chars().collect();
+            let char_starts: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+
+            // Build lower-char-index → original-char-index mapping
+            let mut lower_to_orig: Vec<usize> = Vec::with_capacity(lower_chars.len());
+            for (orig_idx, ch) in text.chars().enumerate() {
+                for _ in 0..ch.to_lowercase().count() {
+                    lower_to_orig.push(orig_idx);
+                }
+            }
+
+            // Find match position in lowered char array
+            let match_orig_char = (0..lower_chars.len())
+                .find(|&j| {
+                    j + query_chars.len() <= lower_chars.len()
+                        && lower_chars[j..j + query_chars.len()] == query_chars[..]
+                })
+                .map(|j| lower_to_orig[j])
                 .unwrap_or(0);
-            let end = text
-                .char_indices()
-                .map(|(idx, ch)| idx + ch.len_utf8())
-                .find(|&idx| idx >= match_pos + query.len() + 20)
+
+            // Context window: 20 chars before and after the match
+            let context_start_char = match_orig_char.saturating_sub(20);
+            let context_end_char =
+                (match_orig_char + query_chars.len() + 20).min(char_starts.len());
+
+            let start = char_starts.get(context_start_char).copied().unwrap_or(0);
+            let end = char_starts
+                .get(context_end_char)
+                .copied()
                 .unwrap_or(text.len());
             let snippet = &text[start..end];
             let prefix = if start > 0 { "…" } else { "" };
@@ -136,6 +194,147 @@ pub fn search_messages(messages: &[AgentMessage], query: &str) -> Vec<(usize, St
     }
 
     results
+}
+
+/// File-tool names whose `path` argument references a file.
+const FILE_TOOLS: &[&str] = &[
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_files",
+    "search",
+];
+
+/// Max number of file paths to include in the context summary.
+const MAX_FILES: usize = 10;
+/// Max number of topic strings to include in the context summary.
+const MAX_TOPICS: usize = 5;
+
+/// Summarize what topics and files are present in a set of messages.
+///
+/// Scans tool calls for file paths and user messages for topic keywords.
+/// Returns a vec of short strings like `["src/main.rs", "auth refactor"]`.
+pub fn summarize_context_topics(messages: &[AgentMessage]) -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    let mut topics: Vec<String> = Vec::new();
+    let mut user_count = 0;
+
+    for msg in messages {
+        match msg {
+            // Extract file paths from tool calls in assistant messages
+            AgentMessage::Llm(Message::Assistant { content, .. }) => {
+                for c in content {
+                    if let Content::ToolCall {
+                        name, arguments, ..
+                    } = c
+                    {
+                        if FILE_TOOLS.contains(&name.as_str()) {
+                            if let Some(path) = arguments.get("path").and_then(|v| v.as_str()) {
+                                if !path.is_empty()
+                                    && files.len() < MAX_FILES
+                                    && !files.iter().any(|f| f == path)
+                                {
+                                    files.push(path.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Extract topics from user messages (first few meaningful messages)
+            AgentMessage::Llm(Message::User { content, .. }) if user_count < MAX_TOPICS => {
+                let text: String = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        Content::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let text = text.trim();
+                // Skip empty, slash-commands, and very short messages
+                if !text.is_empty() && !text.starts_with('/') && text.len() > 3 {
+                    let topic = extract_topic_phrase(text);
+                    if !topic.is_empty() && !topics.contains(&topic) && !files.contains(&topic) {
+                        topics.push(topic);
+                    }
+                    user_count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut result: Vec<String> = files.into_iter().collect();
+    result.extend(topics);
+    result
+}
+
+/// Extract a short topic phrase from user text.
+/// Takes the first meaningful segment (up to ~50 chars), stopping at sentence/clause boundaries.
+fn extract_topic_phrase(text: &str) -> String {
+    // Take first line only
+    let first_line = text.lines().next().unwrap_or("").trim();
+    if first_line.is_empty() {
+        return String::new();
+    }
+    // Truncate at a reasonable length, preferring to break at word boundaries
+    let max_len = 50;
+    if first_line.len() <= max_len {
+        return first_line.to_string();
+    }
+    // Find a safe char boundary and then a word boundary
+    let mut end = max_len;
+    while end > 0 && !first_line.is_char_boundary(end) {
+        end -= 1;
+    }
+    // Try to break at the last space before the limit
+    if let Some(space_pos) = first_line[..end].rfind(' ') {
+        if space_pos > 10 {
+            end = space_pos;
+        }
+    }
+    format!("{}…", &first_line[..end])
+}
+
+/// Format the context summary for display after compaction.
+/// Returns `None` if there's nothing to summarize.
+pub fn format_context_summary(topics: &[String]) -> Option<String> {
+    if topics.is_empty() {
+        return None;
+    }
+
+    let file_count = topics.iter().filter(|t| looks_like_path(t)).count();
+    let topic_count = topics.len() - file_count;
+
+    let items = topics.join(", ");
+
+    let mut suffix_parts = Vec::new();
+    if file_count > 0 {
+        suffix_parts.push(format!(
+            "{file_count} file{}",
+            if file_count == 1 { "" } else { "s" }
+        ));
+    }
+    if topic_count > 0 {
+        suffix_parts.push(format!(
+            "{topic_count} topic{}",
+            if topic_count == 1 { "" } else { "s" }
+        ));
+    }
+
+    let suffix = if suffix_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", suffix_parts.join(", "))
+    };
+
+    Some(format!("📋 Still in context: {items}{suffix}"))
+}
+
+/// Heuristic: does this string look like a file path?
+fn looks_like_path(s: &str) -> bool {
+    s.contains('/') || (s.contains('.') && !s.contains(' '))
 }
 
 /// Summarize a message for /history display.
@@ -244,14 +443,15 @@ mod tests {
 
     #[test]
     fn test_write_output_file_some() {
-        let dir = std::env::temp_dir().join("yoyo_test_output");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("test_output.txt");
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("yoyo_test_output")
+            .tempdir()
+            .unwrap();
+        let path = tmp_dir.path().join("test_output.txt");
         let path_str = path.to_string_lossy().to_string();
         write_output_file(&Some(path_str), "hello from yoyo");
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hello from yoyo");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -448,5 +648,183 @@ mod tests {
         assert_eq!(results.len(), 1);
         // The preview should contain BOLD highlighting around "hello"
         assert!(results[0].2.contains(&format!("{BOLD}hello{RESET}")));
+    }
+
+    // --- summarize_context_topics tests ---
+
+    /// Helper: build an assistant message with a single tool call.
+    fn assistant_with_tool(name: &str, path: &str) -> AgentMessage {
+        AgentMessage::Llm(Message::Assistant {
+            content: vec![Content::ToolCall {
+                id: "tc_1".into(),
+                name: name.into(),
+                arguments: serde_json::json!({ "path": path }),
+                provider_metadata: None,
+            }],
+            stop_reason: StopReason::ToolUse,
+            model: "test".into(),
+            provider: "test".into(),
+            usage: Usage::default(),
+            timestamp: 0,
+            error_message: None,
+        })
+    }
+
+    #[test]
+    fn test_summarize_context_topics_extracts_file_paths() {
+        let messages = vec![
+            assistant_with_tool("read_file", "src/main.rs"),
+            assistant_with_tool("edit_file", "src/tools.rs"),
+            assistant_with_tool("write_file", "src/new.rs"),
+        ];
+        let topics = summarize_context_topics(&messages);
+        assert!(topics.contains(&"src/main.rs".to_string()));
+        assert!(topics.contains(&"src/tools.rs".to_string()));
+        assert!(topics.contains(&"src/new.rs".to_string()));
+        assert_eq!(topics.len(), 3);
+    }
+
+    #[test]
+    fn test_summarize_context_topics_deduplicates_paths() {
+        let messages = vec![
+            assistant_with_tool("read_file", "src/main.rs"),
+            assistant_with_tool("edit_file", "src/main.rs"),
+            assistant_with_tool("read_file", "src/main.rs"),
+        ];
+        let topics = summarize_context_topics(&messages);
+        assert_eq!(
+            topics.iter().filter(|t| *t == "src/main.rs").count(),
+            1,
+            "should deduplicate file paths"
+        );
+    }
+
+    #[test]
+    fn test_summarize_context_topics_empty_messages() {
+        let topics = summarize_context_topics(&[]);
+        assert!(topics.is_empty());
+    }
+
+    #[test]
+    fn test_summarize_context_topics_ignores_non_file_tools() {
+        let messages = vec![assistant_with_tool("bash", "/usr/bin/ls")];
+        let topics = summarize_context_topics(&messages);
+        // bash is not a file tool, so no paths extracted
+        assert!(
+            !topics.contains(&"/usr/bin/ls".to_string()),
+            "should not extract paths from non-file tools"
+        );
+    }
+
+    #[test]
+    fn test_summarize_context_topics_extracts_user_topics() {
+        let messages = vec![
+            AgentMessage::Llm(Message::user(
+                "refactor the authentication module to use JWT tokens",
+            )),
+            assistant_with_tool("read_file", "src/auth.rs"),
+        ];
+        let topics = summarize_context_topics(&messages);
+        assert!(topics.contains(&"src/auth.rs".to_string()));
+        // Should have a topic from the user message
+        assert!(topics.len() >= 2, "should include user topic");
+        assert!(
+            topics
+                .iter()
+                .any(|t| t.contains("refactor") || t.contains("authentication")),
+            "should extract topic from user message"
+        );
+    }
+
+    #[test]
+    fn test_summarize_context_topics_caps_files() {
+        // Create 15 unique file paths — should cap at MAX_FILES (10)
+        let messages: Vec<AgentMessage> = (0..15)
+            .map(|i| assistant_with_tool("read_file", &format!("src/file_{i}.rs")))
+            .collect();
+        let topics = summarize_context_topics(&messages);
+        let file_count = topics.iter().filter(|t| looks_like_path(t)).count();
+        assert!(file_count <= 10, "should cap at MAX_FILES");
+    }
+
+    #[test]
+    fn test_summarize_context_topics_skips_slash_commands() {
+        let messages = vec![AgentMessage::Llm(Message::user("/compact"))];
+        let topics = summarize_context_topics(&messages);
+        assert!(
+            topics.is_empty(),
+            "should skip slash commands as user topics"
+        );
+    }
+
+    #[test]
+    fn test_format_context_summary_empty() {
+        assert!(format_context_summary(&[]).is_none());
+    }
+
+    #[test]
+    fn test_format_context_summary_files_only() {
+        let topics = vec!["src/main.rs".to_string(), "src/tools.rs".to_string()];
+        let summary = format_context_summary(&topics).unwrap();
+        assert!(summary.contains("src/main.rs"));
+        assert!(summary.contains("src/tools.rs"));
+        assert!(summary.contains("2 files"));
+    }
+
+    #[test]
+    fn test_format_context_summary_mixed() {
+        let topics = vec![
+            "src/main.rs".to_string(),
+            "refactor auth module".to_string(),
+        ];
+        let summary = format_context_summary(&topics).unwrap();
+        assert!(summary.contains("1 file"));
+        assert!(summary.contains("1 topic"));
+        assert!(summary.contains("📋"));
+    }
+
+    #[test]
+    fn test_extract_topic_phrase_short() {
+        assert_eq!(extract_topic_phrase("fix the bug"), "fix the bug");
+    }
+
+    #[test]
+    fn test_extract_topic_phrase_long() {
+        let long_text = "this is a very long message that should be truncated at a reasonable point so it doesn't overflow the display area in the terminal";
+        let result = extract_topic_phrase(long_text);
+        assert!(result.len() <= 55); // 50 + a few for the ellipsis
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn test_extract_topic_phrase_empty() {
+        assert_eq!(extract_topic_phrase(""), "");
+    }
+
+    #[test]
+    fn test_highlight_matches_multibyte_chars() {
+        // Chars where to_lowercase() may change byte length:
+        // Turkish İ (U+0130, 2 bytes) lowercases to "i\u{0307}" (3 bytes)
+        let text = "before_İ_after";
+        let result = highlight_matches(text, "after");
+        // Must not panic and must contain the match
+        assert!(result.contains("after"));
+        assert!(result.contains("before"));
+    }
+
+    #[test]
+    fn test_highlight_matches_multibyte_query_target() {
+        // Search for a string that appears after multi-byte lowering chars
+        let text = "İİİ_target_here";
+        let result = highlight_matches(text, "target");
+        assert!(result.contains("target"));
+    }
+
+    #[test]
+    fn test_highlight_matches_unicode_accented() {
+        let text = "café résumé café";
+        let result = highlight_matches(text, "café");
+        assert!(result.contains("café"));
+        assert!(result.contains("résumé"));
     }
 }

@@ -455,6 +455,8 @@ struct PostPromptContext<'a> {
     last_error: &'a mut Option<String>,
     prompt_start: Instant,
     effective_input: &'a str,
+    turn_count: usize,
+    turns_since_slash_command: usize,
 }
 
 /// Post-prompt handling: bell, error tracking, fallback retry, turn snapshots,
@@ -551,6 +553,27 @@ async fn handle_post_prompt(mut ctx: PostPromptContext<'_>) {
         }
     }
 
+    // ── Contextual hint: teach users about relevant commands ─────────
+    if !is_quiet() {
+        let ctx_max = crate::cli_config::effective_context_tokens();
+        let usage_ratio = if ctx_max > 0 {
+            ctx.session_total.total_tokens as f64 / ctx_max as f64
+        } else {
+            0.0
+        };
+        let hint_ctx = crate::format::HintContext {
+            turn_count: ctx.turn_count,
+            files_modified,
+            has_watch: get_watch_command().is_some(),
+            had_tool_error: ctx.outcome.last_tool_error.is_some(),
+            context_usage_ratio: usage_ratio,
+            turns_since_slash_command: ctx.turns_since_slash_command,
+        };
+        if let Some(hint) = crate::format::contextual_hint(&hint_ctx) {
+            eprintln!("{DIM}  {hint}{RESET}");
+        }
+    }
+
     if files_modified {
         let watch_result = run_watch_after_prompt(
             ctx.agent,
@@ -605,7 +628,15 @@ fn print_startup_info(agent_config: &AgentConfig, repl_config: &ReplConfig) {
         println!("{DIM}  temperature: {temp:.1}{RESET}");
     }
     if !agent_config.skills.is_empty() {
-        println!("{DIM}  skills: {} loaded{RESET}", agent_config.skills.len());
+        let total = agent_config.skills.len();
+        let auto = crate::cli::auto_discovered_skill_count();
+        if auto > 0 && auto < total {
+            println!("{DIM}  skills: {total} loaded ({auto} auto-discovered){RESET}");
+        } else if auto > 0 {
+            println!("{DIM}  skills: {total} loaded (auto-discovered){RESET}");
+        } else {
+            println!("{DIM}  skills: {total} loaded{RESET}");
+        }
     }
     if repl_config.mcp_count > 0 {
         println!(
@@ -648,10 +679,10 @@ fn print_startup_info(agent_config: &AgentConfig, repl_config: &ReplConfig) {
     }
 
     // Hint about previous session if one exists and --continue wasn't used
-    if !repl_config.continue_session && commands::last_session_exists() {
-        println!(
-            "{DIM}  💡 Previous session found. Use {YELLOW}--continue{RESET}{DIM} or {YELLOW}/load .yoyo/last-session.json{RESET}{DIM} to resume.{RESET}\n"
-        );
+    if !repl_config.continue_session {
+        if let Some(hint) = crate::banner::session_resume_hint() {
+            println!("{hint}\n");
+        }
     }
 
     // Auto-enable watch mode if a project type is detected and config allows it
@@ -662,6 +693,8 @@ fn print_startup_info(agent_config: &AgentConfig, repl_config: &ReplConfig) {
                 "{DIM}  👀 Auto-watch: `{cmd}` (disable with /watch off or auto_watch = false){RESET}\n"
             );
         }
+    } else if get_watch_command().is_none() && !agent_config.auto_watch {
+        crate::watch::hint_auto_watch_available();
     }
 }
 
@@ -693,6 +726,7 @@ pub async fn run_repl(
     let mut session_total = Usage::default();
     let session_start = Instant::now();
     let mut turn_count: usize = 0;
+    let mut turns_since_slash_command: usize = 0;
     let mut last_input: Option<String> = None;
     let mut last_error: Option<String> = None;
     let mut bookmarks = commands::Bookmarks::new();
@@ -712,6 +746,9 @@ pub async fn run_repl(
             let mut indicators = String::new();
             if commands::is_plan_mode() {
                 indicators.push_str(&format!("{BOLD}{YELLOW}📋{RESET} "));
+            }
+            if commands::is_read_mode() {
+                indicators.push_str(&format!("{BOLD}{YELLOW}🔍{RESET} "));
             }
             if commands::is_architect_mode() {
                 indicators.push_str(&format!("{BOLD}{YELLOW}🏗️{RESET} "));
@@ -780,12 +817,17 @@ pub async fn run_repl(
         let cmd_result = crate::dispatch::dispatch_command(&mut dispatch_ctx).await;
         match cmd_result {
             CommandResult::Quit => break,
-            CommandResult::Continue => continue,
+            CommandResult::Continue => {
+                turns_since_slash_command = 0;
+                continue;
+            }
             CommandResult::SendToAgent(prompt) => {
+                turns_since_slash_command = 0;
                 last_input = Some(prompt);
                 // fall through to agent prompt handling
             }
             CommandResult::NotACommand => {
+                turns_since_slash_command += 1;
                 last_input = Some(input.to_string());
                 // fall through to agent prompt handling
             }
@@ -821,6 +863,13 @@ pub async fn run_repl(
         // If plan mode is active, prepend the planning constraint to the user message
         let effective_input = if commands::is_plan_mode() {
             format!("{}\n\n{}", commands::PLAN_MODE_PROMPT, effective_input)
+        } else {
+            effective_input
+        };
+
+        // If read mode is active, prepend the read-only constraint to the user message
+        let effective_input = if commands::is_read_mode() {
+            format!("{}\n\n{}", commands::READ_MODE_PROMPT, effective_input)
         } else {
             effective_input
         };
@@ -898,6 +947,8 @@ pub async fn run_repl(
             last_error: &mut last_error,
             prompt_start,
             effective_input: &effective_input,
+            turn_count,
+            turns_since_slash_command,
         })
         .await;
 
@@ -967,6 +1018,8 @@ pub async fn run_repl(
                     last_error: &mut last_error,
                     prompt_start: cont_start,
                     effective_input: cont_prompt,
+                    turn_count,
+                    turns_since_slash_command,
                 })
                 .await;
             }
@@ -1204,42 +1257,45 @@ fn extract_step_number(line: &str) -> Option<u32> {
 fn step_x_of_y_incomplete(text: &str) -> Option<bool> {
     // Search for patterns like "step 2 of 5", "step 3/7", "step 1 of 4 complete"
     let mut found = false;
-    let mut i = 0;
-    let bytes = text.as_bytes();
-    while i + 5 < bytes.len() {
-        // Look for "step "
-        if i + 5 <= bytes.len() && &text[i..i + 5] == "step " {
-            let after_step = &text[i + 5..];
-            // Parse X
-            let x_digits: String = after_step
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            if !x_digits.is_empty() {
-                if let Ok(x) = x_digits.parse::<u32>() {
-                    let rest = &after_step[x_digits.len()..];
-                    // Look for " of " or "/"
-                    let y_str = if let Some(r) = rest.strip_prefix(" of ") {
-                        Some(r)
-                    } else {
-                        rest.strip_prefix('/')
-                    };
-                    if let Some(y_rest) = y_str {
-                        let y_digits: String =
-                            y_rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                        if !y_digits.is_empty() {
-                            if let Ok(y) = y_digits.parse::<u32>() {
-                                if x < y {
-                                    return Some(true);
-                                }
-                                found = true;
+    let mut search_from = 0;
+    while search_from < text.len() {
+        // Use str::find which is UTF-8 safe and returns valid char boundaries
+        let Some(pos) = text[search_from..].find("step ") else {
+            break;
+        };
+        let abs_pos = search_from + pos;
+        let after_step = &text[abs_pos + 5..]; // "step " is 5 ASCII bytes, always safe
+                                               // Parse X
+        let x_digits: String = after_step
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if !x_digits.is_empty() {
+            if let Ok(x) = x_digits.parse::<u32>() {
+                let rest = &after_step[x_digits.len()..]; // ASCII digits, len == byte count
+                                                          // Look for " of " or "/"
+                let y_str = if let Some(r) = rest.strip_prefix(" of ") {
+                    Some(r)
+                } else {
+                    rest.strip_prefix('/')
+                };
+                if let Some(y_rest) = y_str {
+                    let y_digits: String =
+                        y_rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    if !y_digits.is_empty() {
+                        if let Ok(y) = y_digits.parse::<u32>() {
+                            if x < y {
+                                return Some(true);
                             }
+                            found = true;
                         }
                     }
                 }
             }
         }
-        i += 1;
+        // Advance past this "step " match. Move forward by at least 1 char to avoid
+        // infinite loop on the same position.
+        search_from = abs_pos + 1;
     }
     if found {
         Some(false) // Found step X of Y but X >= Y
@@ -1879,6 +1935,29 @@ mod tests {
         assert_eq!(step_x_of_y_incomplete("step 5 of 5"), Some(false));
         assert_eq!(step_x_of_y_incomplete("step 7 of 5"), Some(false));
         assert_eq!(step_x_of_y_incomplete("no steps here"), None);
+    }
+
+    #[test]
+    fn test_step_x_of_y_incomplete_non_ascii() {
+        // LLM output routinely contains em-dashes, smart quotes, emoji, etc.
+        // These are multi-byte UTF-8 characters. Byte-level iteration would
+        // panic when indexing lands inside a multi-byte char boundary.
+        assert_eq!(
+            step_x_of_y_incomplete("here's — step 2 of 5 remaining"),
+            Some(true)
+        );
+        assert_eq!(
+            step_x_of_y_incomplete("✓ done — step 5 of 5 complete"),
+            Some(false)
+        );
+        assert_eq!(
+            step_x_of_y_incomplete("→ step 3/7: update the \u{201C}config\u{201D}"),
+            Some(true)
+        );
+        // Pure non-ASCII with no step pattern
+        assert_eq!(step_x_of_y_incomplete("全部完成 — 没有更多步骤"), None);
+        // Emoji right before "step"
+        assert_eq!(step_x_of_y_incomplete("🔧step 1 of 3"), Some(true));
     }
 
     #[test]

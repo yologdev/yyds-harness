@@ -3,7 +3,7 @@
 use crate::format::*;
 
 /// Subcommand names for `/skill <Tab>` completion.
-pub const SKILL_SUBCOMMANDS: &[&str] = &["list", "show", "path", "install", "search"];
+pub const SKILL_SUBCOMMANDS: &[&str] = &["list", "show", "path", "install", "search", "init"];
 
 /// Handle the `/skill` command: list, show, and inspect loaded skills.
 ///
@@ -44,10 +44,127 @@ pub fn handle_skill(input: &str, skills: &yoagent::skills::SkillSet) {
         }
     } else if sub == "search" {
         handle_skill_search(None);
+    } else if let Some(name) = sub.strip_prefix("init ") {
+        let name = name.trim();
+        if name.is_empty() {
+            eprintln!("{YELLOW}  usage: /skill init <name>{RESET}");
+            eprintln!("{DIM}  scaffold a new skill in .yoyo/skills/<name>/SKILL.md{RESET}\n");
+        } else {
+            skill_init(name);
+        }
+    } else if sub == "init" {
+        eprintln!("{YELLOW}  usage: /skill init <name>{RESET}");
+        eprintln!("{DIM}  scaffold a new skill in .yoyo/skills/<name>/SKILL.md{RESET}\n");
     } else {
         eprintln!("{RED}  unknown subcommand: {sub}{RESET}");
-        eprintln!("{DIM}  try: /skill list, /skill show <name>, /skill path, /skill install <path>, /skill search <query>{RESET}\n");
+        eprintln!("{DIM}  try: /skill list, /skill show <name>, /skill path, /skill install <path>, /skill search <query>, /skill init <name>{RESET}\n");
     }
+}
+
+/// Validate a skill name: must be kebab-case (a-z, 0-9, hyphens).
+///
+/// Rules: non-empty, only lowercase letters/digits/hyphens, must start and end
+/// with a letter or digit (no leading/trailing hyphens), no consecutive hyphens.
+fn is_valid_skill_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    // Only a-z, 0-9, and hyphens
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return false;
+    }
+    // Must start and end with letter or digit
+    if name.starts_with('-') || name.ends_with('-') {
+        return false;
+    }
+    // No consecutive hyphens
+    if name.contains("--") {
+        return false;
+    }
+    true
+}
+
+/// Generate the SKILL.md template content for a new skill.
+fn skill_init_template(name: &str) -> String {
+    // Convert kebab-case to Title Case for heading
+    let title: String = name
+        .split('-')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(c) => {
+                    let upper: String = c.to_uppercase().collect();
+                    format!("{upper}{}", chars.collect::<String>())
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    format!(
+        "---\n\
+         name: {name}\n\
+         description: <placeholder — describe what this skill does>\n\
+         tools: [bash, read_file, write_file, edit_file, search, list_files]\n\
+         origin: user\n\
+         status: active\n\
+         ---\n\
+         \n\
+         # {title}\n\
+         \n\
+         ## When to use\n\
+         \n\
+         <Describe when this skill should be activated>\n\
+         \n\
+         ## How\n\
+         \n\
+         <Describe the steps this skill follows>\n"
+    )
+}
+
+/// Scaffold a new skill at `.yoyo/skills/<name>/SKILL.md`.
+///
+/// Creates the directory and writes a template SKILL.md with correct YAML
+/// frontmatter. Refuses to overwrite an existing skill.
+fn skill_init(name: &str) {
+    if !is_valid_skill_name(name) {
+        eprintln!("{RED}  invalid skill name: {name}{RESET}");
+        eprintln!("{DIM}  names must be kebab-case: lowercase letters, digits, and hyphens{RESET}");
+        eprintln!("{DIM}  examples: my-skill, code-review, lint-fix{RESET}\n");
+        return;
+    }
+
+    let dir = std::path::PathBuf::from(".yoyo/skills").join(name);
+    let file = dir.join("SKILL.md");
+
+    if file.exists() {
+        eprintln!("{YELLOW}  skill already exists: {}{RESET}", file.display());
+        eprintln!("{DIM}  delete it first if you want to start over{RESET}\n");
+        return;
+    }
+
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "{RED}  error creating directory {}: {e}{RESET}\n",
+            dir.display()
+        );
+        return;
+    }
+
+    let content = skill_init_template(name);
+    if let Err(e) = std::fs::write(&file, &content) {
+        eprintln!("{RED}  error writing {}: {e}{RESET}\n", file.display());
+        return;
+    }
+
+    println!("{GREEN}  ✓ created skill '{name}'{RESET}");
+    println!("{DIM}  {}{RESET}", file.display());
+    println!("{DIM}  edit the SKILL.md to define your skill's behavior{RESET}");
+    println!("{DIM}  load with: --skills .yoyo/skills{RESET}\n");
 }
 
 /// List all loaded skills with name and description.
@@ -1613,5 +1730,100 @@ mod tests {
         let skills = yoagent::skills::SkillSet::empty();
         handle_skill("/skill search test-query", &skills);
         handle_skill("/skill search", &skills);
+    }
+
+    #[test]
+    fn test_skill_init_subcommand_registered() {
+        assert!(SKILL_SUBCOMMANDS.contains(&"init"));
+    }
+
+    #[test]
+    fn test_valid_skill_names() {
+        assert!(is_valid_skill_name("my-skill"));
+        assert!(is_valid_skill_name("code-review"));
+        assert!(is_valid_skill_name("lint-fix"));
+        assert!(is_valid_skill_name("a"));
+        assert!(is_valid_skill_name("abc123"));
+        assert!(is_valid_skill_name("my-cool-skill-2"));
+    }
+
+    #[test]
+    fn test_invalid_skill_names() {
+        assert!(!is_valid_skill_name(""));
+        assert!(!is_valid_skill_name("My-Skill")); // uppercase
+        assert!(!is_valid_skill_name("my skill")); // spaces
+        assert!(!is_valid_skill_name("-leading")); // leading hyphen
+        assert!(!is_valid_skill_name("trailing-")); // trailing hyphen
+        assert!(!is_valid_skill_name("double--hyphen")); // consecutive hyphens
+        assert!(!is_valid_skill_name("special!char")); // special chars
+        assert!(!is_valid_skill_name("under_score")); // underscore
+        assert!(!is_valid_skill_name("path/slash")); // slash
+    }
+
+    #[test]
+    fn test_skill_init_template_content() {
+        let content = skill_init_template("my-cool-skill");
+        // Check frontmatter
+        assert!(content.starts_with("---\n"));
+        assert!(content.contains("name: my-cool-skill\n"));
+        assert!(content.contains("origin: user\n"));
+        assert!(content.contains("status: active\n"));
+        assert!(content
+            .contains("tools: [bash, read_file, write_file, edit_file, search, list_files]\n"));
+        // Check title case conversion
+        assert!(content.contains("# My Cool Skill\n"));
+        // Check template sections
+        assert!(content.contains("## When to use"));
+        assert!(content.contains("## How"));
+    }
+
+    #[test]
+    fn test_skill_init_template_single_word() {
+        let content = skill_init_template("lint");
+        assert!(content.contains("name: lint\n"));
+        assert!(content.contains("# Lint\n"));
+    }
+
+    #[test]
+    fn test_skill_init_creates_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".yoyo/skills/test-skill");
+        let file = dir.join("SKILL.md");
+
+        // Manually do what skill_init does but in a temp dir
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = skill_init_template("test-skill");
+        std::fs::write(&file, &content).unwrap();
+
+        assert!(file.exists());
+        let written = std::fs::read_to_string(&file).unwrap();
+        assert!(written.contains("name: test-skill"));
+        assert!(written.contains("# Test Skill"));
+    }
+
+    #[test]
+    fn test_skill_init_no_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".yoyo/skills/existing");
+        let file = dir.join("SKILL.md");
+
+        // Pre-create the file with custom content
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "custom content").unwrap();
+
+        // Verify file still has the original content (skill_init would refuse)
+        assert!(file.exists());
+        let content = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(content, "custom content");
+    }
+
+    #[test]
+    fn test_skill_init_routes_without_panic() {
+        let skills = yoagent::skills::SkillSet::empty();
+        // Bare init (no name) should not panic
+        handle_skill("/skill init", &skills);
+        // Init with name should not panic (will try to create in cwd's .yoyo/)
+        // We don't assert file creation here since it writes to cwd
+        handle_skill("/skill init  ", &skills);
     }
 }

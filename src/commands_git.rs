@@ -6,7 +6,9 @@ use crate::format::*;
 use crate::git::*;
 use crate::prompt::run_prompt;
 use crate::session::TurnHistory;
+use crate::symbols::{self, SymbolKind};
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use yoagent::agent::Agent;
 use yoagent::*;
@@ -171,6 +173,7 @@ pub struct DiffOptions {
     pub name_only: bool,
     pub stat_only: bool,
     pub explain: bool,
+    pub functions: bool,
     pub file: Option<String>,
 }
 
@@ -180,6 +183,7 @@ pub struct DiffOptions {
 /// - `/diff` — all changes (default)
 /// - `/diff --staged` or `/diff --cached` — staged only
 /// - `/diff --name-only` — filenames only
+/// - `/diff --functions` — semantic-level change summary (added/modified/removed symbols)
 /// - `/diff --explain` — AI-powered explanation of changes
 /// - `/diff <file>` — diff for a specific file
 /// - Combined: `/diff --staged --name-only src/main.rs`
@@ -190,6 +194,7 @@ pub fn parse_diff_args(input: &str) -> DiffOptions {
     let mut name_only = false;
     let mut stat_only = false;
     let mut explain = false;
+    let mut functions = false;
     let mut file = None;
 
     for part in parts {
@@ -198,6 +203,7 @@ pub fn parse_diff_args(input: &str) -> DiffOptions {
             "--name-only" => name_only = true,
             "--stat" => stat_only = true,
             "--explain" => explain = true,
+            "--functions" => functions = true,
             _ => file = Some(part.to_string()),
         }
     }
@@ -207,6 +213,7 @@ pub fn parse_diff_args(input: &str) -> DiffOptions {
         name_only,
         stat_only,
         explain,
+        functions,
         file,
     }
 }
@@ -315,6 +322,12 @@ pub fn handle_diff(input: &str) {
                         print!("{formatted}");
                     }
                 }
+                return;
+            }
+
+            // --functions: show semantic-level change summary
+            if opts.functions {
+                handle_diff_functions(&opts);
                 return;
             }
 
@@ -516,6 +529,218 @@ fn gather_diff_text(opts: &DiffOptions) -> Option<String> {
     }
 
     Some(diff_text)
+}
+
+/// The semantic status of a symbol when comparing two versions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SymbolChange {
+    Added,
+    Removed,
+    Modified,
+}
+
+/// A single symbol-level change entry.
+#[derive(Debug, Clone)]
+pub struct SymbolDiff {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub change: SymbolChange,
+}
+
+/// Compare old and new symbol lists, returning semantic diffs.
+///
+/// Match symbols by (name, kind) pair:
+/// - Present only in new → Added
+/// - Present only in old → Removed
+/// - Present in both but at a different line → Modified
+pub fn compare_symbols(
+    old_symbols: &[symbols::Symbol],
+    new_symbols: &[symbols::Symbol],
+) -> Vec<SymbolDiff> {
+    // Build maps from (name, kind_tag) → line for old and new
+    let old_map: HashMap<(&str, &SymbolKind), usize> = old_symbols
+        .iter()
+        .map(|s| ((s.name.as_str(), &s.kind), s.line))
+        .collect();
+    let new_map: HashMap<(&str, &SymbolKind), usize> = new_symbols
+        .iter()
+        .map(|s| ((s.name.as_str(), &s.kind), s.line))
+        .collect();
+
+    let mut diffs = Vec::new();
+
+    // Check new symbols: added or modified
+    for sym in new_symbols {
+        let key = (sym.name.as_str(), &sym.kind);
+        match old_map.get(&key) {
+            None => diffs.push(SymbolDiff {
+                name: sym.name.clone(),
+                kind: sym.kind.clone(),
+                change: SymbolChange::Added,
+            }),
+            Some(&old_line) if old_line != sym.line => diffs.push(SymbolDiff {
+                name: sym.name.clone(),
+                kind: sym.kind.clone(),
+                change: SymbolChange::Modified,
+            }),
+            Some(_) => {} // unchanged
+        }
+    }
+
+    // Check old symbols: removed
+    for sym in old_symbols {
+        let key = (sym.name.as_str(), &sym.kind);
+        if !new_map.contains_key(&key) {
+            diffs.push(SymbolDiff {
+                name: sym.name.clone(),
+                kind: sym.kind.clone(),
+                change: SymbolChange::Removed,
+            });
+        }
+    }
+
+    diffs
+}
+
+/// Format a `SymbolKind` as a short display label.
+fn symbol_kind_label(kind: &SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Function => "fn",
+        SymbolKind::Struct => "struct",
+        SymbolKind::Enum => "enum",
+        SymbolKind::Trait => "trait",
+        SymbolKind::Interface => "interface",
+        SymbolKind::Class => "class",
+        SymbolKind::Type => "type",
+        SymbolKind::Const => "const",
+        SymbolKind::Impl => "impl",
+        SymbolKind::Module => "mod",
+        SymbolKind::Macro => "macro",
+        SymbolKind::Namespace => "ns",
+    }
+}
+
+/// Handle `/diff --functions`: show semantic-level change summary.
+pub fn handle_diff_functions(opts: &DiffOptions) {
+    // Get the list of changed files
+    let mut args = vec!["diff", "--name-only"];
+    if opts.staged_only {
+        args.push("--cached");
+    }
+    let file_ref;
+    if let Some(ref f) = opts.file {
+        args.push("--");
+        file_ref = f.as_str();
+        args.push(file_ref);
+    }
+    let unstaged_names = run_git(&args).unwrap_or_default();
+
+    // Also get staged files if not in staged-only mode
+    let all_files: Vec<String> = if opts.staged_only {
+        unstaged_names
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.to_string())
+            .collect()
+    } else {
+        let mut staged_args = vec!["diff", "--name-only", "--cached"];
+        let staged_file_ref;
+        if let Some(ref f) = opts.file {
+            staged_args.push("--");
+            staged_file_ref = f.as_str();
+            staged_args.push(staged_file_ref);
+        }
+        let staged_names = run_git(&staged_args).unwrap_or_default();
+        let mut files: Vec<String> = unstaged_names
+            .lines()
+            .chain(staged_names.lines())
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.to_string())
+            .collect();
+        files.sort();
+        files.dedup();
+        files
+    };
+
+    if all_files.is_empty() {
+        println!("{DIM}  (no changed files){RESET}\n");
+        return;
+    }
+
+    let mut total_added = 0usize;
+    let mut total_modified = 0usize;
+    let mut total_removed = 0usize;
+    let mut files_with_changes = 0usize;
+    let mut output = String::new();
+
+    for file_path in &all_files {
+        // Skip files with unrecognized language
+        let language = match symbols::detect_language(file_path) {
+            Some(lang) => lang,
+            None => continue,
+        };
+
+        // Get current file content
+        let new_content: String = std::fs::read_to_string(file_path).unwrap_or_default();
+
+        // Get base (HEAD) version
+        let git_path = format!("HEAD:{file_path}");
+        let old_content = run_git(&["show", &git_path]).unwrap_or_default();
+
+        let old_symbols = symbols::extract_symbols(&old_content, language);
+        let new_symbols = symbols::extract_symbols(&new_content, language);
+        let diffs = compare_symbols(&old_symbols, &new_symbols);
+
+        if diffs.is_empty() {
+            continue;
+        }
+
+        files_with_changes += 1;
+        output.push_str(&format!("    {BOLD}{file_path}{RESET}\n"));
+
+        for d in &diffs {
+            let label = symbol_kind_label(&d.kind);
+            match d.change {
+                SymbolChange::Added => {
+                    total_added += 1;
+                    output.push_str(&format!(
+                        "      {GREEN}Added:    {RESET} {label} {GREEN}{}{RESET}\n",
+                        d.name
+                    ));
+                }
+                SymbolChange::Modified => {
+                    total_modified += 1;
+                    output.push_str(&format!(
+                        "      {YELLOW}Modified:{RESET} {label} {YELLOW}{}{RESET}\n",
+                        d.name
+                    ));
+                }
+                SymbolChange::Removed => {
+                    total_removed += 1;
+                    output.push_str(&format!(
+                        "      {RED}Removed: {RESET} {label} {RED}{}{RESET}\n",
+                        d.name
+                    ));
+                }
+            }
+        }
+    }
+
+    if files_with_changes == 0 {
+        println!("{DIM}  (no semantic changes detected){RESET}\n");
+        return;
+    }
+
+    println!("{DIM}  Semantic changes:{RESET}");
+    print!("{output}");
+    println!(
+        "\n  {DIM}{} file{}, {GREEN}{} added{DIM}, {YELLOW}{} modified{DIM}, {RED}{} removed{RESET}\n",
+        files_with_changes,
+        if files_with_changes == 1 { "" } else { "s" },
+        total_added,
+        total_modified,
+        total_removed,
+    );
 }
 
 /// Handle `/diff --explain`: send the diff to the AI for a natural-language explanation.
@@ -784,10 +1009,118 @@ fn handle_undo_all(history: &mut TurnHistory) -> Option<String> {
 
 // ── /commit ──────────────────────────────────────────────────────────────
 
+/// Parsed commit arguments: flags (`-a`/`--all`, `--ai`/`--generate`) and the remaining message.
+#[derive(Debug, PartialEq)]
+pub(crate) struct CommitArgs {
+    /// Auto-stage tracked modified files before committing (`-a` / `--all`).
+    pub auto_stage: bool,
+    /// Use AI to generate the commit message (`--ai` / `--generate`).
+    pub ai: bool,
+    /// Amend the last commit instead of creating a new one (`--amend`).
+    pub amend: bool,
+    /// The remaining commit message (if any) after stripping flags.
+    pub message: String,
+}
+
+/// Parse the raw argument string after `/commit` into structured [`CommitArgs`].
+///
+/// Recognises `-a`, `--all`, `--ai`, and `--generate` in any position.
+pub(crate) fn parse_commit_args(arg: &str) -> CommitArgs {
+    let mut auto_stage = false;
+    let mut ai = false;
+    let mut amend = false;
+    let mut message_parts: Vec<&str> = Vec::new();
+
+    for token in arg.split_whitespace() {
+        match token {
+            "-a" | "--all" => auto_stage = true,
+            "--ai" | "--generate" => ai = true,
+            "--amend" => amend = true,
+            other => message_parts.push(other),
+        }
+    }
+
+    CommitArgs {
+        auto_stage,
+        ai,
+        amend,
+        message: message_parts.join(" "),
+    }
+}
+
+/// Run `git add -u` to stage all tracked modified/deleted files.
+///
+/// Returns `true` if staging succeeded and there is something staged afterward,
+/// `false` if there are no tracked changes to stage.
+fn auto_stage_tracked() -> bool {
+    // Run `git add -u` — stages modifications and deletions of tracked files
+    if let Err(e) = run_git(&["add", "-u"]) {
+        eprintln!("{RED}  error staging files: {e}{RESET}\n");
+        return false;
+    }
+    // Check whether anything is actually staged now
+    match get_staged_diff() {
+        Some(diff) if !diff.trim().is_empty() => true,
+        _ => {
+            println!("{DIM}  nothing to commit — no tracked files have changes{RESET}\n");
+            false
+        }
+    }
+}
+
+/// Run `git commit --amend` with a new message, including the co-authored trailer.
+fn run_git_amend_with_message(message: &str) -> (bool, String) {
+    let with_trailer = append_co_authored_trailer(message);
+    match std::process::Command::new("git")
+        .args(["commit", "--amend", "-m", &with_trailer])
+        .output()
+    {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let text = if stdout.is_empty() { stderr } else { stdout };
+            (output.status.success(), text)
+        }
+        Err(e) => (false, format!("error: {e}")),
+    }
+}
+
+/// Run `git commit --amend --no-edit` to amend without changing the message.
+fn run_git_amend_no_edit() -> (bool, String) {
+    match std::process::Command::new("git")
+        .args(["commit", "--amend", "--no-edit"])
+        .output()
+    {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let text = if stdout.is_empty() { stderr } else { stdout };
+            (output.status.success(), text)
+        }
+        Err(e) => (false, format!("error: {e}")),
+    }
+}
+
+/// Get the message of the last commit.
+fn get_last_commit_message() -> Option<String> {
+    run_git(&["log", "-1", "--format=%B"])
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
 pub fn handle_commit(input: &str) {
     let arg = input.strip_prefix("/commit").unwrap_or("").trim();
-    if !arg.is_empty() {
-        let (ok, output) = run_git_commit_with_trailer(arg);
+    let parsed = parse_commit_args(arg);
+
+    // Auto-stage tracked files when `-a`/`--all` is present
+    if parsed.auto_stage && !auto_stage_tracked() {
+        return;
+    }
+
+    if parsed.amend {
+        handle_commit_amend(&parsed);
+    } else if !parsed.message.is_empty() {
+        let (ok, output) = run_git_commit_with_trailer(&parsed.message);
         if ok {
             println!("{GREEN}  ✓ {}{RESET}\n", output.trim());
         } else {
@@ -799,7 +1132,8 @@ pub fn handle_commit(input: &str) {
                 eprintln!("{RED}  error: not in a git repository{RESET}\n");
             }
             Some(diff) if diff.trim().is_empty() => {
-                println!("{DIM}  nothing staged — use `git add` first{RESET}\n");
+                println!("{DIM}  nothing staged — use `git add` first{RESET}");
+                println!("{DIM}  tip: use /commit -a to auto-stage tracked files{RESET}\n");
             }
             Some(diff) => {
                 let suggested = generate_commit_message(&diff);
@@ -846,6 +1180,85 @@ pub fn handle_commit(input: &str) {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Handle `--amend` variant of `/commit`.
+///
+/// Behaviour:
+/// - With a message: amend and replace the commit message.
+/// - Without a message but with staged changes: show current message, ask
+///   whether to keep/edit it, then amend.
+/// - Without a message and no staged changes: amend with `--no-edit` (useful
+///   after `git add` of a forgotten file).
+fn handle_commit_amend(parsed: &CommitArgs) {
+    if !parsed.message.is_empty() {
+        // Amend with a new message
+        let (ok, output) = run_git_amend_with_message(&parsed.message);
+        if ok {
+            println!("{GREEN}  ✓ (amended) {}{RESET}\n", output.trim());
+        } else {
+            eprintln!("{RED}  ✗ {}{RESET}\n", output.trim());
+        }
+        return;
+    }
+
+    // No explicit message — check for staged changes
+    let has_staged = matches!(get_staged_diff(), Some(diff) if !diff.trim().is_empty());
+
+    if has_staged {
+        // Show current commit message and ask whether to keep or edit
+        let current_msg = get_last_commit_message().unwrap_or_default();
+        println!("{DIM}  Current commit message:{RESET}");
+        println!("    {BOLD}{current_msg}{RESET}");
+        eprint!(
+            "\n  {DIM}({GREEN}k{RESET}{DIM})eep / ({CYAN}e{RESET}{DIM})dit / ({RED}c{RESET}{DIM})ancel: {RESET}"
+        );
+        io::stderr().flush().ok();
+        let mut response = String::new();
+        if io::stdin().read_line(&mut response).is_ok() {
+            let response = response.trim().to_lowercase();
+            match response.as_str() {
+                "k" | "keep" | "" => {
+                    let (ok, output) = run_git_amend_no_edit();
+                    if ok {
+                        println!("{GREEN}  ✓ (amended) {}{RESET}\n", output.trim());
+                    } else {
+                        eprintln!("{RED}  ✗ {}{RESET}\n", output.trim());
+                    }
+                }
+                "e" | "edit" => {
+                    println!("{DIM}  Enter new commit message:{RESET}");
+                    eprint!("  > ");
+                    io::stderr().flush().ok();
+                    let mut custom_msg = String::new();
+                    if io::stdin().read_line(&mut custom_msg).is_ok() {
+                        let custom_msg = custom_msg.trim();
+                        if custom_msg.is_empty() {
+                            println!("{DIM}  (amend cancelled — empty message){RESET}\n");
+                        } else {
+                            let (ok, output) = run_git_amend_with_message(custom_msg);
+                            if ok {
+                                println!("{GREEN}  ✓ (amended) {}{RESET}\n", output.trim());
+                            } else {
+                                eprintln!("{RED}  ✗ {}{RESET}\n", output.trim());
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    println!("{DIM}  (amend cancelled){RESET}\n");
+                }
+            }
+        }
+    } else {
+        // No staged changes — amend with --no-edit (e.g. after manually staging)
+        let (ok, output) = run_git_amend_no_edit();
+        if ok {
+            println!("{GREEN}  ✓ (amended) {}{RESET}\n", output.trim());
+        } else {
+            eprintln!("{RED}  ✗ {}{RESET}\n", output.trim());
         }
     }
 }
@@ -916,16 +1329,16 @@ fn clean_ai_commit_message(raw: &str) -> String {
 /// an empty response.
 pub async fn handle_commit_ai(input: &str, agent_config: &AgentConfig) {
     let arg = input.strip_prefix("/commit").unwrap_or("").trim();
+    let parsed = parse_commit_args(arg);
 
-    // Strip flags to see if user also provided an explicit message
-    let explicit = arg
-        .replace("--ai", "")
-        .replace("--generate", "")
-        .trim()
-        .to_string();
-    if !explicit.is_empty() {
+    // Auto-stage tracked files when `-a`/`--all` is present
+    if parsed.auto_stage && !auto_stage_tracked() {
+        return;
+    }
+
+    if !parsed.message.is_empty() {
         // User gave a message alongside --ai — just use it directly
-        let (ok, output) = run_git_commit_with_trailer(&explicit);
+        let (ok, output) = run_git_commit_with_trailer(&parsed.message);
         if ok {
             println!("{GREEN}  ✓ {}{RESET}\n", output.trim());
         } else {
@@ -941,7 +1354,8 @@ pub async fn handle_commit_ai(input: &str, agent_config: &AgentConfig) {
             return;
         }
         Some(d) if d.trim().is_empty() => {
-            println!("{DIM}  nothing staged — use `git add` first{RESET}\n");
+            println!("{DIM}  nothing staged — use `git add` first{RESET}");
+            println!("{DIM}  tip: use /commit -a to auto-stage tracked files{RESET}\n");
             return;
         }
         Some(d) => d,
@@ -1026,7 +1440,7 @@ pub async fn handle_commit_ai(input: &str, agent_config: &AgentConfig) {
 /// Returns `true` if the input contains `--ai` or `--generate` flags.
 pub fn wants_ai_commit(input: &str) -> bool {
     let arg = input.strip_prefix("/commit").unwrap_or("").trim();
-    arg.contains("--ai") || arg.contains("--generate")
+    parse_commit_args(arg).ai
 }
 
 /// Represents a parsed `/pr` subcommand.
@@ -1955,6 +2369,168 @@ mod tests {
         assert_eq!(opts.file, Some("src/main.rs".to_string()));
     }
 
+    #[test]
+    fn test_parse_diff_args_functions() {
+        let opts = parse_diff_args("/diff --functions");
+        assert!(opts.functions);
+        assert!(!opts.staged_only);
+        assert!(!opts.name_only);
+        assert!(!opts.explain);
+        assert_eq!(opts.file, None);
+    }
+
+    #[test]
+    fn test_parse_diff_args_functions_staged() {
+        let opts = parse_diff_args("/diff --functions --staged");
+        assert!(opts.functions);
+        assert!(opts.staged_only);
+    }
+
+    #[test]
+    fn test_parse_diff_args_functions_with_file() {
+        let opts = parse_diff_args("/diff --functions src/main.rs");
+        assert!(opts.functions);
+        assert_eq!(opts.file, Some("src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn test_compare_symbols_added() {
+        use crate::symbols::{Symbol, SymbolKind};
+        let old = vec![];
+        let new = vec![Symbol {
+            name: "foo".to_string(),
+            kind: SymbolKind::Function,
+            is_public: true,
+            line: 1,
+        }];
+        let diffs = compare_symbols(&old, &new);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].name, "foo");
+        assert_eq!(diffs[0].change, SymbolChange::Added);
+    }
+
+    #[test]
+    fn test_compare_symbols_removed() {
+        use crate::symbols::{Symbol, SymbolKind};
+        let old = vec![Symbol {
+            name: "bar".to_string(),
+            kind: SymbolKind::Struct,
+            is_public: true,
+            line: 5,
+        }];
+        let new = vec![];
+        let diffs = compare_symbols(&old, &new);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].name, "bar");
+        assert_eq!(diffs[0].change, SymbolChange::Removed);
+    }
+
+    #[test]
+    fn test_compare_symbols_modified() {
+        use crate::symbols::{Symbol, SymbolKind};
+        let old = vec![Symbol {
+            name: "baz".to_string(),
+            kind: SymbolKind::Function,
+            is_public: true,
+            line: 10,
+        }];
+        let new = vec![Symbol {
+            name: "baz".to_string(),
+            kind: SymbolKind::Function,
+            is_public: true,
+            line: 20,
+        }];
+        let diffs = compare_symbols(&old, &new);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].name, "baz");
+        assert_eq!(diffs[0].change, SymbolChange::Modified);
+    }
+
+    #[test]
+    fn test_compare_symbols_unchanged() {
+        use crate::symbols::{Symbol, SymbolKind};
+        let old = vec![Symbol {
+            name: "unchanged".to_string(),
+            kind: SymbolKind::Function,
+            is_public: true,
+            line: 5,
+        }];
+        let new = vec![Symbol {
+            name: "unchanged".to_string(),
+            kind: SymbolKind::Function,
+            is_public: true,
+            line: 5,
+        }];
+        let diffs = compare_symbols(&old, &new);
+        assert!(diffs.is_empty());
+    }
+
+    #[test]
+    fn test_compare_symbols_mixed() {
+        use crate::symbols::{Symbol, SymbolKind};
+        let old = vec![
+            Symbol {
+                name: "kept".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            },
+            Symbol {
+                name: "removed_fn".to_string(),
+                kind: SymbolKind::Function,
+                is_public: false,
+                line: 10,
+            },
+            Symbol {
+                name: "moved_fn".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 20,
+            },
+        ];
+        let new = vec![
+            Symbol {
+                name: "kept".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 1,
+            },
+            Symbol {
+                name: "moved_fn".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                line: 30,
+            },
+            Symbol {
+                name: "new_struct".to_string(),
+                kind: SymbolKind::Struct,
+                is_public: true,
+                line: 40,
+            },
+        ];
+        let diffs = compare_symbols(&old, &new);
+        // moved_fn changed line: Modified, new_struct: Added, removed_fn: Removed
+        assert_eq!(diffs.len(), 3);
+        let modified: Vec<_> = diffs
+            .iter()
+            .filter(|d| d.change == SymbolChange::Modified)
+            .collect();
+        let added: Vec<_> = diffs
+            .iter()
+            .filter(|d| d.change == SymbolChange::Added)
+            .collect();
+        let removed: Vec<_> = diffs
+            .iter()
+            .filter(|d| d.change == SymbolChange::Removed)
+            .collect();
+        assert_eq!(modified.len(), 1);
+        assert_eq!(modified[0].name, "moved_fn");
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].name, "new_struct");
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].name, "removed_fn");
+    }
+
     // ── PR tests (moved from commands.rs) ───────────────────────────────
 
     #[test]
@@ -2641,7 +3217,123 @@ mod tests {
         assert!(wants_ai_commit("/commit --ai"));
         assert!(wants_ai_commit("/commit --generate"));
         assert!(wants_ai_commit("/commit --ai some msg"));
+        assert!(wants_ai_commit("/commit --ai -a"));
         assert!(!wants_ai_commit("/commit"));
         assert!(!wants_ai_commit("/commit fix: typo"));
+        assert!(!wants_ai_commit("/commit -a fix: typo"));
+    }
+
+    #[test]
+    fn parse_commit_args_no_flags() {
+        let args = parse_commit_args("");
+        assert!(!args.auto_stage);
+        assert!(!args.ai);
+        assert_eq!(args.message, "");
+    }
+
+    #[test]
+    fn parse_commit_args_message_only() {
+        let args = parse_commit_args("fix the bug");
+        assert!(!args.auto_stage);
+        assert!(!args.ai);
+        assert_eq!(args.message, "fix the bug");
+    }
+
+    #[test]
+    fn parse_commit_args_auto_stage_short() {
+        let args = parse_commit_args("-a");
+        assert!(args.auto_stage);
+        assert!(!args.ai);
+        assert_eq!(args.message, "");
+    }
+
+    #[test]
+    fn parse_commit_args_auto_stage_long() {
+        let args = parse_commit_args("--all");
+        assert!(args.auto_stage);
+        assert!(!args.ai);
+        assert_eq!(args.message, "");
+    }
+
+    #[test]
+    fn parse_commit_args_auto_stage_with_message() {
+        let args = parse_commit_args("-a fix the bug");
+        assert!(args.auto_stage);
+        assert!(!args.ai);
+        assert_eq!(args.message, "fix the bug");
+    }
+
+    #[test]
+    fn parse_commit_args_auto_stage_message_first() {
+        // Flag can appear after message tokens
+        let args = parse_commit_args("fix the bug --all");
+        assert!(args.auto_stage);
+        assert!(!args.ai);
+        assert_eq!(args.message, "fix the bug");
+    }
+
+    #[test]
+    fn parse_commit_args_all_flags() {
+        let args = parse_commit_args("--ai -a fix it");
+        assert!(args.auto_stage);
+        assert!(args.ai);
+        assert_eq!(args.message, "fix it");
+    }
+
+    #[test]
+    fn parse_commit_args_ai_and_all_no_message() {
+        let args = parse_commit_args("-a --generate");
+        assert!(args.auto_stage);
+        assert!(args.ai);
+        assert_eq!(args.message, "");
+    }
+
+    #[test]
+    fn parse_commit_args_amend_only() {
+        let args = parse_commit_args("--amend");
+        assert!(args.amend);
+        assert!(!args.auto_stage);
+        assert!(!args.ai);
+        assert_eq!(args.message, "");
+    }
+
+    #[test]
+    fn parse_commit_args_amend_with_message() {
+        let args = parse_commit_args("--amend fix typo");
+        assert!(args.amend);
+        assert!(!args.auto_stage);
+        assert_eq!(args.message, "fix typo");
+    }
+
+    #[test]
+    fn parse_commit_args_amend_auto_stage() {
+        let args = parse_commit_args("-a --amend");
+        assert!(args.amend);
+        assert!(args.auto_stage);
+        assert_eq!(args.message, "");
+    }
+
+    #[test]
+    fn parse_commit_args_amend_auto_stage_reversed() {
+        let args = parse_commit_args("--amend -a");
+        assert!(args.amend);
+        assert!(args.auto_stage);
+        assert_eq!(args.message, "");
+    }
+
+    #[test]
+    fn parse_commit_args_amend_auto_stage_with_message() {
+        let args = parse_commit_args("-a --amend new message");
+        assert!(args.amend);
+        assert!(args.auto_stage);
+        assert_eq!(args.message, "new message");
+    }
+
+    #[test]
+    fn parse_commit_args_amend_message_first() {
+        let args = parse_commit_args("fix the bug --amend");
+        assert!(args.amend);
+        assert!(!args.auto_stage);
+        assert_eq!(args.message, "fix the bug");
     }
 }
