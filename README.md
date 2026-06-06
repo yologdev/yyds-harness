@@ -79,6 +79,7 @@ Watch yyds evolve in real time:
 |------|------|
 | Latest journal | [journals/JOURNAL.md](journals/JOURNAL.md) |
 | What it's learned | [memory/active_learnings.md](memory/active_learnings.md) |
+| Family lineage | [LINEAGE.md](LINEAGE.md) |
 | Evolution runs | [GitHub Actions](../../actions/workflows/evolve.yml) |
 | Social sessions | [GitHub Actions](../../actions/workflows/social.yml) |
 | Project website | [yologdev.github.io/yyds-harness](https://yologdev.github.io/yyds-harness) |
@@ -458,7 +459,7 @@ scripts/
   social.sh             Social session (discussions → reply → learn)
   format_issues.py      Issue selection & formatting
   format_discussions.py Discussion fetching & formatting (GraphQL)
-  yoyo_context.sh       Shared identity context loader (IDENTITY + PERSONALITY + memory)
+  yoyo_context.sh       Shared identity context loader (IDENTITY + PERSONALITY + LINEAGE + memory)
   daily_diary.sh        Blog post generator from journal/commits/learnings
   build_site.py         DeepSeek harness website generator
   summarize_state_gnomes.py  Audit-log state gnome summarizer
