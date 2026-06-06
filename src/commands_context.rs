@@ -11,6 +11,19 @@ pub fn handle_context_subcommand(args: &[String]) {
     }
 }
 
+/// Maximum seconds allowed for building the DeepSeek context preview.
+/// Guards against hangs in external processes (ast-grep) or slow filesystem operations.
+const CONTEXT_PREVIEW_TIMEOUT_SECS: u64 = 30;
+
+fn build_preview_with_timeout() -> Option<crate::context::DeepSeekContextPreview> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(crate::context::build_deepseek_context_preview());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(CONTEXT_PREVIEW_TIMEOUT_SECS))
+        .ok()
+}
+
 fn handle_preview(args: &[String]) {
     if !deepseek_context_enabled(args) {
         eprintln!(
@@ -18,8 +31,12 @@ fn handle_preview(args: &[String]) {
         );
         return;
     }
-    let preview = crate::context::build_deepseek_context_preview();
-    println!("{}", preview.render_preview());
+    match build_preview_with_timeout() {
+        Some(preview) => println!("{}", preview.render_preview()),
+        None => eprintln!(
+            "{YELLOW}  context preview timed out after {CONTEXT_PREVIEW_TIMEOUT_SECS}s — the operation may be slow due to a large repository or missing indexes. Try running `yyds context index --write` first.{RESET}"
+        ),
+    }
 }
 
 fn handle_explain(args: &[String]) {
@@ -29,8 +46,12 @@ fn handle_explain(args: &[String]) {
         );
         return;
     }
-    let preview = crate::context::build_deepseek_context_preview();
-    println!("{}", preview.render_explain());
+    match build_preview_with_timeout() {
+        Some(preview) => println!("{}", preview.render_explain()),
+        None => eprintln!(
+            "{YELLOW}  context explain timed out after {CONTEXT_PREVIEW_TIMEOUT_SECS}s — the operation may be slow due to a large repository or missing indexes. Try running `yyds context index --write` first.{RESET}"
+        ),
+    }
 }
 
 fn handle_index(args: &[String]) {
