@@ -15,6 +15,9 @@
 #   FORCE_RUN          — Set to "true" to bypass the run-frequency gate
 #   FALLBACK_PROVIDER  — Fallback provider on API error (e.g., "zai"); passed as --fallback to yoyo
 #   FALLBACK_MODEL     — (unused, kept for backwards compat; binary auto-derives from provider)
+#   YOYO_EXTERNAL_SKILLS — Optional comma-separated external skill specs:
+#                        name|git-url|ref. Defaults to yoyo-operator-skill.
+#   YOYO_EXTERNAL_SKILLS_DISABLED — Set to "1" to skip external skill fetches.
 
 set -euo pipefail
 
@@ -389,6 +392,68 @@ refresh_gh_token() {
     echo "  Token refreshed."
 }
 
+# ── Optional external skills ──
+# Keep core skills in ./skills, but allow the harness to fetch reusable external
+# skill packages at runtime without vendoring them into this repo.
+YOYO_SKILL_FLAGS=(--skills ./skills)
+
+setup_external_skills() {
+    local specs="${YOYO_EXTERNAL_SKILLS:-yoyo-operator-skill|https://github.com/yologdev/yoyo-operator-skill.git|main}"
+    local base_dir="${YOYO_EXTERNAL_SKILLS_DIR:-.yoyo/external-skills}"
+
+    if [ "${YOYO_EXTERNAL_SKILLS_DISABLED:-}" = "1" ]; then
+        echo "→ external skills disabled by YOYO_EXTERNAL_SKILLS_DISABLED=1"
+        return 0
+    fi
+
+    if ! command -v git &>/dev/null; then
+        echo "→ git not found; skipping external skill fetches"
+        return 0
+    fi
+
+    echo "→ Ensuring external skills are available..."
+    IFS=',' read -r -a skill_specs <<< "$specs"
+    for spec in "${skill_specs[@]}"; do
+        [ -n "$spec" ] || continue
+
+        local name repo ref dir skills_dir
+        IFS='|' read -r name repo ref <<< "$spec"
+        ref="${ref:-main}"
+
+        if [ -z "$name" ] || [ -z "$repo" ]; then
+            echo "  Warning: invalid external skill spec '$spec' (expected name|git-url|ref)."
+            continue
+        fi
+
+        dir="$base_dir/$name"
+        skills_dir="$dir/skills"
+
+        if [ -d "$dir/.git" ]; then
+            if ! git -C "$dir" fetch --depth 1 origin "$ref" >/dev/null 2>&1 ||
+               ! git -C "$dir" reset --hard FETCH_HEAD >/dev/null 2>&1; then
+                echo "  Warning: could not update external skill '$name'; using existing checkout if valid."
+            fi
+        elif [ ! -e "$dir" ]; then
+            mkdir -p "$(dirname "$dir")"
+            if ! git clone --depth 1 --branch "$ref" "$repo" "$dir" >/dev/null 2>&1; then
+                echo "  Warning: could not fetch external skill '$name'; continuing without it."
+            fi
+        else
+            echo "  Warning: $dir exists but is not a git checkout; skipping external skill '$name'."
+        fi
+
+        if [ -d "$skills_dir" ] && find "$skills_dir" -maxdepth 2 -name SKILL.md -print -quit | grep -q .; then
+            YOYO_SKILL_FLAGS+=(--skills "$skills_dir")
+            echo "  external skill '$name' loaded from $skills_dir"
+        elif [ -f "$dir/SKILL.md" ]; then
+            YOYO_SKILL_FLAGS+=(--skills "$(dirname "$dir")")
+            echo "  external skill '$name' loaded from $dir"
+        fi
+    done
+}
+
+setup_external_skills
+
 # ── Helper: run agent with automatic fallback on API error ──
 # Run yoyo with optional --fallback flag for provider failover.
 # Fallback switching happens inside the binary (see Issue #226).
@@ -415,14 +480,14 @@ run_agent_with_fallback() {
     if [ -n "$stage_path" ]; then
         ${TIMEOUT_CMD:+$TIMEOUT_CMD "$timeout_val"} "$YOYO_BIN" \
             --model "$MODEL" \
-            --skills ./skills \
+            "${YOYO_SKILL_FLAGS[@]}" \
             $fallback_flag \
             $extra_flags \
             < "$prompt_file" 2>&1 | tee "$log_file" "$stage_path" || exit_code=$?
     else
         ${TIMEOUT_CMD:+$TIMEOUT_CMD "$timeout_val"} "$YOYO_BIN" \
             --model "$MODEL" \
-            --skills ./skills \
+            "${YOYO_SKILL_FLAGS[@]}" \
             $fallback_flag \
             $extra_flags \
             < "$prompt_file" 2>&1 | tee "$log_file" || exit_code=$?
@@ -1607,7 +1672,7 @@ Steps:
 FIXEOF
         ${TIMEOUT_CMD:+$TIMEOUT_CMD 300} "$YOYO_BIN" \
             --model "$MODEL" \
-            --skills ./skills \
+            "${YOYO_SKILL_FLAGS[@]}" \
             < "$FIX_PROMPT" || true
         rm -f "$FIX_PROMPT"
     else
@@ -1734,7 +1799,7 @@ JEOF
 
     ${TIMEOUT_CMD:+$TIMEOUT_CMD 120} "$YOYO_BIN" \
         --model "$MODEL" \
-        --skills ./skills \
+        "${YOYO_SKILL_FLAGS[@]}" \
         < "$JOURNAL_PROMPT" || true
     rm -f "$JOURNAL_PROMPT"
 
@@ -1807,7 +1872,7 @@ REOF
 
     ${TIMEOUT_CMD:+$TIMEOUT_CMD 120} "$YOYO_BIN" \
         --model "$MODEL" \
-        --skills ./skills \
+        "${YOYO_SKILL_FLAGS[@]}" \
         < "$REFLECT_PROMPT" || true
     rm -f "$REFLECT_PROMPT"
 fi
@@ -1915,12 +1980,12 @@ RESPONDEOF
     if [ -n "$RESPOND_STAGE_PATH" ]; then
         ${TIMEOUT_CMD:+$TIMEOUT_CMD 180} "$YOYO_BIN" \
             --model "$MODEL" \
-            --skills ./skills \
+            "${YOYO_SKILL_FLAGS[@]}" \
             < "$RESPOND_PROMPT" 2>&1 | tee "$RESPOND_LOG" "$RESPOND_STAGE_PATH" || RESPOND_EXIT=$?
     else
         ${TIMEOUT_CMD:+$TIMEOUT_CMD 180} "$YOYO_BIN" \
             --model "$MODEL" \
-            --skills ./skills \
+            "${YOYO_SKILL_FLAGS[@]}" \
             < "$RESPOND_PROMPT" 2>&1 | tee "$RESPOND_LOG" || RESPOND_EXIT=$?
     fi
     rm -f "$RESPOND_PROMPT"
