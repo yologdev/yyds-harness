@@ -25,11 +25,11 @@ from typing import Any
 
 
 ERROR_LINE_RE = re.compile(
-    r"(error|failed|failure|fatal|panicked|exception|traceback|timed out)",
+    r"(\berror(?:\[[^\]]+\])?\b|\bfailed\b|\bfatal\b|\bpanicked\b|\bexception\b|\btraceback\b|timed out|exit code [1-9]\d*)",
     re.IGNORECASE,
 )
 PROVIDER_ERROR_RE = re.compile(
-    r"(provider_error|rate_limit|rate limit|429|5\d\d|api error|overloaded)",
+    r"(provider_error|rate_limit|rate limit|\b(?:http\s*)?(?:429|5\d\d)\b|api error|overloaded)",
     re.IGNORECASE,
 )
 JSON_ERROR_RE = re.compile(r"(json|schema|deserialize|parse).*(error|fail)", re.IGNORECASE)
@@ -42,6 +42,7 @@ SECRET_RE = re.compile(r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*['\"
 MAX_EVIDENCE_LINES = 8
 MAX_FINGERPRINTS = 10
 LOG_FETCH_TIMEOUT_SECONDS = 45
+GITHUB_LOG_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z$")
 
 
 def warn(message: str) -> None:
@@ -79,6 +80,35 @@ def fingerprint_error_line(line: str) -> str:
     )
     text = re.sub(r"\b\d{5,}\b", "<N>", text)
     return re.sub(r"\s+", " ", text.lower())[:120]
+
+
+def log_message(line: str) -> str:
+    parts = line.split("\t", 3)
+    if len(parts) == 4 and GITHUB_LOG_TIMESTAMP_RE.match(parts[2]):
+        return parts[3].strip()
+    parts = line.split("\t", 2)
+    if len(parts) == 3:
+        timestamp, _, message = parts[2].partition(" ")
+        if GITHUB_LOG_TIMESTAMP_RE.match(timestamp):
+            return message.strip()
+    return line.strip()
+
+
+def is_noise_failure_message(message: str) -> bool:
+    lower = message.lower().strip()
+    if not lower:
+        return True
+    if lower.startswith(("##[group]run ", "##[endgroup]", "#", "+", "-")):
+        return True
+    if lower.startswith(("ok:", "warning:", "compiling ", "checking ", "finished ")):
+        return True
+    if "|| echo" in lower or "continue-on-error" in lower or "non-fatal" in lower or "fail-soft" in lower:
+        return True
+    if re.search(r"\b0 (?:failures|failed)\b", lower) or "no failures" in lower:
+        return True
+    if lower.startswith("test result: ok"):
+        return True
+    return False
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -149,22 +179,25 @@ def parse_log(log_text: str) -> dict[str, Any]:
         line = redact(strip_ansi(raw_line)).strip()
         if not line:
             continue
-        lower = line.lower()
+        message = log_message(line)
+        lower = message.lower()
         if "retry after" in lower or "waiting 15 minutes before retry" in lower:
             retry_markers += 1
         if "repair loop" in lower or "retrying after failure" in lower:
             repair_loop_count += 1
-        if PROVIDER_ERROR_RE.search(line):
-            provider_errors += 1
-        if JSON_ERROR_RE.search(line):
-            json_errors += 1
-        if TOOL_ERROR_RE.search(line):
-            tool_errors += 1
-        if STATE_ERROR_RE.search(line):
-            state_errors += 1
-        if not ERROR_LINE_RE.search(line):
+        if is_noise_failure_message(message):
             continue
-        fp = fingerprint_error_line(line)
+        if PROVIDER_ERROR_RE.search(message):
+            provider_errors += 1
+        if JSON_ERROR_RE.search(message):
+            json_errors += 1
+        if TOOL_ERROR_RE.search(message):
+            tool_errors += 1
+        if STATE_ERROR_RE.search(message):
+            state_errors += 1
+        if not ERROR_LINE_RE.search(message):
+            continue
+        fp = fingerprint_error_line(message)
         if not fp:
             continue
         bucket = fingerprints.setdefault(fp, {"fingerprint": fp, "count": 0, "example": line[:240]})
@@ -573,6 +606,20 @@ def run_self_tests() -> int:
     check("provider errors counted", parsed["provider_error_count"] == 1)
     check("failure fingerprints captured", parsed["distinct_failure_count"] >= 2)
     check("retry markers captured", parsed["retry_markers"] == 1)
+    noisy = parse_log(
+        "\n".join(
+            [
+                "evolve\tSetup Rust\t2026-06-06T14:57:25.8102318Z curl --retry 10 https://example.com | sh",
+                "evolve\tInstall RTK\t2026-06-06T14:57:39.5657958Z rtk --version || echo \"RTK install failed; agent will use native compressor\"",
+                "evolve\tRun evolution session\t2026-06-06T16:29:49.6008331Z   + accumulating evidence -- every tool call, every failure, every eval result",
+                "evolve\tRun evolution session\t2026-06-06T15:17:55.6946402Z   Events: 265 total (48 runs, 0 failures)",
+                "evolve\tTests\t2026-06-06T15:00:44.7238078Z test result: ok. 0 passed; 0 failed; finished in 0.00s",
+                "evolve\tInstall xurl\t2026-06-06T14:57:41.9956725Z Compiling proc-macro-error v1.0.4",
+            ]
+        )
+    )
+    check("benign action log lines are not failures", noisy["distinct_failure_count"] == 0, noisy["failure_fingerprints"])
+    check("timestamps and retry counts are not provider errors", noisy["provider_error_count"] == 0, noisy["provider_error_count"])
     redacted = redact("error: Authorization: Bearer sk-super-secret-token-1234567890 failed")
     check("authorization bearer token redacted", "sk-super-secret" not in redacted, redacted)
     check("authorization prefix preserved", "Authorization: Bearer <redacted>" in redacted, redacted)
