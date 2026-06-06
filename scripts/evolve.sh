@@ -491,7 +491,7 @@ echo "  Phase A1: Assessment (${ASSESS_TIMEOUT}s)..."
 mkdir -p session_plan
 ASSESS_PROMPT=$(mktemp)
 cat > "$ASSESS_PROMPT" <<ASSESSEOF
-You are yoyo, a self-evolving coding agent. Today is Day $DAY ($DATE $SESSION_TIME).
+You are yyds, a generation 1 self-evolving coding agent. Today is Day $DAY ($DATE $SESSION_TIME).
 
 $YOYO_CONTEXT
 
@@ -626,7 +626,7 @@ Keep this investigation brief — focus on gathering enough context to write goo
 fi
 
 cat > "$PLAN_PROMPT" <<PLANEOF
-You are yoyo, a self-evolving coding agent. Today is Day $DAY ($DATE $SESSION_TIME).
+You are yyds, a generation 1 self-evolving coding agent. Today is Day $DAY ($DATE $SESSION_TIME).
 
 $YOYO_CONTEXT
 
@@ -740,7 +740,7 @@ For each trusted owner issue shown above, decide:
 Don't try to do everything. Pick the highest-impact work. The goal is a DeepSeek harness that improves from evidence,
 not a generic backlog bot reacting to every outside request.
 Skip issues where you have nothing new to say — silence is better than noise.
-Write issue responses in yoyo's voice (see PERSONALITY.md). Be a curious, honest octopus —
+Write issue responses in yyds's voice (see PERSONALITY.md). Be curious and honest —
 celebrate fixes, admit struggles, show personality. No corporate speak.
 
 For EACH task, create a file: session_plan/task_01.md, session_plan/task_02.md, etc.
@@ -855,7 +855,7 @@ for TASK_FILE in session_plan/task_*.md; do
     for ATTEMPT in 1 2; do
         TASK_PROMPT=$(mktemp)
         cat > "$TASK_PROMPT" <<TEOF
-You are yoyo, a self-evolving coding agent. Day $DAY ($DATE $SESSION_TIME).
+You are yyds, a generation 1 self-evolving coding agent. Day $DAY ($DATE $SESSION_TIME).
 
 $YOYO_CONTEXT
 
@@ -1498,7 +1498,7 @@ ${RECENT_ENTRY}
 
     JOURNAL_PROMPT=$(mktemp)
     cat > "$JOURNAL_PROMPT" <<JEOF
-You are yoyo, a self-evolving coding agent. You just finished an evolution session.
+You are yyds, a generation 1 self-evolving coding agent. You just finished an evolution session.
 
 Today is Day $DAY ($DATE $SESSION_TIME).
 
@@ -1566,7 +1566,7 @@ if [ -n "$COMMITS_FOR_REFLECTION" ]; then
     echo "  Reflecting on session learnings..."
     REFLECT_PROMPT=$(mktemp)
     cat > "$REFLECT_PROMPT" <<REOF
-You are yoyo, a self-evolving coding agent. You just finished Day $DAY ($DATE $SESSION_TIME).
+You are yyds, a generation 1 self-evolving coding agent. You just finished Day $DAY ($DATE $SESSION_TIME).
 
 $YOYO_CONTEXT
 
@@ -1664,7 +1664,7 @@ if [ "$ISSUE_COUNT" -gt 0 ] && command -v gh &>/dev/null; then
     RESPOND_PROMPT=$(mktemp)
     RESPOND_LOG=$(mktemp)
     cat > "$RESPOND_PROMPT" <<RESPONDEOF
-You are yoyo, a self-evolving coding agent. You just finished an evolution session.
+You are yyds, a generation 1 self-evolving coding agent. You just finished an evolution session.
 
 Today is Day $DAY ($DATE $SESSION_TIME).
 Repository: $REPO
@@ -1709,7 +1709,7 @@ ${ALREADY_RESPONDED:+- SKIP these issues (already responded today):${ALREADY_RES
 - DO close issues that are clearly resolved — leaving stale issues open creates noise for humans. Always comment first explaining why.
 - Only keep open if there's genuinely more work to do.
 - If build is FAILING, do NOT claim anything is "fixed" — say you'll fix the build first.
-- Write in yoyo's voice — curious, honest, celebratory. No corporate speak.
+- Write in yyds's voice — curious, honest, celebratory. No corporate speak.
 RESPONDEOF
 
     RESPOND_EXIT=0
