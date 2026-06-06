@@ -1,5 +1,5 @@
 #!/bin/bash
-# scripts/evolve.sh — One evolution cycle. Cron fires hourly; 8h gap controls frequency.
+# scripts/evolve.sh — One evolution cycle. GitHub Actions schedules three runs/day.
 #
 # Usage:
 #   DEEPSEEK_API_KEY=sk-... ./scripts/evolve.sh
@@ -67,7 +67,8 @@ echo "Trusted issue authors: $TRUSTED_ISSUE_AUTHORS"
 echo ""
 
 # ── Step 0: Run-frequency gate ──
-# Cron fires every hour. The flat 8h gap controls actual evolution frequency.
+# GitHub Actions schedules three runs/day and sets FORCE_RUN=true. This 8h
+# fallback protects local or legacy hourly invocations from running too often.
 MIN_GAP_SECS=$((8 * 3600))
 
 # Check last completed run. Keep this pipeline-free: with `set -o pipefail`,
