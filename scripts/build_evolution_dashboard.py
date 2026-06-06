@@ -34,6 +34,31 @@ def is_real_blocker(blocker: dict[str, Any]) -> bool:
     return True
 
 
+def eval_dedupe_key(eval_data: dict[str, Any]) -> tuple[str, str]:
+    suite = str(eval_data.get("suite") or "")
+    eval_id = str(eval_data.get("eval_id") or "")
+    if suite == "log-feedback" and eval_id.startswith("log-feedback-"):
+        run_key = eval_id.removeprefix("log-feedback-").rsplit("-", 1)[0]
+        if run_key:
+            return (suite, run_key)
+    return ("event", str(eval_data.get("event_id") or eval_id or id(eval_data)))
+
+
+def dedupe_evals(evals: Any) -> list[dict[str, Any]]:
+    if not isinstance(evals, list):
+        return []
+    order: list[tuple[str, str]] = []
+    latest_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for eval_data in evals:
+        if not isinstance(eval_data, dict):
+            continue
+        key = eval_dedupe_key(eval_data)
+        if key not in latest_by_key:
+            order.append(key)
+        latest_by_key[key] = eval_data
+    return [latest_by_key[key] for key in order]
+
+
 def load_sessions(audit_sessions: Path) -> list[dict[str, Any]]:
     sessions: list[dict[str, Any]] = []
     if not audit_sessions.is_dir():
@@ -44,7 +69,8 @@ def load_sessions(audit_sessions: Path) -> list[dict[str, Any]]:
             continue
         outcome = load_json(session_dir / "outcome.json")
         summary = load_json(session_dir / "state" / "summary.json")
-        latest_eval = summary.get("latest_eval") if isinstance(summary.get("latest_eval"), dict) else {}
+        evals = dedupe_evals(summary.get("evals", []))
+        latest_eval = evals[-1] if evals else {}
         latest_decision = (
             summary.get("latest_decision") if isinstance(summary.get("latest_decision"), dict) else {}
         )
@@ -68,7 +94,7 @@ def load_sessions(audit_sessions: Path) -> list[dict[str, Any]]:
                 "event_counts": summary.get("event_counts", {}),
                 "latest_gnomes": summary.get("latest_gnomes", {}),
                 "gnome_keys": summary.get("gnome_keys", []),
-                "evals": summary.get("evals", []),
+                "evals": evals,
                 "latest_eval": latest_eval,
                 "latest_decision": latest_decision,
                 "patches": summary.get("patches", []),
