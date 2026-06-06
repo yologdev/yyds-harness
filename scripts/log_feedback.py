@@ -25,7 +25,7 @@ from typing import Any
 
 
 ERROR_LINE_RE = re.compile(
-    r"(\berror(?:\[[^\]]+\])?\b|\bfailed\b|\bfatal\b|\bpanicked\b|\bexception\b|\btraceback\b|timed out|exit code [1-9]\d*)",
+    r"(##\[error\]|::error::|\berror(?:\[[^\]]+\])?:|\berror\[[^\]]+\]|\bfatal:|\bpanicked\b|\bexception\b|\btraceback\b|timed out|exit code [1-9]\d*|process completed with exit code [1-9]\d*|test result: failed)",
     re.IGNORECASE,
 )
 PROVIDER_ERROR_RE = re.compile(
@@ -50,7 +50,8 @@ def warn(message: str) -> None:
 
 
 def strip_ansi(value: str) -> str:
-    return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", value)
+    value = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", value)
+    return re.sub(r"\^\[\[[0-9;]*[a-zA-Z]", "", value)
 
 
 def redact(value: str) -> str:
@@ -101,6 +102,8 @@ def is_noise_failure_message(message: str) -> bool:
     if lower.startswith(("##[group]run ", "##[endgroup]", "#", "+", "-")):
         return True
     if lower.startswith(("ok:", "warning:", "compiling ", "checking ", "finished ")):
+        return True
+    if lower.startswith(("curl ", "echo ", "rtk ", "xurl ", "git ", "python3 ", "cargo ", "chmod ", "./scripts/")):
         return True
     if "|| echo" in lower or "continue-on-error" in lower or "non-fatal" in lower or "fail-soft" in lower:
         return True
