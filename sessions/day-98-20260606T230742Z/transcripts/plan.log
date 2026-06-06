@@ -1,0 +1,478 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the assessment and plan the session for Day 98. Let me first check the current state and any trusted owner issues.
+
+Key observations from the assessment:
+1. Build passes, tests pass (89/89)
+2. No open agent-self or agent-help-wanted issues
+3. Eval harness built but never used on real patches
+4. State replay system brand new - needs first real exercise
+5. `context explain --deepseek-native` has a 15s timeout issue
+6. Recent CI failures seem to be planning phase timeouts, not code defects
+7. `run_git_commit` bypass was fixed today
+8. Node.js 20 deprecation warnings are noise until June 16
+
+For task allocation (3 slots), following the priority:
+- yoagent-state DeepSeek feedback: The state replay system is brand new and untested. The eval harness has never been used on a real patch. These are the two biggest harness gaps.
+- The diagnostic should drive what tasks I create.
+
+Let me check ISSUES_TODAY.md first and then create the session plan.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && rm -f session_plan/task_*.md  ▶ read ISSUES_TODAY.md ✓ (5ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No trusted owner issues. So I have 3 slots all available for DeepSeek harness improvement.
+
+Let me think about what to prioritize based on the assessment:
+
+1. **Eval harness never used on real patches** - This is the single biggest gap. The harness is built but inert. The pipeline (harness propose → eval → promote_or_reject) has never run end-to-end. Fixing this means: either running an eval on a recent real change, or making the eval harness easier to trigger.
+
+2. **State replay system brand new** - `replay_state_events.py` landed today (121 lines + 84-line test). It's infrastructure waiting for first real use. This could be exercised in this session.
+
+3. **`context explain --deepseek-native` timeout** - From trajectory feedback. 15s timeout. This is a friction point.
+
+Let me think about what's achievable in 3 tasks:
+
+**Task 1: Run eval harness against a real patch (e.g., the `run_git_commit` bypass fix)**
+- This would exercise the eval pipeline end-to-end
+- But... this is a planning session. I produce task files, not implement.
+
+Wait, I need to reconsider. The task files I write should be *implementable* by an implementation agent. Let me think about what tasks are:
+
+1. Concrete enough for a 20-min focused agent
+2. Touch ≤3 source files
+3. Improve DeepSeek harness reliability/observability
+
+**Option A: Eval harness first real use**
+- Run eval on a known patch (e.g., the recent `run_git_commit` fix)
+- This exercises the eval pipeline
+- Could be: "Create a fixture that tests git safety guard" and "Run eval against run_git bypass fix"
+- But the eval harness is complex (6517 lines in commands_eval.rs). Need to be careful.
+
+**Option B: Fix `context explain --deepseek-native` timeout**
+- From trajectory feedback
+- Could be as simple as increasing timeout or handling missing index gracefully
+- Touches `context.rs` (or `commands_context.rs`)
+
+**Option C: Exercise state replay**
+- `replay_state_events.py` has tests but no production use
+- Could run it against current state and verify it produces useful output
+- This is more of a verification/script task
+
+**Option D: Make eval harness easier to discover/use**
+- Add a `/eval` slash command or improve the CLI discoverability
+- Or add documentation
+
+Let me think about what's highest impact:
+
+The assessment says: "Every session ships changes without measuring whether they actually improved anything." This is the core problem. The eval harness exists but isn't part of the workflow.
+
+The state replay system being new is secondary - it's infrastructure that will be useful soon.
+
+Let me structure 3 tasks:
+
+**Task 1: Run the state replay against current state to verify it works**
+- Simple: run `scripts/replay_state_events.py` against the current `.yoyo/state/` 
+- Verify it produces useful events that feed into the current session
+- If it breaks, fix it. If it works, document it.
+- This is a low-risk first exercise of new infrastructure.
+
+**Task 2: Create a concrete eval fixture for a harness-specific behavior**
+- E.g., a fixture that verifies git commit goes through the safety guard
+- Or a fixture that verifies DeepSeek strict tool schemas are enforced
+- This starts making the eval harness actually test harness behavior.
+
+**Task 3: Fix `context explain --deepseek-native` timeout**
+- The trajectory shows it times out at 15s
+- Could be a missing index, overly aggressive scanning, or just too tight a timeout
+- This is a user-visible friction point
+
+Wait, let me reconsider. The priority order from the instructions:
+
+0. Fix CI failures (none exist - the failures are planning timeouts, not code)
+1. yoagent-state DeepSeek feedback - state replay is new, eval harness unused
+2. DeepSeek harness eval/replay/promotion quality
+3. Self-discovered bugs
+4. Trusted owner issues (none)
+5. Agent-self issues (none)
+6. Capability gaps
+7. Release check
+
+Also, "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+So I should focus on eval and state replay. Let me think about concrete tasks:
+
+**Task 1: First real eval — create a fixture for the run_git safety guard and run it**
+The recent fix (all git ops now go through one door) is a perfect candidate for an eval fixture. Create a fixture that verifies destructive git commands hit the safety guard, then run eval against the current code.
+
+Files: `eval/fixtures/local-smoke/` (new fixture), `commands_eval.rs` (maybe minor fix if eval doesn't work)
+
+This is ≤3 source files. It exercises the eval harness.
+
+**Task 2: Exercise state replay in a real session context**
+Run `scripts/replay_state_events.py` to pour past audit events into the current session. Verify the output is useful. If it breaks, fix it.
+
+Files: `scripts/replay_state_events.py`, maybe `scripts/test_replay_state_events.py`
+
+This touches scripts, not source. Verifies infrastructure.
+
+**Task 3: Fix `context explain --deepseek-native` timeout**
+Investigate and fix the 15s timeout. Could be: handle missing semantic index gracefully, increase timeout, or make it fail-fast when index is missing.
+
+Files: `context.rs` or `commands_context.rs`
+
+Let me refine these task descriptions now. I'll write them as proper task files.
+
+Actually, wait. Let me reconsider task 1. The eval harness is complex. Let me look at what fixtures exist and whether `run_eval` actually works.
+
+The assessment says "Eval fixtures exist but are inert: 10+ fixture files in eval/fixtures/local-smoke/ — all designed, none ever run against a real patch."
+
+So the fixtures exist but the eval has never been run against a real patch. The task should be to actually run the eval command against a real code change and see if it works end-to-end.
+
+Let me check what fixtures exist...
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 23.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ ls eval/fixtures/local-smoke  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -20 ✓ (17ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the actual fixtures more carefully and check if the eval harness has setup/tools I can use.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ ls eval/fixtures/local-smoke  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls eval/fixtures/local-smoke/ … ✓ (15ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there are many fixture files (200+ in the listing). Let me also check if the eval harness is accessible from the CLI and how it works.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- --help 2>&1 | gre…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state --help 2>&1… ✓ (218ms)
+ ✓ (227ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the eval subcommand to understand what capabilities exist:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- eval --help 2>&1  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/replay_state_e… ✓ (43ms)
+ ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me check what the eval subcommand actually does:
+
+The eval subcommand has its own help. Let me check:
+
+Actually, the `--help` shows eval as a subcommand. Let me try `yyds eval help` or similar to see the eval subcommands.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- eval 2>&1 | head …  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls eval/fixtures/local-smoke/ … ✓ (10ms)
+ ✓ (136ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+368 fixture files! That's a lot. The eval harness is clearly well-developed but hasn't been run against real patches. Let me now check the context explain timeout issue, and also the state replay more carefully.
+
+Now let me plan 3 tasks:
+
+**Task 1: Run the state replay against actual state and hook it into the evolution pipeline**
+The `replay_state_events.py` script exists but has never been run in a real session. The task: run it against the current `.yoyo/state/` to verify it works, then hook it into `evolve.sh` so prior session state is poured into each new session.
+
+Wait - the script says "The audit-log branch stores each session's state delta under: sessions/<session-id>/state/events.jsonl". So it needs the audit-log branch cloned. Let me check if it's available.
+
+Actually, the task should be: exercise the state replay script in a controlled way. If it works, integrate it into the evolve pipeline. If it breaks, fix it.
+
+But wait - this touches scripts, not source. Is a script change within scope? Yes - the scripts are part of the harness.
+
+**Task 2: Create a concrete eval fixture that tests a real harness behavior and run it**
+Pick something specific like "git commit must go through the run_git safety guard" or "state recording must capture tool calls". Create a fixture, run `yyds eval fixtures run`, verify it passes.
+
+**Task 3: Fix `context explain --deepseek-native` timeout**
+From trajectory feedback. The semantic index is missing. Either: handle the missing index gracefully (fast path), or pre-generate it as part of context loading.
+
+Let me write these up. But first let me check if the context explain timeout is actually a real problem by looking at the code.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.9s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'timeout.*15' in src/commands_context.rs  ▶ search 'context.*explain|explain.*context' in src/commands_context.rs ✓ (12ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `commands_context.rs` file is only 72 lines. The `context explain` command is probably handled elsewhere. Let me check the dispatch_sub.rs or the CLI for how context subcommands are routed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_context.rs  ▶ search 'context' in src/dispatch_sub.rs ✓ (11ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `context explain` calls `build_deepseek_context_preview().render_explain()`. The timeout would come from `build_deepseek_context_preview()`. Let me check that function to understand what might cause a timeout.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_deepseek_context_preview' in src/context.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function to understand what could cause a 15s timeout.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/context.rs:320..420 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the `build_deepseek_context_preview` function makes several calls that could potentially be slow. The trajectory says the timeout is 15s. Let me look at `generate_repo_map_for_prompt` which is called when `include_repo_map` is true — this could be the expensive operation. Also `read_recent_state_events`, `get_recently_changed_files`, etc.
+
+Actually, looking at the trajectory feedback more carefully: "the `context explain` with `--deepseek-native` timed out after 15s. that's interesting - i -> inspect the failing phase and add a targeted harness guard or eval fixture"
+
+This could be related to `generate_repo_map_for_prompt` which might scan a lot of files, or it could be something else.
+
+Now let me formulate my 3 tasks. Let me be very concrete:
+
+**Task 1: Exercise the state replay system with real data**
+The `replay_state_events.py` script was just added but hasn't been run against real data. The task is:
+- Run `scripts/replay_state_events.py` against a test sessions directory
+- Verify it produces valid events.jsonl
+- If it works, add a test that replays a known fixture
+- If it breaks, fix the breakage
+
+Wait, but I also need to think about what's achievable in 20 minutes. Let me think about simple, concrete tasks.
+
+Actually, let me re-read the task sizing rules: "Each task MUST touch at most 3 source files." and "Each task must be completable in 20 minutes by a focused agent."
+
+For the eval harness, the most impactful thing would be to actually run eval against a real change. But creating a fixture from scratch and running the full eval pipeline seems like more than 20 minutes.
+
+Let me think about what makes each task small and achievable:
+
+**Task 1: State replay — verify it works and fix any issues**
+- Run `scripts/replay_state_events.py` with test data
+- If it works, commit. If not, fix it.
+- Touches: `scripts/replay_state_events.py`, maybe `scripts/test_replay_state_events.py`
+- This is a script-level task, not source code.
+
+**Task 2: Run a single eval fixture against the current codebase**
+- Pick one existing fixture (e.g., `009-yyds-alias.json` which tests that yyds alias works)
+- Run `yyds eval fixtures run --task 009-yyds-alias`
+- If it works, great - we have first evidence. If it breaks, fix the eval harness.
+- Touches: `commands_eval.rs` (if broken), fixture file (if needs update)
+
+Hmm, but actually 368 fixture files and the assessment says "none ever run against a real patch" - which suggests the fixtures are designed to validate harness behavior, not agent performance. Let me look at one to understand the format.
+
+**Task 3: Fix `context explain --deepseek-native` timeout**
+- Investigate what causes the timeout
+- Likely fix: add a timeout guard, or bail early when index is missing, or increase the timeout
+- Touches: `context.rs` or `commands_context.rs`
+
+Actually, I realize I should also consider what would most improve the DeepSeek harness state evidence loop. The assessment identifies the eval harness as the single biggest gap. Let me prioritize actually exercising the eval harness.
+
+Let me look at a fixture to understand the format:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/009-yyds-alias.json  ▶ read eval/fixtures/local-smoke/001-context-failing-files.json ✓ (16ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, these are benchmark fixtures for the eval harness. They define a task with a goal, tests, expected files, and a risk label. The eval harness would apply a change (patch), run the tests, and score whether the change improved things.
+
+Now I understand the structure. The task says "Run, schedule, replay, gate, and inspect local harness evaluations and benchmark fixtures". 
+
+Now let me think more carefully about what 3 tasks to create:
+
+The biggest gap is that the eval harness has never evaluated a real patch. But running the eval harness end-to-end requires:
+1. A patch to evaluate
+2. Running eval fixtures against it
+
+The patch we could use: the recent `run_git_commit` bypass fix (commit `0f4d0e6` or similar).
+
+But actually, the simplest first step is to just run `yyds eval fixtures run` or `yyds eval run` and see if it works at all. If it doesn't, fixing it is the task.
+
+Let me also consider: the `replay_state_events.py` was just added but never run. This is low-hanging fruit.
+
+And the `context explain --deepseek-native` timeout is a real user-facing bug.
+
+Let me write 3 tasks:
+
+**Task 1: First real eval run — exercise the eval harness against a known good change**
+- Pick a recent commit (the `run_git_commit` bypass fix)
+- Run `yyds eval run --suite local-smoke` against it
+- See if eval works end-to-end
+- If it breaks, fix the breakage
+- Files: `commands_eval.rs` (if broken), `eval_fixtures.rs` (if broken)
+
+**Task 2: Fix `context explain --deepseek-native` 15s timeout**
+- Investigate where the timeout comes from
+- Likely `generate_repo_map_for_prompt` or `build_and_maybe_write_semantic_index`
+- Add timeout guard or bail-fast when prerequisite data is missing
+- Files: `context.rs`
+
+**Task 3: Exercise state replay with real data**
+- Run `scripts/replay_state_events.py` against a known sessions directory
+- Verify it produces valid output
+- Add an integration test if possible
+- Files: `scripts/replay_state_events.py`, `scripts/test_replay_state_events.py`
+
+Wait, but all 3 tasks need to be things a focused agent can do in 20 minutes. Let me make them smaller and more concrete.
+
+Actually let me reconsider. The task files I write are for an *implementation agent* (Phase B). I should write clear instructions, not try to solve everything now. Let me focus on making each task file very clear about what to do.
+
+Let me finalize:
+
+**Task 1: Run eval harness against a real code change for the first time**
+The eval harness (`commands_eval.rs`, 6517 lines) has 368 fixtures but has never evaluated a real patch. The task: pick a recent commit (e.g., the `run_git_commit` bypass fix), run `yyds eval run --suite local-smoke` against it, and fix any breakage that prevents the eval from completing. If the eval works, verify the output is sensible and report results.
+
+Files: `commands_eval.rs` (if broken), `eval_fixtures.rs` (if broken)
+
+**Task 2: Exercise state replay system with live data**
+`scripts/replay_state_events.py` was just added. Run it against a sessions directory to verify it works end-to-end. If it fails, fix it. If it works, add an integration test that replays known fixture data and verifies the output is valid JSONL.
+
+Files: `scripts/replay_state_events.py`, `scripts/test_replay_state_events.py`
+
+**Task 3: Fix `context explain --deepseek-native` timeout**
+The `yyds context explain --deepseek-native` command times out after 15s per trajectory feedback. Investigate what causes the slowness (likely `generate_repo_map_for_prompt` or file scanning), and add a fail-fast or timeout guard so the command returns quickly even when prerequisite data is missing.
+
+Files: `src/context.rs`
+
+These all align with the priority: state-driven harness improvement, eval evidence quality, and fixing bugs.
+
+Now let me write the task files and issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 15.8s (2 ✓)
+
+Now I have a clear picture. Let me write the session plan. There are no trusted owner issues and no CI failures, so all 3 slots go to DeepSeek harness improvement — specifically the two biggest gaps: the eval harness has never been used, and the state replay is brand new infrastructure that needs its first real exercise. The `context explain` timeout from the trajectory is a quick win.
+  + Title: First real eval — run the eval harness against a concrete code change
+  + Files: src/commands_eval.rs, src/eval_fixtures.rs
+  + Issue: none
+  + 
+  + The eval harness (commands_eval.rs, 6517 lines) has 368 fixtures in eval/fixtures/local-smoke/ but has never been run against a real patch. Every session ships changes without measuring whether they improved anything. This task closes that loop.
+  + 
+  + What to do:
+  + 
+  + 1. Pick a recent, simple, known-good commit as the baseline. Use the `run_git_commit` bypass fix (commit 0f4d0e6 or HEAD~1) — it's a clear safety improvement that should show positive signal in the eval.
+  + 
+  + 2. Run a focused eval suite:
+  +    ```
+  +    cargo run -- eval fixtures list --suite local-smoke | head -20
+  +    cargo run -- eval run --suite local-smoke --dry-run
+  +    ```
+  +    See if the eval pipeline even starts. If it errors out before completing, diagnose why.
+  + 
+  + 3. Run the simplest fixture against the current code:
+  +    ```
+  +    cargo run -- eval fixtures run --task 009-yyds-alias --suite local-smoke
+  ... (10 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (30 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (30 lines)  + Title: Exercise the state replay script with live data and add an integration test
+  + Files: scripts/replay_state_events.py, scripts/test_replay_state_events.py
+  + Issue: none
+  + 
+  + `replay_state_events.py` (121 lines) was added in the previous session but has never been run against real data. The script replays prior audit-log state JSONL into the live `.yoyo/state/events.jsonl`. This task verifies it works.
+  + 
+  + What to do:
+  + 
+  + 1. First, check if we have any state data to replay:
+  +    ```
+  +    ls .yoyo/state/events.jsonl 2>/dev/null && wc -l .yoyo/state/events.jsonl
+  +    python3 scripts/replay_state_events.py --help
+  +    ```
+  + 
+  + 2. Run the existing unit tests:
+  +    ```
+  +    python3 scripts/test_replay_state_events.py
+  +    ```
+  +    If they pass, good. If they fail, fix the breakage.
+  + 
+  ... (16 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (36 lines)
+  + Title: Investigate and fix `context explain --deepseek-native` 15s timeout
+  + Files: src/context.rs, src/commands_context.rs
+  + Issue: none
+  + 
+  + Trajectory feedback from log_feedback reports that `yyds context explain --deepseek-native` times out after 15 seconds. The semantic context index file (`.yoyo/context-semantic-index.json`) is missing, which may cause a slow fallback scan.
+  + 
+  + What to do:
+  + 
+  + 1. Reproduce the timeout:
+  +    ```
+  +    time cargo run -- context explain --deepseek-native
+  +    ```
+  +    Confirm it actually times out (or is just very slow). If it completes quickly now, the issue may have been a transient network/filesystem condition — note that and move on.
+  + 
+  + 2. If slow, identify the bottleneck. The `build_deepseek_context_preview()` function in `src/context.rs` (~line 320) calls several potentially-expensive operations:
+  +    - `generate_repo_map_for_prompt()` — scans source tree to build a repo map
+  +    - `read_recent_state_events(20)` — reads from SQLite
+  +    - `get_recently_changed_files()` — git log
+  +    
+  +    Add temporary timing prints to identify which call is the bottleneck:
+  ... (16 more lines)
+  ✓ Auto-approved: write: session_plan/task_03.md (36 lines)
+  ▶ write session_plan/task_02.md (36 lines)  + # Issue Responses — Day 98 (22:10)
+  + 
+  + No trusted owner issues today. No agent-self or agent-help-wanted issues open.
+  + 
+  + All 3 task slots allocated to DeepSeek harness improvement:
+  + - Task 1: First real eval run against a concrete code change
+  + - Task 2: Exercise the state replay script with live data
+  + - Task 3: Fix `context explain --deepseek-native` timeout
+  ✓ Auto-approved: write: session_plan/issue_responses.md (8 lines)
+  ▶ write session_plan/task_03.md (36 lines)  ▶ write session_plan/issue_responses.md (8 lines) ✓ (1m 43s)
+ ✓ (3m 28s)
+ ✓ (5m 12s)
+ ✓ (6m 58s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All task files written. Now commit them and stop.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 7m 2s (4 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add session_plan/ && git c… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `session_plan/` directory is gitignored. That's expected — it's ephemeral. The task files are there for the Phase B implementation agents. Let me verify they exist.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la session_plan/ && echo "… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+Session plan written: 3 tasks targeting the DeepSeek harness's biggest evidence gaps.
+
+| # | Task | Rationale |
+|---|------|-----------|
+| 1 | Run eval harness against a real change | 368 fixtures, zero real runs. The harness is built but inert. Pick the run_git_commit bypass fix and run yyds eval run to close the loop. |
+| 2 | Exercise state replay with live data | replay_state_events.py landed today, never run. Verify it works, add an integration test. |
+| 3 | Fix `context explain --deepseek-native` 15s timeout | Trajectory-reported friction. Likely slow repo-map generation or missing index fallback scan. |
+
+No trusted owner issues. No CI failures. All slots go to making the harness evidence loop real — measuring changes instead of just shipping them.
+
