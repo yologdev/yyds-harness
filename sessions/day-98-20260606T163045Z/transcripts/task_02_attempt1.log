@@ -1,0 +1,383 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task:
+
+1. Parse `--json` flag in `handle_state_subcommand` for the `"tail"` match arm
+2. Modify `handle_tail(limit: usize)` → `handle_tail(limit: usize, json: bool)`
+3. When `json` is true, output raw JSONL lines; when false, keep existing formatted output
+4. Support `--json` combined with `--limit N`
+
+Let me start by reading the relevant parts of `src/commands_state.rs` to understand the current structure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'fn handle_tail' in src/commands_state.rs  ▶ search '"tail"' in src/commands_state.rs (*.rs) ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `handle_tail` function and the match arm in `handle_state_subcommand` that dispatches to it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:25..55  ▶ read src/commands_state.rs:805..885 ✓ (15ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `print_event_line` and `read_tail` to understand the current output format:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn print_event_line' in src/commands_state.rs (*.rs)  ▶ search 'fn read_tail' in src/commands_state.rs (*.rs) ✓ (11ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2464..2524  ▶ read src/commands_state.rs:2083..2123 ✓ (18ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The plan is:
+
+1. In the `"tail"` match arm (~line 31), parse `--json` flag and pass it to `handle_tail`
+2. Modify `handle_tail` signature to `handle_tail(limit: usize, json: bool)`
+3. When `json` is true, just print the raw lines; when false, keep existing `print_event_line` behavior
+
+Let me also check if there are any tests related to `handle_tail` or `state tail`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+Let me also check for existing tests related to this functionality:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_tail|state.*tail|test.*tail' in src/commands_state.rs (*.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also search for "tail" in the test module at the bottom of the file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search '"tail"' in src/commands_state.rs (*.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at line 31 context again and also look at the test module area to see if there are state command tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/commands_state.rs (*.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the information I need. Let me implement the changes:
+
+1. Parse `--json` flag in the `"tail"` match arm
+2. Modify `handle_tail` signature
+3. Add conditional output in `handle_tail`
+
+Let me also look at the existing `format_event_value` function to understand some formatting. The edits are straightforward.
+
+Let me now write a test first. I'll add a test that creates a temp file with JSONL content, calls `handle_tail` with `json: true`, and verifies the output.
+
+Actually, looking more carefully, `handle_tail` currently uses `print_event_line` which does `println!`, and `read_tail` reads from a file path. For the json mode, I just print raw lines. For testing, I'd need to capture stdout, which is a bit involved.
+
+Let me think about the simplest test approach. I could:
+1. Create a temp events.jsonl file
+2. Call `handle_tail` with `json: true`
+3. Capture stdout using `gag` or just test the read_tail + format logic separately
+
+Actually, the simplest approach: I can test the read_tail function and the json printing path by checking that raw lines are returned correctly. But since handle_tail prints to stdout, testing it directly is harder.
+
+Let me take a simpler approach: add a helper function that returns the tail output as a string (for testability), and have handle_tail use it.
+
+Actually, let me keep it simple. The task says "Write a test first if possible." The simplest test: test that read_tail returns correct JSON lines, and test the flag parsing in the match arm. I can also do an integration test with a tempfile.
+
+Let me just make the changes and add a unit test for the read_tail + json output path.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the changes:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me implement these changes.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.7s (4 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+First, edit the "tail" match arm to parse --json:
+────────────────────────────────────────────────────────────────────────────────
+
+**Step 1:** Parse `--json` flag in the `"tail"` match arm and pass it to `handle_tail`.
+                    .and_then(|i| args.get(i + 1))
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(20);
+  -             handle_tail(limit);
+  +             let json = args.iter().any(|a| a == "--json");
+  +             handle_tail(limit, json);
+            }
+  ✓ Auto-approved: edit: src/commands_state.rs (9 → 10 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (9 → 10 lines)
+                    .and_then(|i| args.get(i + 1))
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(20);
+  -             handle_tail(limit);
+  +             let json = args.iter().any(|a| a == "--json");
+  +             handle_tail(limit, json);
+            }
+ ✓ (15.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Expected - the function signature needs updating. Let me update handle_tail now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.6s (2 ✓)
+
+**Step 2:** Update `handle_tail` signature and add JSON output path.
+  - fn handle_tail(limit: usize) {
+  + fn handle_tail(limit: usize, json: bool) {
+        let path = default_events_path();
+        let Ok(lines) = read_tail(&path, limit) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        };
+  -     for line in lines {
+  -         print_event_line(&line);
+  +     if json {
+  +         for line in lines {
+  +             println!("{line}");
+  +         }
+  +     } else {
+  +         for line in lines {
+  +             print_event_line(&line);
+  +         }
+        }
+    }
+  ✓ Auto-approved: edit: src/commands_state.rs (10 → 16 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (10 → 16 lines)
+  - fn handle_tail(limit: usize) {
+  + fn handle_tail(limit: usize, json: bool) {
+        let path = default_events_path();
+        let Ok(lines) = read_tail(&path, limit) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        };
+  -     for line in lines {
+  -         print_event_line(&line);
+  +     if json {
+  +         for line in lines {
+  +             println!("{line}");
+  +         }
+  +     } else {
+  +         for line in lines {
+  +             print_event_line(&line);
+  +         }
+        }
+    }
+ ✓ (2m 17s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now run cargo build to verify it compiles:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (143ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build succeeds. Now let me add a test. I'll look at how the tests module is structured to add one there.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add a test. Let me find a good spot in the test module:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:15261..15321 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the test module starts at line 15267. Let me find a good place near the end of the test module to add a test for `handle_tail`. Let me also check what's near the bottom.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search '^}' in src/commands_state.rs (*.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's not very useful. Let me look at the end of the file for the closing of the test module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:24900..24930 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file goes to line 24931. Let me find the test module end.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:24925..24935 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - the test module ends at line 24931, and the last test ends at line 24930. I'll add my test just before the closing `}` of the test module.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the test. I'll insert it just before the closing `}` of the test module:
+            assert!(report.contains(
+                "release_source_provenance_audit <-[blocked_by_source_provenance_audit]- evt-release-gate (event -> policy)"
+            ));
+  +     }
+  + 
+  +     #[test]
+  +     fn tail_json_output_passes_raw_jsonl_lines() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let events = vec![
+  +             json!({"event_id":"evt-a","event_type":"RunStarted","timestamp_ms":100,"run_id":"run-1","payload":{"task":"test"}}),
+  +             json!({"event_id":"evt-b","event_type":"RunCompleted","timestamp_ms":200,"run_id":"run-1","payload":{"status":"success"}}),
+  +             json!({"event_id":"evt-c","event_type":"ToolCallStarted","timestamp_ms":300,"run_id":"run-2","payload":{"tool_name":"bash"}}),
+  +         ];
+  +         write_jsonl(&events_path, &events);
+  + 
+  +         let lines = read_tail(&events_path, 2).unwrap();
+  +         assert_eq!(lines.len(), 2, "read_tail respects limit");
+  +         // Last two events: evt-b and evt-c
+  +         let parsed: Vec<Value> = lines
+  ... (7 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (5 → 27 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (5 → 27 lines)
+            assert!(report.contains(
+                "release_source_provenance_audit <-[blocked_by_source_provenance_audit]- evt-release-gate (event -> policy)"
+            ));
+  +     }
+  + 
+  +     #[test]
+  +     fn tail_json_output_passes_raw_jsonl_lines() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let events = vec![
+  +             json!({"event_id":"evt-a","event_type":"RunStarted","timestamp_ms":100,"run_id":"run-1","payload":{"task":"test"}}),
+  +             json!({"event_id":"evt-b","event_type":"RunCompleted","timestamp_ms":200,"run_id":"run-1","payload":{"status":"success"}}),
+  +             json!({"event_id":"evt-c","event_type":"ToolCallStarted","timestamp_ms":300,"run_id":"run-2","payload":{"tool_name":"bash"}}),
+  +         ];
+  +         write_jsonl(&events_path, &events);
+  + 
+  +         let lines = read_tail(&events_path, 2).unwrap();
+  +         assert_eq!(lines.len(), 2, "read_tail respects limit");
+  +         // Last two events: evt-b and evt-c
+  +         let parsed: Vec<Value> = lines
+  ... (7 more lines)
+ ✓ (2m 18s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me build and test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt && cargo clippy --al… ✓ (28.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clippy passes. Now let me run cargo build and cargo test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 && cargo test… ✓ (22.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All integration tests pass. Now let me run the unit tests (specifically the new one):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yoyo -- --tes… ✓ (148ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That didn't run the lib tests. Let me run the lib tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- --test-thr… ✓ (2m 20s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 4185 tests pass including the new `tail_json_output_passes_raw_jsonl_lines` test. Let me also quickly verify the actual behavior works by checking if there's an events.jsonl file to test against:
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Let me do a quick manual verification that the `--json` flag works:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la .yoyo/state/events.json… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's an events.jsonl file. Let me test with it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state tail --limi… ✓ (185ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The exit code was 0 for cargo run, but the python validation failed. Let me see what the raw output looks like.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state tail --limi… ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Need to specify --bin. Also, the stderr is going to stdout. Let me separate them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run --bin yoyo -- state … ✓ (169ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The JSON output is working! The events use a different schema than I assumed in my test (field names like `kind` not `event_type`, `ts_ms` not `timestamp_ms`, `id` not `event_id`), but that's fine - the raw JSONL lines are emitted as-is which is exactly what the task asked for.
+
+Now let me verify with the python validation:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run --bin yoyo -- state … ✓ (142ms)
+
+  ✓ Watch passed: `cargo clippy --all-targets -- -D warnings && cargo test`
+
