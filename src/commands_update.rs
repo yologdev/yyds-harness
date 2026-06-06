@@ -93,7 +93,7 @@ pub fn handle_update() -> Result<(), String> {
 
     // Step 4: Download
     let temp_path = format!(
-        "/tmp/yoyo-update-{}.{}",
+        "/tmp/yyds-update-{}.{}",
         latest_version,
         if asset_name.ends_with(".zip") {
             "zip"
@@ -115,7 +115,7 @@ pub fn handle_update() -> Result<(), String> {
     }
 
     // Step 5: Extract and replace
-    let extract_dir = "/tmp/yoyo-update-dir";
+    let extract_dir = "/tmp/yyds-update-dir";
     match extract_archive(&temp_path, extract_dir) {
         Ok(binary_path) => {
             // Get current executable path
@@ -148,7 +148,7 @@ pub fn handle_update() -> Result<(), String> {
             let _ = std::fs::remove_dir_all(extract_dir);
 
             println!(
-                "✓ Updated to v{}! Please restart yoyo to use the new version.",
+                "✓ Updated to v{}! Please restart yyds to use the new version.",
                 latest_version
             );
             Ok(())
@@ -274,7 +274,7 @@ fn extract_archive(archive_path: &str, extract_dir: &str) -> Result<String, Stri
 
     let preferred = preferred_extracted_binary_names();
     find_extracted_binary(std::path::Path::new(extract_dir), &preferred)
-        .ok_or_else(|| "Could not find yoyo or yyds binary in extracted archive".to_string())
+        .ok_or_else(|| "Could not find yyds binary in extracted archive".to_string())
         .map(|path| path.to_string_lossy().to_string())
 }
 
@@ -379,15 +379,15 @@ mod tests {
     fn update_find_asset_url_found() {
         let assets = vec![
             serde_json::json!({
-                "name": "yoyo-x86_64-unknown-linux-gnu.tar.gz",
+                "name": "yyds-x86_64-unknown-linux-gnu.tar.gz",
                 "browser_download_url": "https://example.com/download/linux.tar.gz"
             }),
             serde_json::json!({
-                "name": "yoyo-aarch64-apple-darwin.tar.gz",
+                "name": "yyds-aarch64-apple-darwin.tar.gz",
                 "browser_download_url": "https://example.com/download/macos-arm.tar.gz"
             }),
         ];
-        let url = find_asset_url(&assets, "yoyo-x86_64-unknown-linux-gnu.tar.gz");
+        let url = find_asset_url(&assets, "yyds-x86_64-unknown-linux-gnu.tar.gz");
         assert_eq!(
             url,
             Some("https://example.com/download/linux.tar.gz".to_string())
@@ -397,17 +397,17 @@ mod tests {
     #[test]
     fn update_find_asset_url_not_found() {
         let assets = vec![serde_json::json!({
-            "name": "yoyo-x86_64-unknown-linux-gnu.tar.gz",
+            "name": "yyds-x86_64-unknown-linux-gnu.tar.gz",
             "browser_download_url": "https://example.com/download/linux.tar.gz"
         })];
-        let url = find_asset_url(&assets, "yoyo-x86_64-pc-windows-msvc.zip");
+        let url = find_asset_url(&assets, "yyds-x86_64-pc-windows-msvc.zip");
         assert!(url.is_none());
     }
 
     #[test]
     fn update_find_asset_url_empty() {
         let assets: Vec<serde_json::Value> = vec![];
-        let url = find_asset_url(&assets, "yoyo-x86_64-unknown-linux-gnu.tar.gz");
+        let url = find_asset_url(&assets, "yyds-x86_64-unknown-linux-gnu.tar.gz");
         assert!(url.is_none());
     }
 
@@ -497,7 +497,7 @@ mod tests {
         let assets = vec![serde_json::json!({
             "browser_download_url": "https://example.com/download/linux.tar.gz"
         })];
-        let url = find_asset_url(&assets, "yoyo-x86_64-unknown-linux-gnu.tar.gz");
+        let url = find_asset_url(&assets, "yyds-x86_64-unknown-linux-gnu.tar.gz");
         assert!(url.is_none());
     }
 
@@ -505,9 +505,9 @@ mod tests {
     fn update_find_asset_url_missing_download_url() {
         // Asset matches name but has no browser_download_url → None
         let assets = vec![serde_json::json!({
-            "name": "yoyo-x86_64-unknown-linux-gnu.tar.gz"
+            "name": "yyds-x86_64-unknown-linux-gnu.tar.gz"
         })];
-        let url = find_asset_url(&assets, "yoyo-x86_64-unknown-linux-gnu.tar.gz");
+        let url = find_asset_url(&assets, "yyds-x86_64-unknown-linux-gnu.tar.gz");
         assert!(url.is_none());
     }
 
@@ -516,33 +516,33 @@ mod tests {
         // With all 4 platform assets, each one should resolve correctly
         let assets = vec![
             serde_json::json!({
-                "name": "yoyo-x86_64-unknown-linux-gnu.tar.gz",
+                "name": "yyds-x86_64-unknown-linux-gnu.tar.gz",
                 "browser_download_url": "https://example.com/linux-x86.tar.gz"
             }),
             serde_json::json!({
-                "name": "yoyo-x86_64-apple-darwin.tar.gz",
+                "name": "yyds-x86_64-apple-darwin.tar.gz",
                 "browser_download_url": "https://example.com/macos-x86.tar.gz"
             }),
             serde_json::json!({
-                "name": "yoyo-aarch64-apple-darwin.tar.gz",
+                "name": "yyds-aarch64-apple-darwin.tar.gz",
                 "browser_download_url": "https://example.com/macos-arm.tar.gz"
             }),
             serde_json::json!({
-                "name": "yoyo-x86_64-pc-windows-msvc.zip",
+                "name": "yyds-x86_64-pc-windows-msvc.zip",
                 "browser_download_url": "https://example.com/windows.zip"
             }),
         ];
 
         assert_eq!(
-            find_asset_url(&assets, "yoyo-x86_64-apple-darwin.tar.gz"),
+            find_asset_url(&assets, "yyds-x86_64-apple-darwin.tar.gz"),
             Some("https://example.com/macos-x86.tar.gz".to_string())
         );
         assert_eq!(
-            find_asset_url(&assets, "yoyo-aarch64-apple-darwin.tar.gz"),
+            find_asset_url(&assets, "yyds-aarch64-apple-darwin.tar.gz"),
             Some("https://example.com/macos-arm.tar.gz".to_string())
         );
         assert_eq!(
-            find_asset_url(&assets, "yoyo-x86_64-pc-windows-msvc.zip"),
+            find_asset_url(&assets, "yyds-x86_64-pc-windows-msvc.zip"),
             Some("https://example.com/windows.zip".to_string())
         );
     }
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn update_extract_archive_nonexistent_file() {
-        let tmp = std::env::temp_dir().join("yoyo-test-extract-nofile");
+        let tmp = std::env::temp_dir().join("yyds-test-extract-nofile");
         let result = extract_archive(
             "/tmp/nonexistent-archive-12345.tar.gz",
             tmp.to_str().unwrap(),
@@ -579,9 +579,9 @@ mod tests {
     #[test]
     fn update_extract_archive_unsupported_format() {
         // Create a temp file with unsupported extension
-        let tmp_file = std::env::temp_dir().join("yoyo-test-archive.rar");
+        let tmp_file = std::env::temp_dir().join("yyds-test-archive.rar");
         std::fs::write(&tmp_file, b"fake data").unwrap();
-        let extract_dir = std::env::temp_dir().join("yoyo-test-extract-rar");
+        let extract_dir = std::env::temp_dir().join("yyds-test-extract-rar");
 
         let result = extract_archive(tmp_file.to_str().unwrap(), extract_dir.to_str().unwrap());
         assert!(result.is_err());
@@ -597,12 +597,12 @@ mod tests {
     #[test]
     fn update_extract_archive_empty_tar_no_binary() {
         // Create a valid but empty tar.gz and verify it fails with "Could not find"
-        let extract_dir = std::env::temp_dir().join("yoyo-test-extract-empty");
-        let tar_path = std::env::temp_dir().join("yoyo-test-empty.tar.gz");
+        let extract_dir = std::env::temp_dir().join("yyds-test-extract-empty");
+        let tar_path = std::env::temp_dir().join("yyds-test-empty.tar.gz");
 
         // Create an empty tar.gz using the tar command
         let _ = std::fs::create_dir_all(&extract_dir);
-        let empty_src = std::env::temp_dir().join("yoyo-test-empty-src");
+        let empty_src = std::env::temp_dir().join("yyds-test-empty-src");
         let _ = std::fs::create_dir_all(&empty_src);
 
         let status = std::process::Command::new("tar")
@@ -622,7 +622,7 @@ mod tests {
                 assert!(result.is_err());
                 let err = result.unwrap_err();
                 assert!(
-                    err.contains("Could not find yoyo or yyds binary"),
+                    err.contains("Could not find yyds binary"),
                     "Expected missing binary error, got: {}",
                     err
                 );
@@ -636,14 +636,14 @@ mod tests {
 
     #[test]
     fn update_extract_archive_finds_binary_at_root() {
-        // Create a tar.gz containing a file named "yoyo" — extract_archive should find it
-        let test_id = "yoyo-test-root-binary";
+        // Create a tar.gz containing a file named "yyds" — extract_archive should find it
+        let test_id = "yyds-test-root-binary";
         let src_dir = std::env::temp_dir().join(format!("{}-src", test_id));
         let tar_path = std::env::temp_dir().join(format!("{}.tar.gz", test_id));
         let extract_dir = std::env::temp_dir().join(format!("{}-out", test_id));
 
         let _ = std::fs::create_dir_all(&src_dir);
-        std::fs::write(src_dir.join("yoyo"), b"#!/bin/sh\necho hello").unwrap();
+        std::fs::write(src_dir.join("yyds"), b"#!/bin/sh\necho hello").unwrap();
 
         let status = std::process::Command::new("tar")
             .args([
@@ -651,7 +651,7 @@ mod tests {
                 tar_path.to_str().unwrap(),
                 "-C",
                 src_dir.to_str().unwrap(),
-                "yoyo",
+                "yyds",
             ])
             .status();
 
@@ -662,8 +662,8 @@ mod tests {
                 assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
                 let binary_path = result.unwrap();
                 assert!(
-                    binary_path.contains("yoyo"),
-                    "Binary path should contain 'yoyo': {}",
+                    binary_path.contains("yyds"),
+                    "Binary path should contain 'yyds': {}",
                     binary_path
                 );
             }
@@ -676,7 +676,7 @@ mod tests {
 
     #[test]
     fn update_extract_archive_finds_yyds_binary_at_root() {
-        let test_id = "yoyo-test-root-yyds-binary";
+        let test_id = "yyds-test-root-yyds-binary";
         let src_dir = std::env::temp_dir().join(format!("{}-src", test_id));
         let tar_path = std::env::temp_dir().join(format!("{}.tar.gz", test_id));
         let extract_dir = std::env::temp_dir().join(format!("{}-out", test_id));
@@ -715,15 +715,15 @@ mod tests {
 
     #[test]
     fn update_extract_archive_finds_binary_in_subdir() {
-        // Create tar.gz where "yoyo" is inside a subdirectory
-        let test_id = "yoyo-test-subdir-binary";
+        // Create tar.gz where "yyds" is inside a subdirectory
+        let test_id = "yyds-test-subdir-binary";
         let src_dir = std::env::temp_dir().join(format!("{}-src", test_id));
-        let sub_dir = src_dir.join("yoyo-v1.0.0");
+        let sub_dir = src_dir.join("yyds-v1.0.0");
         let tar_path = std::env::temp_dir().join(format!("{}.tar.gz", test_id));
         let extract_dir = std::env::temp_dir().join(format!("{}-out", test_id));
 
         let _ = std::fs::create_dir_all(&sub_dir);
-        std::fs::write(sub_dir.join("yoyo"), b"#!/bin/sh\necho hello").unwrap();
+        std::fs::write(sub_dir.join("yyds"), b"#!/bin/sh\necho hello").unwrap();
 
         let status = std::process::Command::new("tar")
             .args([
@@ -731,7 +731,7 @@ mod tests {
                 tar_path.to_str().unwrap(),
                 "-C",
                 src_dir.to_str().unwrap(),
-                "yoyo-v1.0.0",
+                "yyds-v1.0.0",
             ])
             .status();
 
@@ -742,8 +742,8 @@ mod tests {
                 assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
                 let binary_path = result.unwrap();
                 assert!(
-                    binary_path.contains("yoyo"),
-                    "Binary path should contain 'yoyo': {}",
+                    binary_path.contains("yyds"),
+                    "Binary path should contain 'yyds': {}",
                     binary_path
                 );
             }
@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn update_download_file_bad_url() {
         // download_file with a non-routable URL should fail
-        let tmp_path = std::env::temp_dir().join("yoyo-test-download-bad");
+        let tmp_path = std::env::temp_dir().join("yyds-test-download-bad");
         let result = download_file("https://0.0.0.0:1/nonexistent", tmp_path.to_str().unwrap());
         assert!(result.is_err());
         let _ = std::fs::remove_file(&tmp_path);

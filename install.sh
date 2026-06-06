@@ -120,8 +120,8 @@ main() {
         exit 1
     fi
 
-    if [ ! -f "${tmpdir}/yyds" ] || [ ! -f "${tmpdir}/yoyo" ]; then
-        echo "Error: binaries 'yyds' and 'yoyo' not found in archive."
+    if [ ! -f "${tmpdir}/yyds" ]; then
+        echo "Error: binary 'yyds' not found in archive."
         echo "Please report this: https://github.com/${REPO}/issues"
         exit 1
     fi
@@ -129,19 +129,16 @@ main() {
     # Install
     mkdir -p "$INSTALL_DIR"
     mv "${tmpdir}/yyds" "${INSTALL_DIR}/yyds"
-    mv "${tmpdir}/yoyo" "${INSTALL_DIR}/yoyo"
     chmod +x "${INSTALL_DIR}/yyds"
-    chmod +x "${INSTALL_DIR}/yoyo"
 
     echo "Installed yyds to ${INSTALL_DIR}/yyds"
-    echo "Installed yoyo compatibility alias to ${INSTALL_DIR}/yoyo"
 
     # Check PATH
     case ":${PATH:-}:" in
         *":${INSTALL_DIR}:"*) ;;
         *)
             echo ""
-            echo "Add yoyo to your PATH by adding this to your shell profile:"
+            echo "Add yyds to your PATH by adding this to your shell profile:"
             echo ""
             echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
             echo ""

@@ -21,21 +21,22 @@
 `yyds-harness` is a DeepSeek-native coding-agent harness that learns from its
 own runs.
 
-This repository is generation 1 in the yoyo family tree. Gen0 is
+This repository,
+[yologdev/yyds-harness](https://github.com/yologdev/yyds-harness), is
+generation 1 in the yoyo family tree. Gen0 is
 [`yologdev/yoyo-evolve`](https://github.com/yologdev/yoyo-evolve). This branch's
 agent is named **yyds**. It keeps the inherited `yoyo` runtime compatibility
 surface, then specializes the harness around DeepSeek models, state-backed
 evidence, deterministic prompt layout, and evaluation-driven self-improvement.
 
-Both binaries are currently built:
+The release artifact builds one binary:
 
 ```bash
-yyds --deepseek-native "fix the failing tests"
-yoyo --deepseek-native "fix the failing tests"
+yyds "fix the failing tests"
 ```
 
-Use `yyds` for the gen1 product surface. Use `yoyo` when compatibility with the
-original command name matters.
+`yyds` is the gen1 product surface. It defaults to the DeepSeek-native harness
+profile, so `--deepseek-native` is not needed.
 
 ## What This Repo Is For
 
@@ -174,19 +175,13 @@ cargo install yoyo-ds-harness
 Run the DeepSeek-native surface:
 
 ```bash
-DEEPSEEK_API_KEY=sk-... yyds --deepseek-native
+DEEPSEEK_API_KEY=sk-... yyds
 ```
 
 Run a one-shot prompt:
 
 ```bash
-DEEPSEEK_API_KEY=sk-... yyds --deepseek-native -p "summarize this repo"
-```
-
-The compatibility binary works too:
-
-```bash
-yoyo --provider openai --model gpt-4o "explain this codebase"
+DEEPSEEK_API_KEY=sk-... yyds -p "summarize this repo"
 ```
 
 ## Configuration
@@ -312,6 +307,10 @@ event model used by this harness.
   note         = {Open-source DeepSeek-native coding agent harness}
 }
 ```
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=yologdev/yyds-harness&type=Date)](https://star-history.com/#yologdev/yyds-harness&Date)
 
 ## License
 

@@ -21940,7 +21940,7 @@ mod tests {
                         "replay_command": "yoyo eval fixtures run --suite local-smoke",
                         "commands": [
                             "cargo test graph_artifacts",
-                            "cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke"
+                            "cargo run --quiet --bin yyds -- eval fixtures validate --suite local-smoke"
                         ]
                     },
                     "fixture_suite": {
@@ -22513,7 +22513,7 @@ mod tests {
                 parent_event_ids: Vec::new(),
                 payload: json!({
                     "test_kind": "local-smoke",
-                    "command": "cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke"
+                    "command": "cargo run --quiet --bin yyds -- eval fixtures validate --suite local-smoke"
                 }),
             },
             crate::state::StateEvent {
@@ -22528,7 +22528,7 @@ mod tests {
                 parent_event_ids: Vec::new(),
                 payload: json!({
                     "test_kind": "local-smoke",
-                    "command": "cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke",
+                    "command": "cargo run --quiet --bin yyds -- eval fixtures validate --suite local-smoke",
                     "passed": true,
                     "result_preview": "Eval fixture suite is valid"
                 }),
@@ -22550,7 +22550,7 @@ mod tests {
         assert!(report.contains("kinds:      local-smoke"));
         assert!(report.contains("statuses:   passed=1"));
         assert!(report.contains("observed_in=2"));
-        assert!(report.contains("test=local-smoke command=cargo run --quiet --bin yoyo"));
+        assert!(report.contains("test=local-smoke command=cargo run --quiet --bin yyds"));
         assert!(report.contains("status=passed result=Eval fixture suite is valid run=run-1"));
         assert!(report.contains("TestCompleted evt-test-done -[observed_in]-> run-1"));
 
@@ -22575,7 +22575,7 @@ mod tests {
         assert_eq!(metadata["status"].as_str().unwrap(), "passed");
         assert_eq!(
             metadata["command"].as_str().unwrap(),
-            "cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke"
+            "cargo run --quiet --bin yyds -- eval fixtures validate --suite local-smoke"
         );
         assert_eq!(
             metadata["result_preview"].as_str().unwrap(),

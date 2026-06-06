@@ -607,16 +607,16 @@ impl Default for DeepSeekHarnessGenome {
                 required_gates: vec![
                     "cargo fmt --check".to_string(),
                     "cargo check".to_string(),
-                    "cargo test --bin yoyo -- --test-threads=1".to_string(),
+                    "cargo test --bin yyds -- --test-threads=1".to_string(),
                     "cargo test --test integration -- --test-threads=1".to_string(),
                 ],
                 protocol_gates: vec![
-                    "cargo run --quiet --bin yoyo -- deepseek test-tool-call --record --json".to_string(),
-                    "cargo run --quiet --bin yoyo -- deepseek test-thinking --record --json".to_string(),
-                    "cargo run --quiet --bin yoyo -- deepseek stream-check --record --json".to_string(),
-                    "cargo run --quiet --bin yoyo -- deepseek json-check --input '{\"ok\":true}' --record --json"
+                    "cargo run --quiet --bin yyds -- deepseek test-tool-call --record --json".to_string(),
+                    "cargo run --quiet --bin yyds -- deepseek test-thinking --record --json".to_string(),
+                    "cargo run --quiet --bin yyds -- deepseek stream-check --record --json".to_string(),
+                    "cargo run --quiet --bin yyds -- deepseek json-check --input '{\"ok\":true}' --record --json"
                         .to_string(),
-                    "cargo run --quiet --bin yoyo -- deepseek transport-check --status 429 --error 'rate limit' --record --json"
+                    "cargo run --quiet --bin yyds -- deepseek transport-check --status 429 --error 'rate limit' --record --json"
                         .to_string(),
                 ],
                 benchmark_subset: "local-smoke".to_string(),

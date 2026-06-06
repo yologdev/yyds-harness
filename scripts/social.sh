@@ -58,21 +58,21 @@ fi
 # Ensure memory directory exists
 mkdir -p memory
 
-# ── Step 1: Find yoyo binary ──
+# ── Step 1: Find yyds binary ──
 YOYO_BIN=""
-if [ -f "./target/release/yoyo" ]; then
-    YOYO_BIN="./target/release/yoyo"
-elif [ -f "./target/debug/yoyo" ]; then
-    YOYO_BIN="./target/debug/yoyo"
+if [ -f "./target/release/yyds" ]; then
+    YOYO_BIN="./target/release/yyds"
+elif [ -f "./target/debug/yyds" ]; then
+    YOYO_BIN="./target/debug/yyds"
 else
     echo "→ No binary found. Building..."
     BUILD_STDERR=$(mktemp)
-    if cargo build --release --quiet 2>"$BUILD_STDERR"; then
-        YOYO_BIN="./target/release/yoyo"
-    elif cargo build --quiet 2>"$BUILD_STDERR"; then
-        YOYO_BIN="./target/debug/yoyo"
+    if cargo build --release --quiet --bin yyds 2>"$BUILD_STDERR"; then
+        YOYO_BIN="./target/release/yyds"
+    elif cargo build --quiet --bin yyds 2>"$BUILD_STDERR"; then
+        YOYO_BIN="./target/debug/yyds"
     else
-        echo "  FATAL: Cannot build yoyo."
+        echo "  FATAL: Cannot build yyds."
         cat "$BUILD_STDERR" | sed 's/^/    /'
         rm -f "$BUILD_STDERR"
         exit 1

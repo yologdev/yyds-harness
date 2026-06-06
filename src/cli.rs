@@ -726,8 +726,17 @@ fn parse_mcp_and_openapi_config(
     }
 }
 
+fn invoked_as_yyds(args: &[String]) -> bool {
+    args.first()
+        .and_then(|arg| std::path::Path::new(arg).file_stem())
+        .and_then(|stem| stem.to_str())
+        .map(|stem| stem == "yyds")
+        .unwrap_or(false)
+}
+
 fn parse_deepseek_native(args: &[String], file_config: &HashMap<String, String>) -> bool {
-    args.iter().any(|a| a == "--deepseek-native")
+    invoked_as_yyds(args)
+        || args.iter().any(|a| a == "--deepseek-native")
         || crate::state::parse_bool(file_config.get("deepseek_native"), false)
         || std::env::var("YOYO_DEEPSEEK_NATIVE")
             .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
@@ -2422,7 +2431,7 @@ system_prompt = "You are a Go expert"
         let _api_key = EnvGuard::set("DEEPSEEK_API_KEY", "test-key");
         let _harness_internal = EnvGuard::clear("YOYO_HARNESS_INTERNAL");
         let _state = EnvGuard::clear("YOYO_STATE");
-        let args: Vec<String> = vec!["yoyo".into(), "--deepseek-native".into()];
+        let args: Vec<String> = vec!["yyds".into()];
         let config = parse_args(&args).expect("should parse");
         assert!(config.deepseek_native);
         assert!(config.deepseek_fim_route);
@@ -2443,8 +2452,7 @@ system_prompt = "You are a Go expert"
     fn test_deepseek_fim_route_flags_parse() {
         std::env::set_var("DEEPSEEK_API_KEY", "test-key");
         let args = vec![
-            "yoyo".to_string(),
-            "--deepseek-native".to_string(),
+            "yyds".to_string(),
             "--deepseek-fim-route".to_string(),
             "--deepseek-fim-response".to_string(),
             r#"{"choices":[{"text":"ok"}]}"#.to_string(),
@@ -2462,11 +2470,7 @@ system_prompt = "You are a Go expert"
     #[test]
     fn test_deepseek_fim_route_can_be_disabled() {
         std::env::set_var("DEEPSEEK_API_KEY", "test-key");
-        let args = vec![
-            "yoyo".to_string(),
-            "--deepseek-native".to_string(),
-            "--no-deepseek-fim-route".to_string(),
-        ];
+        let args = vec!["yyds".to_string(), "--no-deepseek-fim-route".to_string()];
 
         let config = parse_args(&args).expect("should parse");
 
@@ -2535,7 +2539,7 @@ system_prompt = "You are a Go expert"
         let _api_key = EnvGuard::set("DEEPSEEK_API_KEY", "test-key");
         let _harness_internal = EnvGuard::set("YOYO_HARNESS_INTERNAL", "1");
         let _state = EnvGuard::set("YOYO_STATE", "1");
-        let args: Vec<String> = vec!["yoyo".into(), "--deepseek-native".into()];
+        let args: Vec<String> = vec!["yyds".into()];
         let config = parse_args(&args).expect("should parse");
         assert!(config.deepseek_native);
         assert!(config.state.enabled);

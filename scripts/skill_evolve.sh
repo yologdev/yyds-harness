@@ -158,10 +158,10 @@ if [ "$DRY_RUN" != "true" ]; then
         exit 1
     fi
 
-    YOYO_BIN="./target/debug/yoyo"
+    YOYO_BIN="./target/debug/yyds"
     [ -x "$YOYO_BIN" ] || { echo "skill-evolve: $YOYO_BIN missing"; exit 1; }
 else
-    YOYO_BIN="./target/debug/yoyo"  # set anyway for downstream env consistency
+    YOYO_BIN="./target/debug/yyds"  # set anyway for downstream env consistency
 fi
 
 # All gates passed — from here on, the EXIT trap will reset counter + cooldown.

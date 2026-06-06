@@ -65,9 +65,9 @@ Evidence:
 - DeepSeek v4 model names are implemented and tested.
 - DeepSeek protocol helpers cover thinking, strict schemas, JSON output, FIM,
   cache metrics, streaming replay, and transport retry classification.
-- `cargo test --quiet --bin yoyo deepseek::tests::native_models_use_v4_names`
+- `cargo test --quiet --bin yyds deepseek::tests::native_models_use_v4_names`
   passes.
-- `cargo test --quiet --bin yoyo cli::tests::test_deepseek_native_sets_provider_model_thinking_and_state`
+- `cargo test --quiet --bin yyds cli::tests::test_deepseek_native_sets_provider_model_thinking_and_state`
   passes.
 
 Caveat:
@@ -89,7 +89,7 @@ Evidence:
 - State CLI includes `init`, `tail`, `trace`, `failures --recent`, `why`,
   `lineage`, `cache --recent`, import/export, recovery, retention, and graph
   views.
-- `cargo test --quiet --bin yoyo state::tests::event_append_writes_jsonl`
+- `cargo test --quiet --bin yyds state::tests::event_append_writes_jsonl`
   passes.
 
 ### Week 3: context and tool discipline
@@ -104,7 +104,7 @@ Evidence:
 - Strict tool schema suite covers critical mutation and state actions.
 - JSON retry/failure policy and compact state failure payloads are implemented.
 - Cache hit/miss metrics are represented in DeepSeek usage and state reports.
-- `cargo test --quiet --bin yoyo deepseek::tests::strict_schema_suite_covers_critical_state_mutations`
+- `cargo test --quiet --bin yyds deepseek::tests::strict_schema_suite_covers_critical_state_mutations`
   passes.
 
 ### Week 4: eval and first harness patch lifecycle
@@ -115,17 +115,17 @@ Evidence:
 
 - Local fixture suite exists under `eval/fixtures/local-smoke`.
 - Fixture validation passes with 368 task manifests:
-  `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke`.
+  `cargo run --quiet --bin yyds -- eval fixtures validate --suite local-smoke`.
 - Eval CLI includes run, report, compare, replay, release-gate, schedule, and
   fixture attempt flows.
 - Evolve CLI includes propose, feedback, issue intake, apply, rollback, eval,
   approve, promote, and reject.
 - Promotion and release gates enforce required eval evidence.
-- `cargo test --quiet --bin yoyo eval_fixtures::tests::validates_required_task_fields`
+- `cargo test --quiet --bin yyds eval_fixtures::tests::validates_required_task_fields`
   passes.
-- `cargo test --quiet --bin yoyo commands_evolve::tests::promotion_decision_blocks_missing_required_gate_evidence`
+- `cargo test --quiet --bin yyds commands_evolve::tests::promotion_decision_blocks_missing_required_gate_evidence`
   passes.
-- `cargo test --quiet --bin yoyo commands_eval::tests::release_gate_blocks_missing_required_gate_evidence`
+- `cargo test --quiet --bin yyds commands_eval::tests::release_gate_blocks_missing_required_gate_evidence`
   passes.
 
 ### CI and release hardening
@@ -137,7 +137,7 @@ Evidence:
 - CI checks out sibling `yoagent-state`.
 - CI runs formatting, tests, clippy, and local fixture validation.
 - Release workflow checks out sibling `yoagent-state`.
-- Release archives include both `yyds` and `yoyo`.
+- Release archives include only the `yyds` binary.
 - Crates.io publishing is opt-in behind `PUBLISH_CRATE=true` until
   `yoagent-state` is published.
 
@@ -159,7 +159,7 @@ forever:
 The bootstrap branch should stop feature growth and close only these items:
 
 1. Run or explicitly waive a live DeepSeek end-to-end smoke.
-   - Command shape: `DEEPSEEK_API_KEY=... cargo run --bin yyds -- --deepseek-native "<small task>"`.
+   - Command shape: `DEEPSEEK_API_KEY=... cargo run --bin yyds -- "<small task>"`.
    - If network/API credentials are unavailable, record this as a manual release
      smoke rather than implementing unrelated local features.
    - Current status: waived for this local gate run because `DEEPSEEK_API_KEY`
@@ -175,7 +175,7 @@ The bootstrap branch should stop feature growth and close only these items:
    - `cargo fmt --check`
    - `cargo test`
    - `cargo clippy --all-targets --all-features -- -D warnings`
-   - `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke`
+   - `cargo run --quiet --bin yyds -- eval fixtures validate --suite local-smoke`
    - `test ! -e .yoyo`
    - `git -C /Users/yuanhao/Dev/yoagent-state status --short`
    - Current status: achieved on commit `8c020bc` on 2026-06-02 except the live
@@ -194,7 +194,7 @@ Commands run on 2026-06-02:
   - `yyds` unit tests: 3741 passed, 1 ignored
   - integration tests: 89 passed, 1 ignored
 - `cargo clippy --all-targets --all-features -- -D warnings`
-- `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke`
+- `cargo run --quiet --bin yyds -- eval fixtures validate --suite local-smoke`
   - suite: `local-smoke`
   - tasks: 368
 - `test ! -e .yoyo`

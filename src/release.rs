@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 pub const RELEASE_REPO: &str = "yologdev/yyds-harness";
 pub const RELEASE_ARCHIVE_PREFIX: &str = "yyds-harness";
 pub const PRIMARY_BINARY: &str = "yyds";
-pub const COMPAT_BINARY: &str = "yoyo";
 pub const SOURCE_PROVENANCE_POLICY_VERSION: u32 = 1;
 
 pub fn releases_api_url() -> String {
@@ -49,11 +48,11 @@ pub fn platform_asset_name(os: &str, arch: &str, tag_name: &str) -> Option<Strin
     ))
 }
 
-pub fn packaged_binary_names(windows: bool) -> [&'static str; 2] {
+pub fn packaged_binary_names(windows: bool) -> [&'static str; 1] {
     if windows {
-        ["yyds.exe", "yoyo.exe"]
+        ["yyds.exe"]
     } else {
-        [PRIMARY_BINARY, COMPAT_BINARY]
+        [PRIMARY_BINARY]
     }
 }
 
@@ -320,7 +319,7 @@ mod tests {
 
         assert!(introduction.contains("# Yoyo DeepSeek Harness"));
         assert!(introduction.contains("cargo install yoyo-ds-harness"));
-        assert!(introduction.contains("yyds --deepseek-native"));
+        assert!(introduction.contains("yyds"));
         assert!(introduction.contains("github.com/yologdev/yyds-harness"));
         assert!(introduction.contains("gen0 is `yologdev/yoyo-evolve`"));
         assert!(!introduction.contains("github.com/yologdev/yoyo-evolve"));

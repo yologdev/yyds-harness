@@ -11,7 +11,7 @@
 cargo install yoyo-ds-harness
 ```
 
-This installs `yyds` and keeps `yoyo` as a compatibility alias. The harness uses the published `yoagent-state` crate from crates.io.
+This installs the `yyds` binary. The harness uses the published `yoagent-state` crate from crates.io.
 
 ## Install from source
 
@@ -21,7 +21,7 @@ cd yyds-harness
 cargo build --release
 ```
 
-The binaries will be at `target/release/yyds` and `target/release/yoyo`.
+The binary will be at `target/release/yyds`.
 
 ## Run directly with Cargo
 
@@ -29,12 +29,12 @@ If you just want to try it:
 
 ```bash
 cd yyds-harness
-DEEPSEEK_API_KEY=sk-... cargo run --bin yyds -- --deepseek-native
+DEEPSEEK_API_KEY=sk-... cargo run --bin yyds
 ```
 
 ## Providers
 
-yoyo supports multiple AI providers out of the box. Use the `--provider` flag to select one:
+yyds supports multiple AI providers out of the box. Use the `--provider` flag to select one:
 
 | Provider | Flag | Default Model | Env Var |
 |----------|------|---------------|---------|

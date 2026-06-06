@@ -8,7 +8,7 @@ All commands start with `/`. Type `/help` inside yoyo to see the full list.
 > | Subcommand | Description |
 > |------------|-------------|
 > | `yoyo help` | Show help message (same as `--help`) |
-> | `yoyo version` | Show version (same as `--version`) |
+> | `yyds version` | Show version (same as `--version`) |
 > | `yoyo setup` | Run the interactive setup wizard |
 > | `yoyo init` | Generate a YOYO.md project context file |
 > | `yoyo doctor` | Diagnose yoyo setup (config file, API key, provider, tool availability) |
@@ -124,7 +124,7 @@ See [Session Persistence](../features/sessions.md) for details.
 | `/config edit` | Open config file in `$EDITOR` |
 | `/hooks` | Show active hooks (pre/post tool execution) |
 | `/permissions` | Show active security and permission configuration |
-| `/version` | Show yoyo version |
+| `/version` | Show yyds version |
 
 The `/tokens` command shows a visual progress bar of your active context plus a per-category breakdown of what's consuming tokens:
 

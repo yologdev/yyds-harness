@@ -233,7 +233,7 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
                 // without agent state (version, git branch, cwd).
                 let cwd = std::env::current_dir()
                     .map_or_else(|_| "?".into(), |p| p.display().to_string());
-                println!("{DIM}  yoyo v{VERSION}");
+                println!("{DIM}  yyds v{VERSION}");
                 if let Some(branch) = crate::git::git_branch() {
                     println!("  git:     {branch}");
                 }

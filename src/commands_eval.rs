@@ -3900,8 +3900,7 @@ fn print_usage() {
     );
 }
 
-const DEFAULT_AGENT_TEMPLATE_HINT: &str =
-    "yyds --deepseek-native --yes --no-update-check --prompt {goal}";
+const DEFAULT_AGENT_TEMPLATE_HINT: &str = "yyds --yes --no-update-check --prompt {goal}";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FixtureAttemptAgentCommand {
@@ -3938,7 +3937,7 @@ fn default_fixture_agent_command_template() -> String {
         .filter(|path| !path.trim().is_empty())
         .unwrap_or_else(|| "yyds".to_string());
     format!(
-        "{} --deepseek-native --yes --no-update-check --prompt {{goal}}",
+        "{} --yes --no-update-check --prompt {{goal}}",
         shell_quote(&binary)
     )
 }
@@ -6068,7 +6067,7 @@ mod tests {
     #[test]
     fn default_fixture_agent_command_uses_current_binary_and_prompt_placeholder() {
         let command = default_fixture_agent_command_template();
-        assert!(command.contains("--deepseek-native"));
+        assert!(!command.contains("--deepseek-native"));
         assert!(command.contains("--yes"));
         assert!(command.contains("--no-update-check"));
         assert!(command.contains("--prompt {goal}"));
@@ -6342,9 +6341,9 @@ mod tests {
             task_id: "context-miss".into(),
             passed: false,
             worktree: "/tmp/worktree".into(),
-            agent_command: "yyds --deepseek-native -p 'fix'".into(),
+            agent_command: "yyds -p 'fix'".into(),
             agent_result: crate::eval_fixtures::FixtureCommandResult {
-                command: "yyds --deepseek-native -p 'fix'".into(),
+                command: "yyds -p 'fix'".into(),
                 passed: true,
                 status_code: Some(0),
                 duration_ms: 12,

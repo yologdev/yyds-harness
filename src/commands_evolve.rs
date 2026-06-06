@@ -3173,7 +3173,7 @@ mod tests {
                     "commands": [
                         "cargo fmt --check",
                         "cargo check",
-                        "cargo test --bin yoyo -- --test-threads=1",
+                        "cargo test --bin yyds -- --test-threads=1",
                         "cargo test --test integration -- --test-threads=1"
                     ]
                 }
@@ -3646,7 +3646,7 @@ mod tests {
             "git_dirty": false,
             "commands": [
                 "cargo fmt --check",
-                "cargo test --bin yoyo -- --test-threads=1",
+                "cargo test --bin yyds -- --test-threads=1",
                 "cargo test --test integration -- --test-threads=1"
             ]
         });
@@ -3701,7 +3701,7 @@ mod tests {
             "git_dirty": false,
             "commands": [
                 "cargo fmt --check",
-                "cargo test --bin yoyo -- --test-threads=1",
+                "cargo test --bin yyds -- --test-threads=1",
                 "cargo test --test integration -- --test-threads=1"
             ]
         });

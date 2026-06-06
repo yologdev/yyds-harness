@@ -145,7 +145,7 @@ Create markdown files with YAML frontmatter in the `skills/` directory. The agen
 
 ## The `/update` Command
 
-The yoyo binary's `/update` command checks for releases from `yologdev/yyds-harness`, not your fork. This is expected behavior. As a fork maintainer, rebuild from source after pulling changes:
+The yyds binary's `/update` command checks for releases from `yologdev/yyds-harness`, not your fork. This is expected behavior. As a fork maintainer, rebuild from source after pulling changes:
 
 ```bash
 cargo build --release

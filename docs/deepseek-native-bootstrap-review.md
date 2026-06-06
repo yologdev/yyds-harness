@@ -74,7 +74,7 @@ Latest local gate run: passed on commit `8c020bc` on 2026-06-02.
   - `yyds` unit tests: 3741 passed, 1 ignored
   - integration tests: 89 passed, 1 ignored
 - `cargo clippy --all-targets --all-features -- -D warnings`
-- `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke`
+- `cargo run --quiet --bin yyds -- eval fixtures validate --suite local-smoke`
   - suite: `local-smoke`
   - tasks: 368
 - `test ! -e .yoyo`
@@ -87,7 +87,7 @@ Known waiver:
   present in this environment. Run it before release/tagging with:
 
 ```bash
-DEEPSEEK_API_KEY=... cargo run --bin yyds -- --deepseek-native "<small task>"
+DEEPSEEK_API_KEY=... cargo run --bin yyds -- "<small task>"
 ```
 
 ## Review Checklist

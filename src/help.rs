@@ -45,13 +45,13 @@ pub use crate::help_data::{command_help, command_short_description};
 pub fn cli_help_text() -> String {
     let mut s = String::new();
     use std::fmt::Write as _;
-    let _ = writeln!(s, "yoyo v{VERSION} — a coding agent growing up in public");
+    let _ = writeln!(s, "yyds v{VERSION} — a coding agent growing up in public");
     let _ = writeln!(s);
-    let _ = writeln!(s, "Usage: yoyo [OPTIONS] [PROMPT]");
+    let _ = writeln!(s, "Usage: yyds [OPTIONS] [PROMPT]");
     let _ = writeln!(s);
-    let _ = writeln!(s, "  Run with a bare prompt:  yoyo \"fix this bug\"");
-    let _ = writeln!(s, "  Or with --prompt flag:   yoyo -p \"fix this bug\"");
-    let _ = writeln!(s, "  Interactive REPL:        yoyo");
+    let _ = writeln!(s, "  Run with a bare prompt:  yyds \"fix this bug\"");
+    let _ = writeln!(s, "  Or with --prompt flag:   yyds -p \"fix this bug\"");
+    let _ = writeln!(s, "  Interactive REPL:        yyds");
     let _ = writeln!(s);
     let _ = writeln!(s, "Options:");
     let _ = writeln!(
@@ -374,7 +374,7 @@ pub fn cli_help_text() -> String {
     let _ = writeln!(s, "    /config            Show all current settings");
     let _ = writeln!(s, "    /hooks             Show active hooks");
     let _ = writeln!(s, "    /permissions       Show security/permission config");
-    let _ = writeln!(s, "    /version           Show yoyo version");
+    let _ = writeln!(s, "    /version           Show yyds version");
     let _ = writeln!(
         s,
         "    /update            Check for and install latest version"
@@ -705,7 +705,7 @@ pub fn help_text() -> String {
     out.push_str("  /config get        Show the on-disk value for a config key\n");
     out.push_str("  /hooks             Show active hooks (pre/post tool execution)\n");
     out.push_str("  /permissions       Show active security and permission configuration\n");
-    out.push_str("  /version           Show yoyo version\n");
+    out.push_str("  /version           Show yyds version\n");
     out.push_str("  /update            Check for and install the latest version\n");
     out.push_str("  /history           Show summary of conversation messages\n");
     out.push_str("  /history detail    Per-turn breakdown with tools and token counts\n");
@@ -1513,7 +1513,7 @@ mod tests {
         let text = cli_help_text();
         assert!(text.contains("Usage:"), "should contain Usage section");
         assert!(
-            text.contains("yoyo [OPTIONS] [PROMPT]"),
+            text.contains("yyds [OPTIONS] [PROMPT]"),
             "should show usage synopsis"
         );
     }

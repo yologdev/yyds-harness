@@ -20,7 +20,7 @@ Yoyo DS Harness is open-source, written in Rust, and built on [yoagent](https://
 export DEEPSEEK_API_KEY=sk-...
 cargo install yoyo-ds-harness  # or: cargo run from source
 
-yyds --deepseek-native
+yyds
 ```
 
 Then just talk to it:

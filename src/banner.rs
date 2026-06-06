@@ -13,7 +13,7 @@ pub fn print_banner() {
         format!(" — Day {day_str}")
     };
     println!(
-        "\n{BOLD}{CYAN}  yoyo{RESET} v{VERSION}{day_suffix} {DIM}— a coding agent growing up in public{RESET}"
+        "\n{BOLD}{CYAN}  yyds{RESET} v{VERSION}{day_suffix} {DIM}— a coding agent growing up in public{RESET}"
     );
 
     // Show project context if we can detect it

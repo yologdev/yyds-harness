@@ -1859,7 +1859,7 @@ mod tests {
     #[test]
     fn classify_test_command_recognizes_common_test_runners() {
         assert_eq!(
-            classify_test_command("cargo test --bin yoyo"),
+            classify_test_command("cargo test --bin yyds"),
             Some("cargo_test")
         );
         assert_eq!(
@@ -1867,7 +1867,7 @@ mod tests {
             Some("cargo_nextest")
         );
         assert_eq!(
-            classify_test_command("env -u NO_COLOR cargo test --bin yoyo"),
+            classify_test_command("env -u NO_COLOR cargo test --bin yyds"),
             Some("cargo_test")
         );
         assert_eq!(
@@ -1895,13 +1895,13 @@ mod tests {
 
     #[test]
     fn test_command_payloads_capture_lineage_fields() {
-        let started = test_started_payload("tool-1", "cargo test --bin yoyo").unwrap();
+        let started = test_started_payload("tool-1", "cargo test --bin yyds").unwrap();
         assert_eq!(started["tool_call_id"], "tool-1");
-        assert_eq!(started["command"], "cargo test --bin yoyo");
+        assert_eq!(started["command"], "cargo test --bin yyds");
         assert_eq!(started["test_kind"], "cargo_test");
 
         let completed =
-            test_completed_payload("tool-1", "cargo test --bin yoyo", false, "test failed")
+            test_completed_payload("tool-1", "cargo test --bin yyds", false, "test failed")
                 .unwrap();
         assert_eq!(completed["tool_call_id"], "tool-1");
         assert_eq!(completed["test_kind"], "cargo_test");

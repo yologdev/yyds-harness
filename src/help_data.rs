@@ -153,7 +153,7 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              Checks your development environment and reports what's working,\n\
              what's missing, and what might need attention.\n\n\
              Checks performed:\n\
-             \x20 • Version — current yoyo version\n\
+             \x20 • Version — current yyds version\n\
              \x20 • Git — whether git is installed and current repo/branch\n\
              \x20 • Provider — configured AI provider\n\
              \x20 • API key — whether the required env var is set\n\
@@ -701,8 +701,8 @@ pub fn command_help(cmd: &str) -> Option<&'static str> {
              project awareness.",
         ),
         "version" => Some(
-            "/version — Show yoyo version\n\n\
-             Displays the current yoyo version number.",
+            "/version — Show yyds version\n\n\
+             Displays the current yyds version number.",
         ),
         "update" => Some(
             "/update — Check for and install the latest version\n\n\
@@ -1328,7 +1328,7 @@ pub fn command_short_description(cmd: &str) -> Option<&'static str> {
         "tree" => Some("Show project directory tree"),
         "undo" => Some("Undo last turn's changes, all uncommitted, or last commit"),
         "update" => Some("Check for and install the latest version"),
-        "version" => Some("Show yoyo version"),
+        "version" => Some("Show yyds version"),
         "watch" => Some("Auto-run lint+test after file changes"),
         "web" => Some("Fetch a web page or search the web"),
         "open" => Some("Open a file in your editor"),

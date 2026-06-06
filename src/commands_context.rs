@@ -12,9 +12,9 @@ pub fn handle_context_subcommand(args: &[String]) {
 }
 
 fn handle_preview(args: &[String]) {
-    if !args.iter().any(|arg| arg == "--deepseek-native") {
+    if !deepseek_context_enabled(args) {
         eprintln!(
-            "{YELLOW}  context preview currently supports --deepseek-native layout only{RESET}"
+            "{YELLOW}  context preview currently supports the yyds DeepSeek-native layout only{RESET}"
         );
         return;
     }
@@ -23,9 +23,9 @@ fn handle_preview(args: &[String]) {
 }
 
 fn handle_explain(args: &[String]) {
-    if !args.iter().any(|arg| arg == "--deepseek-native") {
+    if !deepseek_context_enabled(args) {
         eprintln!(
-            "{YELLOW}  context explain currently supports --deepseek-native layout only{RESET}"
+            "{YELLOW}  context explain currently supports the yyds DeepSeek-native layout only{RESET}"
         );
         return;
     }
@@ -34,8 +34,8 @@ fn handle_explain(args: &[String]) {
 }
 
 fn handle_index(args: &[String]) {
-    if !args.iter().any(|arg| arg == "--deepseek-native") {
-        eprintln!("{YELLOW}  context index currently supports --deepseek-native only{RESET}");
+    if !deepseek_context_enabled(args) {
+        eprintln!("{YELLOW}  context index currently supports the yyds DeepSeek-native layout only{RESET}");
         return;
     }
     let write = args.iter().any(|arg| arg == "--write");
@@ -58,6 +58,15 @@ fn handle_index(args: &[String]) {
 
 fn print_usage() {
     println!(
-        "Usage: yoyo context <command>\n\n  preview --deepseek-native\n  explain --deepseek-native\n  index --deepseek-native [--write] [--path PATH] [--json]"
+        "Usage: yyds context <command>\n\n  preview\n  explain\n  index [--write] [--path PATH] [--json]"
     );
+}
+
+fn deepseek_context_enabled(args: &[String]) -> bool {
+    args.first()
+        .and_then(|arg| std::path::Path::new(arg).file_stem())
+        .and_then(|stem| stem.to_str())
+        .map(|stem| stem == "yyds")
+        .unwrap_or(false)
+        || args.iter().any(|arg| arg == "--deepseek-native")
 }

@@ -156,10 +156,10 @@ if [ "$DRY_RUN" = true ]; then
     exit 0
 fi
 
-# --- Generate via yoyo binary ---
-YOYO_BIN="${YOYO_BIN:-$YOYO_REPO/target/debug/yoyo}"
+# --- Generate via yyds binary ---
+YOYO_BIN="${YOYO_BIN:-$YOYO_REPO/target/debug/yyds}"
 if [ ! -x "$YOYO_BIN" ]; then
-    echo "Error: yoyo binary not found at $YOYO_BIN" >&2
+    echo "Error: yyds binary not found at $YOYO_BIN" >&2
     echo "Run 'cargo build' in $YOYO_REPO first." >&2
     exit 1
 fi

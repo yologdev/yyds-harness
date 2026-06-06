@@ -110,7 +110,7 @@ fi
 echo "→ Checking build..."
 cargo build --quiet
 cargo test --quiet
-YOYO_BIN="./target/debug/yoyo"
+YOYO_BIN="./target/debug/yyds"
 echo "  Build OK."
 echo ""
 

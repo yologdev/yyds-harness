@@ -2687,10 +2687,10 @@ mod tests {
 
     #[test]
     fn bash_approval_request_keeps_normal_commands_high_risk() {
-        let request = bash_approval_request("cargo test --bin yoyo");
+        let request = bash_approval_request("cargo test --bin yyds");
 
         assert!(!request.is_critical());
-        assert_eq!(request.command, "cargo test --bin yoyo");
+        assert_eq!(request.command, "cargo test --bin yyds");
         assert_eq!(request.risk_label, "high");
         assert!(request.warning.is_none());
     }

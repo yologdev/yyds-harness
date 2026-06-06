@@ -96,11 +96,10 @@ function Main {
             exit 1
         }
 
-        # Find the binaries
+        # Find the binary
         $PrimaryBinary = Get-ChildItem -Path $TmpDir -Filter "yyds.exe" -Recurse | Select-Object -First 1
-        $CompatBinary = Get-ChildItem -Path $TmpDir -Filter "yoyo.exe" -Recurse | Select-Object -First 1
-        if (-not $PrimaryBinary -or -not $CompatBinary) {
-            Write-Host "Error: binaries 'yyds.exe' and 'yoyo.exe' not found in archive."
+        if (-not $PrimaryBinary) {
+            Write-Host "Error: binary 'yyds.exe' not found in archive."
             Write-Host "Please report this: https://github.com/$Repo/issues"
             exit 1
         }
@@ -109,15 +108,13 @@ function Main {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
         try {
             Copy-Item -Path $PrimaryBinary.FullName -Destination (Join-Path $InstallDir "yyds.exe") -Force
-            Copy-Item -Path $CompatBinary.FullName -Destination (Join-Path $InstallDir "yoyo.exe") -Force
         } catch {
-            Write-Host "Error: could not install Yoyo DS Harness binaries to $InstallDir"
-            Write-Host "If yoyo is currently running, close it and try again."
+            Write-Host "Error: could not install Yoyo DS Harness binary to $InstallDir"
+            Write-Host "If yyds is currently running, close it and try again."
             exit 1
         }
 
         Write-Host "Installed yyds to $InstallDir\yyds.exe"
-        Write-Host "Installed yoyo compatibility alias to $InstallDir\yoyo.exe"
 
         # Check PATH
         $UserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
@@ -131,7 +128,7 @@ function Main {
                 Write-Host "Restart your terminal for the change to take effect."
             } catch {
                 Write-Host ""
-                Write-Host "Add yoyo to your PATH manually:"
+                Write-Host "Add yyds to your PATH manually:"
                 Write-Host "  `$env:PATH = `"$InstallDir;`$env:PATH`""
                 Write-Host ""
             }

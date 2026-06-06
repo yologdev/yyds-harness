@@ -97,7 +97,7 @@ fn format_self_written(self_written: usize, total: usize, pct: f64) -> String {
 
 // ── /version ─────────────────────────────────────────────────────────────
 
-/// Build a compact version string: `yoyo v0.1.9 (abc1234 2026-04-23) linux-x86_64`
+/// Build a compact version string: `yyds v0.1.9 (abc1234 2026-04-23) linux-x86_64`
 ///
 /// Uses compile-time env vars `GIT_HASH` and `BUILD_DATE` (set by `build.rs`
 /// or overridden in CI/release builds).
@@ -106,7 +106,7 @@ pub fn version_line() -> String {
     let date = option_env!("BUILD_DATE").unwrap_or("dev");
     let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
 
-    format!("yoyo v{VERSION} ({hash} {date}) {target}")
+    format!("yyds v{VERSION} ({hash} {date}) {target}")
 }
 
 pub fn handle_version() {
@@ -1659,10 +1659,10 @@ mod tests {
     #[test]
     fn test_version_line_format() {
         let line = version_line();
-        // Should match: yoyo vX.Y.Z (HASH DATE) OS-ARCH
+        // Should match: yyds vX.Y.Z (HASH DATE) OS-ARCH
         assert!(
-            line.starts_with("yoyo v"),
-            "should start with 'yoyo v': {line}"
+            line.starts_with("yyds v"),
+            "should start with 'yyds v': {line}"
         );
         assert!(line.contains('('), "should contain '(': {line}");
         assert!(line.contains(')'), "should contain ')': {line}");

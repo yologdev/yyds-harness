@@ -217,7 +217,7 @@ HTML_TEMPLATE = """\
     <header class="hero">
       <div class="hero-prompt">
         <span class="hero-prompt-sigil">$</span>
-        <span class="hero-cmd">yyds --deepseek-native --status</span>
+        <span class="hero-cmd">yyds --status</span>
       </div>
       <h1>Yoyo DeepSeek Harness<span class="cursor">_</span></h1>
       <p class="hero-status">day {day_count}<span class="sep">·</span><span class="status-tag">state-backed harness evolution</span></p>
