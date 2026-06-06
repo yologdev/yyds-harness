@@ -75,7 +75,7 @@ def load_sessions(audit_sessions: Path) -> list[dict[str, Any]]:
                 "decisions": summary.get("decisions", []),
                 "blockers": blockers,
                 "code_refs": summary.get("code_refs", []),
-                "audit_url": f"{REPO_URL}/tree/audit-log/{session_dir.name}",
+                "audit_url": f"{REPO_URL}/tree/audit-log/sessions/{session_dir.name}",
             }
         )
     return sessions
