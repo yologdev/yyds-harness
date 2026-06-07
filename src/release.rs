@@ -299,7 +299,8 @@ mod tests {
         assert!(readme.contains("Yoyo DeepSeek Harness:"));
         assert!(readme.contains("github.com/yologdev/yyds-harness"));
         assert!(readme.contains("repos=yologdev/yyds-harness"));
-        assert!(readme.contains("star-history.com/#yologdev/yyds-harness&Date"));
+        assert!(readme.contains("www.star-history.com/?type=date&repos=yologdev%2Fyyds-harness"));
+        assert!(readme.contains("api.star-history.com/chart?repos=yologdev/yyds-harness&type=date"));
         assert!(!readme.contains("@misc{yoyo2026yoyoevolve"));
         assert!(!readme.contains("github.com/yologdev/yoyo-evolve},"));
         assert!(!readme.contains("repos=yologdev/yoyo-evolve&type=Date"));
