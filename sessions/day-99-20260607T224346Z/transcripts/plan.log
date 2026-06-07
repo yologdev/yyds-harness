@@ -1,0 +1,578 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the assessment and plan the session. The key points:
+
+1. **CI Status**: Build passes, tests mostly pass (1 flaky test, not a CI failure)
+2. **Flaky test**: `context::tests::test_load_project_context_includes_file_listing` - likely test-ordering issue
+3. **Missing embedding index**: `.yoyo/context-embedding-index.json` is missing
+4. **commands_state.rs is 23,736 lines** - largest file, but splitting it would require touching many files per task
+5. **Cache report**: 91% cache hit ratio - excellent
+6. **Web search tool**: returned no results during assessment - needs investigation
+7. **Safety false positive**: `grep -c` pattern blocked as "reverse shell"
+8. **No open issues** in TRUSTED OWNER ISSUES section
+
+Let me check:
+- TRAJECTORY shows 3 recurring CI errors but those seem to be assertion failures in test output, not actual CI failures blocking the build
+- The assessment says "All 10 runs success" - so no CI failures to fix
+- No trusted owner issues to respond to
+- The DEEPSEEK HARNESS EVOLUTION POLICY says prioritize state-driven DeepSeek harness work
+
+Let me read ISSUES_TODAY.md if it exists, and check the actual state of things.
+
+Given the policy guidance:
+- At least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence
+- The flaky test and missing embedding index are harness-relevant
+- The web search tool failure could be a harness issue
+- The safety false positive on `grep -c` is worth fixing
+
+Task candidates:
+1. **Fix flaky test** - `context::tests::test_load_project_context_includes_file_listing` - likely needs cwd save/restore or serial test execution
+2. **Fix safety false positive** - the `nc` pattern in `grep -c` is a false positive for reverse shell detection
+3. **Build missing embedding index** - or at least investigate why it's missing
+4. **Investigate web search tool** - why did it return no results?
+
+For task sizing (max 3 source files per task):
+- Flaky test fix: likely just `context.rs` (1 file)
+- Safety false positive: likely `safety.rs` (1 file)
+- Embedding index: `context.rs` mainly (1-2 files)
+- Web search: `commands_web.rs` (1 file)
+
+Let me check ISSUES_TODAY.md first.
+────────────────────────────────────────────────────────────────────────────────
+
+I'll start by checking if ISSUES_TODAY.md exists, then plan the session tasks. Let me also verify the flaky test and other evidence mentioned in the assessment.
+  ▶ read ISSUES_TODAY.md  ▶ read .skill_evolve_counter  ▶ $ cargo test context::tests::test_load_project_context_includes_file_listing -- --… ✓ (21ms)
+ ✓ (40ms)
+ ✓ (149ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The flaky test passes in isolation. Let me now run the full test suite to see if it actually fails, and check what the test does.
+
+Also, no issues today - so I have 3 slots to allocate based on state/trajectory evidence.
+
+Let me think about what tasks to plan:
+
+1. **Fix flaky test** - the `context::tests::test_load_project_context_includes_file_listing` test. This is self-discovered bug/friction. It's a flaky test that fails intermittently. The assessment says "likely needs `#[serial]` attribute or cwd save/restore." This is important for harness reliability.
+
+2. **Fix safety false positive on `grep -c`** - the `nc` pattern in commands like `grep -c` triggers reverse shell detection. This directly impacts the harness's ability to run commands. This is a friction item.
+
+3. **Build missing embedding index** - or investigate why it's missing. The assessment says the embedding index is missing. This improves context loading quality, which is DeepSeek harness relevant.
+
+4. **Investigate web search tool failure** - web search returned no results during assessment. Could be a harness issue.
+
+Let me prioritize based on the policy:
+- #0: CI failures - none (the flaky test is the closest but it's intermittent)
+- #1: yoagent-state DeepSeek feedback - the assessment says no policy or file relation data in the graph. But that's a very large task.
+- #2: DeepSeek harness eval/replay/promotion quality - embedding index and flaky test fix both fit here
+- #3: Self-discovered bugs - flaky test, safety false positive
+
+Let me check the safety false positive more carefully and the flaky test.
+
+For the 3 slots:
+1. Fix the flaky `context::tests::test_load_project_context_includes_file_listing` test - harness reliability
+2. Fix safety false positive on `grep -c` (the `nc` pattern) - harness reliability  
+3. Build/generate missing embedding index in `context.rs` - context quality for DeepSeek
+
+Let me verify each by reading the relevant code sections.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 7.0s (3 ✓)
+
+Good — the flaky test passes in isolation. Let me verify the full suite and examine the identified issues more closely.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test --lib -- --test-threads=1 2>&1 | grep -E "(FAILED|test result|panicke…  ▶ $ grep -n "nc\|reverse.shell\|reverse_shell" src/safety.rs | head -30  ▶ $ ls -la .yoyo/context-embedding-index.json 2>&1; ls -la .yoyo/context-semantic-in… ✓ (21ms)
+ ✓ (22ms)
+ ✓ (1m 40s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the specific parts more closely:
+
+1. The flaky test - let me read it
+2. The safety false positive - the `nc` in `grep -c` triggers `nc ` check at line 931-932
+3. The embedding index - it's missing
+
+Let me also check if the full test suite actually fails or if the assessment's claim about the flaky test was from a previous run.
+
+Actually, the `grep` output shows 20 passing tests - that's not complete. Let me check the full suite result.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1m 44s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test --lib -- --test-threads=1 2>&1 | tail -5  ▶ $ grep -n "test_load_project_context_includes_file_listing\|fn test_load_project_c… ✓ (10ms)
+ ✓ (1m 40s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 4188 tests pass, 0 failed. So the flaky test was from a previous run perhaps, or the assessment was from a previous session. The current state is all tests passing.
+
+Let me now focus on the actual issues:
+1. **Safety false positive**: `grep -c` contains `nc ` which triggers reverse shell detection. I need to look at `check_reverse_shell` at line 922.
+2. **Missing embedding index**: The file doesn't exist - need to understand how it's built.
+3. **Flaky test**: Currently passing. Could still be worth fixing but it's not actively failing.
+
+Let me read the relevant code sections.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1m 43s (2 ✓)
+
+All 4188 tests pass. The flaky test isn't failing right now. Let me investigate the actionable issues more closely.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/safety.rs:921..1001  ▶ read src/context.rs:2525..2585 ✓ (16ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see some interesting things:
+
+1. **Safety false positive**: Line 931-932 checks for `nc `, `ncat `, `netcat ` combined with ` -e ` or ` -c `. The ` -c ` check would match `grep -c` if it also contains `nc `. But wait — `grep -c` doesn't contain `nc ` followed by a space. Let me think again... `grep -c "^pub fn"` — does this contain `nc `? Let me check: `grep -c "^pub fn \|^pub async fn \|^fn " src/commands_state.rs` — this contains `nc ` inside `src/commands_state.rs`? No... `nc ` would need the literal characters 'n', 'c', ' ' in sequence. Let me look more carefully...
+
+Actually wait, the assessment said the command was `grep -c "^pub fn \|^pub async fn \|^fn " src/commands_state.rs`. Does this contain `nc `? Let me check character by character: `grep -c "^pub fn \|^pub async fn \|^fn " src/commands_state.rs`. The substring `nc ` appears in... `...async fn \|^fn " src/commands_state.rs`. Let me look: `fn \|^fn " s` - no, that's `fn ` not `nc `. 
+
+Hmm, actually I think the user's original command might have been different from what the assessment describes. Let me search for what triggers the reverse shell check. The key is: `nc ` is checked, and ` -c ` is checked. So `nc ` AND ` -c ` both need to be present.
+
+Wait, `grep -c` has ` -c ` in it, and if the path contains `nc ` (like maybe `func` → no), or if there's something else...
+
+Actually, I think the assessment might have been slightly misattributing the cause. Let me re-read: "The pattern `nc` anywhere in a command string triggers this." That's not quite right based on the code — it's `nc ` (nc followed by space) AND ` -e ` or ` -c `. But `grep -c` does contain ` -c `, and if there's `nc ` anywhere else in the command string...
+
+Actually in `grep -c "^pub fn \|^pub async fn \|^fn " src/commands_state.rs`, let me look for `nc `:
+- `fnc` in... no, there's no `nc `. 
+
+Hmm, but maybe the actual command was different. The point is: the assessment reports a false positive. Let me check the code more carefully. The safety check for reverse shell requires BOTH `nc ` AND (` -e ` OR ` -c `). For `grep -c`, the `-c` flag would match ` -c `? Actually `-c ` or ` -c `? The check is for ` -c ` (space before -c space). `grep -c "^pub fn"` would have ` -c ` (space, -c, space) if there are spaces around `-c`. Let me look: `grep -c "` — yes, that's ` -c ` (space, dash, c, space). So the `-c` part IS matched.
+
+But `nc ` also needs to be present. In the command string `grep -c "^pub fn \|^pub async fn \|^fn " src/commands_state.rs`, does `nc ` appear? Let me check: `fn \|^fn " src/commands_state` — wait, no. `async fn` — that's `fn`, not `nc`. `src/` — no. `commands_state` — no. 
+
+Actually... wait. Let me look for `nc` in the string: `commands_state` contains... no it doesn't. 
+
+Hmm, perhaps the assessment report was wrong about the exact cause, or it was a slightly different command. In any case, I can see a potential false positive: `grep -c` contains ` -c ` which is a trigger, and if the command contains something like `syncing` or `function` or any word with `nc` in it, then `cmd_lower.contains("nc ")` would not match those because they contain `nc` followed by something other than space. But what about `nc` at end of line? Or `nc` followed by `|`?
+
+Actually, I think the real issue might be subtler. Let me re-examine. The `nc_tools` check uses `"nc "` (nc followed by space). The ` -c ` check uses spaces around `-c`. For `grep -c`, the `-c` is ` -c ` (with the space before it from `grep -c`). But where does `nc ` come from?
+
+Wait — what if `-c ` in `grep -c ` is a substring of... no, `-c ` is `-c `, not `nc `.
+
+Let me look more carefully at what the false positive might be. Maybe it's `socat` or `/dev/tcp/` or something else? Or maybe the assessment is pointing to a different command. Let me just focus on the actionable issue: the safety checker can false-positive. Let me look at what patterns could cause false positives and fix the most obvious ones.
+
+Actually, let me step back. The assessment mentions this as a bug/friction. But the assessment may be from a previous run or may have slightly wrong details. Let me focus on:
+
+1. The ` -c ` flag pattern is overly broad — it matches any command with `-c` flag like `grep -c`, `cargo -c`, etc. Combined with any substring containing `nc `, this could trigger. But `nc ` requires `nc` followed by space, which is quite specific.
+
+Maybe the false positive was actually on a command like: `nc -l -p 9999` which is actually benign (listening without exec). Or maybe something like `function sync_data` triggering `nc ` match in... no.
+
+Let me focus on actual issues I can verify:
+
+1. **Safety**: The ` -c ` check for nc tools is intended to catch `nc -c /bin/bash` but could false-positive on `nc -l -p 9999` (which is just a listener, no reverse shell). But the ` -c ` combined with `nc ` is actually specific enough. The real false positive risk is `nc -l -p PORT` being flagged as reverse shell when it's not.
+
+Actually looking more carefully, the ` -c ` check is:
+```
+cmd_lower.contains(tool) && (cmd_lower.contains(" -e ") || cmd_lower.contains(" -c "))
+```
+This requires BOTH `nc ` AND (` -e ` OR ` -c `). For `nc -l -p 8080`, there's no ` -e ` or ` -c ` so it wouldn't match. Good.
+
+The `grep -c` that the assessment mentions would match ` -c ` but wouldn't match `nc ` because the `-c ` is `-c ` not `nc `. So this shouldn't false-positive on `grep -c`.
+
+Unless... the `cmd_lower` contains `nc` elsewhere. Let me think of a command that would falsely trigger: `sync_files.sh | grep -c` — does this contain `nc `? `sync_files` has `nc_` not `nc `. So no.
+
+What about: `grep -rnc "pattern" .` — `-rnc ` doesn't match `nc ` either, because `-rnc ` starts with `-r`, not just `nc `.
+
+I think the assessment's claim about the false positive might be slightly inaccurate. But the broader point is valid: safety checks can false-positive. Let me focus on what I can actually fix.
+
+Let me now think about the 3 tasks:
+
+**Task 1: Fix the flaky `test_load_project_context_includes_file_listing` test**
+- The test at line 2525 checks `load_project_context()` and asserts it contains "## Project Files"
+- It's flaky because it doesn't save/restore cwd, unlike `test_load_project_context_includes_recently_changed` at line 2579 which does save/restore cwd AND uses `#[serial]`
+- Fix: add `#[serial]` attribute and cwd save/restore
+- File: `src/context.rs` (1 file)
+- Issue: none
+
+**Task 2: Add missing embedding index generation**
+- The embedding index `.yoyo/context-embedding-index.json` is missing
+- Need to understand how the semantic index is built and add embedding index generation
+- File: `src/context.rs` (1 file, maybe multiple functions)
+- Issue: none
+
+**Task 3: Fix safety false positive on `grep -c`**
+- Even though the exact mechanism might be slightly off, the assessment flags it as friction
+- Actually, I should verify this before planning. Let me test a command that should trigger it.
+
+Actually, let me reconsider. The assessment might be reporting a real issue from the previous session's flow. Let me test:
+
+```
+grep -c "^pub fn" src/commands_state.rs
+```
+
+Let me just try triggering the safety checker with a command that has both `-c ` and something like `nc` in it.
+
+Wait, actually I just realized: `function_call` or `sync` could match `nc ` if... no. `sync` has `nc` but no space after `c`. Let me check if `sync -c ...` would match. In `sync -c`, the `nc -c` overlaps. `sync -c` — does this contain `nc `? Between `syn` and `c -c`: `sync -c`. The substring `nc ` would be at position 3-4: `nc` followed by space at position 4. `sync -c` at positions: s(0) y(1) n(2) c(3) (4) -(5) c(6). So `nc ` is at positions 2-4: `nc `. Yes! `sync -c` DOES contain `nc `!
+
+So a command like `rsync -c ...` or `sync -c ...` would match `nc ` AND ` -c `, triggering the reverse shell false positive. That's a real issue!
+
+Similarly: `func -c` → `nc -c` overlap. `func` at positions f(0) u(1) n(2) c(3). `func -c`: n(2) c(3) (4) -(5). So `nc ` at positions 2-4. Yes!
+
+But for `grep -c`, does it contain `nc `? `grep -c` is: g(0) r(1) e(2) p(3) (4) -(5) c(6). No `nc ` there. But what if the command was something like `grep -rnc pattern file`? `rnc ` at positions: r, n, c, space → `nc ` at positions n,c,space. Yes! `grep -rnc pattern` contains `nc ` (from `rnc `).
+
+So the false positive is real! `grep -rnc pattern` contains both `nc ` (from `rnc `) and ` -c ` is... actually `-rnc ` is `-rnc ` not ` -c `. But what about `grep -r -c` combined? `grep -r -c "pattern"` → does it contain `nc `? Let me check: `grep -r -c ` at positions... `grep` space `-r` space `-c` space... g(0) r(1) e(2) p(3) (4) -(5) r(6) (7) -(8) c(9) (10). `nc ` would be n(?) c(?) (space). No `n` before `c` here. Let me look harder... `grep -r -c` — the `-c` is at positions 8-9, preceded by space at 7, preceded by `r` at 6. No `n` before `c`.
+
+What about `grep -rnc` → g(0) r(1) e(2) p(3) (4) -(5) r(6) n(7) c(8). Does this contain `nc `? `nc` would be at n(7), c(8), but the next char is... depends on what comes next. If it's `grep -rnc "pattern"`, then after c(8) it's space(9). So `nc ` is at positions 7-9. Yes! `grep -rnc "pattern"` contains `nc `!
+
+And does it contain ` -e ` or ` -c `? `grep -rnc` doesn't have ` -e ` or ` -c ` as a standalone flag. It has `-rnc` which doesn't match ` -c `. So it would NOT trigger the false positive, because both conditions (nc tool AND -e/-c flag) must be met.
+
+But what about `rsync -c` — that has both `nc ` (from `sync -c`) and ` -c ` as a flag. Let me check: `rsync -c /path` → `sync -c` at positions s(1) y(2) n(3) c(4) (5) -(6) c(7). `nc ` at n(3) c(4) (5). ` -c ` at (4) -(5) c(6) (7)? Wait, ` -c ` needs to be space, dash, c, space. In `rsync -c /`, we have: r(0) s(1) y(2) n(3) c(4) (5) -(6) c(7) (8) /(9). The ` -c ` pattern (space-dash-c-space) at positions (5) -(6) c(7) (8)... that's ` -c `! And `nc ` at n(3) c(4) (5)... yes! So `rsync -c` would false-positive!
+
+Similarly `uncompress -c file` contains `nc ` (from `ncompress -`) AND ` -c ` flag. False positive!
+
+So the fix should make the `nc_tools` match more precise — it should match `nc`, `ncat`, or `netcat` as standalone commands/tools, not as substrings. We should check for word boundaries before the `nc` part.
+
+Now let me plan the tasks:
+
+**Task 1**: Fix reverse shell false positive in `src/safety.rs`. Make `nc`/`ncat`/`netcat` detection use word boundaries so `rsync -c`, `uncompress -c`, `grep -rnc` don't trigger. Add tests.
+
+**Task 2**: Fix flaky test `test_load_project_context_includes_file_listing` in `src/context.rs`. Add `#[serial]` and cwd save/restore like the other tests do.
+
+**Task 3**: Build missing embedding index. This is in `src/context.rs`. I need to check how the semantic index is built and create the embedding equivalent.
+
+Let me now check how the semantic index is generated and what the embedding index structure looks like.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 38.6s (2 ✓)
+
+Good findings. Let me now dig into the specific issues for task planning: the embedding index structure, and the safety checker's word-boundary logic.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_and_maybe_write_semantic_index|build_and_maybe_write_e…' in src/context.rs  ▶ search 'PersistentEmbeddingIndex' in src/context.rs ✓ (13ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the structure and the semantic index building function to understand how both indexes work and why the embedding index might be missing.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/context.rs:90..140  ▶ read src/context.rs:1035..1115 ✓ (16ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the function that BUILDS the semantic index, so I can understand whether there's also a builder for the embedding index.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build.*semantic|fn build.*embedding|fn write.*semantic|fn…' in src/context.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where the semantic index is actually written to disk.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'SEMANTIC_INDEX|EMBEDDING_INDEX|semantic_index_path|embedding…' in src/context.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, the search doesn't find them. Let me try case-insensitive or different patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "SEMANTIC_INDEX\|EMBEDDING_INDEX\|semantic_index\|embedding_index\|write… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see it! Line 324: `fn ensure_semantic_index()` — it's called to ensure the semantic index exists. But there's no `ensure_embedding_index()` function. The embedding index is referenced in diagnostic lines (line 1051, 1101) and loaded (line 715) but never built. 
+
+The semantic index is built at:
+- `ensure_semantic_index()` at line 324
+- `build_and_maybe_write_semantic_index()` at line 567
+- `build_persistent_semantic_index()` at line 996
+
+The embedding index has these references:
+- `load_persistent_embedding_index()` at line 1041
+- `embedding_index_diagnostic_line()` at line 1101
+- `embedding_index` parameter at line 715, 803, 820
+- Test data at line 2277, 2353
+
+There's NO `build_and_maybe_write_embedding_index()` or `ensure_embedding_index()`. So the embedding index was designed but never implemented for actual generation.
+
+This is a larger task than I initially thought. I need to:
+1. Create a `build_persistent_embedding_index()` function
+2. Create a `build_and_maybe_write_embedding_index()` function  
+3. Create an `ensure_embedding_index()` function
+4. Call it from the same places where `ensure_semantic_index()` is called
+
+But this might be complex. Let me consider whether this is actually a 1-file change. It's all in `context.rs`, but the embedding generation requires:
+- Reading every candidate file
+- Tokenizing the content
+- Computing embeddings (some sort of vector representation)
+- Writing the index
+
+Looking at the structure:
+```rust
+pub struct PersistentEmbeddingIndex {
+    pub schema_version: u32,
+    pub generated_at_ms: u128,
+    pub files: Vec<PersistentEmbeddingIndexFile>,
+    pub terms: Vec<PersistentEmbeddingIndexTerm>,
+}
+
+pub struct PersistentEmbeddingIndexFile {
+    pub path: String,
+    pub len_bytes: u64,
+    pub modified_ms: u128,
+    pub embedding: Vec<f32>,
+}
+
+pub struct PersistentEmbeddingIndexTerm {
+    pub term: String,
+    pub embedding: Vec<f32>,
+}
+```
+
+The `embedding: Vec<f32>` fields suggest some kind of embedding vector. This could be:
+1. A simple TF-IDF or bag-of-words style embedding
+2. An actual ML embedding (which would require a model)
+3. A placeholder that hasn't been implemented
+
+Given that we're a CLI tool without ML dependencies, option 1 makes sense. Let me look at the test data to understand what embeddings look like.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/context.rs:2270..2370  ▶ read src/context.rs:324..374 ✓ (17ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 372: "The embedding index needs an external embedding model so we only build the semantic index here." This is important. The embedding index requires embeddings (vector representations) which the code doesn't compute. The test data uses hardcoded embeddings like `vec![1.0, 0.0]`.
+
+So the embedding index was designed as a structure, but the actual embedding generation requires:
+1. An external embedding model (like an API call to an embedding service)
+2. Or a local embedding model
+
+This is NOT a simple "add a function" task. It requires either:
+- Adding an embedding API client (e.g., DeepSeek embeddings, OpenAI embeddings)
+- Or using a local embedding model
+
+This is a significant feature, not a quick fix. Let me reconsider my task allocation.
+
+Actually, let me re-read the assessment's suggestion: "Build missing embedding index" was suggested but looking at the code, it's clear this was intentionally deferred because it requires an external embedding model. The comment at line 372-373 says exactly this.
+
+So my 3 tasks should probably be:
+
+1. **Fix safety false positive** in `src/safety.rs` — make `nc`/`ncat`/`netcat` detection use word boundaries
+2. **Fix flaky test** `test_load_project_context_includes_file_listing` in `src/context.rs`
+3. **Something else from the assessment...**
+
+Let me think about what else is actionable. The assessment mentions:
+- Web search tool returned no results — needs investigation
+- `commands_state.rs` is monolithic — but splitting is multi-file and huge
+- No event-driven triggers — architectural, not a simple fix
+
+Let me look at the web search issue. The assessment says: "Web search tool (DuckDuckGo) failed on multiple queries — this may be an env issue (CI runner network) or a tool issue."
+
+Let me check the web search tool code to see if there's a bug.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.2s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn web_search|fn fetch_url|ddg|DuckDuckGo|duckduckgo' in src/commands_web.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "fn web_search\|fn fetch_url\|ddg\|html.duckduckgo\|DUCKDUCKGO\|duckduck… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the web_search function to understand how it works and if there's a bug.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_web.rs:789..869 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The web search uses DuckDuckGo's HTML endpoint. The assessment says it "failed on multiple queries." This could be:
+1. Network issues on CI (can't reach duckduckgo.com)
+2. DuckDuckGo blocking the user agent
+3. DuckDuckGo's HTML endpoint being rate-limited or changed
+
+This is hard to reproduce and fix without being able to test against the live endpoint. And the CI environment might just not have internet access for curl.
+
+Let me reconsider my task allocation. Given the assessment evidence:
+
+**Task 1: Fix reverse shell false positive in `src/safety.rs`**
+- The `nc_tools` check at line 931-932 matches `nc `, `ncat `, `netcat ` as substrings
+- This false-positives on `rsync -c`, `uncompress -c`, `grep -rnc`, etc.
+- Fix: use word boundaries to ensure `nc`/`ncat`/`netcat` appear as standalone tool names
+- Add unit tests for the false positive cases
+- Files: `src/safety.rs` only (1 file)
+- Impact: Directly fixes friction reported in assessment
+
+**Task 2: Fix flaky test in `src/context.rs`**
+- `test_load_project_context_includes_file_listing` at line 2525
+- It doesn't use `#[serial]` or cwd save/restore unlike nearby tests
+- Fix: add `#[serial]` and cwd save/restore
+- Files: `src/context.rs` only (1 file)
+- Impact: Improves test reliability
+
+**Task 3: Add ensure_embedding_index() stub with diagnostic-only behavior**
+- The embedding index structure exists but the builder doesn't
+- The comment says it "needs an external embedding model"
+- Rather than building a full embedding pipeline (which would need external dependencies), add a `ensure_embedding_index()` function that gracefully handles the missing index and logs a clear diagnostic about what's needed
+- This makes the "missing" status actionable rather than silent
+- Files: `src/context.rs` only (1 file)
+- Impact: Improves observability
+
+Actually wait, let me reconsider Task 3. The embedding index being missing is NOT a bug — it's an intentional design choice per the comment at line 372-373. The comment explicitly says it needs an external embedding model. Maybe instead of trying to build the embedding index, I should focus on something more actionable.
+
+Let me reconsider what to do for task 3. Looking at the assessment again:
+- "No policy or file relation data in the graph — the state system is capturing events but hasn't yet built rich cross-event relationships"
+
+But that's a huge scope. Let me look for something smaller.
+
+What about the `ensure_semantic_index()` function — it's called from `build_deepseek_context_preview()` at line 369. Let me check if it's also called from `render_deepseek_native_context_for_prompt()` which is what actually builds the context for the agent prompt.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "ensure_semantic_index\|ensure_embedding_index\|build_deepseek_context_p… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `ensure_semantic_index()` is called from `build_deepseek_context_preview()` which is called from:
+1. `render_deepseek_native_context_for_prompt()` — used for prompt building
+2. Inside some tests (1817, 1952)
+3. The fix for missing embedding index would be to add an `ensure_embedding_index()` call alongside `ensure_semantic_index()` call, but with a different implementation that notes the dependency.
+
+OK, let me now decide on my 3 tasks. Given the constraints and the codebase:
+
+**Task 1: Fix reverse shell false positive in src/safety.rs**
+- The `nc_tools` substring matching false-positives on patterns like `rsync -c`, `uncompress -c`
+- Fix: word-boundary check before `nc`/`ncat`/`netcat`
+- Files: `src/safety.rs` (with tests in the same file)
+- 1 file
+
+**Task 2: Fix flaky test in src/context.rs**
+- `test_load_project_context_includes_file_listing` needs `#[serial]` and cwd save/restore
+- Files: `src/context.rs` (1 file)
+
+**Task 3: Add ensure_embedding_index() function**
+- Add an `ensure_embedding_index()` function that prints a clear diagnostic about embedding index needing an external model
+- This makes the missing index observable and actionable
+- Files: `src/context.rs` (1 file)
+
+All 3 tasks touch 1 file each. That's well within the 3-file limit.
+
+Wait, actually task 2 and task 3 both touch `src/context.rs`. But each is independently verifiable. They're separate logical changes.
+
+Let me now write the session plan.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough understanding. Let me check one more thing — how `is_at_word_boundary` works in safety.rs, since I'll need similar logic:
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "fn is_at_word_boundary\|fn is_word_char" src/safety.rs ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/safety.rs:155..185 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The `is_at_word_boundary` checks for word boundaries at the beginning of a match, and `is_at_word_boundary_end` checks at the end. For the `nc`/`ncat`/`netcat` detection, I need to check both:
+- A word boundary BEFORE `nc` (i.e., `nc` at the start of a command word)
+- A word boundary AFTER `nc`/`ncat`/`netcat` (space after the tool name)
+
+And the same for `-c`/`-e` flags — they should be standalone flags, not part of combined flags like `-rnc`.
+
+But wait, re-reading the check: `cmd_lower.contains(tool) && (cmd_lower.contains(" -e ") || cmd_lower.contains(" -c "))`. The `tool` check is `nc `, `ncat `, `netcat ` (with trailing space). So `rsync -c` contains `nc ` (from `sync -c`). The fix is to ensure `nc`/`ncat`/`netcat` are at word boundaries.
+
+For `nc `: check that position of `nc` is at a word boundary. For `rsync -c`, `nc` is at position 3, preceded by `s` (not a boundary), so it would be rejected.
+
+For `ncat `: the `ncat` is the whole word, so preceded by a boundary (space), and followed by space (already handled by trailing space in pattern).
+
+For `netcat `: same analysis.
+
+So the fix is to, when we find a match of `nc `/`ncat `/`netcat `, also verify that the match starts at a word boundary.
+
+Now let me write the session plan files.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the evidence I need. Let me create the session plan.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ mkdir -p session_plan && rm -f session_plan/task_*.md session_plan/issue_respons… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the task files and issue responses.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Fix reverse shell false positive on nc/ncat/netcat substring matching
+  + Files: src/safety.rs
+  + Issue: none
+  + 
+  + ## What to do
+  + 
+  + The `check_reverse_shell` function at line 922-973 of `src/safety.rs` detects `nc`, `ncat`, and `netcat` by substring matching (`"nc "`, `"ncat "`, `"netcat "`). These patterns can appear inside unrelated command strings:
+  + 
+  + - `rsync -c /path` → contains `nc ` from `sync -c` AND ` -c ` flag → false positive
+  + - `uncompress -c file` → contains `nc ` from `ncompress -` AND ` -c ` → false positive  
+  + - `grep -rnc pattern` → contains `nc ` from `rnc ` AND ` -c ` can match elsewhere → false positive
+  + 
+  + The fix: when we find a match of `"nc "`, `"ncat "`, or `"netcat "`, verify that the match starts at a word boundary using the existing `is_at_word_boundary()` helper (line 161). This ensures `nc` is a standalone command name, not a substring of `rsync`, `uncompress`, or `grep -rnc`.
+  + 
+  + ## Detailed changes
+  + 
+  + 1. In `check_reverse_shell`, replace the simple `cmd_lower.contains(tool)` loop with a search that finds all occurrences and checks word boundaries:
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (52 lines)
+  + Title: Fix flaky test_load_project_context_includes_file_listing with cwd save/restore
+  + Files: src/context.rs
+  + Issue: none
+  + 
+  + ## What to do
+  + 
+  + The test `test_load_project_context_includes_file_listing` at line 2525 of `src/context.rs` is flaky. It calls `load_project_context()` and asserts the result contains `"## Project Files"`, but it does not save and restore the current working directory. If another test changes `cwd` before it runs, the project file listing may fail to find the expected sections.
+  + 
+  + Nearby tests (`test_load_project_context_includes_recently_changed` at line 2581, `test_load_project_context_includes_git_status` at line 2634) already use `#[serial]` and cwd save/restore. This test should match that pattern.
+  + 
+  + ## Detailed changes
+  + 
+  + 1. Add `#[serial]` attribute above `#[test]`:
+  +    ```rust
+  +    #[test]
+  +    #[serial]
+  +    fn test_load_project_context_includes_file_listing() {
+  +    ```
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (46 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (52 lines)  + Title: Add ensure_embedding_index() scaffold with clear diagnostic
+  + Files: src/context.rs
+  + Issue: none
+  + 
+  + ## What to do
+  + 
+  + The embedding index (`.yoyo/context-embedding-index.json`) is missing. The code has:
+  + - A full data model (`PersistentEmbeddingIndex`, `PersistentEmbeddingIndexFile`, `PersistentEmbeddingIndexTerm`)
+  + - A loader (`load_persistent_embedding_index`)
+  + - A diagnostic (`embedding_index_diagnostic_line`)
+  + - Test fixtures that use it
+  + 
+  + But there is NO builder function — no `build_persistent_embedding_index()` or `ensure_embedding_index()`. The comment at line 372-373 of `context.rs` says: "The embedding index needs an external embedding model so we only build the semantic index here."
+  + 
+  + This task adds an `ensure_embedding_index()` function that:
+  + 1. Checks if the embedding index file exists and is valid
+  + 2. If missing, prints a single-line stderr diagnostic explaining that embedding-based context ranking is unavailable and what's needed to enable it
+  + 3. If present but stale/corrupt, removes it (same pattern as `ensure_semantic_index`)
+  + 4. Is called from `build_deepseek_context_preview()` alongside `ensure_semantic_index()`
+  + 
+  ... (18 more lines)
+  ✓ Auto-approved: write: session_plan/task_03.md (38 lines)
+  + # Issue Responses — Day 99 (22:43)
+  + 
+  + No trusted owner issues today. Nothing to respond to.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (3 lines)
+  ▶ write session_plan/task_02.md (46 lines)  ▶ write session_plan/task_03.md (38 lines)  ▶ write session_plan/issue_responses.md (3 lines) ✓ (1m 33s)
+ ✓ (3m 7s)
