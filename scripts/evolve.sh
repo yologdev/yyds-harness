@@ -126,7 +126,10 @@ echo ""
 export YOYO_AUDIT=1
 export YOYO_HARNESS_INTERNAL=1
 export YOYO_STATE=1
-SESSION_STAGING=".yoyo/session_staging"
+# Keep authoritative session evidence outside the repository worktree. Task
+# reverts use `git reset --hard` and `git clean -fd`; in-worktree staging can be
+# erased before the audit-log push.
+SESSION_STAGING="${RUNNER_TEMP:-/tmp}/yoyo-session-staging-${STATE_SESSION_ID}-$$"
 STATE_EVENTS=".yoyo/state/events.jsonl"
 SESSION_STATE_EVENTS="$SESSION_STAGING/state/events.jsonl"
 STATE_REPLAY_MANIFEST="$SESSION_STAGING/state_replay.json"
