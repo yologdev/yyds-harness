@@ -4,15 +4,15 @@
 //! Read IDENTITY.md and journals/JOURNAL.md for the full story.
 //!
 //! Usage:
-//!   ANTHROPIC_API_KEY=sk-... cargo run
-//!   ANTHROPIC_API_KEY=sk-... cargo run -- --model claude-opus-4-6
-//!   ANTHROPIC_API_KEY=sk-... cargo run -- --thinking high
-//!   ANTHROPIC_API_KEY=sk-... cargo run -- --skills ./skills
-//!   ANTHROPIC_API_KEY=sk-... cargo run -- --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp"
-//!   ANTHROPIC_API_KEY=sk-... cargo run -- --system "You are a Rust expert."
-//!   ANTHROPIC_API_KEY=sk-... cargo run -- --system-file prompt.txt
-//!   ANTHROPIC_API_KEY=sk-... cargo run -- -p "explain this code"
-//!   ANTHROPIC_API_KEY=sk-... cargo run -- -p "write a README" -o README.md
+//!   DEEPSEEK_API_KEY=sk-... cargo run
+//!   DEEPSEEK_API_KEY=sk-... cargo run -- --model deepseek-v4-pro
+//!   DEEPSEEK_API_KEY=sk-... cargo run -- --thinking high
+//!   DEEPSEEK_API_KEY=sk-... cargo run -- --skills ./skills
+//!   DEEPSEEK_API_KEY=sk-... cargo run -- --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp"
+//!   DEEPSEEK_API_KEY=sk-... cargo run -- --system "You are a Rust expert."
+//!   DEEPSEEK_API_KEY=sk-... cargo run -- --system-file prompt.txt
+//!   DEEPSEEK_API_KEY=sk-... cargo run -- -p "explain this code"
+//!   DEEPSEEK_API_KEY=sk-... cargo run -- -p "write a README" -o README.md
 //!   echo "prompt" | cargo run  (piped mode: single prompt, no REPL)
 //!
 //! Commands:
