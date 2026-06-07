@@ -1338,4 +1338,119 @@ mod tests {
             );
         }
     }
+
+    /// Smoke test: loads a real fixture from the local-smoke suite, constructs
+    /// simulated agent output (FixtureCommandResult records), assembles a
+    /// FixtureTaskResult, and asserts the result is coherent and non-empty.
+    /// Exercises load_fixture_suite → data access → result construction.
+    #[test]
+    fn smoke_run_fixture_through_eval_pipeline() {
+        // 1. Load a real fixture from the local-smoke suite
+        let suite = load_fixture_suite("local-smoke").expect("should load fixture suite");
+
+        // Pick a fixture with expected-files that reference actual source files
+        let task = suite
+            .tasks
+            .iter()
+            .find(|task| task.task_id == "context-failing-files")
+            .expect("should find context-failing-files fixture");
+
+        // Verify the fixture loaded correctly
+        assert_eq!(task.task_id, "context-failing-files");
+        assert!(!task.tests.is_empty(), "fixture should have test commands");
+        assert!(
+            !task.expected_files.is_empty(),
+            "fixture should have expected files"
+        );
+        assert!(
+            task.expected_files.iter().any(|f| f == "src/context.rs"),
+            "expected_files should include src/context.rs"
+        );
+        assert_eq!(task.risk_label, "medium");
+        assert_eq!(task.category, "context-miss challenge");
+
+        // 2. Simulate agent output by constructing FixtureCommandResult records
+        let simulated_commands = vec![
+            FixtureCommandResult {
+                command: task.tests[0].clone(),
+                passed: true,
+                status_code: Some(0),
+                duration_ms: 1234,
+                stdout_preview: "test result: ok. 2 passed; 0 failed".to_string(),
+                stderr_preview: String::new(),
+            },
+            FixtureCommandResult {
+                command: task.tests[1].clone(),
+                passed: true,
+                status_code: Some(0),
+                duration_ms: 891,
+                stdout_preview: "test result: ok. 1 passed; 0 failed".to_string(),
+                stderr_preview: String::new(),
+            },
+        ];
+
+        // 3. Assemble a FixtureTaskResult from the simulated output
+        let result = FixtureTaskResult {
+            task_id: task.task_id.clone(),
+            passed: simulated_commands.iter().all(|cmd| cmd.passed),
+            command_results: simulated_commands.clone(),
+        };
+
+        // 4. Assert the result is coherent and non-empty
+        assert_eq!(result.task_id, task.task_id);
+        assert!(result.passed, "all simulated commands passed");
+        assert!(
+            !result.command_results.is_empty(),
+            "command_results should not be empty"
+        );
+        assert_eq!(result.command_results.len(), task.tests.len());
+
+        // Each command result should satisfy basic invariants
+        for (i, cmd_result) in result.command_results.iter().enumerate() {
+            assert!(
+                !cmd_result.command.is_empty(),
+                "command_result[{}] should have a non-empty command",
+                i
+            );
+            assert!(
+                cmd_result.status_code.is_some(),
+                "command_result[{}] should have a status_code",
+                i
+            );
+            assert!(
+                cmd_result.passed,
+                "command_result[{}] should be passed in simulation",
+                i
+            );
+            assert!(
+                cmd_result.duration_ms > 0,
+                "command_result[{}] should have non-zero duration",
+                i
+            );
+            assert!(
+                !cmd_result.stdout_preview.is_empty(),
+                "command_result[{}] should have non-empty stdout_preview",
+                i
+            );
+        }
+
+        // 5. Verify that run_fixture_task on the real fixture also produces
+        //    a well-formed result (exercises run_fixture_task → run_fixture_command)
+        let real_result = run_fixture_task(task);
+        assert_eq!(real_result.task_id, task.task_id);
+        assert!(
+            !real_result.command_results.is_empty(),
+            "real fixture task should produce command results"
+        );
+        for cmd_result in &real_result.command_results {
+            assert!(
+                !cmd_result.command.is_empty(),
+                "real command result should have a non-empty command"
+            );
+            assert!(
+                cmd_result.status_code.is_some(),
+                "real command result should have a status_code"
+            );
+        }
+    }
 }

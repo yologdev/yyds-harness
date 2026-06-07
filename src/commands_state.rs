@@ -49,7 +49,7 @@ pub fn handle_state_subcommand(args: &[String]) {
         "migrate" => handle_migrate(),
         "recover" => handle_recover(&args[3..]),
         "retention" => handle_retention(&args[3..]),
-        "memory" => handle_memory(&args[3..]),
+        "memory" => crate::commands_state_memory::handle_memory(&args[3..]),
         "journal" => handle_journal(&args[3..]),
         "export" => {
             let Some(path) = args.get(3) else {
@@ -571,141 +571,6 @@ fn handle_retention(args: &[String]) {
     }
 }
 
-fn handle_memory(args: &[String]) {
-    match args.first().map(|arg| arg.as_str()) {
-        Some("synthesize") => handle_memory_synthesize(args),
-        Some("list") => handle_memory_list(&args[1..]),
-        Some("promote") => handle_memory_decision(&args[1..], true),
-        Some("reject") => handle_memory_decision(&args[1..], false),
-        _ => print_memory_usage(),
-    }
-}
-
-fn print_memory_usage() {
-    eprintln!("{YELLOW}  Usage: yoyo state memory synthesize [--output PATH] [--record]{RESET}");
-    eprintln!(
-        "{YELLOW}         yoyo state memory list [--status proposed|promoted|rejected]{RESET}"
-    );
-    eprintln!("{YELLOW}         yoyo state memory promote <candidate-id> [--reason TEXT]{RESET}");
-    eprintln!("{YELLOW}         yoyo state memory reject <candidate-id> [--reason TEXT]{RESET}");
-}
-
-fn handle_memory_synthesize(args: &[String]) {
-    let record = args.iter().any(|arg| arg == "--record");
-    let events_path = default_events_path();
-    let output_path = args
-        .iter()
-        .position(|arg| arg == "--output")
-        .and_then(|idx| args.get(idx + 1))
-        .map(PathBuf::from);
-    let Ok(events) = read_events(&events_path) else {
-        eprintln!(
-            "{YELLOW}  no state log found at {}{RESET}",
-            events_path.display()
-        );
-        return;
-    };
-    match build_state_memory_synthesis(&events) {
-        Ok(report) => {
-            if record {
-                match record_state_memory_candidates(&events, &events_path) {
-                    Ok(event_ids) => {
-                        println!(
-                            "State memory candidates recorded\n  proposed: {}",
-                            event_ids.len()
-                        );
-                        if !event_ids.is_empty() {
-                            println!("  events:   {}", event_ids.join(", "));
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("{RED}  failed to record state memory candidates: {e}{RESET}")
-                    }
-                }
-            }
-            if let Some(path) = output_path {
-                match write_text_artifact(&path, &report, "state memory synthesis") {
-                    Ok(()) => println!(
-                        "State memory synthesis written\n  output: {}",
-                        path.display()
-                    ),
-                    Err(e) => {
-                        eprintln!("{RED}  failed to write state memory synthesis: {e}{RESET}")
-                    }
-                }
-            } else {
-                println!("{report}");
-            }
-        }
-        Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
-    }
-}
-
-fn handle_memory_list(args: &[String]) {
-    let status_filter = flag_value(args, "--status").map(|status| status.as_str());
-    let events_path = default_events_path();
-    let Ok(events) = read_events(&events_path) else {
-        eprintln!(
-            "{YELLOW}  no state log found at {}{RESET}",
-            events_path.display()
-        );
-        return;
-    };
-    let records = build_state_memory_records(&events);
-    println!("State memory candidates");
-    let mut shown = 0usize;
-    for record in records {
-        if status_filter
-            .map(|status| status != record.status)
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        println!(
-            "  {:<10} {:<32} {:<28} {}",
-            record.status,
-            record.candidate_id,
-            record.source,
-            preview_line(&record.summary, 90)
-        );
-        shown += 1;
-    }
-    if shown == 0 {
-        println!("  none");
-    }
-}
-
-fn handle_memory_decision(args: &[String], promote: bool) {
-    let Some(candidate_id) = args.first() else {
-        print_memory_usage();
-        return;
-    };
-    let reason = flag_value(args, "--reason")
-        .map(|reason| reason.as_str())
-        .unwrap_or(if promote {
-            "approved for durable memory"
-        } else {
-            "rejected from durable memory"
-        });
-    let events_path = default_events_path();
-    let Ok(events) = read_events(&events_path) else {
-        eprintln!(
-            "{YELLOW}  no state log found at {}{RESET}",
-            events_path.display()
-        );
-        return;
-    };
-    match record_state_memory_decision(&events, &events_path, candidate_id, promote, reason) {
-        Ok(event_id) => {
-            let action = if promote { "promoted" } else { "rejected" };
-            println!("State memory candidate {action}");
-            println!("  candidate: {candidate_id}");
-            println!("  event:     {event_id}");
-        }
-        Err(e) => eprintln!("{RED}  failed to record state memory decision: {e}{RESET}"),
-    }
-}
-
 fn handle_journal(args: &[String]) {
     if args.first().map(|arg| arg.as_str()) != Some("generate") {
         eprintln!("{YELLOW}  Usage: yoyo state journal generate [--output PATH]{RESET}");
@@ -996,7 +861,7 @@ fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
     Ok(lines.into_iter().collect())
 }
 
-fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+pub(crate) fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
     crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
 }
 
@@ -1252,7 +1117,7 @@ fn write_normalized_jsonl(path: &Path, lines: &[String], label: &str) -> Result<
     std::fs::write(path, normalized).map_err(|e| format!("write {label} '{}': {e}", path.display()))
 }
 
-fn write_text_artifact(path: &Path, text: &str, label: &str) -> Result<(), String> {
+pub(crate) fn write_text_artifact(path: &Path, text: &str, label: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create {label} directory '{}': {e}", parent.display()))?;
@@ -1354,7 +1219,7 @@ pub(crate) fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a Strin
         .and_then(|idx| args.get(idx + 1))
 }
 
-fn preview_line(line: &str, max_chars: usize) -> String {
+pub(crate) fn preview_line(line: &str, max_chars: usize) -> String {
     let mut out = String::new();
     for ch in line.chars().take(max_chars) {
         out.push(ch);
@@ -12775,7 +12640,7 @@ fn build_cache_recent_report(events: &[Value], limit: usize) -> Result<String, S
     Ok(out.trim_end().to_string())
 }
 
-fn build_state_memory_synthesis(events: &[Value]) -> Result<String, String> {
+pub(crate) fn build_state_memory_synthesis(events: &[Value]) -> Result<String, String> {
     if events.is_empty() {
         return Err("no state events available for memory synthesis".to_string());
     }
@@ -12947,15 +12812,15 @@ impl StateMemoryCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct StateMemoryRecord {
-    candidate_id: String,
-    status: String,
-    source: String,
-    summary: String,
-    proposed_event_id: Option<String>,
-    decision_event_id: Option<String>,
-    reason: Option<String>,
-    evidence_event_ids: Vec<String>,
+pub(crate) struct StateMemoryRecord {
+    pub(crate) candidate_id: String,
+    pub(crate) status: String,
+    pub(crate) source: String,
+    pub(crate) summary: String,
+    pub(crate) proposed_event_id: Option<String>,
+    pub(crate) decision_event_id: Option<String>,
+    pub(crate) reason: Option<String>,
+    pub(crate) evidence_event_ids: Vec<String>,
 }
 
 fn build_state_memory_candidates(events: &[Value]) -> Vec<StateMemoryCandidate> {
@@ -13049,7 +12914,7 @@ fn build_state_memory_candidates(events: &[Value]) -> Vec<StateMemoryCandidate> 
     candidates
 }
 
-fn record_state_memory_candidates(
+pub(crate) fn record_state_memory_candidates(
     events: &[Value],
     events_path: &Path,
 ) -> Result<Vec<String>, String> {
@@ -13086,7 +12951,7 @@ fn record_state_memory_candidates(
     Ok(event_ids)
 }
 
-fn build_state_memory_records(events: &[Value]) -> Vec<StateMemoryRecord> {
+pub(crate) fn build_state_memory_records(events: &[Value]) -> Vec<StateMemoryRecord> {
     let mut records = BTreeMap::<String, StateMemoryRecord>::new();
     for event in events {
         let event_type = event_string(event, "event_type").unwrap_or("Unknown");
@@ -13145,7 +13010,7 @@ fn build_state_memory_records(events: &[Value]) -> Vec<StateMemoryRecord> {
     records.into_values().collect()
 }
 
-fn record_state_memory_decision(
+pub(crate) fn record_state_memory_decision(
     events: &[Value],
     events_path: &Path,
     candidate_id: &str,
