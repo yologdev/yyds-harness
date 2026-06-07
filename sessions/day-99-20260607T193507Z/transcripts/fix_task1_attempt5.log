@@ -1,0 +1,496 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. The evaluator says no implementation changes were made - the diff is empty. I need to:
+
+1. Audit `deepseek.rs` for failure paths that aren't wired to state recording
+2. Wire those failure paths to record `FailureObserved` events
+3. Add a test verifying at least one failure path records properly
+
+Let me start by understanding the current state of the codebase - checking `deepseek.rs` and `state.rs` to understand the existing infrastructure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the key files to understand the state recording infrastructure and the failure paths in deepseek.rs.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 1.9s (4 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant parts of deepseek.rs to understand the failure paths, and also look at how state recording works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs (100 lines)  ▶ search 'record_failure|FailureObserved|state_record' in src (*.rs) ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search for `record_failure|FailureObserved|state_record` returned "No matches found" across all .rs files. This is very surprising — it means the state recording infrastructure for failures may not exist at all, or it's named differently. Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' (*.rs)  ▶ search 'record_failure' (*.rs)  ▶ search 'fn.*state|EventType|append_event' in src (*.rs) ✓ (6ms)
+ ✓ (25ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I can see key things:
+
+1. `FailureObserved` is an `EventType` variant in `src/state.rs` line 55
+2. `record_failure_event` field exists on `DeepSeekTransportDecision` at line 216
+3. `should_record_failure` field exists on `DeepSeekProtocolCheck` at line 305
+4. `record_failure_hypotheses` field exists somewhere at line 492
+5. `record_failure_schema()` function exists at line 2404
+6. There are already some FailureObserved recordings in `commands_deepseek.rs` line 746, `prompt.rs` lines 853 and 909
+
+Let me understand the recording pipeline. I need to see:
+1. How the state recorder works (the API for appending events)
+2. The `DeepSeekTransportDecision` struct and its `record_failure_event` field usage
+3. The `DeepSeekProtocolCheck` struct and its `should_record_failure` field usage
+4. How the existing wiring in `commands_deepseek.rs` works
+
+Let me read the relevant sections.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.7s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:200..350  ▶ read src/deepseek.rs:280..360  ▶ read src/deepseek.rs:470..540 ✓ (26ms)
+ ✓ (21ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `DeepSeekTransportDecision` struct and how `classify_deepseek_transport_failure` works. I also need to understand the state recording API.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.4s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct DeepSeekTransportDecision' in src (*.rs)  ▶ search 'classify_deepseek_transport_failure' in src (*.rs)  ▶ search 'fn append_event' in src (*.rs) ✓ (12ms)
+ ✓ (26ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `DeepSeekTransportDecision` struct and how `classify_deepseek_transport_failure` works, plus the state recording API and how it's already used in `commands_deepseek.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:110..210  ▶ read src/deepseek.rs:940..1040  ▶ read src/commands_deepseek.rs:720..800 ✓ (26ms)
+ ✓ (21ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see important things:
+
+1. `record_deepseek_transport_failure` already exists at line 1003-1016 — it calls `crate::state::record()` with `FailureObserved` event type. So transport failures CAN be recorded.
+
+2. `record_thinking_protocol_failure` at line 744-758 also records `FailureObserved`.
+
+3. But the question is: are these functions actually CALLED from the failure paths? Let me check who calls them.
+
+Let me look at where `record_deepseek_transport_failure` is called, and where `record_thinking_protocol_failure` is called.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.1s (3 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_deepseek_transport_failure' in src (*.rs)  ▶ search 'record_thinking_protocol_failure' in src (*.rs)  ▶ search 'record_json_output_failure' in src (*.rs) ✓ (18ms)
+ ✓ (17ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So:
+1. `record_deepseek_transport_failure` is called from `src/lib.rs` line 296
+2. `record_json_output_failure` is called from `src/lib.rs` line 277
+3. `record_thinking_protocol_failure` is called from `commands_deepseek.rs` lines 624, 656
+
+Let me check `lib.rs` to see the context where these are called. This will help me understand where the actual transport error paths are, and whether we're recording correctly.
+
+Let me also check the `validate_strict_tool_schema_suite` and `validate_strict_tool_arguments` functions to see if they have recording.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.1s (3 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:260..340  ▶ search 'fn validate_strict_tool_schema_suite' in src (*.rs) ✓ (11ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me read the `validate_strict_tool_schema_suite` and `validate_strict_tool_arguments` functions, as well as the `parse_json_output_attempts` function, to understand what failure paths exist that might not be wired to state recording.
+
+Let me also look at the state.rs API for recording events.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:1980..2100  ▶ read src/state.rs:330..410 ✓ (14ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the `record` and `record_deepseek_diagnostic_event` functions in state.rs to understand the public API.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search '^pub fn record\b|^pub fn record_deepseek_diagnostic' in src (*.rs)  ▶ search 'fn record_deepseek_diagnostic_event' in src (*.rs) ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `record_deepseek_diagnostic_event` and also the `crate::state::record` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:20..70  ▶ search 'pub fn record\("' in src (*.rs)  ▶ grep ✗ (10ms)
+    │ Tool grep not found
+ ✓ (27ms)
+ ✗ (31ms)
+    │ Search error: grep: Unmatched ( or \(
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the `record` function definition in state.rs properly.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (1 ✓, 2 ✗)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn record' in src/state.rs (*.rs)  ▶ search 'fn record\b' in src/state.rs (*.rs) ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the full picture. Let me read the `record` function and surrounding code in state.rs, and also check what the `active_harness_genome` function looks like.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:250..330  ▶ read src/deepseek.rs:1290..1390 ✓ (16ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the state recording infrastructure:
+
+1. **`crate::state::record(event_type, actor, payload)`** - the central recording function. It uses a `GLOBAL_RECORDER` (lazy initialized). 
+
+2. **`record_deepseek_transport_failure`** - records `FailureObserved` events for transport errors (called from `lib.rs`)
+
+3. **`record_json_output_failure`** - records `JsonOutputFailure` events for JSON parsing failures (called from `lib.rs`)
+
+4. **`record_thinking_protocol_failure`** - records `FailureObserved` for thinking protocol failures (called from `commands_deepseek.rs`)
+
+Now, the task says we need to make sure these failure paths are consistently wired. Let me look at what's missing:
+
+1. **Transport failures**: `record_deepseek_transport_failure` is called from `lib.rs`. This seems wired. But let me check if `classify_deepseek_transport_failure` itself returns a decision with `retryable` information and the callers might USE this to decide whether to retry, but might not always record the failure.
+
+2. **Schema validation failures**: `validate_strict_tool_arguments` returns `ToolSchemaValidationReport` with `valid: false` - but does anyone call `record` when this fails? Let me check.
+
+3. **JSON parse failures**: `parse_json_output_attempts` returns `Err(JsonOutputFailure)` and `record_json_output_failure` is called from `lib.rs` in one path. But is it called everywhere?
+
+4. **Thinking protocol**: `validate_deepseek_thinking_tool_call_messages` presumably returns errors. Are these recorded?
+
+Let me now dig deeper into each path. Let me check:
+- Who calls `validate_strict_tool_arguments`?
+- Who calls `validate_deepseek_thinking_tool_call_messages`?
+- Is `record_deepseek_transport_failure` called from ALL transport error paths?
+
+Let me also look at the `lib.rs` path more carefully to understand what the `maybe_record_deepseek_api_failure` function is doing with `PromptOutcome`. This seems to be a post-hoc recording after a prompt completes. But what about transport errors that happen during API calls that don't go through the `PromptOutcome` path?
+
+Actually, let me step back and think about what the task is really asking. Let me re-read:
+
+> 1. **Audit `deepseek.rs`**: Find every code path where a DeepSeek transport error, protocol check failure, or schema validation failure is detected but NOT recorded to state.
+
+So we need to:
+1. Find failure detection paths in `deepseek.rs`
+2. Check if they record to state
+3. Wire up the ones that don't
+
+Let me look at:
+- `validate_strict_tool_arguments` - does this get called somewhere that should record a failure?
+- `validate_deepseek_thinking_tool_call_messages` - same question
+- `parse_json_output_attempts` - is it called from places other than `lib.rs`?
+
+Let me also check the `deepseek.rs` file more carefully to find `validate_deepseek_thinking_tool_call_messages`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.1s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'validate_deepseek_thinking_tool_call_messages' in src (*.rs)  ▶ search 'validate_strict_tool_arguments' in src (*.rs)  ▶ search 'parse_json_output_attempts' in src (*.rs) ✓ (18ms)
+ ✓ (17ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at each failure path in detail to understand what's wired and what's not.
+
+Let me check:
+1. `commands_deepseek.rs` line 453 - `validate_strict_tool_arguments` call - is there recording?
+2. `commands_deepseek.rs` line 960 - `parse_json_output_attempts` call - is there recording?
+3. `validate_deepseek_thinking_tool_call_messages` - let me read the function
+
+And also let me check the `record_json_output_failure` function and where it gets called from. We know it's called from `lib.rs:277`. But what about `commands_deepseek.rs:960`?
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.3s (3 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:440..530  ▶ read src/commands_deepseek.rs:940..1010  ▶ read src/commands_deepseek.rs:620..690 ✓ (25ms)
+ ✓ (20ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clearer picture. Let me look at the actual `parse_json_output_attempts` function to understand its structure and what it returns.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.6s (3 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:1241..1321  ▶ read src/deepseek.rs:1880..1950 ✓ (5ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the rest of `validate_deepseek_thinking_tool_call_messages`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:1949..1989  ▶ read src/deepseek.rs:2110..2170 ✓ (14ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a comprehensive picture. Let me now also look at the `record_tool_schema_failure` function that's called from `commands_deepseek.rs:470`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record_tool_schema_failure' in src (*.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:573..623 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check `tool_schema_failure_payload`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn tool_schema_failure_payload' in src/commands_deepseek.rs (*.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function too.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:554..579 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a comprehensive understanding of the codebase. Let me summarize the current state of failure recording:
+
+### Already wired (from `deepseek.rs` perspective):
+
+1. **`record_deepseek_transport_failure`** (line 1003-1016) - records `FailureObserved` for transport errors. Called from `lib.rs:296` via `maybe_record_deepseek_api_failure`.
+
+2. **`record_json_output_failure`** (line 1302-1308) - records `JsonOutputFailure` event. Called from `lib.rs:277`.
+
+3. **`validate_deepseek_thinking_tool_call_messages`** (line 1884) - returns `Result<DeepSeekProtocolCheck, String>`. The callers in `commands_deepseek.rs` do call `record_thinking_protocol_failure` (which records `FailureObserved`) when this fails.
+
+4. **`validate_strict_tool_arguments`** (line 2018) - returns `Result<ToolSchemaValidationReport, String>`. The caller in `commands_deepseek.rs:453` does call `record_tool_schema_failure` (which records `ToolSchemaFailure`) when `--record` flag is passed.
+
+5. **`parse_json_output_attempts`** (line 1241) - returns `Result<JsonOutputParseResult, JsonOutputFailure>`. The caller in `commands_deepseek.rs:960` does call `record_deepseek_diagnostic_event` with `JsonOutputFailure`.
+
+### Key observations:
+
+The `commands_deepseek.rs` recording functions all use `record_deepseek_diagnostic_event` which checks `harness_internal_enabled()` and `is_initialized()` before recording. But functions in `deepseek.rs` like `record_deepseek_transport_failure` and `record_json_output_failure` use `crate::state::record` directly via the `GLOBAL_RECORDER`.
+
+These are mostly already wired in the **command-line diagnostic paths** (`commands_deepseek.rs`), but the key question is: are they wired in the **actual runtime paths**?
+
+Looking at the task description again:
+> The current harness has `record_failure_event` and `should_record_failure` fields on transport/protocol decision structs, plus a `record_failure_schema()` for the strict tool schema system — but these may not be consistently wired to emit `EventType::FailureObserved` via the state recorder at runtime.
+
+So the issue is that while the diagnostic commands (`yoyo deepseek ...`) do call the recording functions, the actual runtime code that processes transport errors, schema validation failures, etc. may NOT be calling these recording functions.
+
+Let me look more carefully at the runtime paths:
+
+1. `record_deepseek_transport_failure` called from `lib.rs` - only one path, and it requires `deepseek_native` and `provider == "deepseek"`.
+
+2. `record_json_output_failure` called from `lib.rs` - only one path, in `evaluate_deepseek_json_output_attempts`.
+
+3. Schema validation failures in `validate_strict_tool_arguments` - called from `eval_fixtures.rs` and `commands_deepseek.rs` (diagnostic), but is it called during actual tool execution? Let me check.
+
+Let me also look at the `classify_deepseek_transport_failure` function usage to see if there are other callers that don't record:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:1170..1210  ▶ search 'validate_strict_tool_arguments\(' in src (*.rs) ✓ (10ms)
+ ✗ (15ms)
+    │ Search error: grep: Unmatched ( or \(
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me try a simpler search pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (1 ✓, 1 ✗)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'validate_strict_tool_arguments' in src (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at where `validate_strict_tool_arguments` is called around line 3862 in deepseek.rs (this is in tests):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:3850..3880 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `record_failure_schema` function in deepseek.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:2400..2500 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `warning` section around line 3858 that seems empty:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:3855..3865 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - there are two empty lines at 3858-3859. Not relevant to our task though.
+
+Now let me build a comprehensive plan. Let me understand exactly what's needed:
+
+### Current state:
+1. **Transport failures**: `record_deepseek_transport_failure()` exists and is called from `lib.rs:296`. This seems wired.
+2. **JSON output failures**: `record_json_output_failure()` exists and is called from `lib.rs:277`. This seems wired.
+3. **Thinking protocol failures**: `validate_deepseek_thinking_tool_call_messages` returns `Err(String)` for various failures. Callers in `commands_deepseek.rs` call `record_thinking_protocol_failure`. This is wired for CLI diagnostics.
+4. **Schema validation failures**: `validate_strict_tool_arguments` returns `Ok(report)` with `valid: false` or `Err(String)`. Callers in `commands_deepseek.rs` call `record_tool_schema_failure` when `--record` is passed. This is wired for CLI diagnostics but only with `--record`.
+
+### What's missing:
+The task says the recording functions are in `deepseek.rs` but need to be "consistently wired." Looking at it more carefully:
+
+The key issue is that `commands_deepseek.rs` has recording wrappers that are only called with `--record` flags or in diagnostic commands. But the actual **runtime** paths where these functions are used in production need to also record.
+
+Let me look at the eval_fixtures.rs usage more carefully to understand the runtime path better. And let me re-read the task description more carefully.
+
+> 1. **Audit `deepseek.rs`**: Find every code path where a DeepSeek transport error, protocol check failure, or schema validation failure is detected but NOT recorded to state. Key areas:
+>    - `classify_deepseek_transport_failure` / `extract_deepseek_transport_status` — transport-level errors
+>    - `validate_strict_tool_schema_suite` / `validate_strict_tool_arguments` — schema validation failures
+>    - `parse_json_output_attempts` — JSON output parsing failures
+>    - `validate_deepseek_thinking_tool_call_messages` — thinking-mode tool call mismatches
+
+> 2. **Wire recordings**: For each failure path you find that doesn't already call the state recorder, add a `record_failure` call ... that emits a `FailureObserved` event with:
+>    - `source`: the function/module name
+>    - `message`: the specific error message
+>    - `class`: the failure taxonomy
+>    - `retryable`: whether the failure is retryable
+
+> 3. **Add a test** that verifies at least one of these new failure paths actually records a FailureObserved event.
+
+Let me now check which paths are truly unwired. Let me focus on `deepseek.rs` itself:
+
+1. `classify_deepseek_transport_failure` - this is a pure function that classifies and returns a decision. It doesn't call state recording itself. That's fine - the callers should record. `record_deepseek_transport_failure` IS called from `lib.rs`. But does `classify_deepseek_transport_failure` get called from any OTHER place that doesn't also record? Let me check...
+
+Looking at the search results, `classify_deepseek_transport_failure` is called from:
+- `deepseek.rs:986` (in `deepseek_transport_failure_state_payload` - this is used by `record_deepseek_transport_failure`)
+- `deepseek.rs` tests at lines 2821, 2827, 2833, etc.
+- `eval_fixtures.rs:1079` and `commands_deepseek.rs:771`
+
+The eval_fixtures.rs call at line 1079 - does it record? Let me check.
+
+2. `validate_strict_tool_arguments` - returns a report. Callers need to check `report.valid` and record if needed. Let me check all non-test callers.
+
+3. `parse_json_output_attempts` - returns `Err(JsonOutputFailure)`. Caller needs to record. `record_json_output_failure` is called from `lib.rs:277`. But what about `commands_deepseek.rs:960`? That does call `record_deepseek_diagnostic_event` with `JsonOutputFailure`. 
+
+4. `validate_deepseek_thinking_tool_call_messages` - returns `Err(String)`. Callers in `commands_deepseek.rs` call `record_thinking_protocol_failure`.
+
+So looking at this, the recording functions already exist. What might be missing is making them more consistent and adding tests.
+
+Wait, let me re-read the evaluator feedback: "No implementation changes were made — the diff is empty." So the previous attempt literally didn't change any files. The task needs actual changes.
+
+Let me think about what concrete changes would satisfy the task requirements:
+
+The task defines a `FailureObserved` event that should have:
+- `source`: function/module name (e.g., "deepseek::transport")
+- `message`: specific error message
+- `class`: failure taxonomy (transport, protocol, schema, json_parse, thinking_mismatch)
+- `retryable`: whether retryable
+
+But looking at the existing recordings:
+- `record_deepseek_transport_failure` uses `deepseek_transport_failure_state_payload` which has `source`, `failure_class`, `transport_class`, `retryable`, etc. But it uses `EventType::FailureObserved`.
+- `record_json_output_failure` uses `EventType::JsonOutputFailure` (NOT `FailureObserved`).
+- `record_tool_schema_failure` uses `EventType::ToolSchemaFailure` (NOT `FailureObserved`).
+- `record_thinking_protocol_failure` uses `EventType::FailureObserved` directly with a `failure_class` of `thinking_tool_call_protocol`.
+
+The task says: "add a `record_failure` call ... that emits a `FailureObserved` event."
+
+So the task wants these failures to emit `FailureObserved` events (not `JsonOutputFailure` or `ToolSchemaFailure`). But wait - `JsonOutputFailure` and `ToolSchemaFailure` are separate event types that exist. The task might be saying these should ALSO emit `FailureObserved`.
+
+Actually, re-reading more carefully: the task says "use the existing state recording API" and "emits a `FailureObserved` event." The current recordings use different event types (`JsonOutputFailure`, `ToolSchemaFailure`) which are separate. The task wants `FailureObserved` events for these failures.
+
+Let me look at the `EventType` enum to understand what's available:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:40..120 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So we have these event types:
+- `FailureObserved` - general failure event
+- `JsonOutputFailure` - specific JSON output failure 
+- `ToolSchemaFailure` - specific tool schema failure
+
+The task wants `FailureObserved` events for DeepSeek failures. Currently:
+- `record_deepseek_transport_failure` records `FailureObserved` ✓
+- `record_json_output_failure` records `JsonOutputFailure` (separate type)
+- `record_tool_schema_failure` records `ToolSchemaFailure` (separate type)
+- `record_thinking_protocol_failure` records `FailureObserved` ✓
+
+Now, the task says: "The current harness has `record_failure_event` and `should_record_failure` fields on transport/protocol decision structs... but these may not be consistently wired to emit `EventType::FailureObserved` via the state recorder at runtime."
+
+Looking at the structs:
+- `JsonPolicy` has `record_failure_event: bool` (line 216)
+- `ToolSchemaRepairDecision` has `should_record_failure: bool` (line 305)
+- `RepairPolicy` has `record_failure_hypotheses: bool` (line 492)
+
+But `record_json_output_failure` doesn't check `JsonPolicy.record_failure_event` before recording! It just blindly records. And `record_tool_schema_failure` in `commands_deepseek.rs` does check `report.valid` and the caller checks both `repair_decision.should_record_failure` AND the `--record` flag. But at runtime (not CLI), these checks may not be properly wired.
+
+Let me look at this from a different angle. Let me look at `lib.rs` more carefully to understand the flow when the agent runs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1..101 ✓ (4ms)
+
+  ✓ Watch passed: `cargo clippy --all-targets -- -D warnings && cargo test`
+

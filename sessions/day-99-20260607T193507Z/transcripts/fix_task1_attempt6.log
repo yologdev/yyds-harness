@@ -1,0 +1,523 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The evaluator says no changes were made — the git diff is empty. I need to actually implement the task. Let me start by auditing the failure paths in `src/deepseek.rs`, understand the state recording mechanism, then wire up the missing recordings and add a test.
+
+Let me first understand the current state of things.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat HEAD  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5 ✓ (8ms)
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the state recording infrastructure and the deepseek failure paths. I need to:
+
+1. Read `src/deepseek.rs` for failure paths
+2. Read `src/state.rs` for the state recording API
+3. Understand how `record_failure` works
+
+Let me read key sections of both files.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the deepseek.rs and state.rs files to understand the failure paths and recording mechanism.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 1.7s (5 ✓)
+
+Let me first understand the state recording API and the current failure paths in deepseek.rs.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' in /home/runner/work/yyds-harness/yyds-harness/src  ▶ search 'record_failure' in /home/runner/work/yyds-harness/yyds-harness/src ✓ (14ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how state recording works. I need to find the `record_failure` function in state.rs and understand the EventType::FailureObserved schema.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record_failure' in /home/runner/work/yyds-harness/yyds-harness/src  ▶ search 'fn record_failure_event' in /home/runner/work/yyds-harness/yyds-harness/src ✓ (13ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look for the state recording mechanism. Let me search for record_failure_event in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_failure' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Those are just schema references. Let me look at the state API — how do you record events? Let me search for EventType::FailureObserved in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType::FailureObserved' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how to record events. There must be a state recorder or something that emits events. Let me look at the state module more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "pub fn" src/state.rs …  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "pub fn" src/lib.rs | … ✓ (8ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Found it: `pub fn record(event_type: EventType, actor: Actor, payload: Value)` in state.rs. Let me read that function and understand the API.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:192..292 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, so the API is `yyds::state::record(event_type, actor, payload)` where payload is a `serde_json::Value`. Let me also look at how existing FailureObserved events are recorded (the ones that already exist in deepseek.rs) and what the payload structure looks like.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me understand the DeepSeek failure paths. Let me look at the key functions in deepseek.rs:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_failure|FailureObserved|should_record|record_failure' in /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No existing FailureObserved recordings in deepseek.rs. That confirms the gap. Let me find the failure detection points mentioned in the task.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn classify_deepseek_transport_failure|fn extract_deepseek_t…' in /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for these function names more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "fn " src/deepseek.rs … ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There we go. I can see several key functions:
+- `record_deepseek_transport_failure` (line 1003) — already records, let me check it
+- `record_json_output_failure` (line 1302) — already records, let me check it
+- `record_fim_route_decision` (line 1567) — already records
+
+But the issue is whether the calling code actually invokes these. Let me also check:
+- `validate_deepseek_thinking_tool_call_messages` (line 1884) — may need recording
+- `validate_strict_tool_schema_suite` (line 1985) — may need recording
+- `validate_strict_tool_arguments` (line 2018) — may need recording
+- `decide_tool_schema_repair` (line 2112) — may need recording
+
+Let me read all these functions to understand what's already recorded and what's missing.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me read the key functions to understand the current state of failure recording:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:946..1076  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:1241..1321  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:1861..2061 ✓ (23ms)
+ ✓ (19ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the rest of `validate_strict_tool_arguments` and `decide_tool_schema_repair`:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.0s (3 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:2060..2170  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:1985..2035 ✓ (15ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the full picture. Looking at the code:
+
+1. **Transport failures**: `record_deepseek_transport_failure` already exists and calls `crate::state::record(EventType::FailureObserved, ...)`. But where is it called from? Let me search.
+
+2. **JSON output failures**: `record_json_output_failure` exists but records `EventType::JsonOutputFailure` — not `FailureObserved`. The task asks for `FailureObserved` events.
+
+3. **Schema validation failures**: `validate_strict_tool_arguments` returns a `ToolSchemaValidationReport` with `valid: false`. The `decide_tool_schema_repair` function handles it with `should_record_failure: true` on abort, but does anyone actually call `record_failure` when `should_record_failure` is true?
+
+4. **Protocol check failures**: `validate_strict_tool_schema_suite` and `validate_deepseek_thinking_tool_call_messages` return errors, but nothing records them.
+
+Let me now check:
+- Where `record_deepseek_transport_failure` is actually called from
+- Where `decide_tool_schema_repair` is called and whether `should_record_failure` is acted upon
+- Where `validate_strict_tool_schema_suite` and `validate_deepseek_thinking_tool_call_messages` are called
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.3s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn "record_deepseek_tran… ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the callsites are in `lib.rs`. Let me look at how transport failures are recorded there:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:260..380  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:375..435 ✓ (14ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture. The transport failures are already being recorded via `maybe_record_deepseek_api_failure` and `record_deepseek_transport_failure`. The `record_json_output_failure` is called but records `EventType::JsonOutputFailure`, not `FailureObserved`.
+
+Now the key gaps are:
+1. `record_json_output_failure` records `JsonOutputFailure` event type, not `FailureObserved`. The task wants `FailureObserved` events for JSON parsing failures too.
+2. `validate_strict_tool_arguments` returns a report and `decide_tool_schema_repair` sets `should_record_failure: true` on abort, but nobody actually calls `record_failure` when that flag is set.
+3. `validate_strict_tool_schema_suite` and `validate_deepseek_thinking_tool_call_messages` return errors but nobody records them as FailureObserved.
+
+Let me check where `decide_tool_schema_repair` is actually called at runtime (not in tests):
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn "decide_tool_schema_r… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No runtime callsites for those validation functions outside of deepseek.rs itself! Let me also check within deepseek.rs non-test calls:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "decide_tool_schema_re… ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All those are in tests! So the functions `validate_strict_tool_arguments`, `validate_strict_tool_schema_suite`, `validate_deepseek_thinking_tool_call_messages` are defined and tested, but never called at runtime. And `decide_tool_schema_repair` with `should_record_failure: true` is never acted upon.
+
+The task says to pick the 2 most impactful unwired paths. Let me evaluate what paths exist:
+
+1. **Transport failures** — already wired via `record_deepseek_transport_failure` → calls `state::record(EventType::FailureObserved, ...)`. ✓ Already done.
+
+2. **JSON output failures** — `record_json_output_failure` exists but records `EventType::JsonOutputFailure`, NOT `FailureObserved`. The task wants FailureObserved events. This is a gap.
+
+3. **Schema validation failures** — `decide_tool_schema_repair` has `should_record_failure: true` but nobody checks this flag to actually record. Gap.
+
+4. **Protocol check failures** — `validate_strict_tool_schema_suite` and `validate_deepseek_thinking_tool_call_messages` return errors but aren't called at runtime at all.
+
+The task says "pick the 2 most impactful." I think the two that matter are:
+1. The `decide_tool_schema_repair` path — add a function that, when `should_record_failure` is true, records a `FailureObserved` event.
+2. The `record_json_output_failure` path — either make it also emit `FailureObserved` or add a separate call.
+
+Wait, let me re-read the task more carefully:
+
+> 2. **Wire recordings**: For each failure path you find that doesn't already call the state recorder, add a `record_failure` call (or use the existing state recording API) that emits a `FailureObserved` event with:
+> - `source`: the function/module name where the failure was detected (e.g., "deepseek::transport", "deepseek::schema_validation")
+> - `message`: the specific error message
+> - `class`: the failure taxonomy (transport, protocol, schema, json_parse, thinking_mismatch)
+> - `retryable`: whether the failure is retryable
+
+So the task wants these specific fields in the payload. Let me look at the current `deepseek_transport_failure_state_payload` to understand the format, and then create similar functions for the other failure paths.
+
+Actually let me check what's happening more carefully — the transport path already has `record_deepseek_transport_failure`. The JSON output path has `record_json_output_failure` but uses `EventType::JsonOutputFailure`. 
+
+The task says the failures are to be "not consistently wired to emit `EventType::FailureObserved` via the state recorder at runtime." So the issue is:
+- Transport paths ARE wired (they emit FailureObserved)
+- JSON output failure records JsonOutputFailure but NOT FailureObserved — double-checking that
+- Schema validation failure path exists in structure but is never called at runtime
+
+Let me also check the `build_json_output_request` function since it may also have failure paths:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:1124..1204 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at what the `record_fim_route_decision` function does:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:1544..1574 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:1567..1582 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me see the EventType enum to understand all variants:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'enum EventType' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read around line 42 of state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:42..162 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me plan the changes:
+
+**Gap 1: `record_json_output_failure` records `EventType::JsonOutputFailure` but NOT `EventType::FailureObserved`.**
+
+The task wants `FailureObserved` events for these failures. I should modify `record_json_output_failure` to also emit a `FailureObserved` event.
+
+**Gap 2: `decide_tool_schema_repair` has `should_record_failure: true` but nobody acts on it.**
+
+I need to add a function like `record_tool_schema_repair_failure` that records a `FailureObserved` event when `should_record_failure` is true. But since the function is never called at runtime (only in tests), I also need to find where it should be called or at least make the recording API available.
+
+Actually, let me re-read the task:
+
+> 3. **Add a test** that verifies at least one of these new failure paths actually records a FailureObserved event. Use the existing state test infrastructure in `state.rs` — write a test that simulates the failure condition and asserts a FailureObserved event appears.
+
+So the task wants:
+1. Identify unwired paths
+2. Add recording for those paths  
+3. Add a test
+
+Let me focus on the practical, impactful changes:
+
+1. **Add a `record_failure` function for tool schema repair failures** — currently `decide_tool_schema_repair` sets `should_record_failure: true` on abort but nothing records it. I'll add a function `record_tool_schema_repair_failure` (or extend `record_json_output_failure` to also emit `FailureObserved`) and add a function for schema repair failures.
+
+Actually wait — the task says to also check `validate_strict_tool_schema_suite` and `validate_deepseek_thinking_tool_call_messages`. These return `Result<DeepSeekProtocolCheck, String>` — when they return `Err`, that's a protocol check failure. But they're never called at runtime.
+
+Let me think about what's most impactful:
+
+1. **JSON output failures** — `record_json_output_failure` exists and IS called at runtime (from `lib.rs`), but records `JsonOutputFailure` event type instead of `FailureObserved`. I should add `FailureObserved` recording here.
+
+2. **Tool schema repair abort failures** — `decide_tool_schema_repair` sets `should_record_failure: true` but nobody reads it. I should add recording here. But since it's not called at runtime, this is less impactful. Still, the infrastructure should be wired so that when it IS called, failures get recorded.
+
+Let me also check if `validate_strict_tool_arguments` + `decide_tool_schema_repair` is called anywhere at runtime:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn "validate_strict_tool… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Those functions are only called from deepseek.rs tests, not at runtime. So the two most impactful unwired paths are:
+
+1. **JSON output failures**: `record_json_output_failure` records `EventType::JsonOutputFailure` but should ALSO record `EventType::FailureObserved` (or include it as a FailureObserved with class `json_parse`). This is called at runtime from `lib.rs`.
+
+2. **Tool schema repair abort**: `decide_tool_schema_repair` sets `should_record_failure: true` but nobody records it. Even though it's not called at runtime currently, the wiring should be complete. I should add a function that records a `FailureObserved` when `should_record_failure` is true.
+
+Also, the `record_json_output_failure` currently records a `JsonOutputFailure` event which is a different event type. The task specifically asks for `FailureObserved` events.
+
+Let me also check: does the transport path already record `FailureObserved`? Yes, `record_deepseek_transport_failure` uses `EventType::FailureObserved`. Good.
+
+Now let me also look at what the `ToolSchemaRepairDecision` struct looks like:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:275..325 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also look at what `JsonOutputFailure` contains:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct JsonOutputFailure' in /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:243..273 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have full picture. Let me plan the changes:
+
+## Changes to make:
+
+### 1. `src/deepseek.rs`: Modify `record_json_output_failure` to also emit a `FailureObserved` event
+
+Currently `record_json_output_failure` records `EventType::JsonOutputFailure`. I should modify it to ALSO record a `FailureObserved` event (or change it to record `FailureObserved` with class "json_parse"). The task specifically says to emit `EventType::FailureObserved`.
+
+### 2. `src/deepseek.rs`: Add `record_tool_schema_repair_failure` function
+
+When `decide_tool_schema_repair` returns a decision with `should_record_failure: true`, record a `FailureObserved` event with class "schema".
+
+### 3. `src/state.rs`: Add a test that verifies FailureObserved events are recorded
+
+### Implementation approach:
+
+For #1, I'll modify `record_json_output_failure` to also emit `FailureObserved`:
+```rust
+pub fn record_json_output_failure(failure: &JsonOutputFailure) {
+    crate::state::record(
+        crate::state::EventType::JsonOutputFailure,
+        crate::state::Actor::Harness,
+        failure.to_state_payload(),
+    );
+    // Also emit FailureObserved for the state subsystem
+    crate::state::record(
+        crate::state::EventType::FailureObserved,
+        crate::state::Actor::Harness,
+        json!({
+            "source": "deepseek::json_parse",
+            "message": format!("JSON output parsing failed for {}: {} attempts", 
+                failure.source,
+                failure.attempts.len()),
+            "class": "json_parse",
+            "retryable": failure.retry_allowed,
+            "details": failure.to_state_payload(),
+        }),
+    );
+}
+```
+
+For #2, I'll add:
+```rust
+pub fn record_tool_schema_repair_failure(decision: &ToolSchemaRepairDecision) {
+    if !decision.should_record_failure {
+        return;
+    }
+    crate::state::record(
+        crate::state::EventType::FailureObserved,
+        crate::state::Actor::Harness,
+        json!({
+            "source": "deepseek::schema_validation",
+            "message": decision.reason,
+            "class": "schema",
+            "retryable": false,
+            "schema_name": decision.schema_name,
+            "failed_attempt": decision.failed_attempt,
+            "max_repair_turns": decision.max_repair_turns,
+        }),
+    );
+}
+```
+
+Wait, but I need to check: does `ToolSchemaRepairDecision` implement any trait that allows it to be serialized? Let me check.
+
+Looking at the struct definition:
+```rust
+pub struct ToolSchemaRepairDecision {
+    pub schema_name: String,
+    pub action: ToolSchemaRepairAction,
+    pub failed_attempt: u32,
+    pub max_repair_turns: u32,
+    pub should_record_failure: bool,
+    pub instruction: Option<String>,
+    pub reason: String,
+}
+```
+
+It has `Serialize, Deserialize` derives, so I can construct a json! payload from its fields.
+
+Now for the test, I need to understand how state tests work. Let me look at some existing tests in state.rs that test FailureObserved recording.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at how existing state tests work to understand the test infrastructure:
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "fn .*failure.*record\… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "#\[test\]" src/state.… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at a test that exercises FailureObserved recording, like the one around line 4737 or 4861:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:4850..4930 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I now have a clear understanding. Let me also look at the `append_event` function and how events are written, and check if there are tests that call `StateRecorder::append` directly.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at how tests directly exercise the state recorder:
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:2964..3034 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a solid understanding of the test infrastructure. I can write tests that create StateEvent objects and use `append_event` directly, or use the `StateRecorder::append` method.
+
+Let me also check the `commands_eval.rs` to see how `FailureObserved` is recorded at runtime in the existing code, since the search showed it's used there:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType::FailureObserved' in /home/runner/work/yyds-harness/yyds-harness/src/commands_eval.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how these are being recorded there:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_eval.rs:988..1008 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear understanding of the existing patterns. Let me now implement the changes.
+
+## Implementation Plan
+
+### Changes to `src/deepseek.rs`:
+
+1. **Modify `record_json_output_failure`** to also emit a `FailureObserved` event alongside the existing `JsonOutputFailure` event.
+
+2. **Add `record_tool_schema_repair_failure`** function that records a `FailureObserved` event when a `ToolSchemaRepairDecision` has `should_record_failure: true`.
+
+3. **Add `record_protocol_check_failure`** function that can be used when `validate_strict_tool_schema_suite` or `validate_deepseek_thinking_tool_call_messages` return errors.
+
+But wait — the task says "pick the 2 most impactful" if there are more than 3-4. Let me be pragmatic:
+
+The two most impactful paths:
+1. **JSON output failures**: Called at runtime, records `JsonOutputFailure` but NOT `FailureObserved`. Fix: add `FailureObserved` recording.
+2. **Tool schema repair abort**: Has `should_record_failure: true` but nobody acts on it. Fix: add a function to record when `should_record_failure` is true.
+
+For the protocol check failures and thinking-mode mismatches — those functions aren't called at runtime, so wiring them is less impactful. I'll add a comment noting them for future work as the task suggests.
+
+### Test in `src/deepseek.rs`:
+
+Add a test that:
+1. Sets up a temporary state recorder
+2. Creates a failure condition (e.g., a `JsonOutputFailure` or a `ToolSchemaRepairDecision` with `should_record_failure: true`)
+3. Calls the recording function
+4. Reads the events file and asserts a `FailureObserved` event was written
+
+Wait, looking at the state tests, they use `append_event` directly with `StateEvent` structs. But the recording functions call `crate::state::record` which uses the global recorder. I need to either:
+- Initialize the global recorder in a test (which might conflict)
+- Or test the recording functions at a lower level
+
+Actually, let me look at how `record_deepseek_transport_failure` is tested:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 33 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn "record_deepseek_tran… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+These functions are only called from lib.rs at runtime and from tests within deepseek.rs. Let me check tests in deepseek.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 34 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "#\[test\]" src/deepse… ✓ (8ms)
+
+  ✓ Watch passed: `cargo clippy --all-targets -- -D warnings && cargo test`
+
