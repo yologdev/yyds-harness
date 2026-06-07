@@ -607,17 +607,36 @@ HTML = r"""<!doctype html>
     .hero-title {
       margin: 12px 0 0;
       max-width: 920px;
-      font-size: clamp(28px, 5vw, 62px);
-      line-height: 1;
+      font-size: 44px;
+      line-height: 1.08;
       font-weight: 900;
       letter-spacing: 0;
+    }
+
+    .hero-kicker {
+      margin-top: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .hero-kicker code {
+      color: var(--ink);
+      background: rgba(230, 238, 232, 0.7);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 3px 6px;
+      overflow-wrap: anywhere;
     }
 
     .hero-copy {
       margin: 16px 0 0;
       max-width: 820px;
       color: var(--muted);
-      font-size: clamp(15px, 1.5vw, 18px);
+      font-size: 16px;
     }
 
     .hero-side {
@@ -630,7 +649,7 @@ HTML = r"""<!doctype html>
     }
 
     .hero-side .value {
-      font-size: clamp(34px, 5vw, 72px);
+      font-size: 52px;
     }
 
     .grid,
@@ -1046,6 +1065,8 @@ HTML = r"""<!doctype html>
       .split { grid-template-columns: 1fr; }
       .toolbar { grid-template-columns: 1fr; }
       .work-facts { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      .hero-title { font-size: 34px; }
+      .hero-side .value { font-size: 42px; }
     }
 
     @media (max-width: 520px) {
@@ -1055,6 +1076,7 @@ HTML = r"""<!doctype html>
       .work-facts { grid-template-columns: 1fr; }
       .detail-grid { grid-template-columns: 1fr; }
       .section-head { display: grid; }
+      .hero-title { font-size: 28px; }
       header { position: static; }
     }
   </style>
@@ -1355,8 +1377,11 @@ HTML = r"""<!doctype html>
       const score = latestMetric(agg, "coding_log_score");
       const stateCapture = latestMetric(agg, "state_capture_coverage");
       const heroTitle = session
-        ? `${text(session.id)} finished ${text(session.tasks_succeeded || 0)}/${text(session.tasks_attempted || 0)} tasks`
+        ? `${text(session.tasks_succeeded || 0)} of ${text(session.tasks_attempted || 0)} tasks completed`
         : "No audit-backed evolution sessions yet";
+      const heroMeta = session
+        ? `Day ${text(session.day)} / ${text(session.session_time || session.ts || "latest")} / <code>${text(session.id)}</code>`
+        : "Waiting for the first pushed audit session";
       const heroCopy = session
         ? text(work.headline || "No detailed work signals captured")
         : "Run an evolution session and push audit evidence to populate this report.";
@@ -1364,6 +1389,7 @@ HTML = r"""<!doctype html>
         <div>
           <span class="pill ${healthClass(health)}">${text(health)}</span>
           <h2 class="hero-title">${heroTitle}</h2>
+          <div class="hero-kicker">${heroMeta}</div>
           <p class="hero-copy">${heroCopy}</p>
         </div>
         <aside class="hero-side">
