@@ -324,7 +324,30 @@ pub fn get_project_file_listing() -> Option<String> {
 fn ensure_semantic_index() {
     let path = Path::new(DEFAULT_SEMANTIC_INDEX_PATH);
     if path.exists() {
-        return;
+        // Check freshness before deciding it's good enough.
+        // If the index is stale (all files changed or >2/3 stale),
+        // delete it so the build path below recreates it.
+        if let Some(index) = load_persistent_semantic_index(path) {
+            let (fresh, stale, _missing) = count_fresh_index_files(
+                index
+                    .files
+                    .iter()
+                    .map(|f| (&f.path, f.len_bytes, f.modified_ms)),
+            );
+            if fresh == 0 || stale > fresh * 2 {
+                eprintln!(
+                    "\x1b[33m  semantic index is stale (fresh={fresh} stale={stale}) — rebuilding\x1b[0m"
+                );
+                let _ = std::fs::remove_file(path);
+                // Fall through to rebuild below
+            } else {
+                return;
+            }
+        } else {
+            // Corrupt or schema-mismatched file — treat as needing rebuild
+            eprintln!("\x1b[33m  semantic index is corrupt — rebuilding\x1b[0m");
+            let _ = std::fs::remove_file(path);
+        }
     }
     // Build-and-write with a 60-second timeout so a slow filesystem or huge
     // repository can't block the caller forever.

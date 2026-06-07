@@ -514,7 +514,11 @@ fn parse_model_config(
                                     String::new()
                                 } else {
                                     // Piped/single-shot mode: terse error for scripts
-                                    let env_hint = provider_env_var.unwrap_or("ANTHROPIC_API_KEY");
+                                    let env_hint = provider_env_var.unwrap_or(if deepseek_native {
+                                        "DEEPSEEK_API_KEY"
+                                    } else {
+                                        "ANTHROPIC_API_KEY"
+                                    });
                                     eprintln!("{RED}error:{RESET} No API key found.");
                                     eprintln!(
                                         "Set {env_hint} env var, use --api-key <key>, or add api_key to .yoyo.toml."
