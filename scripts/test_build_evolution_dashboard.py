@@ -67,6 +67,18 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     ],
                     "patches": [{"patch_id": "patch-1"}],
                     "decisions": [{"decision": "promote", "eligible": True}],
+                    "task_lineage": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "task_title": "Improve dashboard",
+                            "status": "completed",
+                            "source_files": ["scripts/build_evolution_dashboard.py"],
+                            "commit_shas": ["abc123"],
+                            "eval": {"verdict": "PASS"},
+                            "gnome_deltas": {"coding_log_score": 0.1},
+                        }
+                    ],
                     "blockers": [],
                 },
             )
@@ -100,6 +112,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["transcripts"]["phase_counts"], {"plan": 1, "task": 1})
             self.assertEqual(work["patch_count"], 1)
             self.assertEqual(work["decision_count"], 1)
+            self.assertEqual(work["task_lineage"][0]["task_id"], "task_01")
+            self.assertEqual(work["task_lineage"][0]["gnome_deltas"], {"coding_log_score": 0.1})
             self.assertEqual(data["sessions"][0]["trace_quality"]["status"], "full")
 
     def test_derives_source_changes_from_matching_session_commits(self):

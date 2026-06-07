@@ -79,6 +79,17 @@ run -> state events -> gnome metrics -> dashboard/evidence -> next run prompt
 The agent should not only remember that a session "passed." It should also see
 where the run was slow, noisy, brittle, or under-instrumented.
 
+Each task also emits explicit lineage:
+
+```text
+task_id -> planned/touched files -> commit sha -> eval verdict -> gnome deltas
+```
+
+That lineage is stored in yoagent-state events. If a source change is committed
+during session wrap-up instead of inside the task loop, the harness records a
+`TaskLineageLinked` event that connects the wrap-up commit back to the task by
+source-file overlap.
+
 ## Gnome Metrics
 
 Gnome metrics are the compact health signals that turn raw logs and state events
@@ -259,6 +270,7 @@ See [`docs/src/guides/fork.md`](docs/src/guides/fork.md) for the full guide.
 ```text
 src/                         Rust CLI, REPL, tools, commands, state, DeepSeek support
 scripts/evolve.sh            Autonomous evolution session pipeline
+scripts/task_lineage.py       Per-task touched-file, commit, eval, and gnome lineage
 scripts/log_feedback.py      GitHub Actions log feedback -> PatchEvaluated metrics
 scripts/summarize_state_gnomes.py
                              State events -> gnome summary
@@ -281,7 +293,9 @@ Run the main checks:
 ```bash
 cargo fmt --check
 cargo test
+python3 scripts/task_lineage.py --test
 python3 scripts/log_feedback.py --test
+python3 scripts/test_task_lineage_feedback.py
 python3 scripts/build_evolution_dashboard.py \
   --audit-sessions /tmp/yoyo-audit-log/sessions \
   --output-dir /tmp/yyds-dashboard

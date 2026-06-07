@@ -302,6 +302,7 @@ def work_summary(
     latest_eval = evals[-1] if evals else {}
     source_commits = [commit for commit in commits if commit.get("source_files")]
     bookkeeping_commits = [commit for commit in commits if not commit.get("source_files")]
+    task_lineage = summary.get("task_lineage") if isinstance(summary.get("task_lineage"), list) else []
     source_patch_count = len(source_commits)
     labels: list[str] = []
     if attempted:
@@ -328,6 +329,7 @@ def work_summary(
         "commits": serialize_commits(commits),
         "source_commits": serialize_commits(source_commits),
         "bookkeeping_commits": serialize_commits(bookkeeping_commits),
+        "task_lineage": [task for task in task_lineage if isinstance(task, dict)],
         "read_files": event_data["read_files"],
         "commands": event_data["commands"],
         "failed_commands": event_data["failed_commands"],
@@ -1723,6 +1725,7 @@ HTML = r"""<!doctype html>
                 <div><strong>Changed</strong>${listItems(sourceFiles, "No repo changes recorded.")}</div>
                 <div><strong>Source commits</strong>${sourceCommitItems(work)}</div>
                 <div><strong>Bookkeeping commits</strong>${bookkeepingCommitItems(work)}</div>
+                <div><strong>Task lineage</strong>${renderTaskLineage(work)}</div>
                 <div><strong>Validated</strong>${listItems(work.commands, "No command events recorded.")}</div>
                 <div><strong>Read</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
                 <div><strong>State edits</strong>${listItems(work.edited_files, "No FileEdited events recorded.")}</div>
@@ -1743,6 +1746,7 @@ HTML = r"""<!doctype html>
       }
       const feedbackOnly = sessions.filter(session => session.trace_quality?.status === "feedback_only");
       const codeSessions = sessions.filter(session => (session.work_summary?.source_commit_count || 0) > 0);
+      const explicitLineage = sessions.filter(session => (session.work_summary?.task_lineage || []).length > 0);
       const wrapupSource = sessions.filter(session =>
         (session.work_summary?.source_commits || []).some(commit => String(commit.subject || "").includes("session wrap-up"))
       );
@@ -1756,6 +1760,13 @@ HTML = r"""<!doctype html>
           className: "good",
           title: `${text(codeSessions.length)} of ${text(sessions.length)} visible sessions have source-changing commits`,
           detail: "Source file lists are derived from all matching session commits, then separated from journals, memory, plans, and .yoyo artifacts."
+        },
+        {
+          show: true,
+          kind: explicitLineage.length === sessions.length ? "Captured" : "Open",
+          className: explicitLineage.length === sessions.length ? "good" : "warn",
+          title: `${text(explicitLineage.length)} of ${text(sessions.length)} visible sessions have explicit task lineage`,
+          detail: "New sessions should link task_id, touched files, commit SHAs, evaluator verdicts, and log-feedback gnome deltas directly in yoagent-state."
         },
         {
           show: feedbackOnly.length > 0,
@@ -1779,11 +1790,11 @@ HTML = r"""<!doctype html>
           detail: "This can be legitimate verification work, but repeated bookkeeping-only sessions should trigger a planning-quality review."
         },
         {
-          show: true,
+          show: explicitLineage.length < sessions.length,
           kind: "Next",
           className: "info",
-          title: "Promote task-level evidence from inferred to explicit",
-          detail: "Ideal state: each task emits planned files, touched files, commits, eval verdicts, and gnome deltas as linked yoagent-state events."
+          title: "Backfill is historical only",
+          detail: "Older audit sessions can still be inferred from commits, but only future runs can emit complete task lineage at execution time."
         }
       ].filter(note => note.show);
       panel.innerHTML = notes.map(note => `
@@ -1818,6 +1829,19 @@ HTML = r"""<!doctype html>
       }).join("");
     }
 
+    function renderTaskLineage(work) {
+      const rows = (work.task_lineage || []).slice(0, 6);
+      if (!rows.length) return `<p class="muted">No explicit task lineage events yet.</p>`;
+      return `<ul class="mini-list">${rows.map(task => {
+        const commitCount = (task.commit_shas || []).length;
+        const fileCount = (task.source_files || task.touched_files || []).length;
+        const evalVerdict = task.eval && task.eval.verdict ? ` / eval ${task.eval.verdict}` : "";
+        const deltaCount = Object.keys(task.gnome_deltas || {}).length;
+        const deltaText = deltaCount ? ` / ${deltaCount} gnome delta(s)` : "";
+        return `<li>${text(task.task_id || "")} ${text(task.status || "-")}: ${text(task.task_title || "")} (${text(fileCount)} files, ${text(commitCount)} commits${evalVerdict}${deltaText})</li>`;
+      }).join("")}</ul>`;
+    }
+
     function renderEvidence(sessions) {
       const items = [];
       sessions.slice().reverse().forEach(session => {
@@ -1830,6 +1854,12 @@ HTML = r"""<!doctype html>
         ((session.work_summary || {}).source_commits || []).slice(0, 3).forEach(commit => {
           const files = (commit.source_files || []).length;
           items.push({ kind: "Source commit", className: "good", session: session.id, title: `${commit.short_sha || ""} ${commit.subject || ""}`, detail: `${files} source files: ${(commit.source_files || []).slice(0, 3).join(", ")}` });
+        });
+        ((session.work_summary || {}).task_lineage || []).slice(0, 3).forEach(task => {
+          const files = (task.source_files || task.touched_files || []).length;
+          const commits = (task.commit_shas || []).length;
+          const deltas = Object.keys(task.gnome_deltas || {}).length;
+          items.push({ kind: "Task link", className: deltas ? "good" : "info", session: session.id, title: `${task.task_id || ""} ${task.task_title || ""}`, detail: `${task.status || "-"} / ${files} files / ${commits} commits / ${deltas} gnome deltas` });
         });
         (session.evals || []).slice(-2).forEach(evalData => {
           items.push({ kind: "Eval", className: evalData.status === "passed" ? "good" : "warn", session: session.id, title: evalData.eval_id || evalData.suite || "evaluation", detail: `${evalData.suite || "-"} ${evalData.status || "-"} score ${evalData.score === undefined ? "-" : evalData.score}` });

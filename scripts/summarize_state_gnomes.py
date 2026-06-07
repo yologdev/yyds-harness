@@ -159,6 +159,157 @@ def summarize_eval(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def task_key(data: dict[str, Any]) -> str:
+    value = data.get("task_id")
+    if isinstance(value, str) and value:
+        return value
+    number = data.get("task_number")
+    if isinstance(number, int):
+        return f"task_{number:02d}"
+    return str(number or "")
+
+
+def summarize_task_lineage(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    tasks: dict[str, dict[str, Any]] = {}
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        if data.get("phase") == "task":
+            key = task_key(data)
+            if not key:
+                continue
+            row = tasks.setdefault(
+                key,
+                {
+                    "task_id": key,
+                    "task_number": data.get("task_number"),
+                    "task_title": data.get("task_title"),
+                    "started_event_id": None,
+                    "completed_event_id": None,
+                    "gnome_metrics": {},
+                    "gnome_deltas": {},
+                },
+            )
+            if kind == "RunStarted":
+                row["started_event_id"] = event_id(event)
+                for field in ("planned_files", "issue", "base_commit"):
+                    if data.get(field) is not None:
+                        row[field] = data.get(field)
+            elif kind == "RunCompleted":
+                row["completed_event_id"] = event_id(event)
+                for field in (
+                    "status",
+                    "head_commit",
+                    "touched_files",
+                    "source_files",
+                    "commit_shas",
+                    "commits",
+                    "eval",
+                    "revert_reason",
+                ):
+                    value = data.get(field)
+                    if field in {"touched_files", "source_files", "commit_shas", "commits"} and not value:
+                        continue
+                    if value is not None:
+                        row[field] = value
+            continue
+
+        if kind in {"DecisionRecorded", "TaskLineageLinked"} and data.get("phase") == "task_commit_linkage":
+            for linked_task in data.get("tasks", []) or []:
+                if not isinstance(linked_task, dict):
+                    continue
+                key = task_key(linked_task)
+                if not key:
+                    continue
+                row = tasks.setdefault(
+                    key,
+                    {
+                        "task_id": key,
+                        "task_number": linked_task.get("task_number"),
+                        "task_title": linked_task.get("task_title"),
+                        "gnome_metrics": {},
+                        "gnome_deltas": {},
+                    },
+                )
+                linked_shas = [
+                    str(sha)
+                    for sha in (linked_task.get("linked_commit_shas") or [])
+                    if sha
+                ]
+                existing_shas = [
+                    str(sha)
+                    for sha in (row.get("commit_shas") or [])
+                    if sha
+                ]
+                row["commit_shas"] = list(dict.fromkeys(existing_shas + linked_shas))
+                existing_commits = row.get("commits") if isinstance(row.get("commits"), list) else []
+                linked_commits = (
+                    linked_task.get("linked_commits")
+                    if isinstance(linked_task.get("linked_commits"), list)
+                    else []
+                )
+                row["commits"] = existing_commits + linked_commits
+                row["commit_linkage_event_id"] = event_id(event)
+                row["commit_linkage_method"] = linked_task.get("linked_by")
+            continue
+
+        if kind != "PatchEvaluated":
+            continue
+        metrics = data.get("metrics")
+        if not isinstance(metrics, dict):
+            continue
+        feedback = metrics.get("log_feedback")
+        if not isinstance(feedback, dict):
+            continue
+        lineage = feedback.get("task_lineage")
+        if not isinstance(lineage, dict):
+            continue
+        for linked_task in lineage.get("tasks", []) or []:
+            if not isinstance(linked_task, dict):
+                continue
+            key = task_key(linked_task)
+            if not key:
+                continue
+            row = tasks.setdefault(
+                key,
+                {
+                    "task_id": key,
+                    "task_number": linked_task.get("task_number"),
+                    "task_title": linked_task.get("task_title"),
+                    "started_event_id": linked_task.get("started_event_id"),
+                    "completed_event_id": linked_task.get("completed_event_id"),
+                },
+            )
+            for field in (
+                "status",
+                "head_commit",
+                "touched_files",
+                "source_files",
+                "commit_shas",
+                "commits",
+                "eval",
+                "revert_reason",
+                "planned_files",
+                "issue",
+                "base_commit",
+                "gnome_metrics",
+                "gnome_deltas",
+            ):
+                value = linked_task.get(field)
+                if field in {"touched_files", "source_files", "commit_shas", "commits"} and not value:
+                    continue
+                if value is not None:
+                    row[field] = value
+
+    return sorted(
+        tasks.values(),
+        key=lambda row: (
+            row.get("task_number") if isinstance(row.get("task_number"), int) else 999,
+            str(row.get("task_id") or ""),
+        ),
+    )
+
+
 def summarize_decision(event: dict[str, Any]) -> dict[str, Any]:
     data = payload(event)
     decision = data.get("promotion_decision")
@@ -278,6 +429,7 @@ def summarize(events: list[dict[str, Any]], source: Path) -> dict[str, Any]:
 
     latest_eval = evals[-1] if evals else None
     latest_decision = decisions[-1] if decisions else None
+    task_lineage = summarize_task_lineage(events)
     return {
         "schema_version": 1,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -291,6 +443,7 @@ def summarize(events: list[dict[str, Any]], source: Path) -> dict[str, Any]:
         "decisions": decisions[-20:],
         "blockers": blockers[-20:],
         "code_refs": code_refs[-20:],
+        "task_lineage": task_lineage[-20:],
         "latest_eval": latest_eval,
         "latest_decision": latest_decision,
     }

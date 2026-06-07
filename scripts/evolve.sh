@@ -154,6 +154,23 @@ record_state_event() {
         --payload-json "$payload_json" 2>/dev/null || true
 }
 
+task_lineage_payload() {
+    local status="$1"
+    local base_sha="$2"
+    local reason="${3:-}"
+    python3 scripts/task_lineage.py \
+        --repo-root . \
+        --base "$base_sha" \
+        --task-number "$TASK_NUM" \
+        --task-title "$task_title" \
+        --status "$status" \
+        --task-file "$TASK_FILE" \
+        --eval-file "session_plan/eval_task_${TASK_NUM}.md" \
+        --reason "$reason" 2>/dev/null || \
+        python3 -c 'import json,sys; print(json.dumps({"phase":"task","task_id":f"task_{int(sys.argv[1]):02d}","task_number":int(sys.argv[1]),"task_title":sys.argv[2],"status":sys.argv[3],"base_commit":sys.argv[4] or None,"revert_reason":sys.argv[5] or None}))' \
+            "$TASK_NUM" "$task_title" "$status" "$base_sha" "$reason"
+}
+
 # ── Step 1c: Compute YOUR TRAJECTORY block (read-only audit-log fetch) ──
 # Aggregates audit-log session outcomes + git log + recent CI runs into a
 # structured markdown summary, injected ONLY into Phase A1 (assess) and
@@ -1006,7 +1023,6 @@ for TASK_FILE in session_plan/task_*.md; do
     task_title="${task_title:-Task $TASK_NUM}"
 
     echo "  → Task $TASK_NUM: $task_title"
-    record_state_event "RunStarted" "{\"phase\":\"task\",\"task_number\":$TASK_NUM,\"task_title\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$task_title")}"
 
     # Save pre-task state for rollback
     if ! PRE_TASK_SHA=$(git rev-parse HEAD 2>&1); then
@@ -1015,6 +1031,7 @@ for TASK_FILE in session_plan/task_*.md; do
         TASK_FAILURES=$((TASK_FAILURES + 1))
         break
     fi
+    record_state_event "RunStarted" "$(task_lineage_payload "started" "$PRE_TASK_SHA")"
 
     # ── Checkpoint-restart retry loop (max 2 attempts) ──
     CHECKPOINT_SECTION=""
@@ -1488,6 +1505,7 @@ $(cat "session_plan/eval_task_${TASK_NUM}.md" 2>/dev/null || echo 'no eval file 
 
     # Revert task if verification or evaluation failed
     if [ "$TASK_OK" = false ]; then
+        TASK_LINEAGE_PAYLOAD=$(task_lineage_payload "reverted" "$PRE_TASK_SHA" "$REVERT_REASON")
         echo "    Reverting Task $TASK_NUM (resetting to $PRE_TASK_SHA)"
         if ! git reset --hard "$PRE_TASK_SHA"; then
             echo "    FATAL: git reset --hard failed. Cannot guarantee clean state."
@@ -1532,10 +1550,10 @@ ${REVERT_DETAILS:-no details captured}" 2>/dev/null; then
                     --label "agent-self" 2>/dev/null || echo "    WARNING: Could not file revert issue"
             fi
         fi
-        record_state_event "RunCompleted" "{\"phase\":\"task\",\"task_number\":$TASK_NUM,\"status\":\"reverted\",\"reason\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$REVERT_REASON")}"
+        record_state_event "RunCompleted" "$TASK_LINEAGE_PAYLOAD"
     else
         echo "    Task $TASK_NUM: verified OK"
-        record_state_event "RunCompleted" "{\"phase\":\"task\",\"task_number\":$TASK_NUM,\"status\":\"completed\"}"
+        record_state_event "RunCompleted" "$(task_lineage_payload "completed" "$PRE_TASK_SHA")"
     fi
 
 done
@@ -1951,6 +1969,12 @@ if ! git diff --cached --quiet; then
 else
     echo "  No uncommitted changes remaining."
 fi
+TASK_COMMIT_LINKS=$(python3 scripts/task_lineage.py \
+    --repo-root . \
+    --link-commits \
+    --events "$STATE_EVENTS" \
+    --base "$SESSION_START_SHA" 2>/dev/null || echo '{}')
+record_state_event "TaskLineageLinked" "$TASK_COMMIT_LINKS"
 
 # Update DAY_COUNT (separate commit — immune to task reverts)
 echo "$DAY" > DAY_COUNT

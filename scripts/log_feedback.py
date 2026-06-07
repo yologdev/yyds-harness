@@ -47,6 +47,20 @@ MAX_EVIDENCE_LINES = 8
 MAX_FINGERPRINTS = 10
 LOG_FETCH_TIMEOUT_SECONDS = 45
 GITHUB_LOG_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z$")
+GNOME_KEYS = [
+    "coding_log_score",
+    "coding_log_confidence",
+    "coding_log_available",
+    "workflow_success_rate",
+    "session_success_rate",
+    "task_success_rate",
+    "retry_success_rate",
+    "recurring_failure_count",
+    "max_failure_fingerprint_recurrence",
+    "state_capture_coverage",
+    "audit_capture_coverage",
+    "closed_loop_fix_rate",
+]
 
 
 def warn(message: str) -> None:
@@ -174,6 +188,37 @@ def event_count(events_path: Path) -> int:
     except OSError:
         return 0
     return count
+
+
+def load_events(events_path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not events_path.is_file():
+        return rows
+    try:
+        with events_path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    value = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    rows.append(value)
+    except OSError:
+        return rows
+    return rows
+
+
+def event_kind(event: dict[str, Any]) -> str:
+    value = event.get("event_type") or event.get("kind")
+    return value if isinstance(value, str) else ""
+
+
+def event_payload(event: dict[str, Any]) -> dict[str, Any]:
+    value = event.get("payload")
+    return value if isinstance(value, dict) else {}
 
 
 def parse_log(log_text: str) -> dict[str, Any]:
@@ -310,6 +355,117 @@ def recurrence_metrics(current: list[dict[str, Any]], previous: list[dict[str, A
     }
 
 
+def gnome_values(metrics: dict[str, Any]) -> dict[str, Any]:
+    return {key: metrics[key] for key in GNOME_KEYS if key in metrics}
+
+
+def gnome_deltas(metrics: dict[str, Any], previous: list[dict[str, Any]]) -> dict[str, Any]:
+    current = gnome_values(metrics)
+    previous_metrics: dict[str, Any] = {}
+    for assessment in previous:
+        candidate = assessment.get("metrics")
+        if isinstance(candidate, dict):
+            previous_metrics = gnome_values(candidate)
+            break
+    deltas: dict[str, Any] = {}
+    for key, value in current.items():
+        old = previous_metrics.get(key)
+        if isinstance(value, bool) or isinstance(old, bool):
+            if old is not None and old != value:
+                deltas[key] = {"from": old, "to": value}
+            continue
+        if isinstance(value, (int, float)) and isinstance(old, (int, float)):
+            deltas[key] = round(float(value) - float(old), 6)
+        elif old is not None and old != value:
+            deltas[key] = {"from": old, "to": value}
+    return deltas
+
+
+def task_lineage(session_dir: Path, metrics: dict[str, Any], deltas: dict[str, Any]) -> list[dict[str, Any]]:
+    tasks: dict[str, dict[str, Any]] = {}
+    for event in load_events(session_dir / "state" / "events.jsonl"):
+        kind = event_kind(event)
+        data = event_payload(event)
+        if data.get("phase") == "task_commit_linkage" and kind in {"DecisionRecorded", "TaskLineageLinked"}:
+            for linked_task in data.get("tasks", []) or []:
+                if not isinstance(linked_task, dict):
+                    continue
+                task_id = str(linked_task.get("task_id") or "")
+                if not task_id:
+                    continue
+                row = tasks.setdefault(
+                    task_id,
+                    {
+                        "task_id": task_id,
+                        "task_number": linked_task.get("task_number"),
+                        "task_title": linked_task.get("task_title"),
+                    },
+                )
+                existing = [str(sha) for sha in (row.get("commit_shas") or []) if sha]
+                linked = [str(sha) for sha in (linked_task.get("linked_commit_shas") or []) if sha]
+                row["commit_shas"] = list(dict.fromkeys(existing + linked))
+                current_commits = row.get("commits") if isinstance(row.get("commits"), list) else []
+                linked_commits = (
+                    linked_task.get("linked_commits")
+                    if isinstance(linked_task.get("linked_commits"), list)
+                    else []
+                )
+                row["commits"] = current_commits + linked_commits
+                row["commit_linkage_method"] = linked_task.get("linked_by")
+            continue
+        if data.get("phase") != "task":
+            continue
+        task_id = str(data.get("task_id") or "")
+        if not task_id and data.get("task_number") is not None:
+            try:
+                task_id = f"task_{int(data.get('task_number')):02d}"
+            except (TypeError, ValueError):
+                task_id = str(data.get("task_number"))
+        if not task_id:
+            continue
+        row = tasks.setdefault(
+            task_id,
+            {
+                "task_id": task_id,
+                "task_number": data.get("task_number"),
+                "task_title": data.get("task_title"),
+                "started_event_id": None,
+                "completed_event_id": None,
+            },
+        )
+        if kind == "RunStarted":
+            row["started_event_id"] = event.get("event_id")
+            for key in ("planned_files", "issue", "base_commit"):
+                if data.get(key) is not None:
+                    row[key] = data.get(key)
+        elif kind == "RunCompleted":
+            row["completed_event_id"] = event.get("event_id")
+            for key in (
+                "status",
+                "head_commit",
+                "touched_files",
+                "source_files",
+                "commit_shas",
+                "commits",
+                "eval",
+                "revert_reason",
+            ):
+                value = data.get(key)
+                if key in {"touched_files", "source_files", "commit_shas", "commits"} and not value:
+                    continue
+                if value is not None:
+                    row[key] = value
+            row["gnome_metrics"] = gnome_values(metrics)
+            row["gnome_deltas"] = deltas
+    return sorted(
+        tasks.values(),
+        key=lambda row: (
+            row.get("task_number") if isinstance(row.get("task_number"), int) else 999,
+            str(row.get("task_id") or ""),
+        ),
+    )
+
+
 def ratio(numerator: float, denominator: float) -> float | None:
     if denominator <= 0:
         return None
@@ -418,6 +574,7 @@ def build_assessment(
         **recurrences,
     }
     metrics["coding_log_score"] = score_assessment(metrics)
+    deltas = gnome_deltas(metrics, previous)
 
     return {
         "schema_version": 1,
@@ -429,6 +586,7 @@ def build_assessment(
         "log_available": log_available,
         "log_error": log_error,
         "metrics": metrics,
+        "gnome_deltas": deltas,
         "top_lessons": top_lessons(metrics),
     }
 
@@ -478,6 +636,8 @@ def append_patch_evaluated(session_dir: Path, assessment: dict[str, Any]) -> Pat
     run_id = str(assessment.get("run_id") or "unknown")
     run_attempt = str(assessment.get("run_attempt") or "")
     metrics = assessment["metrics"]
+    deltas = assessment.get("gnome_deltas") if isinstance(assessment.get("gnome_deltas"), dict) else {}
+    tasks = task_lineage(session_dir, metrics, deltas)
     score = float(metrics["coding_log_score"])
     status = "passed" if score >= 0.75 else "failed"
     failures = int(metrics.get("distinct_failure_count") or 0)
@@ -500,6 +660,8 @@ def append_patch_evaluated(session_dir: Path, assessment: dict[str, Any]) -> Pat
                 "session_id": assessment.get("session_id"),
                 "top_lessons": assessment.get("top_lessons", []),
                 "evidence": metrics.get("evidence", []),
+                "gnome_deltas": deltas,
+                "task_lineage": {"tasks": tasks},
             },
         },
         "failure_event_ids": [],
