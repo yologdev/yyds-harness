@@ -1,0 +1,163 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the current state of the codebase. The task is about building context indexes on first use and adding timeout guards. Let me look at what changes have been made and verify the implementation.
+
+The task says:
+1. Auto-build indexes when accessed (when `yyds context preview` or `yyds context explain` is called and either index file is missing)
+2. Add 30-second timeout to context explain
+3. Add 60-second timeout to index building
+
+Let me first check if there's actually a diff, then look at the relevant files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD --stat ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, there are changes. Let me see the full diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full diff more carefully — the output seems truncated. Let me get the complete diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD -- src/context.r… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is being truncated because it's too long. Let me read the actual files to see the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/context.rs:310..380  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_context.rs:60..110 ✓ (15ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the changes. Let me also look at the `context_index_diagnostics` function and `render_deepseek_native_context_for_prompt` to see if they also call `ensure_semantic_index`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+Let me check a few more things to verify completeness:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn render_deepseek_native_context_for_prompt' in /home/runner/work/yyds-harness/yyds-harness/src/context.rs  ▶ search 'fn context_index_diagnostics' in /home/runner/work/yyds-harness/yyds-harness/src/context.rs  ▶ search 'fn handle_explain' in /home/runner/work/yyds-harness/yyds-harness/src/commands_context.rs ✓ (16ms)
+ ✓ (16ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the `handle_explain` function and the `render_deepseek_native_context_for_prompt` function.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_context.rs:42..62  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/context.rs:573..603 ✓ (14ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the `build_preview_with_timeout` function and the `CONTEXT_PREVIEW_TIMEOUT_SECS` constant.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_preview_with_timeout|CONTEXT_PREVIEW_TIMEOUT_SECS' in /home/runner/work/yyds-harness/yyds-harness/src/commands_context.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, that's strange. `handle_explain` calls `build_preview_with_timeout()` and references `CONTEXT_PREVIEW_TIMEOUT_SECS` but they're not found. Maybe the search is being too restrictive. Let me try broader.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_preview_with_timeout' in /home/runner/work/yyds-harness/yyds-harness/src/commands_context.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search earlier returned no results because the function name is `build_preview_with_timeout` (singular `build`, not `build_`). Let me read it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_context.rs:1..41 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me verify the implementation against the task requirements:
+
+**Step 1: Auto-build indexes when accessed**
+- `ensure_semantic_index()` is called in `build_deepseek_context_preview()`, which is the entry point for both preview and explain. ✅ (line 351)
+- It checks if the index file exists, and if not, spawns a thread to build it with a 60-second timeout. ✅ (lines 324-343)
+- The function is also used by `render_deepseek_native_context_for_prompt` (line 574) which calls `build_deepseek_context_preview()`.
+
+**Step 2: Add timeout guard to context explain (30s)**
+- `CONTEXT_PREVIEW_TIMEOUT_SECS` = 30 ✅ (line 16)
+- `build_preview_with_timeout()` wraps `build_deepseek_context_preview()` in a thread with 30s timeout ✅ (lines 18-25)
+- Both `handle_preview` and `handle_explain` use `build_preview_with_timeout()` ✅ (lines 34, 49)
+- When it times out, it logs a warning and returns partial results ✅
+
+**Step 3: Add timeout guard to context index building (60s)**
+- The `ensure_semantic_index()` function has a 60-second timeout ✅ (line 337)
+- The `handle_index` function has a 60-second timeout ✅ (line 73, `INDEX_BUILD_TIMEOUT_SECS`)
+- When it times out, it logs a warning and returns without writing the index ✅
+
+Let me also check that the embedding index auto-build might be missing. The task says "The index paths are: `.yoyo/context-semantic-index.json` and `.yoyo/context-embedding-index.json`". Let me check if the embedding index has any auto-build.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'embedding' in /home/runner/work/yyds-harness/yyds-harness/src/context.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The embedding index uses external embedding models and can't be auto-built without an external model. The comment in the code says: "embedding index needs an external embedding model so we only build the semantic index here." That's reasonable. The task notes said "Focus on reliability, not feature completeness" so this is fine.
+
+Now let me run the tests and verify the binary works.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run tests and try to verify the feature works:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✓ (1m 42s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+89 passed, 0 failed. Let me also run the integration tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --test integration … ✓ (14.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Let me also verify the binary builds and try the feature.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, all tests pass. Let me try the binary:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -5 ✓ (139ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me test `yyds context preview`. Let me first try to remove the index to test the auto-build behavior.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la .yoyo/context-semantic-… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The semantic index exists, embedding index is missing. Let me test preview first without removing the index:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && timeout 10 ./target/debug/yyds… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Preview works. Now let me remove the semantic index and verify it auto-builds:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cp .yoyo/context-semantic-inde…
