@@ -1,0 +1,230 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation carefully before planning.
+
+## Current State
+
+- Day 99, second session of the day (10:30 UTC)
+- Build is green: all tests pass, clippy clean, fmt clean
+- Previous session today (05:10) had 2/3 tasks with 1 revert
+- Day 98 had three clean 3/3 sessions
+
+## Priority Analysis
+
+### Priority 0: CI Failures
+The trajectory shows CI failures:
+```
+[3×] test watch::tests::test_watch_result_failed_with_error ... ok
+[3×] thread 'release::tests::public_readme_metadata_uses_yoyo_ds_harness_identity' (1
+[3×] ^[[1m^[[91merror^[[0m: test failed, to rerun pass `--lib`
+[3×] ##[error]process completed with exit code 101.
+[2×] assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"
+```
+
+Wait - looking more carefully, those "CI errors" look like they're from the trajectory extractor picking up test output text. The `test watch::tests::test_watch_result_failed_with_error ... ok` line - that says "ok" at the end, which means it passed. The `thread 'release::tests::public_readme_metadata...'` - that's a test name. And the error lines look like they might be from a failing test about README metadata.
+
+Let me re-read: `assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"` - this seems like a test that checks README contains a specific URL, and it's failing.
+
+Wait, but the assessment says "cargo test (89 passed / 0 failed / 1 ignored)". So maybe the CI failures are from a different time, or the trajectory extractor is finding old CI logs. 
+
+Actually looking more carefully at the trajectory format, the "Recurring CI errors" section clusters log lines from failed CI runs over the window. These could be from before Day 99. The assessment says build is currently green.
+
+Let me check the current state myself before planning.
+
+Actually, I should focus on planning, not investigating CI. The assessment says build is green. Let me proceed.
+
+### Priority Assessment
+
+1. **yoagent-state DeepSeek feedback**: 
+   - 83.73% cache hit ratio - healthy
+   - No eval results recorded - 368 fixtures, zero eval runs
+   - The "factory built but nothing comes down the line" problem
+   - This is a significant harness gap
+
+2. **DeepSeek harness eval/replay/promotion quality**:
+   - First real eval run needed
+   - `commands_state.rs` at 24,953 lines is too large
+   - Default provider mismatch (anthropic vs deepseek)
+
+3. **Self-discovered bugs**:
+   - Default provider should be DeepSeek for a DeepSeek-native harness
+   - Context indexes stale/missing
+   - Journal gap Days 83-96
+
+4. **Trusted owner issues**: I need to check if ISSUES_TODAY.md exists
+
+5. **Capability gaps**: Architectural gaps (cloud, triggers, sandboxing) - not actionable for single session
+
+Let me check what ISSUES_TODAY.md says, and also verify the current build state.
+
+Let me think about task allocation:
+
+Given 3 slots and the policy that at least 2 should be state-driven DeepSeek harness work:
+
+**Slot 1**: Run first real eval against a fixture. The eval pipeline is built (6,517 lines in commands_eval.rs, 368 fixtures) but never exercised against a real patch. This is the most impactful harness improvement - it closes the "factory built but nothing comes down the line" gap.
+
+Actually wait - I need to be careful about task sizing. "Run first real eval" could be huge. Let me think about what a 20-minute task looks like here.
+
+A good first eval task would be: pick one fixture, run `yyds eval` against it, fix any bugs that surface, record the result. That's scoped enough.
+
+But actually, is running eval in a planning session the right approach? No - the planning session just writes task files. The implementation agents execute them.
+
+Let me think about what tasks would be:
+
+**Task 1**: Fix default provider to DeepSeek. This is a small, clear change - probably just a constant or default in `cli_config.rs` or `agent_builder.rs`. This is a harness identity fix.
+
+**Task 2**: Run first real eval run. Pick a fixture from `eval/fixtures/local-smoke/`, run it, record results. This exercises the eval pipeline. But this might be better as a state/commands task.
+
+**Task 3**: Build context indexes on startup or add timeout guard. The semantic index is stale, embedding index is missing. This improves context loading quality.
+
+Wait, let me also check if there are any trusted owner issues first.
+
+Let me read ISSUES_TODAY.md and check the current state, then make a plan.
+────────────────────────────────────────────────────────────────────────────────
+
+I need to check the current state before planning. Let me look at what's available.
+  ▶ $ ls -la ISSUES_TODAY.md 2>/dev/null && echo "EXISTS" || echo "NO ISSUES FILE"  ▶ $ cargo build 2>&1 | tail -5 && echo "---" && cargo test 2>&1 | tail -5  ▶ $ ls eval/fixtures/local-smoke/ 2>/dev/null | head -20 && echo "---" && ls eval/fi… ✓ (88ms)
+ ✓ (78ms)
+ ✓ (39.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are some important findings:
+
+1. **ISSUES_TODAY.md exists** - need to read it
+2. **Build is green** but **tests have 1 failure**: `commands_file::tests::test_suggest_related_test_file_detection` - this is a CI failure that must be Priority 0!
+3. **368 fixtures** in eval/fixtures/local-smoke/
+
+Wait, the assessment said "cargo test (89 passed / 0 failed / 1 ignored)" but now I see "4185 passed; 1 failed; 1 ignored". The assessment was wrong about test count - it was only counting a subset. There IS a test failure.
+
+This changes everything. Priority 0 says: "Fix CI failures (if any — this overrides everything else)"
+
+Let me read the ISSUES_TODAY.md and the failing test.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 44.0s (3 ✓)
+
+Build is green but there's a **test failure**: `commands_file::tests::test_suggest_related_test_file_detection`. This is Priority 0. Let me investigate.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read ISSUES_TODAY.md  ▶ $ cargo test commands_file::tests::test_suggest_related_test_file_detection -- --n… ✓ (18ms)
+ ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - when I run just that test in isolation, it passes. But when all tests run together, it fails. This is likely a test ordering / test pollution issue. Let me run it a few more times and also look at the test to understand what it does.
+
+Actually, wait - the test passed in isolation. This could be a flaky test. Let me run the full test suite again to confirm the failure is reproducible, and also look at the test code.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+The test passes in isolation — likely a test-ordering pollution issue. Let me confirm and investigate.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test 2>&1 | grep -A5 "FAILED\|failures:"  ▶ search 'test_suggest_related_test_file_detection' (*.rs) ✓ (8ms)
+ ✓ (48.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The cargo test run appears to have either passed this time or timed out. Let me run the test again to see the current state and read the test code.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 52.5s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test 2>&1 | grep -E "test result:|FAILED|failures:" | tail -5  ▶ read src/commands_file.rs:2420..2500 ✓ (5ms)
+ ✓ (40.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test uses `#[serial]` annotation, which means it should be serialized, but it's still failing. The test changes the current directory with `set_current_dir` - this is a common source of test pollution. Even with `#[serial]`, if a previous test also changes the directory and doesn't restore it properly, or if there's some global state issue, this test could fail.
+
+Let me look at the `suggest_related_files` function to understand what might go wrong when run with other tests. The test changes `cwd` to a temp dir, and after the test restores it. But if another serial test before it also changes cwd and fails to restore, that could pollute.
+
+Let me also check if there's more context around the function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 47.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn suggest_related_files' (*.rs)  ▶ $ cargo test commands_file::tests::test_suggest_related_test_file_detection comman… ✓ (114ms)
+ ✓ (135ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The command failed. Let me try a different approach - capture all output.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test "commands_file::tests::test_suggest_related" -- --nocapture 2>&1 | ta… ✓ (202ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The related tests all pass when run together. The issue seems to be test pollution from some OTHER test that runs before this one in the full suite. Given that the test uses `set_current_dir`, the issue is likely that some other test also calls `set_current_dir` and either:
+1. Doesn't restore it properly (missing the `set_current_dir(orig_dir)` in an error path), or
+2. Has a panic/unwind that skips the restore
+
+Let me look at the `suggest_related_files` function to understand its implementation and look for what could fail.
+
+Actually, since the test uses `#[serial]`, and all related tests use `#[serial]`, they should run sequentially. The issue might be a different serial test that modifies global state (like `set_current_dir`) and fails to restore.
+
+Let me search for other tests that use `set_current_dir` to find potential polluters.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'set_current_dir' (*.rs) ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is a well-known problem in this codebase - `set_current_dir` is process-global and races across parallel tests. The codebase already has comments acknowledging this. The test uses `#[serial]` to avoid races with other serial tests, but there could still be parallel tests using `set_current_dir` (which they shouldn't but might).
+
+Let me look at the specific test more carefully and see if I can find the root cause. Let me also look at `commands_goal.rs` line 159 which uses `set_current_dir` — does it have `#[serial]`?
+
+Actually, let me take a different approach. The comment in `commands_git_review.rs:969` says "with other tests that call set_current_dir". Let me check if there are tests without `#[serial]` that use `set_current_dir`.
+
+Looking at the search results, many `context.rs` tests use `set_current_dir` at lines like 1927, 2121, 2180, etc. Let me check if those have `#[serial]`.
+
+Let me also look at how `suggest_related_files` actually works - maybe the issue is that it reads the project directory or something.
+
+Let me try to reproduce the failure by running the full test suite and capturing the failure output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test 2>&1 | grep -B2 -A10 "test_suggest_related_test_file_detection" ✓ (48.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, it passed this time. The failure might be intermittent/flaky. Let me run it a few more times to see if I can reproduce.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ for i in 1 2 3; do echo "=== Run $i ===" && cargo test 2>&1 | grep -E "FAILED|te… ✓ (2m 34s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Tests passed all 3 times. The previous failure might have been a one-time fluke or something in the CI environment. The trajectory showed it as a recurring CI error though. Let me look at the trajectory data more carefully.
+
+Wait - the `cargo test` I ran earlier only ran the lib tests (89 tests). The full test suite (`cargo test` without `--lib`) has 4186 tests. Let me run the full suite to see if the failure occurs there.
+
+Let me run the full suite once to confirm.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test -- --test-threads=1 2>&1 | tail -20 ✓ (2m 15s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, with `--test-threads=1` it passes. The failure was without `--test-threads=1`, which means it's a race condition from parallel test execution. The `#[serial]` attribute should prevent that, but maybe there's another test that also uses `set_current_dir` without `#[serial]`.
+
+Wait, the first run was with `cargo test` (no flags), which runs tests in parallel. Let me run it without `--test-threads=1` several times.
+
+Actually, looking back at the results:
+- First full `cargo test` run: 4185 passed, 1 failed (commands_file test)
+- Then 3 subsequent `cargo test` runs: 89 passed (only lib tests ran - that's odd)
+- Then `cargo test -- --test-threads=1`: 89 passed (again only lib tests)
+
+Wait, why is `cargo test` only running 89 tests now? Let me check if maybe something got compiled differently.
+
+Actually, I think the 89 tests are from `cargo test --lib` which runs the library tests only. The full `cargo test` includes unit tests from the binary too. Let me run the full suite again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test 2>&1 | grep "test result:"  ✓ (49.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
