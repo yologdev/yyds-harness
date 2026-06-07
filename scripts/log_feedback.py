@@ -42,7 +42,7 @@ STATE_ERROR_RE = re.compile(r"(state|audit-log|events\.jsonl|state\.sqlite).*(er
 COMMAND_TIMEOUT_RE = re.compile(r"Command timed out after (\d+)s|timed out after (\d+)s", re.IGNORECASE)
 EVALUATOR_TIMEOUT_RE = re.compile(r"Evaluator:\s*timed out", re.IGNORECASE)
 SEARCH_ERROR_RE = re.compile(r"\bSearch error:\s*", re.IGNORECASE)
-PROTECTED_FILE_RE = re.compile(r"modified protected files:", re.IGNORECASE)
+PROTECTED_FILE_RE = re.compile(r"modified protected files(?:\s*:|\s+[—-]\s+reverting)", re.IGNORECASE)
 TASK_STARTED_RE = re.compile(r"(?:→|->)\s*Task\s+\d+:", re.IGNORECASE)
 TASK_VERIFIED_RE = re.compile(r"\bTask\s+\d+:\s+verified OK\b", re.IGNORECASE)
 TASK_REVERT_RE = re.compile(r"\bReverting Task\s+\d+\b", re.IGNORECASE)
@@ -1006,12 +1006,14 @@ def run_self_tests() -> int:
                 "evolve\tRun evolution session\t2026-06-07T04:24:22Z   → Task 1: First real eval run",
                 "evolve\tRun evolution session\t2026-06-07T04:33:47Z     Task 1: verified OK",
                 "evolve\tRun evolution session\t2026-06-07T04:09:25Z - Cache: 84.38% hit ratio, 572,800 hit tokens, 106,004 miss tokens",
+                "evolve\tRun evolution session\t2026-06-07T04:50:23Z     Build-fix agent modified protected files — reverting",
+                "evolve\tRun evolution session\t2026-06-07T04:50:24Z     Fix agent modified protected files - reverting",
             ]
         )
     )
     check("command timeouts counted", operational["command_timeout_count"] == 1, operational)
     check("evaluator timeouts counted", operational["evaluator_timeout_count"] == 1, operational)
-    check("protected file reverts counted", operational["protected_file_revert_count"] == 1, operational)
+    check("protected file reverts counted", operational["protected_file_revert_count"] == 3, operational)
     check("task reverts counted", operational["task_revert_count"] == 1, operational)
     check("search errors counted", operational["search_error_count"] == 1, operational)
     check("task verification rate derived", operational["task_verification_rate"] == 1.0, operational)
