@@ -67,13 +67,27 @@ fn handle_index(args: &[String]) {
         .and_then(|idx| args.get(idx + 1))
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(crate::context::DEFAULT_SEMANTIC_INDEX_PATH));
-    match crate::context::build_and_maybe_write_semantic_index(&path, write) {
-        Ok(report) if json_output => println!(
+
+    /// Maximum seconds allowed for building and writing the semantic index.
+    /// Guards against hangs in slow filesystem operations on large repositories.
+    const INDEX_BUILD_TIMEOUT_SECS: u64 = 60;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let write_path = path.clone();
+    std::thread::spawn(move || {
+        let result = crate::context::build_and_maybe_write_semantic_index(&write_path, write);
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(INDEX_BUILD_TIMEOUT_SECS)) {
+        Ok(Ok(report)) if json_output => println!(
             "{}",
             serde_json::to_string_pretty(&report.payload()).unwrap_or_else(|_| "{}".to_string())
         ),
-        Ok(report) => println!("{}", report.render()),
-        Err(e) => eprintln!("{RED}  failed to build context semantic index: {e}{RESET}"),
+        Ok(Ok(report)) => println!("{}", report.render()),
+        Ok(Err(e)) => eprintln!("{RED}  failed to build context semantic index: {e}{RESET}"),
+        Err(_timeout) => eprintln!(
+            "{YELLOW}  context index build timed out after {INDEX_BUILD_TIMEOUT_SECS}s — the operation may be slow due to a large repository{RESET}"
+        ),
     }
 }
 

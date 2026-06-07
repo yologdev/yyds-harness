@@ -317,7 +317,39 @@ pub fn get_project_file_listing() -> Option<String> {
     Some(listing)
 }
 
+/// Build and write the persistent semantic index if it does not already exist.
+///
+/// This is a one-time cost per clone/checkout.  Once the index file is on disk
+/// subsequent calls are a no-op.
+fn ensure_semantic_index() {
+    let path = Path::new(DEFAULT_SEMANTIC_INDEX_PATH);
+    if path.exists() {
+        return;
+    }
+    // Build-and-write with a 60-second timeout so a slow filesystem or huge
+    // repository can't block the caller forever.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path_buf = path.to_path_buf();
+    std::thread::spawn(move || {
+        let result = build_and_maybe_write_semantic_index(&path_buf, true);
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+        Ok(Ok(_)) => {} // built and written
+        Ok(Err(e)) => eprintln!("\x1b[33m  semantic index could not be built: {e}\x1b[0m"),
+        Err(_timeout) => eprintln!(
+            "\x1b[33m  semantic index build timed out after 60s — proceeding without index\x1b[0m"
+        ),
+    }
+}
+
 pub fn build_deepseek_context_preview() -> DeepSeekContextPreview {
+    // Auto-build the semantic index on first access so that context
+    // preview/explain don't time out building it on every call.  The
+    // embedding index needs an external embedding model so we only
+    // build the semantic index here.
+    ensure_semantic_index();
+
     let genome = crate::deepseek::active_harness_genome();
     let recent_files =
         get_recently_changed_files(genome.context_policy.changed_file_limit as usize)
