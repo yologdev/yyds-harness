@@ -2522,7 +2522,11 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_project_context_includes_file_listing() {
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(env!("CARGO_MANIFEST_DIR")).unwrap();
+
         // load_project_context should include project file listing when in a git repo
         let result = load_project_context();
         if let Some(context) = &result {
@@ -2534,6 +2538,8 @@ mod tests {
                 );
             }
         }
+
+        let _ = std::env::set_current_dir(original_dir);
     }
 
     #[test]
