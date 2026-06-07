@@ -366,12 +366,48 @@ fn ensure_semantic_index() {
     }
 }
 
+fn ensure_embedding_index() {
+    let path = Path::new(DEFAULT_EMBEDDING_INDEX_PATH);
+    if path.exists() {
+        // Check freshness before deciding it's good enough.
+        // If the index is stale (all files changed or >2/3 stale),
+        // delete it and report.
+        if let Some(index) = load_persistent_embedding_index(path) {
+            let (fresh, stale, _missing) = count_fresh_index_files(
+                index
+                    .files
+                    .iter()
+                    .map(|f| (&f.path, f.len_bytes, f.modified_ms)),
+            );
+            if fresh == 0 || stale > fresh * 2 {
+                eprintln!(
+                    "\x1b[33m  embedding index is stale (fresh={fresh} stale={stale}) — removing\x1b[0m"
+                );
+                let _ = std::fs::remove_file(path);
+            } else {
+                return;
+            }
+        } else {
+            // Corrupt or schema-mismatched file — remove it
+            eprintln!("\x1b[33m  embedding index is corrupt — removing\x1b[0m");
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    // No builder exists yet — embedding-based context ranking requires an
+    // external embedding model or API.  Print a diagnostic so the missing
+    // index is observable rather than silently absent.
+    eprintln!(
+        "\x1b[33m  embedding index is missing — embedding-based context ranking is unavailable (requires an external embedding model)\x1b[0m"
+    );
+}
+
 pub fn build_deepseek_context_preview() -> DeepSeekContextPreview {
     // Auto-build the semantic index on first access so that context
     // preview/explain don't time out building it on every call.  The
     // embedding index needs an external embedding model so we only
     // build the semantic index here.
     ensure_semantic_index();
+    ensure_embedding_index();
 
     let genome = crate::deepseek::active_harness_genome();
     let recent_files =
