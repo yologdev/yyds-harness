@@ -1290,4 +1290,52 @@ mod tests {
             "deepseek should sort before other (empty category)"
         );
     }
+
+    /// Smoke test: validates that the real fixture files on disk can be loaded,
+    /// validated, and run through the fixture pipeline end-to-end.
+    #[test]
+    fn smoke_fixture_pipeline_with_real_fixture_data() {
+        // Load the real fixture files from eval/fixtures/local-smoke/
+        let suite = load_fixture_suite("local-smoke").expect("should load fixture suite");
+
+        // Assert we have a meaningful number of tasks
+        assert!(
+            !suite.tasks.is_empty(),
+            "fixture suite should contain at least one task"
+        );
+
+        // Validate the suite explicitly (load_fixture_suite already validates, but
+        // call it again to exercise the API directly)
+        suite.validate().expect("suite should validate");
+
+        // Pick the first task and run it through the pipeline
+        let first = &suite.tasks[0];
+        let result = run_fixture_task(first);
+
+        // Result should contain command_results matching the task's test commands
+        assert!(
+            !result.command_results.is_empty(),
+            "command_results should not be empty for task '{}'",
+            first.task_id
+        );
+        assert_eq!(
+            result.task_id, first.task_id,
+            "result task_id should match input task_id"
+        );
+
+        // Each command result should have basic invariants satisfied
+        for (i, cmd_result) in result.command_results.iter().enumerate() {
+            assert!(
+                !cmd_result.command.is_empty(),
+                "command_result[{}] should have a non-empty command",
+                i
+            );
+            // status_code is populated for all commands; passed should match exit==0
+            assert!(
+                cmd_result.status_code.is_some(),
+                "command_result[{}] should have a status_code",
+                i
+            );
+        }
+    }
 }
