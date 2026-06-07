@@ -35,6 +35,14 @@ def append_event(path: Path, event_type: str, payload: dict[str, object]) -> Non
 
 
 class TaskLineageFeedback(unittest.TestCase):
+    def test_evolve_records_lineage_to_stable_session_state_delta(self):
+        evolve = Path(__file__).with_name("evolve.sh").read_text(encoding="utf-8")
+        self.assertIn('SESSION_STATE_EVENTS="$SESSION_STAGING/state/events.jsonl"', evolve)
+        self.assertIn('--events "$SESSION_STATE_EVENTS"', evolve)
+        self.assertIn('--events "$STATE_EVENTS"', evolve)
+        self.assertIn('--link-commits \\\n    --events "$SESSION_STATE_EVENTS"', evolve)
+        self.assertNotIn('tail -n +"$((STATE_BASE_LINES + 1))"', evolve)
+
     def test_task_lineage_payload_captures_source_commits(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

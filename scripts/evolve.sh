@@ -128,12 +128,14 @@ export YOYO_HARNESS_INTERNAL=1
 export YOYO_STATE=1
 SESSION_STAGING=".yoyo/session_staging"
 STATE_EVENTS=".yoyo/state/events.jsonl"
+SESSION_STATE_EVENTS="$SESSION_STAGING/state/events.jsonl"
 STATE_REPLAY_MANIFEST="$SESSION_STAGING/state_replay.json"
 STATE_BASE_LINES=0
 rm -rf "$SESSION_STAGING"
-mkdir -p "$SESSION_STAGING/transcripts"
+mkdir -p "$SESSION_STAGING/transcripts" "$SESSION_STAGING/state"
 mkdir -p .yoyo/state
 : > "$STATE_EVENTS"
+: > "$SESSION_STATE_EVENTS"
 rm -f .yoyo/state/state.sqlite .yoyo/state/events.sqlite 2>/dev/null || true
 # Track session-level outcome flags (read by Step 7c2 to populate outcome.json).
 SESSION_BUILD_OK="false"
@@ -147,6 +149,13 @@ record_state_event() {
     local payload_json="${2:-{}}"
     python3 scripts/append_state_event.py \
         --events "$STATE_EVENTS" \
+        --event-type "$event_type" \
+        --run-id "$STATE_RUN_ID" \
+        --session-id "$STATE_SESSION_ID" \
+        --trace-id "$STATE_TRACE_ID" \
+        --payload-json "$payload_json" 2>/dev/null || true
+    python3 scripts/append_state_event.py \
+        --events "$SESSION_STATE_EVENTS" \
         --event-type "$event_type" \
         --run-id "$STATE_RUN_ID" \
         --session-id "$STATE_SESSION_ID" \
@@ -1972,7 +1981,7 @@ fi
 TASK_COMMIT_LINKS=$(python3 scripts/task_lineage.py \
     --repo-root . \
     --link-commits \
-    --events "$STATE_EVENTS" \
+    --events "$SESSION_STATE_EVENTS" \
     --base "$SESSION_START_SHA" 2>/dev/null || echo '{}')
 record_state_event "TaskLineageLinked" "$TASK_COMMIT_LINKS"
 
@@ -2011,22 +2020,16 @@ if [ -d "$SESSION_STAGING" ]; then
         : > .yoyo/audit.jsonl
     fi
 
-    # Persist only this session's state delta as compact evidence. The live
+    # Persist this session's state delta as compact evidence. The live
     # `.yoyo/state/events.jsonl` is rebuilt from prior audit-log deltas at
-    # startup; SQLite is a generated projection and is intentionally not
-    # committed to audit-log.
-    if [ -f "$STATE_EVENTS" ]; then
+    # startup and may be rewritten by projection commands, so harness-emitted
+    # session events are written directly to SESSION_STATE_EVENTS as they occur.
+    # SQLite is a generated projection and is intentionally not committed to
+    # audit-log.
+    if [ -f "$SESSION_STATE_EVENTS" ]; then
         mkdir -p "$SESSION_STAGING/state"
-        STATE_TOTAL_LINES=$(wc -l < "$STATE_EVENTS" 2>/dev/null | tr -d '[:space:]')
-        STATE_TOTAL_LINES="${STATE_TOTAL_LINES:-0}"
-        STATE_BASE_LINES="${STATE_BASE_LINES:-0}"
-        if [ "$STATE_TOTAL_LINES" -gt "$STATE_BASE_LINES" ]; then
-            tail -n +"$((STATE_BASE_LINES + 1))" "$STATE_EVENTS" > "$SESSION_STAGING/state/events.jsonl" 2>/dev/null || : > "$SESSION_STAGING/state/events.jsonl"
-        else
-            : > "$SESSION_STAGING/state/events.jsonl"
-        fi
         if ! python3 scripts/summarize_state_gnomes.py \
-            --events "$SESSION_STAGING/state/events.jsonl" \
+            --events "$SESSION_STATE_EVENTS" \
             --output "$SESSION_STAGING/state/summary.json"; then
             echo "  WARNING: state gnome summary write failed — continuing session-end cleanup anyway" >&2
         fi
