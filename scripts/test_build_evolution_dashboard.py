@@ -161,8 +161,14 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["landed_patch_count"], 1)
             self.assertEqual(work["state_patch_count"], 0)
             self.assertEqual(work["landed_commit_count"], 2)
+            self.assertEqual(work["source_commit_count"], 1)
+            self.assertEqual(work["bookkeeping_commit_count"], 1)
+            self.assertEqual(len(work["source_commits"]), 1)
+            self.assertEqual(len(work["bookkeeping_commits"]), 1)
             self.assertEqual(work["commits"][0]["subject"], "Day 1 (00:00): implement source")
             self.assertEqual(work["commits"][1]["source_files"], [])
+            self.assertEqual(work["source_commits"][0]["subject"], "Day 1 (00:00): implement source")
+            self.assertEqual(work["bookkeeping_commits"][0]["subject"], "Day 1 (00:00): session wrap-up")
 
     def test_feedback_only_trace_is_explicit(self):
         with tempfile.TemporaryDirectory() as tmp:

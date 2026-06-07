@@ -185,6 +185,19 @@ def session_commits(outcome: dict[str, Any], repo_root: Path) -> list[dict[str, 
     return commits
 
 
+def serialize_commits(commits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "sha": commit.get("sha"),
+            "short_sha": commit.get("short_sha"),
+            "subject": commit.get("subject"),
+            "files": commit.get("files") or [],
+            "source_files": commit.get("source_files") or [],
+        }
+        for commit in commits
+    ]
+
+
 def transcript_summary(session_dir: Path) -> dict[str, Any]:
     transcript_dir = session_dir / "transcripts"
     files = sorted(transcript_dir.glob("*.log")) if transcript_dir.is_dir() else []
@@ -287,7 +300,9 @@ def work_summary(
     patches = summary.get("patches", []) if isinstance(summary.get("patches"), list) else []
     decisions = summary.get("decisions", []) if isinstance(summary.get("decisions"), list) else []
     latest_eval = evals[-1] if evals else {}
-    source_patch_count = sum(1 for commit in commits if commit.get("source_files"))
+    source_commits = [commit for commit in commits if commit.get("source_files")]
+    bookkeeping_commits = [commit for commit in commits if not commit.get("source_files")]
+    source_patch_count = len(source_commits)
     labels: list[str] = []
     if attempted:
         labels.append(f"{succeeded}/{attempted} tasks completed")
@@ -310,16 +325,9 @@ def work_summary(
         "transcripts": transcript_data,
         "edited_files": event_data["edited_files"],
         "source_changed_files": source_files,
-        "commits": [
-            {
-                "sha": commit.get("sha"),
-                "short_sha": commit.get("short_sha"),
-                "subject": commit.get("subject"),
-                "files": commit.get("files") or [],
-                "source_files": commit.get("source_files") or [],
-            }
-            for commit in commits
-        ],
+        "commits": serialize_commits(commits),
+        "source_commits": serialize_commits(source_commits),
+        "bookkeeping_commits": serialize_commits(bookkeeping_commits),
         "read_files": event_data["read_files"],
         "commands": event_data["commands"],
         "failed_commands": event_data["failed_commands"],
@@ -329,6 +337,8 @@ def work_summary(
         "source_patch_count": source_patch_count,
         "landed_patch_count": source_patch_count,
         "landed_commit_count": len(commits),
+        "source_commit_count": len(source_commits),
+        "bookkeeping_commit_count": len(bookkeeping_commits),
         "decision_count": len(decisions),
         "eval_count": len(evals),
         "latest_eval_status": latest_eval.get("status"),
@@ -1171,9 +1181,16 @@ HTML = r"""<!doctype html>
     <section aria-label="Session work">
       <div class="section-head">
         <h2>Session Work</h2>
-        <p>What actually happened behind the metrics: completed tasks, changed files, validations, commits, and audit evidence.</p>
+        <p>What actually happened behind the metrics: completed tasks, source changes, validations, commits, and audit evidence.</p>
       </div>
       <div class="stack" id="sessionWork"></div>
+    </section>
+    <section class="panel compact">
+      <h2>Feedback Loop Open Points</h2>
+      <div class="panel-body">
+        <p class="explain">Current weak spots in the yoagent-state feedback loop, derived from the visible audit evidence.</p>
+        <div class="stack" id="feedbackLoop"></div>
+      </div>
     </section>
     <section class="chart-dashboard secondary">
       <section class="panel compact">
@@ -1660,6 +1677,18 @@ HTML = r"""<!doctype html>
       }).join("")}</ul>`;
     }
 
+    function sourceCommitItems(work) {
+      const sourceCommits = work.source_commits || [];
+      if (sourceCommits.length) return commitItems(sourceCommits);
+      return `<p class="muted">No source-changing commits matched this session.</p>`;
+    }
+
+    function bookkeepingCommitItems(work) {
+      const rows = (work.bookkeeping_commits || []).slice(0, 5);
+      if (!rows.length) return `<p class="muted">No bookkeeping commits recorded.</p>`;
+      return `<ul class="mini-list">${rows.map(commit => `<li>${text(commit.short_sha || "")} ${text(commit.subject || "")}</li>`).join("")}</ul>`;
+    }
+
     function renderSessionWork(sessions) {
       const panel = document.getElementById("sessionWork");
       if (!sessions.length) {
@@ -1684,7 +1713,7 @@ HTML = r"""<!doctype html>
               <div class="fact"><strong>${text(session.tasks_succeeded || 0)}/${text(session.tasks_attempted || 0)}</strong>tasks</div>
               <div class="fact"><strong>${text(sourceFiles.length || 0)}</strong>source files</div>
               <div class="fact"><strong>${text(work.eval_count || 0)}</strong>evals</div>
-              <div class="fact"><strong>${text(work.landed_patch_count || work.source_patch_count || 0)}</strong>landed patches</div>
+              <div class="fact"><strong>${text(work.source_commit_count || 0)}</strong>source commits</div>
               <div class="fact"><strong>${text(work.decision_count || 0)}</strong>decisions</div>
               <div class="fact"><strong>${text(trace.trace_event_count || 0)}</strong>trace events</div>
             </div>
@@ -1692,7 +1721,8 @@ HTML = r"""<!doctype html>
               <summary>Open audit evidence</summary>
               <div class="detail-grid">
                 <div><strong>Changed</strong>${listItems(sourceFiles, "No repo changes recorded.")}</div>
-                <div><strong>Committed</strong>${commitItems(work.commits)}</div>
+                <div><strong>Source commits</strong>${sourceCommitItems(work)}</div>
+                <div><strong>Bookkeeping commits</strong>${bookkeepingCommitItems(work)}</div>
                 <div><strong>Validated</strong>${listItems(work.commands, "No command events recorded.")}</div>
                 <div><strong>Read</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
                 <div><strong>State edits</strong>${listItems(work.edited_files, "No FileEdited events recorded.")}</div>
@@ -1703,6 +1733,66 @@ HTML = r"""<!doctype html>
           </div>
         </article>`;
       }).join("");
+    }
+
+    function renderFeedbackLoop(sessions, agg) {
+      const panel = document.getElementById("feedbackLoop");
+      if (!sessions.length) {
+        panel.innerHTML = `<div class="empty">No sessions match the current filter.</div>`;
+        return;
+      }
+      const feedbackOnly = sessions.filter(session => session.trace_quality?.status === "feedback_only");
+      const codeSessions = sessions.filter(session => (session.work_summary?.source_commit_count || 0) > 0);
+      const wrapupSource = sessions.filter(session =>
+        (session.work_summary?.source_commits || []).some(commit => String(commit.subject || "").includes("session wrap-up"))
+      );
+      const bookkeepingOnly = sessions.filter(session =>
+        (session.tasks_attempted || 0) > 0 && !(session.work_summary?.source_commit_count || 0)
+      );
+      const notes = [
+        {
+          show: true,
+          kind: "Captured",
+          className: "good",
+          title: `${text(codeSessions.length)} of ${text(sessions.length)} visible sessions have source-changing commits`,
+          detail: "Source file lists are derived from all matching session commits, then separated from journals, memory, plans, and .yoyo artifacts."
+        },
+        {
+          show: feedbackOnly.length > 0,
+          kind: "Open",
+          className: "warn",
+          title: `${text(feedbackOnly.length)} session(s) are feedback-only traces`,
+          detail: "They have log-feedback evals but no task/tool trace events. New harness lifecycle events prevent future sessions from being completely empty, but older sessions stay historical."
+        },
+        {
+          show: wrapupSource.length > 0,
+          kind: "Open",
+          className: "warn",
+          title: `${text(wrapupSource.length)} session(s) landed source changes in wrap-up commits`,
+          detail: "The code changed, but task-level attribution is weak. A stronger loop should attach task_id and commit_sha to state events when each task finishes."
+        },
+        {
+          show: bookkeepingOnly.length > 0,
+          kind: "Watch",
+          className: "info",
+          title: `${text(bookkeepingOnly.length)} session(s) completed tasks without source commits`,
+          detail: "This can be legitimate verification work, but repeated bookkeeping-only sessions should trigger a planning-quality review."
+        },
+        {
+          show: true,
+          kind: "Next",
+          className: "info",
+          title: "Promote task-level evidence from inferred to explicit",
+          detail: "Ideal state: each task emits planned files, touched files, commits, eval verdicts, and gnome deltas as linked yoagent-state events."
+        }
+      ].filter(note => note.show);
+      panel.innerHTML = notes.map(note => `
+        <article class="item">
+          <span class="pill ${note.className}">${note.kind}</span>
+          <strong>${note.title}</strong>
+          <p class="muted">${note.detail}</p>
+        </article>
+      `).join("");
     }
 
     function renderSessions(sessions) {
@@ -1723,7 +1813,7 @@ HTML = r"""<!doctype html>
           <td><span class="pill ${healthClass(health)}">${text(health)}</span><div class="muted">build ${text(session.build_ok)} / test ${text(session.test_ok)}<br>tasks ${text(session.tasks_succeeded)}/${text(session.tasks_attempted)}<br>${text(work.headline)}</div></td>
           <td><span class="${decisionClass(decision)}">${text(decision.criterion || decision.decision || decision.decision_type)}</span><div class="muted">${text(decision.reason)}</div></td>
           <td><span class="pill soft">${text(trace.label || "unknown trace")}</span><div class="muted">${text(trace.trace_event_count || 0)} trace events / ${text(events)} total<br>eval ${text(evalData.status)} ${evalData.score === undefined ? "" : `score ${text(evalData.score)}`}</div></td>
-          <td><a href="${text(session.audit_url)}">audit files</a><div class="muted">${text((session.blockers || []).length)} blockers / ${text((session.evals || []).length)} evals / ${text(work.landed_commit_count || 0)} commits / ${text(work.landed_patch_count || 0)} landed patches / ${text((session.patches || []).length)} state patches</div></td>
+          <td><a href="${text(session.audit_url)}">audit files</a><div class="muted">${text((session.blockers || []).length)} blockers / ${text((session.evals || []).length)} evals / ${text(work.source_commit_count || 0)} source commits / ${text(work.bookkeeping_commit_count || 0)} bookkeeping commits / ${text((session.patches || []).length)} state patches</div></td>
         </tr>`;
       }).join("");
     }
@@ -1737,15 +1827,22 @@ HTML = r"""<!doctype html>
         (session.code_refs || []).forEach(ref => {
           items.push({ kind: "Code ref", className: "info", session: session.id, title: ref.commit || ref.patch_id || ref.artifact_path, detail: ref.event_type });
         });
+        ((session.work_summary || {}).source_commits || []).slice(0, 3).forEach(commit => {
+          const files = (commit.source_files || []).length;
+          items.push({ kind: "Source commit", className: "good", session: session.id, title: `${commit.short_sha || ""} ${commit.subject || ""}`, detail: `${files} source files: ${(commit.source_files || []).slice(0, 3).join(", ")}` });
+        });
         (session.evals || []).slice(-2).forEach(evalData => {
           items.push({ kind: "Eval", className: evalData.status === "passed" ? "good" : "warn", session: session.id, title: evalData.eval_id || evalData.suite || "evaluation", detail: `${evalData.suite || "-"} ${evalData.status || "-"} score ${evalData.score === undefined ? "-" : evalData.score}` });
-        });
-        ((session.work_summary || {}).commits || []).slice(-2).forEach(commit => {
-          items.push({ kind: "Commit", className: "good", session: session.id, title: `${commit.short_sha || ""} ${commit.subject || ""}`, detail: `${(commit.source_files || []).length} repo files` });
         });
         (session.patches || []).slice(-2).forEach(patch => {
           items.push({ kind: "State patch", className: "warn", session: session.id, title: patch.patch_id || patch.intent, detail: `${patch.kind || "-"} risk ${patch.risk_level || "-"}` });
         });
+        const work = session.work_summary || {};
+        if (!(work.source_commits || []).length) {
+          (work.bookkeeping_commits || []).slice(-1).forEach(commit => {
+            items.push({ kind: "Bookkeeping", className: "info", session: session.id, title: `${commit.short_sha || ""} ${commit.subject || ""}`, detail: "no source commit in this session" });
+          });
+        }
       });
       const panel = document.getElementById("evidence");
       if (!items.length) {
@@ -1770,6 +1867,7 @@ HTML = r"""<!doctype html>
       renderCharts(visibleAgg);
       renderGnomeHistory(filtered);
       renderSessionWork(filtered);
+      renderFeedbackLoop(filtered, visibleAgg);
       renderSessions(filtered);
       renderEvidence(filtered);
     }
