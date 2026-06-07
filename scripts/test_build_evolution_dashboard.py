@@ -48,7 +48,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             write_json(
                 session / "state/summary.json",
                 {
-                    "event_count": 4,
+                    "event_count": 5,
                     "event_counts": {"FileEdited": 1, "CommandStarted": 1},
                     "latest_gnomes": {"coding_log_score": 0.8, "coding_log_available": True},
                     "gnome_keys": ["coding_log_score", "coding_log_available"],
@@ -100,6 +100,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["transcripts"]["phase_counts"], {"plan": 1, "task": 1})
             self.assertEqual(work["patch_count"], 1)
             self.assertEqual(work["decision_count"], 1)
+            self.assertEqual(data["sessions"][0]["trace_quality"]["status"], "full")
 
     def test_derives_source_changes_from_matching_session_commits(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -113,10 +114,23 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
             subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
             (repo / "src").mkdir()
+            (repo / "session_plan").mkdir()
+            (repo / ".yoyo").mkdir()
             (repo / "src/lib.rs").write_text("pub fn ok() {}\n", encoding="utf-8")
+            (repo / "session_plan/task_01.md").write_text("plan\n", encoding="utf-8")
+            (repo / ".yoyo/context-semantic-index.json").write_text("{}\n", encoding="utf-8")
             subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
             subprocess.run(
                 ["git", "-C", str(repo), "commit", "-m", "Day 1 (00:00): implement source"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "add", "session_plan/task_01.md", ".yoyo/context-semantic-index.json"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-m", "Day 1 (00:00): session wrap-up"],
                 check=True,
                 stdout=subprocess.DEVNULL,
             )
@@ -142,12 +156,50 @@ class BuildEvolutionDashboard(unittest.TestCase):
             work = data["sessions"][0]["work_summary"]
             self.assertEqual(work["source_changed_files"], ["src/lib.rs"])
             self.assertEqual(work["edited_files"], ["journals/JOURNAL.md"])
-            self.assertIn("1 repo file(s) changed", work["headline"])
+            self.assertIn("1 source file(s) changed", work["headline"])
             self.assertEqual(work["source_patch_count"], 1)
             self.assertEqual(work["landed_patch_count"], 1)
             self.assertEqual(work["state_patch_count"], 0)
-            self.assertEqual(work["landed_commit_count"], 1)
+            self.assertEqual(work["landed_commit_count"], 2)
             self.assertEqual(work["commits"][0]["subject"], "Day 1 (00:00): implement source")
+            self.assertEqual(work["commits"][1]["source_files"], [])
+
+    def test_feedback_only_trace_is_explicit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "github_run_id": "123",
+                    "github_run_attempt": "2",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 1,
+                    "event_counts": {"PatchEvaluated": 1},
+                    "evals": [{"suite": "log-feedback", "eval_id": "log-feedback-123-1"}],
+                },
+            )
+            write_events(
+                session / "state/events.jsonl",
+                [{"event_type": "PatchEvaluated", "payload": {"suite": "log-feedback"}}],
+            )
+
+            data = build(root / "sessions", root / "out")
+
+            current = data["sessions"][0]
+            self.assertEqual(current["github_run_id"], "123")
+            self.assertEqual(current["github_run_attempt"], "2")
+            self.assertEqual(current["trace_quality"]["status"], "feedback_only")
+            self.assertEqual(current["trace_quality"]["trace_event_count"], 0)
+            self.assertEqual(data["aggregate"]["feedback_only_sessions"], 1)
+            self.assertEqual(data["aggregate"]["full_trace_sessions"], 0)
 
     def test_missing_optional_artifacts_do_not_fail(self):
         with tempfile.TemporaryDirectory() as tmp:

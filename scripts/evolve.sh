@@ -41,6 +41,7 @@ FALLBACK_PROVIDER="${FALLBACK_PROVIDER:-}"
 FALLBACK_MODEL="${FALLBACK_MODEL:-}"
 DATE=$(date +%Y-%m-%d)
 SESSION_TIME=$(date +%H:%M)
+SESSION_DIR_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 # Security nonce for content boundary markers (prevents spoofing)
 BOUNDARY_NONCE=$(python3 -c "import os; print(os.urandom(16).hex())" 2>/dev/null || echo "fallback-$(date +%s)")
 BOUNDARY_BEGIN="[BOUNDARY-${BOUNDARY_NONCE}-BEGIN]"
@@ -51,6 +52,10 @@ if date -j &>/dev/null; then
 else
     DAY=$(( ($(date +%s) - $(date -d "$BIRTH_DATE" +%s)) / 86400 ))
 fi
+SESSION_DIR="sessions/day-${DAY}-${SESSION_DIR_STAMP}"
+STATE_SESSION_ID="${SESSION_DIR#sessions/}"
+STATE_RUN_ID="github-actions-${GITHUB_RUN_ID:-local}"
+STATE_TRACE_ID="trace-evolve-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-${DAY}-$(echo "$SESSION_TIME" | tr ':' '-')"
 # DAY_COUNT is written at the end of the session (separate commit, immune to task reverts)
 
 # Pull latest changes (in case a queued run starts with stale checkout)
@@ -137,6 +142,18 @@ SESSION_TASKS_ATTEMPTED=0
 SESSION_TASKS_SUCCEEDED=0
 SESSION_REVERTED="false"
 
+record_state_event() {
+    local event_type="$1"
+    local payload_json="${2:-{}}"
+    python3 scripts/append_state_event.py \
+        --events "$STATE_EVENTS" \
+        --event-type "$event_type" \
+        --run-id "$STATE_RUN_ID" \
+        --session-id "$STATE_SESSION_ID" \
+        --trace-id "$STATE_TRACE_ID" \
+        --payload-json "$payload_json" 2>/dev/null || true
+}
+
 # ── Step 1c: Compute YOUR TRAJECTORY block (read-only audit-log fetch) ──
 # Aggregates audit-log session outcomes + git log + recent CI runs into a
 # structured markdown summary, injected ONLY into Phase A1 (assess) and
@@ -212,6 +229,7 @@ if "$YOYO_BIN" state project --rebuild >>"$TRAJ_STDERR" 2>&1; then
 else
     echo "  state: sqlite projection rebuild failed (state JSONL remains available)" >&2
 fi
+record_state_event "RunStarted" "{\"phase\":\"session\",\"day\":$DAY,\"session_time\":\"$SESSION_TIME\",\"github_run_id\":\"${GITHUB_RUN_ID:-}\",\"github_run_attempt\":\"${GITHUB_RUN_ATTEMPT:-}\"}"
 
 # ── Helper: refresh GitHub App token (tokens expire after 1 hour) ──
 # Uses APP_ID, APP_PRIVATE_KEY, and APP_INSTALLATION_ID env vars.
@@ -955,6 +973,7 @@ Read your own source code, identify the most impactful improvement you can make,
 FALLBACK
     echo "  Fallback task written to session_plan/task_01.md"
 fi
+record_state_event "DecisionRecorded" "{\"phase\":\"plan\",\"task_count\":$TASK_COUNT,\"assessment_present\":$([ -n "$ASSESSMENT" ] && echo true || echo false)}"
 
 echo "  Planning complete."
 echo ""
@@ -987,6 +1006,7 @@ for TASK_FILE in session_plan/task_*.md; do
     task_title="${task_title:-Task $TASK_NUM}"
 
     echo "  → Task $TASK_NUM: $task_title"
+    record_state_event "RunStarted" "{\"phase\":\"task\",\"task_number\":$TASK_NUM,\"task_title\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$task_title")}"
 
     # Save pre-task state for rollback
     if ! PRE_TASK_SHA=$(git rev-parse HEAD 2>&1); then
@@ -1512,8 +1532,10 @@ ${REVERT_DETAILS:-no details captured}" 2>/dev/null; then
                     --label "agent-self" 2>/dev/null || echo "    WARNING: Could not file revert issue"
             fi
         fi
+        record_state_event "RunCompleted" "{\"phase\":\"task\",\"task_number\":$TASK_NUM,\"status\":\"reverted\",\"reason\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$REVERT_REASON")}"
     else
         echo "    Task $TASK_NUM: verified OK"
+        record_state_event "RunCompleted" "{\"phase\":\"task\",\"task_number\":$TASK_NUM,\"status\":\"completed\"}"
     fi
 
 done
@@ -1942,6 +1964,7 @@ fi
 SESSION_TASKS_ATTEMPTED="${TASK_NUM:-0}"
 SESSION_TASKS_SUCCEEDED=$(( ${TASK_NUM:-0} - ${TASK_FAILURES:-0} ))
 [ "$SESSION_TASKS_SUCCEEDED" -lt 0 ] && SESSION_TASKS_SUCCEEDED=0
+record_state_event "RunCompleted" "{\"phase\":\"session\",\"status\":\"completed\",\"tasks_attempted\":$SESSION_TASKS_ATTEMPTED,\"tasks_succeeded\":$SESSION_TASKS_SUCCEEDED,\"build_ok\":${SESSION_BUILD_OK:-false},\"test_ok\":${SESSION_TEST_OK:-false},\"reverted\":${SESSION_REVERTED:-false}}"
 
 skill_counter=$(cat .skill_evolve_counter 2>/dev/null || echo 0)
 skill_counter=${skill_counter//[^0-9]/}
@@ -2022,7 +2045,6 @@ PYEOF
     # consecutive misses we emit a loud warning so a misconfigured token (push
     # protection rule, missing branch perms, etc.) doesn't silently kill the
     # observability stream forever. The counter lives at .yoyo/audit_push_failures.
-    SESSION_DIR="sessions/day-${DAY}-$(date -u +%Y%m%dT%H%M%SZ)"
     AUDIT_PUSH_WT="/tmp/evolve-audit-push-$$"
     AUDIT_FAIL_FILE=".yoyo/audit_push_failures"
     AUDIT_PUSH_OK=0

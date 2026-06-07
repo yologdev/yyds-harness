@@ -79,13 +79,50 @@ def compact_list(values: list[str], limit: int) -> list[str]:
 def source_file(path: str) -> bool:
     if not path:
         return False
-    if path.startswith("journals/"):
+    non_source_prefixes = (
+        ".yoyo/",
+        "journals/",
+        "memory/",
+        "session_plan/",
+        "sessions/",
+        "site/",
+    )
+    if path.startswith(non_source_prefixes):
         return False
-    if path.startswith("sessions/"):
-        return False
-    if path.startswith("site/"):
-        return False
-    return path != ".skill_evolve_counter"
+    return path not in {".skill_evolve_counter", "DAY_COUNT", "ISSUES_TODAY.md"}
+
+
+def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[str, Any]:
+    counts = summary.get("event_counts") if isinstance(summary.get("event_counts"), dict) else {}
+    total = int(summary.get("event_count") or 0)
+    patch_evaluated = int(counts.get("PatchEvaluated") or 0)
+    trace_events = max(0, total - patch_evaluated)
+    feedback_evals = sum(
+        1
+        for eval_data in evals
+        if isinstance(eval_data, dict) and eval_data.get("suite") == "log-feedback"
+    )
+    if total <= 0:
+        status = "missing"
+        label = "no state trace"
+    elif trace_events <= 0 and (patch_evaluated or feedback_evals):
+        status = "feedback_only"
+        label = "feedback-only trace"
+    elif trace_events < 5:
+        status = "thin"
+        label = "thin state trace"
+    else:
+        status = "full"
+        label = "full state trace"
+    return {
+        "status": status,
+        "label": label,
+        "event_count": total,
+        "trace_event_count": trace_events,
+        "patch_evaluated_count": patch_evaluated,
+        "feedback_eval_count": feedback_evals,
+        "state_capture_coverage": 1.0 if trace_events > 0 else 0.0,
+    }
 
 
 def session_commit_prefix(outcome: dict[str, Any]) -> str:
@@ -255,7 +292,7 @@ def work_summary(
     if attempted:
         labels.append(f"{succeeded}/{attempted} tasks completed")
     if source_files:
-        labels.append(f"{len(source_files)} repo file(s) changed")
+        labels.append(f"{len(source_files)} source file(s) changed")
     elif event_data["edited_files"]:
         labels.append(f"{len(event_data['edited_files'])} file(s) edited")
     if event_data["command_count"]:
@@ -358,6 +395,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
             if isinstance(blocker, dict) and is_real_blocker(blocker)
         ]
         commits = session_commits(outcome, repo_root)
+        trace = trace_quality(summary, evals)
         work = work_summary(session_dir, outcome, summary, evals, blockers, commits)
         sessions.append(
             {
@@ -365,6 +403,8 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
                 "day": outcome.get("day"),
                 "ts": outcome.get("ts") or summary.get("generated_at"),
                 "session_time": outcome.get("session_time"),
+                "github_run_id": outcome.get("github_run_id"),
+                "github_run_attempt": outcome.get("github_run_attempt"),
                 "build_ok": outcome.get("build_ok"),
                 "test_ok": outcome.get("test_ok"),
                 "tasks_attempted": outcome.get("tasks_attempted"),
@@ -372,6 +412,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
                 "reverted": outcome.get("reverted"),
                 "event_count": summary.get("event_count", 0),
                 "event_counts": summary.get("event_counts", {}),
+                "trace_quality": trace,
                 "latest_gnomes": summary.get("latest_gnomes", {}),
                 "gnome_keys": summary.get("gnome_keys", []),
                 "evals": evals,
@@ -412,6 +453,9 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     gnome_keys: list[str] = []
     health = {"passed": 0, "partial": 0, "attention": 0, "reverted": 0}
     event_counts: dict[str, int] = {}
+    trace_event_count = 0
+    full_trace_sessions = 0
+    feedback_only_sessions = 0
 
     for session in sessions:
         evals += 1 if session.get("latest_eval") else 0
@@ -420,6 +464,12 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         tasks_attempted += int(session.get("tasks_attempted") or 0)
         tasks_succeeded += int(session.get("tasks_succeeded") or 0)
         health[run_health(session)] += 1
+        trace = session.get("trace_quality") if isinstance(session.get("trace_quality"), dict) else {}
+        trace_event_count += int(trace.get("trace_event_count") or 0)
+        if trace.get("status") == "full":
+            full_trace_sessions += 1
+        if trace.get("status") == "feedback_only":
+            feedback_only_sessions += 1
         latest_gnomes.update(session.get("latest_gnomes") or {})
         for key in session.get("gnome_keys") or []:
             if isinstance(key, str) and key not in gnome_keys:
@@ -441,6 +491,9 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         "rejected_decisions": rejected,
         "blocker_count": blockers,
         "event_count": events,
+        "trace_event_count": trace_event_count,
+        "full_trace_sessions": full_trace_sessions,
+        "feedback_only_sessions": feedback_only_sessions,
         "tasks_attempted": tasks_attempted,
         "tasks_succeeded": tasks_succeeded,
         "task_success_rate": (tasks_succeeded / tasks_attempted) if tasks_attempted else None,
@@ -864,7 +917,7 @@ HTML = r"""<!doctype html>
 
     .work-facts {
       display: grid;
-      grid-template-columns: repeat(5, minmax(90px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
       gap: 10px;
     }
 
@@ -1206,6 +1259,7 @@ HTML = r"""<!doctype html>
       max_failure_fingerprint_recurrence: "Max failure recurrence",
       state_capture_coverage: "State capture",
       audit_capture_coverage: "Audit capture",
+      state_trace_event_count: "Trace events",
       closed_loop_fix_rate: "Closed-loop fix rate"
     };
     const priorityGnomes = [
@@ -1292,6 +1346,9 @@ HTML = r"""<!doctype html>
       let blockers = 0;
       let promoted = 0;
       let rejected = 0;
+      let traceEventCount = 0;
+      let fullTraceSessions = 0;
+      let feedbackOnlySessions = 0;
 
       sessions.forEach(session => {
         const healthKey = healthOf(session);
@@ -1301,6 +1358,10 @@ HTML = r"""<!doctype html>
         tasksSucceeded += Number(session.tasks_succeeded || 0);
         blockers += (session.blockers || []).length;
         if (session.latest_eval && Object.keys(session.latest_eval).length) evalCount += 1;
+        const trace = session.trace_quality || {};
+        traceEventCount += Number(trace.trace_event_count || 0);
+        if (trace.status === "full") fullTraceSessions += 1;
+        if (trace.status === "feedback_only") feedbackOnlySessions += 1;
         Object.entries(session.event_counts || {}).forEach(([kind, count]) => {
           eventCounts[kind] = (eventCounts[kind] || 0) + Number(count || 0);
         });
@@ -1319,6 +1380,9 @@ HTML = r"""<!doctype html>
         ...fallback,
         session_count: sessions.length,
         event_count: eventCount,
+        trace_event_count: traceEventCount,
+        full_trace_sessions: fullTraceSessions,
+        feedback_only_sessions: feedbackOnlySessions,
         event_counts: eventCounts,
         tasks_attempted: tasksAttempted,
         tasks_succeeded: tasksSucceeded,
@@ -1374,6 +1438,7 @@ HTML = r"""<!doctype html>
       const session = latestSession(sessions);
       const health = session ? healthOf(session) : "attention";
       const work = session ? (session.work_summary || {}) : {};
+      const trace = session ? (session.trace_quality || {}) : {};
       const score = latestMetric(agg, "coding_log_score");
       const stateCapture = latestMetric(agg, "state_capture_coverage");
       const heroTitle = session
@@ -1388,6 +1453,7 @@ HTML = r"""<!doctype html>
       document.getElementById("heroSummary").innerHTML = `
         <div>
           <span class="pill ${healthClass(health)}">${text(health)}</span>
+          ${session ? `<span class="pill soft">${text(trace.label || "unknown trace")}</span>` : ""}
           <h2 class="hero-title">${heroTitle}</h2>
           <div class="hero-kicker">${heroMeta}</div>
           <p class="hero-copy">${heroCopy}</p>
@@ -1400,8 +1466,8 @@ HTML = r"""<!doctype html>
           </div>
           <div class="detail-grid">
             <div>
-              <div class="label">State capture</div>
-              <strong>${stateCapture === null ? "-" : metricValue("state_capture_coverage", stateCapture)}</strong>
+              <div class="label">State trace</div>
+              <strong>${text(trace.trace_event_count || 0)} event(s)</strong>
             </div>
             <div>
               <div class="label">Audit evals</div>
@@ -1416,7 +1482,7 @@ HTML = r"""<!doctype html>
       const cards = [
         ["Sessions", agg.session_count || 0, "audit-backed runs"],
         ["Task success", rate === null || rate === undefined ? "-" : percent(rate), `${text(agg.tasks_succeeded || 0)}/${text(agg.tasks_attempted || 0)} tasks`],
-        ["Green runs", agg.health?.passed || 0, "build + tests passed"],
+        ["Full traces", agg.full_trace_sessions || 0, `${text(agg.feedback_only_sessions || 0)} feedback-only`],
         ["Blockers", agg.blocker_count || 0, "real blocking signals"],
       ];
       document.getElementById("summary").innerHTML = cards.map(([label, value, hint]) => `
@@ -1602,22 +1668,25 @@ HTML = r"""<!doctype html>
       }
       panel.innerHTML = sessions.slice().reverse().slice(0, 12).map(session => {
         const work = session.work_summary || {};
+        const trace = session.trace_quality || {};
         const transcripts = work.transcripts || {};
         const sourceFiles = (work.source_changed_files || []).length ? work.source_changed_files : work.edited_files;
         const phaseText = Object.entries(transcripts.phase_counts || {}).map(([phase, count]) => `${phase} ${count}`).join(", ");
         return `<article class="item work-row">
           <div class="work-meta">
             <span class="pill ${healthClass(healthOf(session))}">${text(healthOf(session))}</span>
+            <span class="pill soft">${text(trace.label || "unknown trace")}</span>
             <strong class="work-title">${text(session.id)}</strong>
             <p class="muted">${text(work.headline || "No detailed work signals captured")}</p>
           </div>
           <div>
             <div class="work-facts">
               <div class="fact"><strong>${text(session.tasks_succeeded || 0)}/${text(session.tasks_attempted || 0)}</strong>tasks</div>
-              <div class="fact"><strong>${text(sourceFiles.length || 0)}</strong>repo files</div>
+              <div class="fact"><strong>${text(sourceFiles.length || 0)}</strong>source files</div>
               <div class="fact"><strong>${text(work.eval_count || 0)}</strong>evals</div>
               <div class="fact"><strong>${text(work.landed_patch_count || work.source_patch_count || 0)}</strong>landed patches</div>
               <div class="fact"><strong>${text(work.decision_count || 0)}</strong>decisions</div>
+              <div class="fact"><strong>${text(trace.trace_event_count || 0)}</strong>trace events</div>
             </div>
             <details class="work-details">
               <summary>Open audit evidence</summary>
@@ -1629,7 +1698,7 @@ HTML = r"""<!doctype html>
                 <div><strong>State edits</strong>${listItems(work.edited_files, "No FileEdited events recorded.")}</div>
                 <div><strong>Failures</strong>${listItems(work.failed_commands, "No failed commands recorded.")}</div>
               </div>
-              <p class="muted">Transcript phases: ${text(phaseText || "no transcripts")}. Audit files: <a href="${text(session.audit_url)}">open session evidence</a>.</p>
+              <p class="muted">Transcript phases: ${text(phaseText || "no transcripts")}. ${text(trace.label || "unknown trace")} from ${text(trace.event_count || 0)} total event(s). Audit files: <a href="${text(session.audit_url)}">open session evidence</a>.</p>
             </details>
           </div>
         </article>`;
@@ -1648,12 +1717,13 @@ HTML = r"""<!doctype html>
         const health = healthOf(session);
         const events = session.event_count || 0;
         const work = session.work_summary || {};
+        const trace = session.trace_quality || {};
         return `<tr>
-          <td><strong>${text(session.id)}</strong><div class="muted">Day ${text(session.day)} at ${text(session.session_time)}<br>${text(session.ts)}</div></td>
+          <td><strong>${text(session.id)}</strong><div class="muted">Day ${text(session.day)} at ${text(session.session_time)}<br>${text(session.ts)}${session.github_run_id ? `<br>run ${text(session.github_run_id)} attempt ${text(session.github_run_attempt || "-")}` : ""}</div></td>
           <td><span class="pill ${healthClass(health)}">${text(health)}</span><div class="muted">build ${text(session.build_ok)} / test ${text(session.test_ok)}<br>tasks ${text(session.tasks_succeeded)}/${text(session.tasks_attempted)}<br>${text(work.headline)}</div></td>
           <td><span class="${decisionClass(decision)}">${text(decision.criterion || decision.decision || decision.decision_type)}</span><div class="muted">${text(decision.reason)}</div></td>
-          <td><span class="pill soft">${text(events)} events</span><div class="muted">eval ${text(evalData.status)} ${evalData.score === undefined ? "" : `score ${text(evalData.score)}`}</div></td>
-          <td><a href="${text(session.audit_url)}">audit files</a><div class="muted">${text((session.blockers || []).length)} blockers / ${text((session.evals || []).length)} evals / ${text(work.landed_commit_count || 0)} commits / ${text((session.patches || []).length)} state patches / ${text((session.code_refs || []).length)} refs</div></td>
+          <td><span class="pill soft">${text(trace.label || "unknown trace")}</span><div class="muted">${text(trace.trace_event_count || 0)} trace events / ${text(events)} total<br>eval ${text(evalData.status)} ${evalData.score === undefined ? "" : `score ${text(evalData.score)}`}</div></td>
+          <td><a href="${text(session.audit_url)}">audit files</a><div class="muted">${text((session.blockers || []).length)} blockers / ${text((session.evals || []).length)} evals / ${text(work.landed_commit_count || 0)} commits / ${text(work.landed_patch_count || 0)} landed patches / ${text((session.patches || []).length)} state patches</div></td>
         </tr>`;
       }).join("");
     }
