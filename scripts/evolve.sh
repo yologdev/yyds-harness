@@ -998,8 +998,9 @@ Issue: none
 Read your own source code, identify the most impactful improvement you can make, implement it, and commit. Follow evolve skill rules.
 FALLBACK
     echo "  Fallback task written to session_plan/task_01.md"
+    TASK_COUNT=1
 fi
-record_state_event "DecisionRecorded" "{\"phase\":\"plan\",\"task_count\":$TASK_COUNT,\"assessment_present\":$([ -n "$ASSESSMENT" ] && echo true || echo false)}"
+record_state_event "DecisionRecorded" "{\"phase\":\"plan\",\"decision_type\":\"session_plan\",\"decision\":\"tasks_selected\",\"task_count\":$TASK_COUNT,\"selected_task_count\":$(( TASK_COUNT > 3 ? 3 : TASK_COUNT )),\"assessment_present\":$([ -n "$ASSESSMENT" ] && echo true || echo false),\"reason\":\"planning phase selected implementation tasks for this evolution session\"}"
 
 echo "  Planning complete."
 echo ""
