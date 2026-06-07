@@ -1,0 +1,656 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The user wants me to plan the session by creating task files in `session_plan/`. Let me analyze the assessment and trajectory to identify the highest-priority work.
+
+Key findings from the assessment:
+
+1. **CI is clean** - no CI failures to fix. Good.
+
+2. **yoagent-state DeepSeek feedback** (highest priority):
+   - State recording is live and working
+   - Cache policy is effective (91% hit ratio)
+   - No eval data at all - 368 fixtures, zero real evaluations
+   - No DeepSeek protocol failures (which is good)
+   - commands_state.rs is 24,953 lines (17% of codebase) - structural debt
+
+3. **Bugs/Friction found**:
+   - Wrong provider default (Anthropic instead of DeepSeek)
+   - commands_state.rs monolithic
+   - Stale context indexes
+   - Eval harness never exercised
+   - No agent-self backlog
+
+4. **No open issues** - zero issues in the repo
+
+5. **Trajectory shows** recent success: Day 99 sessions all passing.
+
+Now, let me decide on the 3 task slots:
+
+Priority order:
+- State-driven DeepSeek harness work: at least 2 slots from state/trajectory/eval evidence
+- The biggest gap is: **eval harness never exercised** - this is the "factory built but nothing flowing" problem
+- Second: **stale context indexes** - semantic index is stale (537 files), embedding index missing
+- Third: **provider default fix** - small, high-impact fix
+
+Let me think about what's achievable:
+
+**Task 1: Run first real eval against a patch** - This exercises the eval harness end-to-end. The harness compiles and has 368 fixtures but has never evaluated a real patch. I could have the implementation agent pick a recent change and run it through the eval pipeline, recording results.
+
+**Task 2: Fix stale context indexes** - Build the semantic and embedding indexes so the repo map prioritizes the right files.
+
+**Task 3: Fix provider default** - Make the DeepSeek-native harness default to DeepSeek, not Anthropic.
+
+Wait, but the policy says "Each task MUST touch at most 3 source files." Let me think about this more carefully.
+
+Task 3 (provider default) - likely touches `agent_builder.rs` or `providers.rs` or `cli_config.rs`. That's manageable.
+
+Task 2 (context indexes) - likely touches `context.rs` and maybe a build script. But building indexes might be complex.
+
+Task 1 (first eval run) - This is more of an operational task than a code change. It would involve running the eval framework against a real patch. But as a task file, it needs to be specific enough for an implementation agent.
+
+Actually, let me re-read the assessment more carefully. The assessment says:
+- "Run the first real eval against a patch — prove the harness works end-to-end"
+- "Build the embedding index and refresh the semantic index"
+- "Fix the provider default so a DeepSeek-native harness actually defaults to DeepSeek"
+
+Let me think about what's smallest and most impactful:
+
+The provider default fix is probably the smallest change and has high impact. Let me check what files would need to change.
+
+For the eval run, the implementation agent would need to use the existing eval framework (`commands_eval.rs`) to evaluate a real patch. This could be done by running `yyds eval` with appropriate flags.
+
+For the context indexes, the agent would need to trigger index building via the existing code in `context.rs`.
+
+Let me think about task sizing more carefully:
+
+**Task 1: Fix provider default to DeepSeek** 
+- Files: likely `cli_config.rs` or `agent_builder.rs`
+- Small change, high impact
+
+**Task 2: Run first real eval** 
+- This is more of a "run a command and verify" task
+- But it needs to produce meaningful eval results
+- Could touch `commands_eval.rs` and maybe a test file
+
+**Task 3: Build context indexes**
+- Operational task - run index building
+- Or could fix the auto-build logic
+
+Actually, let me reconsider. The assessment found 5 bugs/friction items. Let me prioritize:
+
+1. Provider default fix - simple, high impact, one file
+2. Eval harness exercise - prove the harness works
+3. Context index rebuild - fix stale indexes
+
+All three are good candidates. Let me also check if there are any trusted owner issues to handle... The assessment says "None. Zero open issues of any label."
+
+So all 3 slots can go to harness work. Good.
+
+Let me also consider: should I break up commands_state.rs? The assessment notes it's 24,953 lines. But that would be a massive refactor touching many files, violating the 3-file rule. I should NOT tackle that in this session - it needs to be broken into smaller tasks across multiple sessions.
+
+OK, let me draft the plan:
+
+**Task 1: Fix provider default — DeepSeek-native harness should default to DeepSeek**
+- Files: `src/cli_config.rs` or `src/agent_builder.rs` or wherever the default provider is set
+- Small, targeted change
+- Tests must pass
+- Update CLAUDE.md if needed
+
+**Task 2: Run first real eval through the harness**
+- Use the eval framework to evaluate a recent change
+- Record eval results in state
+- Verify the harness works end-to-end
+- This validates the "factory built but nothing flowing" concern
+
+**Task 3: Rebuild context indexes**
+- Run semantic index building
+- Run embedding index building
+- Verify indexes are fresh
+- Ensure the repo map prioritizes the right files
+
+Wait, I need to think about what each task file actually says. The implementation agent needs specific instructions.
+
+Let me also check what files are relevant by looking at the provider default issue.
+
+Let me search for where the default provider is set.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'default_model|DEFAULT_MODEL|default_provider|AnthropicProvid…' in /home/runner/work/yyds-harness/yyds-harness/src (*.rs)  ▶ search 'deepseek.*default|default.*deepseek|DeepSeek.*default|defaul…' in /home/runner/work/yyds-harness/yyds-harness/src (*.rs) ✓ (6ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly for where the provider/model default is set.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'DEFAULT_MODEL' in /home/runner/work/yyds-harness/yyds-harness/src (*.rs)  ▶ search 'fn default_model|default_model' in /home/runner/work/yyds-harness/yyds-harness/src (*.rs) ✓ (15ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the cli.rs for the default model/provider setup, and the deepseek.rs for DEFAULT_MODEL.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'default_model_for_provider|fn default_model|DEFAULT_MODEL|DE…' in /home/runner/work/yyds-harness/yyds-harness/src (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search results earlier mentioned `default_model_for_provider` and `DEFAULT_MODEL` in import/reference lines but the function search didn't find the definitions. Let me look more specifically.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn "default_model_for_pr… ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the flow. The default is set in `src/cli.rs` around line 538-547, where it checks for provider and uses `deepseek::DEFAULT_MODEL` for deepseek, or falls back to `default_model_for_provider`. Let me look at that code and also at how the provider itself is defaulted.
+
+Let me also check how the provider default is set in cli.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/cli.rs:525..565  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:1..31 ✓ (21ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check where `deepseek_native` and the `provider` default are set. The provider default is key - let me find where `provider` is initialized.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'let provider|provider.*=|deepseek_native.*=' in /home/runner/work/yyds-harness/yyds-harness/src (cli.rs) ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me use grep directly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "provider\|deepseek_na… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the default provider setting. I see line 440 says "default 'anthropic'". Let me read that section.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/cli.rs:430..465 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the issue clearly. The provider default is "anthropic" when `deepseek_native` is false, and "deepseek" when `deepseek_native` is true. The question is: what is `deepseek_native`? Let me find out.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "deepseek_native" src/… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see how `deepseek_native` is determined:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/cli.rs:737..757 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see: `deepseek_native` is true when:
+1. The binary is invoked as `yyds` (not `yoyo`)
+2. `--deepseek-native` flag is passed
+3. `deepseek_native = true` in config file
+4. `YOYO_DEEPSEEK_NATIVE` env var is set
+
+When deepseek_native is false (default for `yoyo` invocations), the provider defaults to "anthropic". 
+
+Now, the assessment says "The binary defaults to Anthropic provider, not DeepSeek." This makes sense for `yoyo` invocations. But the harness IS DeepSeek-native. The jira here is: when running as `yyds`, deepseek_native=true and provider defaults to DeepSeek. When running as `yoyo`, it defaults to Anthropic.
+
+The assessment seems to be saying that even for a DeepSeek-native harness, you still need `DEEPSEEK_API_KEY` explicitly set. Let me re-read the assessment:
+
+"Friction noted: The binary defaults to Anthropic provider, not DeepSeek. DEEPSEEK_API_KEY must be set explicitly. This is a wrong default for a DeepSeek-native harness."
+
+But this might be about `yoyo` binary mode. The `yyds` binary already defaults to DeepSeek.
+
+Actually, looking at this more carefully, the `invoked_as_yyds(args)` check is the key. Let me see what that does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "invoked_as_yyds" src/… ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the invoked_as_yyds function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/cli.rs:729..739 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so now I understand the full picture:
+
+1. If the binary is named `yyds` (or invoked as `yyds`), `deepseek_native` is true, and the provider defaults to `deepseek` and model defaults to `deepseek-v4-pro`.
+
+2. If the binary is named `yoyo`, `deepseek_native` is false, and the provider defaults to `anthropic`.
+
+So the "wrong default" issue from the assessment might actually be about the fact that the `yyds` binary is not being used - maybe the invocation path checks `args[0]` which might be `./target/debug/yyds` (which would match). Let me verify by looking at the binary name.
+
+Actually wait - looking at `cargo build`, the binary is named `yyds` (from Cargo.toml). So `invoked_as_yyds` should return true when running `./target/debug/yyds`. Let me check what the binary name is.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "name\|bin" Cargo.toml… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the binary is named `yyds`. So invoke_as_yyds should return true. The provider should already default to DeepSeek. But the assessment says it defaults to Anthropic. This might be a misunderstanding in the assessment, or there could be an edge case.
+
+Let me check what happens in test mode or when the self-test is running. Actually maybe the assessment writer ran it as `cargo run` which invokes the binary differently...
+
+Actually, I should just focus on planning. The assessment identified 5 friction points. Let me pick the 3 that are:
+1. Most impactful for the DeepSeek harness
+2. Achievable in 20 min each
+3. Touch <= 3 source files each
+
+Let me also check what the `context.rs` index building looks like - whether there's a CLI command to rebuild indexes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "semantic_index\|embed… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that `ensure_semantic_index()` is called on context load. Let me check if there's a `context rebuild` CLI command.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/context.rs:324..354 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. The semantic index is auto-built if missing. But the assessment says it's stale (537 files stale). The issue is that the index exists but is outdated. Let me check how staleness is determined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "stale\|fresh\|missing… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how the staleness is checked and whether there's a way to rebuild from CLI.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/context.rs:1125..1155 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the index is "stale" because the files have been modified. The index stores file metadata (bytes, modified timestamp) and compares against current filesystem state. After 98 days of evolution, files have been changed but the index hasn't been rebuilt.
+
+Now let me check if there's a `context rebuild` command:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_context.rs:1..101 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - there's already a `yyds context index --write` command that can rebuild the semantic index. The embedding index is separate and needs external model support.
+
+Now I have a clear picture. Let me plan the 3 tasks:
+
+**Task 1: Fix provider default for non-yyds invocation**
+Wait - actually, when invoked as `yyds`, it already defaults to DeepSeek. The friction item from the assessment might be about the fact that when invoked as `yoyo` (which happens during `cargo test` or when the binary is named `yoyo`), it defaults to Anthropic. But the binary IS named `yyds`.
+
+Actually, I realize the assessment might have tested with `cargo run` where args[0] might not be `yyds`. Or maybe the assessment writer ran the binary name check wrong. Let me just verify the actual current behavior.
+
+But actually, I should not dig into this too deeply - the assessment identified this as a friction point, and I should plan accordingly. Let me think about what "fix" would make sense.
+
+Wait, let me re-read the assessment: "The binary defaults to Anthropic provider, not DeepSeek. DEEPSEEK_API_KEY must be set explicitly." 
+
+This could mean the assessment tested with the `yoyo` binary name, or it could mean even when running as `yyds`, the API key resolution doesn't find `DEEPSEEK_API_KEY` automatically.
+
+Let me look at the API key resolution code:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/cli.rs:479..524 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see! When `deepseek_native` is true:
+- Provider = "deepseek"
+- `provider_api_key_env("deepseek")` returns `DEEPSEEK_API_KEY`
+- If DEEPSEEK_API_KEY is set, great
+- If not, fallback is `ANTHROPIC_API_KEY` then `API_KEY` then config file
+
+So the API key chain actually handles this correctly. DEEPSEEK_API_KEY is checked first (provider_env_var), then fallbacks.
+
+But wait - line 517 hardcodes `"ANTHROPIC_API_KEY"` as fallback env hint. That's a cosmetic issue.
+
+Let me also check `providers.rs` for the provider_api_key_env function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/providers.rs:120..170 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I now understand the situation thoroughly. When running as `yyds`, the provider defaults to "deepseek" and everything works correctly. However, there is ONE case where the default could be wrong: if the binary is named something else (like `yoyo`) and `deepseek_native` is not set via env/config. But that's by design - the `yoyo` binary is meant to be a generic agent, and the `yyds` binary is the DeepSeek-native one.
+
+The assessment might be wrong about this, or it might be testing with `cargo run --bin yyds` where args[0] could be different.
+
+Regardless, this is a minor issue compared to the other friction points. Let me focus on the highest-impact tasks:
+
+1. **Eval harness**: The biggest gap. 368 fixtures, zero real evaluations. This is THE thing to fix. But running an eval is more of an operational task than a code change.
+
+2. **Context indexes**: Stale semantic index (537 stale, 5 missing), missing embedding index. There's already a `context index --write` command, so this can be fixed by running it.
+
+3. **Provider default**: Minor, might already work correctly for `yyds` binary.
+
+Actually, let me re-think. The assessment says the eval harness has NEVER been exercised. The task could be: "Write and run the first eval using the existing framework, recording results in state." This would validate the entire eval pipeline end-to-end.
+
+For the context indexes, the task could be: "Rebuild semantic index, add auto-refresh on staleness detection" — this is a code change.
+
+For the provider default, the task could be: "Ensure the yyds binary always defaults to DeepSeek, even in edge cases" — small code change.
+
+But actually, I think the three tasks should be:
+
+**Task 1: Fix provider default edge cases** — When running as yyds, ensure provider always defaults to "deepseek" and API key lookup prioritizes DEEPSEEK_API_KEY in all code paths. Also fix the hardcoded "ANTHROPIC_API_KEY" env hint on line 517.
+
+**Task 2: Rebuild context indexes and add auto-refresh** — The semantic index is stale (537 files). Add auto-rebuild when staleness is detected, or add a `--force` flag. Actually wait, this might be too complex. Let me simplify.
+
+**Task 3: Exercise eval harness against a real patch** — Run the first real evaluation through the 368-fixture harness, recording results as state events.
+
+Hmm, but Task 3 is an operational task (run a command) rather than a code change. That's fine — the planning agent can tell the implementation agent to run a command.
+
+Actually wait, let me re-read the requirements: "For EACH task, create a file: session_plan/task_01.md, session_plan/task_02.md, etc."
+
+And "Each task MUST touch at most 3 source files." So if a task is operational (no source changes), that's fine — it touches 0 files.
+
+Let me decide on the final 3 tasks:
+
+1. **Fix provider default and API key env hint** — touches `cli.rs` only
+2. **Rebuild stale context indexes** — operational (run `context index --write`), or add auto-refresh in `context.rs`
+3. **Run first real eval** — operational (run eval command)
+
+Wait, but the eval task: do we want the implementation agent to just run `yyds eval`? Or do we want to add something to make the eval framework more usable?
+
+Let me look at the eval command to understand how it works:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "handle_eval\|eval.*su… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the eval subcommand handling to understand what operations are available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_eval.rs:28..148 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see there's already a rich eval framework with `run`, `fixtures`, `schedule`, `release-gate`, `replay`, `report`, `compare` subcommands. The "never exercised" problem is that no one has actually run `yyds eval run` against a real patch.
+
+But wait - there's also the question of what "fixtures" are. The assessment says 368 fixtures. Let me check what those are - they might be existing test fixtures, not eval fixtures.
+
+Actually, looking at the complexity here, I think the best plan is:
+
+**Task 1: Fix provider default for yyds binary edge cases**
+- Files: `src/cli.rs` only
+- Fix: When invoked as `yyds` (deepseek_native=true), ensure the API key env hint shows DEEPSEEK_API_KEY instead of hardcoded ANTHROPIC_API_KEY
+- Small change, high user-facing impact
+
+**Task 2: Rebuild context indexes**  
+- Operational task: run `./target/debug/yyds context index --write` and verify indexes are fresh
+- If auto-refresh on staleness detection is easy to add, do it (in `src/context.rs`)
+- Otherwise just rebuild manually
+
+**Task 3: Run first real eval through the harness**
+- Operational task: run `./target/debug/yyds eval run --suite local-smoke` and record results
+- Verify that eval results are recorded in state
+- If the eval framework has issues, fix minimal blockers
+
+Wait, but Task 3 might be too ambitious for 20 min. The eval run could take a long time. Let me make it smaller: "Verify eval framework compiles and can list fixtures, fix any blockers preventing first run"
+
+Actually, let me reconsider. The policy says: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+And: "Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality."
+
+So the eval gap and context indexes are the right focus. Let me also consider that one task could be to fix something small but with state visibility, like adding an auto-rebuild for stale indexes.
+
+Let me finalize:
+
+**Task 1: Fix provider API key env hint for deepseek-native mode**
+- Small fix in `cli.rs`: When `deepseek_native` is true, the "No API key found" error should suggest `DEEPSEEK_API_KEY` instead of hardcoded `ANTHROPIC_API_KEY`
+- This is a cosmetic but important fix for user experience
+- 1 file touched
+
+**Task 2: Auto-rebuild stale context semantic index**
+- When `ensure_semantic_index()` detects that the index exists but is stale (>50% of entries stale), auto-rebuild it
+- Or alternatively: add a `--force` flag to `context index --write` and make the assessment builder invoke it
+- Files: `src/context.rs` only
+- 1 file touched
+
+**Task 3: Run first eval against a real patch**
+- Use the eval framework to evaluate a recent change
+- Record results in state
+- This validates the end-to-end harness
+
+Actually, I'm going to narrow this. Let me think about what's MOST impactful for the DeepSeek harness:
+
+1. The eval gap is the biggest - "factory built but nothing flowing." This is existential for the harness.
+2. Context indexes being stale means repo map is suboptimal - this directly affects session quality.
+3. Provider default is minor cosmetic.
+
+Let me reorder:
+- Task 1: Run first eval (most impactful)
+- Task 2: Fix context indexes (directly improves session quality)  
+- Task 3: Fix provider API key hint (small fix, good hygiene)
+
+For Task 1, I need to make it concrete enough for an implementation agent. The eval framework is `commands_eval.rs` (6517 lines). The implementation agent needs to:
+1. Build the binary
+2. Run `./target/debug/yyds eval run --suite local-smoke` (or whatever the right command is)
+3. Check state for eval results
+4. If it fails, diagnose and fix
+
+For Task 2, the agent needs to:
+1. Run `./target/debug/yyds context index --write` to rebuild
+2. Verify indexes are fresh
+3. Also consider adding automatic staleness detection + rebuild
+
+For Task 3, the agent needs to:
+1. Fix line 517 in cli.rs: change hardcoded "ANTHROPIC_API_KEY" to use provider_env_var
+2. Test that the error message correctly shows DEEPSEEK_API_KEY when provider is deepseek
+
+Let me write these up as task files now.
+
+Wait - I also need to check: is there a `--force` flag for context index rebuild? The `ensure_semantic_index()` function only builds if the file doesn't exist. If it exists but is stale, it doesn't rebuild. I should add a `--force` flag to force rebuild, or add staleness detection.
+
+Actually, looking at the code again at line 324-343:
+```rust
+fn ensure_semantic_index() {
+    let path = Path::new(DEFAULT_SEMANTIC_INDEX_PATH);
+    if path.exists() {
+        return; // <-- just returns if exists, even if stale!
+    }
+    // build fresh...
+}
+```
+
+So there's the bug! The index exists but is stale, and `ensure_semantic_index()` just returns without rebuilding. The fix should be to detect staleness and rebuild if the index is stale.
+
+But wait, counting staleness requires loading the index and checking every file against filesystem metadata. That could be expensive. Maybe a simpler heuristic: check if the index file's mtime is older than some threshold (like 24 hours).
+
+Actually, looking at the assessment output: "semantic_index: stale files=537 fresh=0 stale=533 missing=4 terms=81318" - the index has 537 total, 533 stale, 0 fresh, 4 missing. That's extremely stale.
+
+The simplest fix: add a staleness threshold. If >50% of entries are stale, auto-rebuild. Or just auto-rebuild if ANY entries are stale.
+
+But this could be computationally expensive for large repos. Let me think...
+
+A simpler approach: check the mtime of the index file itself. If it's older than 24 hours, rebuild. This is O(1) and covers the common case.
+
+Or even simpler: run `context index --write` before sessions to force-rebuild. Add this to the evolve.sh pipeline.
+
+Let me create the plan now. I'll go with:
+
+Task 1: Add semantic index auto-rebuild on staleness (context.rs)
+Task 2: Run first eval through the harness (operational + commands_eval.rs)
+Task 3: Fix API key env hint for deepseek-native mode (cli.rs)
+
+Actually wait, let me reconsider whether these are the right 3 tasks. Looking at the priority list again:
+
+0. Fix CI failures - NONE
+1. yoagent-state DeepSeek feedback - eval gap (no eval data), context indexes stale
+2. DeepSeek harness eval/replay/promotion quality - run first eval
+3. Self-discovered bugs - provider default
+4. Trusted owner issues - NONE
+5. Agent-self issues - NONE (need to create one)
+6. Capability gaps - N/A
+7. Release check - not enough accumulated
+
+The "no agent-self backlog" is itself a problem worth fixing. But maybe that's for the assess phase to create an issue.
+
+OK, final decision:
+
+**Task 1: Rebuild stale context indexes and add auto-refresh**
+- `ensure_semantic_index()` currently returns immediately if the index file exists, even if it's 100% stale
+- Fix: when the index exists, check staleness. If >50% stale, force rebuild.
+- Files: `src/context.rs`
+- Also run `context index --write` to immediately fix the current staleness
+
+**Task 2: Run first eval through the harness and record results**
+- The eval framework (commands_eval.rs, 6517 lines) has never been exercised against a real patch
+- Run `yyds eval run --suite local-smoke` and record results
+- If the command succeeds, verify eval results appear in state
+- If it fails, diagnose and fix the blocker
+- Files: potentially `src/commands_eval.rs` (minimal changes)
+
+**Task 3: Fix API key env hint for deepseek-native mode**  
+- Line 517 in cli.rs: hardcoded `"ANTHROPIC_API_KEY"` should use `provider_env_var` instead
+- When running as yyds with DeepSeek provider, the "No API key found" error should say DEEPSEEK_API_KEY
+- Files: `src/cli.rs`
+
+All three touch at most 1 source file each. All three are verifiable with cargo build && cargo test.
+
+Let me write the task files now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture of the codebase. Let me create the session plan. The assessment identifies 5 friction points — I'll prioritize the 3 that directly improve the DeepSeek harness with yoagent-state evidence.
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && mkdir -p session_plan && rm -f… ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me write the task files and issue responses.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Task 01: Rebuild stale context semantic index with auto-refresh
+  + 
+  + Title: Rebuild stale context semantic index with auto-refresh
+  + Files: src/context.rs
+  + Issue: none
+  + 
+  + ## Problem
+  + 
+  + The semantic index at `.yoyo/context-semantic-index.json` is 99.3% stale:
+  + - 537 total files, 533 stale, 0 fresh, 4 missing
+  + - `ensure_semantic_index()` (line 324) returns immediately if the file exists, even if 100% stale
+  + - The embedding index is entirely missing
+  + - Stale indexes mean the repo map prioritizes the wrong files during sessions
+  + 
+  + ## What To Do
+  + 
+  + ### Part A: Fix `ensure_semantic_index()` to auto-rebuild when stale
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: write: /home/runner/work/yyds-harness/yyds-harness/session_plan/task_01.md (46 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ write /home/runner/work/yyds-harness/yyds-harness/session_plan/task_01.md (46 lines) ✓ (1m 55s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now task 02 - the eval run.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Task 02: Run first real eval through the harness
+  + 
+  + Title: Run first real eval through the harness and record results in state
+  + Files: src/commands_eval.rs (read-only, minimal changes if any)
+  + Issue: none
+  + 
+  + ## Problem
+  + 
+  + The eval harness (`commands_eval.rs`, 6517 lines) has 368 fixtures and compiles clean, but has NEVER been exercised against a real patch. Zero eval-result events in state. This is the "factory built but nothing flowing" problem — the harness exists but has never proven it can evaluate whether a change actually improves anything.
+  + 
+  + ## What To Do
+  + 
+  + ### Part A: Understand the eval framework
+  + 
+  + 1. Read `src/commands_eval.rs` lines 28-54 (subcommand dispatch) to understand available commands
+  + 2. Read the `handle_run` function to understand how eval runs work
+  + 3. Check what fixtures are available:
+  +    ```
+  ... (3 more lines)
+  ✓ Auto-approved: write: /home/runner/work/yyds-harness/yyds-harness/session_plan/task_02.md (56 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ write /home/runner/work/yyds-harness/yyds-harness/session_plan/task_02.md (56 lines) ✓ (1m 55s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task 03 - fix the API key env hint.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Task 03: Fix API key env hint for deepseek-native mode
+  + 
+  + Title: Fix API key env hint for deepseek-native mode
+  + Files: src/cli.rs
+  + Issue: none
+  + 
+  + ## Problem
+  + 
+  + When the `yyds` binary runs in deepseek-native mode without an API key, the error message on line 517 of `cli.rs` hardcodes `"ANTHROPIC_API_KEY"` as the fallback env hint:
+  + 
+  + ```rust
+  + let env_hint = provider_env_var.unwrap_or("ANTHROPIC_API_KEY");
+  + ```
+  + 
+  + This is correct for generic yoyo mode (where the default provider is Anthropic), but wrong for yyds deepseek-native mode. When the provider is "deepseek", `provider_env_var` returns `Some("DEEPSEEK_API_KEY")`, so the hint is correct. But the fallback `unwrap_or("ANTHROPIC_API_KEY")` is misleading — it suggests the wrong env var if something goes wrong with provider_env_var resolution.
+  + 
+  + ## What To Do
+  + 
+  + In `src/cli.rs`, line 517, change the fallback to be provider-aware:
+  + 
+  ... (14 more lines)
+  ✓ Auto-approved: write: /home/runner/work/yyds-harness/yyds-harness/session_plan/task_03.md (34 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ write /home/runner/work/yyds-harness/yyds-harness/session_plan/task_03.md (34 lines) ✓ (1m 55s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now create the issue_responses.md file. There are no open issues, so this is simple.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 99 (16:08)
+  + 
+  + No open issues in yologdev/yyds-harness.
+  + 
+  + No trusted owner issues to respond to. The repo backlog is empty — zero issues of any label.
+  + 
+  + ## Note
+  + 
+  + The assessment identified this empty backlog as a problem. After the implementation sessions, I should file agent-self issues for:
+  + - Stale context index auto-rebuild (will be fixed by Task 01)
+  + - Eval harness never exercised (will be partially addressed by Task 02)
+  + - commands_state.rs monolithic at 25K lines (needs multi-session decomposition)
+  + - Provider default clarity for non-yyds invocations
+  ✓ Auto-approved: write: /home/runner/work/yyds-harness/yyds-harness/session_plan/issue_responses.md (13 lines)
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ write /home/runner/work/yyds-harness/yyds-harness/session_plan/issue_responses.md (13 lines)

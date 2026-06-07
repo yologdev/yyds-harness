@@ -1,0 +1,408 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully:
+
+1. **Problem**: The semantic index at `.yoyo/context-semantic-index.json` is stale (99.3% stale). The `ensure_semantic_index()` function returns immediately if the file exists, even when 100% stale.
+
+2. **What to do**:
+   - Part A: Fix `ensure_semantic_index()` to auto-rebuild when stale
+   - Part B: Rebuild immediately
+
+Let me start by reading the relevant code sections.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant code sections.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/context.rs:310..360  ▶ read src/context.rs:1110..1170 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand how `count_fresh_index_files` is called — I need to see how the index is loaded and how file data is structured. Let me look at the index data structures and how they're loaded.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+Let me look at the index structures, loading functions, and how `count_fresh_index_files` is used:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'count_fresh_index_files' in src/context.rs  ▶ search 'PersistentSemanticIndex' in src/context.rs ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the data structures and how count_fresh_index_files is called at line 1055 and 1100.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/context.rs:80..140  ▶ read src/context.rs:1045..1115 ✓ (5ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the code. Let me also look at:
+
+1. `build_and_maybe_write_semantic_index` - the function that builds and writes the index
+2. `semantic_file_metadata` - the function used by `count_fresh_index_files`
+3. Where `ensure_semantic_index` is called
+
+Let me trace through the logic:
+
+- `count_fresh_index_files` takes an iterator of `(&String, u64, u128)` - (path, len_bytes, modified_ms)
+- It calls `semantic_file_metadata(path)` for each file to get current metadata
+- If the current metadata matches (len_bytes and modified_ms), the file is "fresh"
+- If metadata exists but doesn't match: "stale"
+- If file doesn't exist: "missing"
+
+Now for `ensure_semantic_index`:
+- Currently it only checks `if path.exists() { return; }` — no freshness check
+- I need to add freshness checking before the early return
+
+Let me also look at `semantic_file_metadata` and `load_persistent_semantic_index` to understand how to load the index.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn semantic_file_metadata' in src/context.rs  ▶ search 'fn load_persistent_semantic_index' in src/context.rs ✓ (12ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/context.rs:1012..1032  ▶ read src/context.rs:1277..1307 ✓ (16ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also look at `DEFAULT_SEMANTIC_INDEX_PATH` and `SEMANTIC_INDEX_SCHEMA_VERSION` to understand the constants.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'DEFAULT_SEMANTIC_INDEX_PATH' in src/context.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have everything I need. Let me also look at the `SemanticFileMetadata` struct:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct SemanticFileMetadata' in src/context.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me see the struct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/context.rs:1270..1280 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. Let me plan the implementation:
+
+1. Modify `ensure_semantic_index()` (lines 324-344) to:
+   - When the file exists, load the index using `load_persistent_semantic_index`
+   - If loaded, check freshness using `count_fresh_index_files`
+   - If `fresh == 0` or `stale > fresh * 2`, delete the index file and rebuild
+   - Add `eprintln!` note when auto-rebuilding
+
+The key insight: `count_fresh_index_files` expects `impl Iterator<Item = (&String, u64, u128)>` — references to tuples. And `load_persistent_semantic_index` returns `Option<PersistentSemanticIndex>`.
+
+Let me write the code:
+
+```rust
+fn ensure_semantic_index() {
+    let path = Path::new(DEFAULT_SEMANTIC_INDEX_PATH);
+    if path.exists() {
+        // Check freshness before deciding it's good enough
+        if let Some(index) = load_persistent_semantic_index(path) {
+            let (fresh, stale, _missing) = count_fresh_index_files(
+                index.files.iter().map(|f| (&f.path, f.len_bytes, f.modified_ms)),
+            );
+            if fresh == 0 || stale > fresh * 2 {
+                // More than 2/3 stale, rebuild
+                eprintln!(
+                    "\x1b[33m  semantic index is stale (fresh={} stale={}) — rebuilding\x1b[0m",
+                    fresh, stale
+                );
+                let _ = std::fs::remove_file(path);
+            } else {
+                return;
+            }
+        } else {
+            // Corrupt or invalid schema — rebuild
+            eprintln!("\x1b[33m  semantic index is corrupt — rebuilding\x1b[0m");
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    // Build-and-write with a 60-second timeout...
+    // ... rest of existing code
+}
+```
+
+Wait, I need to be careful. If `path.exists()` is true but `load_persistent_semantic_index` returns `None` (schema version mismatch, invalid JSON), we should also rebuild. Actually, looking at the current code more carefully, if `path.exists()` is true and the file is corrupt, we'd return early with no index. That's also a bug — but fixing it is part of the task since the task asks us to handle "fresh == 0" conditions, and a corrupt file would effectively be 0 fresh.
+
+Actually, let me re-read the task description more carefully:
+
+> 1. When the index file exists, load it and check freshness using `count_fresh_index_files()` (line 1125)
+> 2. If `fresh == 0` or `stale > fresh * 2` (i.e., more than 2/3 stale), delete the index file and rebuild
+> 3. Keep the 60-second timeout and error handling
+> 4. Add an `eprintln!` note when auto-rebuilding so it's visible in logs
+
+The condition: `fresh == 0` or `stale > fresh * 2`. The "more than 2/3 stale" interpretation: if stale > fresh * 2, then stale represents at least 2/3 of the files. E.g., fresh=1, stale=3 → stale > 1*2 = 3 > 2, yes. So ≥ 2/3 stale.
+
+Actually wait: `stale > fresh * 2` means the stale count is more than double the fresh count. If fresh=1 and stale=2, then stale(2) > fresh*2(2) is false. If fresh=1 and stale=3, then stale(3) > fresh*2(2) is true. So the threshold is: stale > 2*fresh, which means stale represents more than 2/3 of the total (since if stale > 2*fresh, then stale/(fresh+stale) > 2/3).
+
+Let me also check: if there are 0 files total (unusual but possible), `fresh == 0` and `stale == 0`, and `stale > fresh * 2` is `0 > 0` which is false. But `fresh == 0` would trigger the rebuild. That seems reasonable.
+
+Now let me also check: what about the case where path exists but `load_persistent_semantic_index` returns None? The task says to check freshness. If the file is corrupt (load returns None), we can't check freshness. But the logical thing to do is rebuild. Let me handle that.
+
+Let me write the edit now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the fix:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the edit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.7s (2 ✓)
+
+
+    fn ensure_semantic_index() {
+        let path = Path::new(DEFAULT_SEMANTIC_INDEX_PATH);
+        if path.exists() {
+  -         return;
+  +         // Check freshness before deciding it's good enough.
+  +         // If the index is stale (all files changed or >2/3 stale),
+  +         // delete it so the build path below recreates it.
+  +         if let Some(index) = load_persistent_semantic_index(path) {
+  +             let (fresh, stale, _missing) = count_fresh_index_files(
+  +                 index
+  +                     .files
+  +                     .iter()
+  +                     .map(|f| (&f.path, f.len_bytes, f.modified_ms)),
+  +             );
+  +             if fresh == 0 || stale > fresh * 2 {
+  +                 eprintln!(
+  +                     "\x1b[33m  semantic index is stale (fresh={fresh} stale={stale}) — rebuilding\x1b[0m"
+  +                 );
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/context.rs (21 → 44 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/context.rs (21 → 44 lines)
+    fn ensure_semantic_index() {
+        let path = Path::new(DEFAULT_SEMANTIC_INDEX_PATH);
+        if path.exists() {
+  -         return;
+  +         // Check freshness before deciding it's good enough.
+  +         // If the index is stale (all files changed or >2/3 stale),
+  +         // delete it so the build path below recreates it.
+  +         if let Some(index) = load_persistent_semantic_index(path) {
+  +             let (fresh, stale, _missing) = count_fresh_index_files(
+  +                 index
+  +                     .files
+  +                     .iter()
+  +                     .map(|f| (&f.path, f.len_bytes, f.modified_ms)),
+  +             );
+  +             if fresh == 0 || stale > fresh * 2 {
+  +                 eprintln!(
+  +                     "\x1b[33m  semantic index is stale (fresh={fresh} stale={stale}) — rebuilding\x1b[0m"
+  +                 );
+  +                 let _ = std::fs::remove_file(path);
+  +                 // Fall through to rebuild below
+  ... (11 more lines)
+ ✓ (2m 0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit went through. Now let me build and test.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now let me build and run the checks:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (135ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build succeeded. Let me now run tests and fmt/clippy.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && c… ✓ (25.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both fmt and clippy pass. Now let me run the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 ✓ (1m 3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output is truncated but it shows many passing tests. Let me check the exit code more carefully - it was 0. Let me also run with grep for any failures.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | tail -5 ✓ (42.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test output shows "test result: ok" but that's only the doc tests. Let me check for the unit test results specifically.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | grep -E "(te… ✓ (43.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output shows no failures. Let me run it more directly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | grep -E "^te… ✓ (36.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's 1 failed test. Let me see which one failed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | grep -A 20 "… ✓ (44.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The grep didn't match. Let me try a different approach.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | grep "fail" ✓ (44.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now it passes - 4186 passed, 0 failed. The previous run had 1 failure which was probably a flaky test. Let me run it once more to confirm.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | grep -E "^te… ✓ (45.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me verify the index rebuild works by actually running the command.
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass: 4186 passed, 0 failed. Now let me rebuild the semantic index and verify it's fresh:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me rebuild the index.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds context in… ✓ (790ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify it's fresh.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds context in… ✓ (724ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, the context index command only shows file count and term count. The freshness status isn't shown there. Let me look at how to check freshness. The task says `./target/debug/yyds context index` should show fresh status. Let me check the code for how the `context index` subcommand works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'index' in src/commands_context.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the diagnostics function more carefully - I see it references `context_index_diagnostics`. Let me look at that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_context.rs:57..87 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `handle_index` command shows the `report.render()` which shows file count and terms but not freshness. The freshness check is in `semantic_index_diagnostic_line` which is used in the context diagnostics. Let me check where those diagnostics are used - it seems like the freshness info is more for internal diagnostics.
+
+Let me try the `--json` flag to see the payload:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds context in… ✓ (724ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `context index` command doesn't report freshness directly; it just shows the report from `build_and_maybe_write_semantic_index`. The freshness check is in the diagnostics used for the context preview/explain commands. Let me check if the auto-rebuild mechanism would fire correctly. The task says:
+- `./target/debug/yyds context index` shows fresh or partial (not stale)
+
+Let me check if there's a way to show the diagnostics. Let me look at `context_index_diagnostics` and where it's called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ search 'context_index_diagnostics' in src/context.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diagnostics aren't exposed via CLI directly. Let me check how they're used at line 393.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ read src/context.rs:385..415 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - the diagnostics are used in the context build pipeline for the system prompt. The freshness is visible there. 
+
+Now, let me verify the index is actually fresh by checking the auto-rebuild logic in `ensure_semantic_index`. Since I just now rebuilt it with `--write`, it should be fresh. Let me verify the test for `context_index_diagnostics` to understand what it checks:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ read src/context.rs:2323..2403 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me write a test for the `ensure_semantic_index` auto-rebuild behavior. Actually, the task says "Write a test first if possible". Let me check if there are existing tests near `ensure_semantic_index` or if I should add one for the new behavior. Let me search for existing tests for ensure_semantic_index:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ensure_semantic_index' in src/context.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are no tests for `ensure_semantic_index`. Let me add a test. The function uses `DEFAULT_SEMANTIC_INDEX_PATH` and works with files relative to the CWD. Let me look at the test module and its conventions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ search '#\[cfg\(test\)\]' in src/context.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the test module differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/context.rs ✓ (6ms)
+
+  ✓ Watch passed: `cargo clippy --all-targets -- -D warnings && cargo test`
+
