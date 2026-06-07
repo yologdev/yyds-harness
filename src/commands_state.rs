@@ -4295,7 +4295,7 @@ fn build_lineage_report(events: &[Value], id: &str) -> Result<String, String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct GraphRelationStep {
+pub(crate) struct GraphRelationStep {
     depth: usize,
     relation: crate::state::StateRelation,
 }
@@ -4336,7 +4336,7 @@ impl GraphHotspot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct GraphCluster {
+pub(crate) struct GraphCluster {
     seed: String,
     seed_relation: String,
     nodes: BTreeSet<String>,
