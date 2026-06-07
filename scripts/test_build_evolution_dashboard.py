@@ -50,8 +50,16 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 {
                     "event_count": 5,
                     "event_counts": {"FileEdited": 1, "CommandStarted": 1},
-                    "latest_gnomes": {"coding_log_score": 0.8, "coding_log_available": True},
-                    "gnome_keys": ["coding_log_score", "coding_log_available"],
+                    "latest_gnomes": {
+                        "coding_log_score": 0.8,
+                        "coding_log_available": True,
+                        "evolution_friction_count": 2,
+                    },
+                    "gnome_keys": [
+                        "coding_log_score",
+                        "coding_log_available",
+                        "evolution_friction_count",
+                    ],
                     "evals": [
                         {
                             "eval_id": "eval-1",
@@ -62,6 +70,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                                 "coding_log_score": 0.8,
                                 "coding_log_available": True,
                                 "closed_loop_fix_rate": None,
+                                "evolution_friction_count": 2,
                             },
                         }
                     ],
@@ -102,8 +111,11 @@ class BuildEvolutionDashboard(unittest.TestCase):
             data = build(root / "sessions", root / "out")
 
             self.assertEqual(data["schema_version"], 2)
-            self.assertEqual(data["gnome_numeric_keys"], ["coding_log_score"])
-            self.assertEqual(data["gnome_history"][0]["values"], {"coding_log_score": 0.8})
+            self.assertEqual(data["gnome_numeric_keys"], ["coding_log_score", "evolution_friction_count"])
+            self.assertEqual(
+                data["gnome_history"][0]["values"],
+                {"coding_log_score": 0.8, "evolution_friction_count": 2.0},
+            )
 
             work = data["sessions"][0]["work_summary"]
             self.assertIn("2/2 tasks completed", work["headline"])

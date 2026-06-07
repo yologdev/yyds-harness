@@ -104,6 +104,8 @@ They help yyds evolve the harness in four practical ways:
 | Score whether a change helped | `coding_log_score`, `workflow_success_rate`, `session_success_rate`, `task_success_rate` | Compares the latest run against the previous baseline. |
 | Prioritize reusable fixes | `recurring_failure_count`, `max_failure_fingerprint_recurrence`, `closed_loop_fix_rate` | Promotes repeated friction into a harness-level fix. |
 | Check the feedback loop itself | `coding_log_available`, `coding_log_confidence`, `state_capture_coverage`, `audit_capture_coverage` | Verifies that evidence was captured well enough to learn from it. |
+| Improve evolution ergonomics | `evolution_friction_count`, `command_timeout_count`, `evaluator_timeout_count`, `protected_file_revert_count`, `search_error_count`, `max_task_turn_count` | Turns real action-log and transcript friction into concrete harness tasks. |
+| Optimize DeepSeek usage | `deepseek_cache_hit_ratio`, `deepseek_cache_hit_tokens`, `deepseek_cache_miss_tokens` | Shows whether stable prompt prefixes are actually being reused. |
 
 The dashboard can therefore say something more useful than "CI passed." For
 example:
@@ -114,6 +116,9 @@ coding_log_score = 0.81
 state_capture_coverage = 1.0
 audit_capture_coverage = 1.0
 failure fingerprints = timeouts and search errors
+evolution_friction_count = 2
+max_task_turn_count = 15
+deepseek_cache_hit_ratio = 0.84
 ```
 
 That means the session completed its tasks, but yyds should still consider a

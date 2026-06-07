@@ -1279,13 +1279,29 @@ HTML = r"""<!doctype html>
       state_capture_coverage: "State capture",
       audit_capture_coverage: "Audit capture",
       state_trace_event_count: "Trace events",
-      closed_loop_fix_rate: "Closed-loop fix rate"
+      closed_loop_fix_rate: "Closed-loop fix rate",
+      evolution_friction_count: "Evolution friction",
+      command_timeout_count: "Command timeouts",
+      evaluator_timeout_count: "Evaluator timeouts",
+      search_error_count: "Search errors",
+      protected_file_revert_count: "Protected-file reverts",
+      task_revert_count: "Task reverts",
+      task_verification_rate: "Task verification",
+      max_task_turn_count: "Max task turns",
+      avg_task_turn_count: "Avg task turns",
+      total_task_turn_count: "Total task turns",
+      deepseek_cache_hit_ratio: "DeepSeek cache hit ratio",
+      deepseek_cache_hit_tokens: "DeepSeek cache hit tokens",
+      deepseek_cache_miss_tokens: "DeepSeek cache miss tokens"
     };
     const priorityGnomes = [
       "coding_log_score",
       "task_success_rate",
       "workflow_success_rate",
-      "state_capture_coverage"
+      "state_capture_coverage",
+      "evolution_friction_count",
+      "max_task_turn_count",
+      "deepseek_cache_hit_ratio"
     ];
 
     function escapeHtml(value) {
@@ -1565,7 +1581,7 @@ HTML = r"""<!doctype html>
         });
       });
       keys.sort();
-      const preferred = ["coding_log_score", "task_success_rate", "workflow_success_rate", "state_capture_coverage", "cache_hit_ratio"];
+      const preferred = ["coding_log_score", "task_success_rate", "workflow_success_rate", "state_capture_coverage", "evolution_friction_count", "max_task_turn_count", "deepseek_cache_hit_ratio", "cache_hit_ratio"];
       preferred.reverse().forEach(key => {
         const idx = keys.indexOf(key);
         if (idx >= 0) {

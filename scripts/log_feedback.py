@@ -39,6 +39,21 @@ EXPLICIT_PROVIDER_SIGNAL_RE = re.compile(
 JSON_ERROR_RE = re.compile(r"(json|schema|deserialize|parse).*(error|fail)", re.IGNORECASE)
 TOOL_ERROR_RE = re.compile(r"(tool call|tool schema|malformed tool|invalid tool)", re.IGNORECASE)
 STATE_ERROR_RE = re.compile(r"(state|audit-log|events\.jsonl|state\.sqlite).*(error|fail|missing)", re.IGNORECASE)
+COMMAND_TIMEOUT_RE = re.compile(r"Command timed out after (\d+)s|timed out after (\d+)s", re.IGNORECASE)
+EVALUATOR_TIMEOUT_RE = re.compile(r"Evaluator:\s*timed out", re.IGNORECASE)
+SEARCH_ERROR_RE = re.compile(r"\bSearch error:\s*", re.IGNORECASE)
+PROTECTED_FILE_RE = re.compile(r"modified protected files:", re.IGNORECASE)
+TASK_STARTED_RE = re.compile(r"(?:→|->)\s*Task\s+\d+:", re.IGNORECASE)
+TASK_VERIFIED_RE = re.compile(r"\bTask\s+\d+:\s+verified OK\b", re.IGNORECASE)
+TASK_REVERT_RE = re.compile(r"\bReverting Task\s+\d+\b", re.IGNORECASE)
+CACHE_PERCENT_RE = re.compile(
+    r"(?:cache(?: hit)? ratio(?: is)?|Cache:)\D{0,24}(\d+(?:\.\d+)?)\s*%\s*(?:hit ratio)?",
+    re.IGNORECASE,
+)
+CACHE_TOKENS_RE = re.compile(r"([\d,]+)\s+hit tokens,\s*([\d,]+)\s+miss tokens", re.IGNORECASE)
+TASK_TRANSCRIPT_RE = re.compile(r"task_(\d+)_attempt(\d+)\.log$")
+TURN_MARKER_RE = re.compile(r"\bTurn\s+(\d+)\b")
+ACTION_LINE_RE = re.compile(r"^\s*▶\s+", re.MULTILINE)
 AUTHORIZATION_RE = re.compile(r"(?i)\bauthorization\s*[:=]\s*bearer\s+[^'\"\s]+")
 BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}")
 SECRET_RE = re.compile(r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*['\"]?[^'\"\s]+")
@@ -60,6 +75,19 @@ GNOME_KEYS = [
     "state_capture_coverage",
     "audit_capture_coverage",
     "closed_loop_fix_rate",
+    "evolution_friction_count",
+    "command_timeout_count",
+    "evaluator_timeout_count",
+    "search_error_count",
+    "protected_file_revert_count",
+    "task_revert_count",
+    "task_verification_rate",
+    "max_task_turn_count",
+    "avg_task_turn_count",
+    "total_task_turn_count",
+    "deepseek_cache_hit_ratio",
+    "deepseek_cache_hit_tokens",
+    "deepseek_cache_miss_tokens",
 ]
 
 
@@ -229,6 +257,16 @@ def parse_log(log_text: str) -> dict[str, Any]:
     state_errors = 0
     repair_loop_count = 0
     retry_markers = 0
+    command_timeouts = 0
+    evaluator_timeouts = 0
+    search_errors = 0
+    protected_file_reverts = 0
+    task_started = 0
+    task_verified = 0
+    task_reverts = 0
+    cache_ratio: float | None = None
+    cache_hit_tokens: int | None = None
+    cache_miss_tokens: int | None = None
     evidence: list[str] = []
 
     for raw_line in log_text.splitlines():
@@ -237,6 +275,36 @@ def parse_log(log_text: str) -> dict[str, Any]:
             continue
         message = log_message(line)
         lower = message.lower()
+        if COMMAND_TIMEOUT_RE.search(message):
+            command_timeouts += 1
+        if EVALUATOR_TIMEOUT_RE.search(message):
+            evaluator_timeouts += 1
+        if SEARCH_ERROR_RE.search(message):
+            search_errors += 1
+        if PROTECTED_FILE_RE.search(message):
+            protected_file_reverts += 1
+        if TASK_STARTED_RE.search(message):
+            task_started += 1
+        if TASK_VERIFIED_RE.search(message):
+            task_verified += 1
+        if TASK_REVERT_RE.search(message):
+            task_reverts += 1
+        cache_match = CACHE_PERCENT_RE.search(message)
+        if cache_match:
+            try:
+                cache_ratio = round(float(cache_match.group(1)) / 100.0, 6)
+            except (TypeError, ValueError):
+                pass
+        token_match = CACHE_TOKENS_RE.search(message)
+        if token_match:
+            try:
+                cache_hit_tokens = int(token_match.group(1).replace(",", ""))
+                cache_miss_tokens = int(token_match.group(2).replace(",", ""))
+                total = cache_hit_tokens + cache_miss_tokens
+                if total > 0:
+                    cache_ratio = round(cache_hit_tokens / total, 6)
+            except (TypeError, ValueError):
+                pass
         if "retry after" in lower or "waiting 15 minutes before retry" in lower:
             retry_markers += 1
         if "repair loop" in lower or "retrying after failure" in lower:
@@ -263,6 +331,14 @@ def parse_log(log_text: str) -> dict[str, Any]:
             evidence.append(line[:240])
 
     ordered = sorted(fingerprints.values(), key=lambda item: (-int(item["count"]), item["fingerprint"]))
+    task_verification_rate = ratio(task_verified, task_started) if task_started else None
+    evolution_friction_count = (
+        command_timeouts
+        + evaluator_timeouts
+        + search_errors
+        + protected_file_reverts
+        + task_reverts
+    )
     return {
         "failure_fingerprints": ordered[:MAX_FINGERPRINTS],
         "failure_count": sum(int(item["count"]) for item in ordered),
@@ -273,6 +349,18 @@ def parse_log(log_text: str) -> dict[str, Any]:
         "state_error_count": state_errors,
         "repair_loop_count": repair_loop_count,
         "retry_markers": retry_markers,
+        "command_timeout_count": command_timeouts,
+        "evaluator_timeout_count": evaluator_timeouts,
+        "search_error_count": search_errors,
+        "protected_file_revert_count": protected_file_reverts,
+        "task_started_count": task_started,
+        "task_verified_count": task_verified,
+        "task_revert_count": task_reverts,
+        "task_verification_rate": task_verification_rate,
+        "deepseek_cache_hit_ratio": cache_ratio,
+        "deepseek_cache_hit_tokens": cache_hit_tokens,
+        "deepseek_cache_miss_tokens": cache_miss_tokens,
+        "evolution_friction_count": evolution_friction_count,
         "evidence": evidence,
     }
 
@@ -357,6 +445,61 @@ def recurrence_metrics(current: list[dict[str, Any]], previous: list[dict[str, A
 
 def gnome_values(metrics: dict[str, Any]) -> dict[str, Any]:
     return {key: metrics[key] for key in GNOME_KEYS if key in metrics}
+
+
+def transcript_turn_count(text: str) -> int:
+    turns: list[int] = []
+    for match in TURN_MARKER_RE.finditer(text):
+        try:
+            turns.append(int(match.group(1)))
+        except ValueError:
+            continue
+    if turns:
+        return max(turns)
+    action_count = len(ACTION_LINE_RE.findall(text))
+    if action_count:
+        return action_count
+    return 1 if text.strip() else 0
+
+
+def task_turn_metrics(session_dir: Path) -> dict[str, Any]:
+    transcript_dir = session_dir / "transcripts"
+    if not transcript_dir.is_dir():
+        return {
+            "task_turn_counts": {},
+            "task_turn_attempts": [],
+            "max_task_turn_count": None,
+            "avg_task_turn_count": None,
+            "total_task_turn_count": None,
+        }
+    per_task: dict[str, int] = {}
+    attempts: list[dict[str, Any]] = []
+    for path in sorted(transcript_dir.glob("task_*_attempt*.log")):
+        match = TASK_TRANSCRIPT_RE.match(path.name)
+        if not match:
+            continue
+        task_number = int(match.group(1))
+        attempt = int(match.group(2))
+        task_id = f"task_{task_number:02d}"
+        turns = transcript_turn_count(read_text(path))
+        per_task[task_id] = max(per_task.get(task_id, 0), turns)
+        attempts.append(
+            {
+                "task_id": task_id,
+                "task_number": task_number,
+                "attempt": attempt,
+                "turn_count": turns,
+                "transcript": str(path.relative_to(session_dir)),
+            }
+        )
+    counts = list(per_task.values())
+    return {
+        "task_turn_counts": per_task,
+        "task_turn_attempts": attempts,
+        "max_task_turn_count": max(counts) if counts else None,
+        "avg_task_turn_count": round(sum(counts) / len(counts), 4) if counts else None,
+        "total_task_turn_count": sum(counts) if counts else None,
+    }
 
 
 def gnome_deltas(metrics: dict[str, Any], previous: list[dict[str, Any]]) -> dict[str, Any]:
@@ -490,6 +633,7 @@ def score_assessment(metrics: dict[str, Any]) -> float:
             + float(metrics.get("json_error_count") or 0)
             + float(metrics.get("tool_error_count") or 0)
             + float(metrics.get("recurring_failure_count") or 0) * 2.0
+            + float(metrics.get("evolution_friction_count") or 0)
         )
         / 12.0,
     )
@@ -522,6 +666,7 @@ def build_assessment(
     state_events = event_count(session_dir / "state" / "events.jsonl")
     audit_exists = (session_dir / "audit.jsonl").is_file()
     parsed = parse_log(log_text) if log_available else parse_log("")
+    turn_metrics = task_turn_metrics(session_dir)
     previous = previous_feedback(session_dir)
     recurrences = recurrence_metrics(parsed["failure_fingerprints"], previous)
 
@@ -571,6 +716,7 @@ def build_assessment(
         "audit_capture_coverage": audit_capture_coverage,
         "state_event_count": state_events,
         **parsed,
+        **turn_metrics,
         **recurrences,
     }
     metrics["coding_log_score"] = score_assessment(metrics)
@@ -593,9 +739,62 @@ def build_assessment(
 
 def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     lessons: list[dict[str, Any]] = []
+    if int(metrics.get("protected_file_revert_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "protected_file_revert",
+                "fingerprint": "evolution task modified protected files and was reverted",
+                "action": "route protected workflow/release changes through human-owned issues or explicit allowlists",
+            }
+        )
+    if int(metrics.get("evaluator_timeout_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "evaluator_timeout",
+                "fingerprint": "task evaluator timed out after build/test passed",
+                "action": "make evaluator checks cheaper, bounded, or resumable so quality evidence is not skipped",
+            }
+        )
+    if int(metrics.get("command_timeout_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "command_timeout",
+                "fingerprint": "agent commands timed out during evolution",
+                "action": "prefer bounded diagnostics and targeted commands before broad cargo/state scans",
+            }
+        )
+    if int(metrics.get("search_error_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "search_error",
+                "fingerprint": "search tool or grep produced an error",
+                "action": "escape generated search patterns and avoid binary/.git/target paths in evidence scans",
+            }
+        )
+    max_turns = metrics.get("max_task_turn_count")
+    if isinstance(max_turns, (int, float)) and max_turns >= 16:
+        lessons.append(
+            {
+                "kind": "high_task_turn_count",
+                "fingerprint": f"max task turn count is high: {int(max_turns)}",
+                "action": "split broad tasks earlier or add task-specific context so implementation converges in fewer turns",
+            }
+        )
+    cache_ratio = metrics.get("deepseek_cache_hit_ratio")
+    if isinstance(cache_ratio, (int, float)) and cache_ratio < 0.70:
+        lessons.append(
+            {
+                "kind": "deepseek_cache_utilization",
+                "fingerprint": f"DeepSeek cache hit ratio below target: {cache_ratio:.3f}",
+                "action": "move stable identity, policy, schema, and repo map content earlier in the prompt prefix",
+            }
+        )
+    lessons = lessons[:3]
     for item in metrics.get("failure_fingerprints", []) or []:
         if not isinstance(item, dict):
             continue
+        if len(lessons) >= 3:
+            break
         fp = str(item.get("fingerprint") or "")
         if not fp:
             continue
@@ -608,8 +807,6 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "action": "inspect the failing phase and add a targeted harness guard or eval fixture",
             }
         )
-        if len(lessons) >= 3:
-            break
     if not lessons and not metrics.get("coding_log_available"):
         lessons.append(
             {
@@ -661,6 +858,8 @@ def append_patch_evaluated(session_dir: Path, assessment: dict[str, Any]) -> Pat
                 "top_lessons": assessment.get("top_lessons", []),
                 "evidence": metrics.get("evidence", []),
                 "gnome_deltas": deltas,
+                "task_turn_counts": metrics.get("task_turn_counts", {}),
+                "task_turn_attempts": metrics.get("task_turn_attempts", []),
                 "task_lineage": {"tasks": tasks},
             },
         },
@@ -796,6 +995,40 @@ def run_self_tests() -> int:
     )
     check("benign action log lines are not failures", noisy["distinct_failure_count"] == 0, noisy["failure_fingerprints"])
     check("timestamps and retry counts are not provider errors", noisy["provider_error_count"] == 0, noisy["provider_error_count"])
+    operational = parse_log(
+        "\n".join(
+            [
+                "evolve\tRun evolution session\t2026-06-07T04:26:23Z     │ Command timed out after 60s",
+                "evolve\tRun evolution session\t2026-06-07T05:05:46Z    Evaluator: timed out — skipping eval (build+test passed)",
+                "evolve\tRun evolution session\t2026-06-07T04:50:22Z ^G    BLOCKED: Task 2 modified protected files: .github/workflows/ci.yml",
+                "evolve\tRun evolution session\t2026-06-07T04:50:22Z     Reverting Task 2 (resetting to 041da74)",
+                "evolve\tRun evolution session\t2026-06-07T04:24:55Z     │ Search error: grep: ./target/debug/deps/yyds: binary file matches",
+                "evolve\tRun evolution session\t2026-06-07T04:24:22Z   → Task 1: First real eval run",
+                "evolve\tRun evolution session\t2026-06-07T04:33:47Z     Task 1: verified OK",
+                "evolve\tRun evolution session\t2026-06-07T04:09:25Z - Cache: 84.38% hit ratio, 572,800 hit tokens, 106,004 miss tokens",
+            ]
+        )
+    )
+    check("command timeouts counted", operational["command_timeout_count"] == 1, operational)
+    check("evaluator timeouts counted", operational["evaluator_timeout_count"] == 1, operational)
+    check("protected file reverts counted", operational["protected_file_revert_count"] == 1, operational)
+    check("task reverts counted", operational["task_revert_count"] == 1, operational)
+    check("search errors counted", operational["search_error_count"] == 1, operational)
+    check("task verification rate derived", operational["task_verification_rate"] == 1.0, operational)
+    check("cache hit tokens parsed", operational["deepseek_cache_hit_tokens"] == 572800, operational)
+    check("cache miss tokens parsed", operational["deepseek_cache_miss_tokens"] == 106004, operational)
+    check(
+        "cache hit ratio parsed from tokens",
+        abs(float(operational["deepseek_cache_hit_ratio"]) - 0.843842) < 0.00001,
+        operational,
+    )
+    lesson_kinds = [
+        lesson["kind"]
+        for lesson in top_lessons({**operational, "coding_log_available": True})
+    ]
+    check("operational lessons prioritize concrete friction", "protected_file_revert" in lesson_kinds, lesson_kinds)
+    check("explicit transcript turn markers counted", transcript_turn_count("╭─ Turn 2 ─╮\n▶ read\n╭─ Turn 15 ─╮\n▶ test\n") == 15)
+    check("transcript action fallback counted", transcript_turn_count("▶ read\n▶ search\n") == 2)
     redacted = redact("error: Authorization: Bearer sk-super-secret-token-1234567890 failed")
     check("authorization bearer token redacted", "sk-super-secret" not in redacted, redacted)
     check("authorization prefix preserved", "Authorization: Bearer <redacted>" in redacted, redacted)
@@ -826,6 +1059,27 @@ def run_self_tests() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
+        session = root / "session"
+        transcript_dir = session / "transcripts"
+        transcript_dir.mkdir(parents=True)
+        (transcript_dir / "task_01_attempt1.log").write_text(
+            "╭─ Turn 2 ─╮\n▶ read\n╭─ Turn 15 ─╮\n▶ cargo test\n",
+            encoding="utf-8",
+        )
+        (transcript_dir / "task_01_attempt2.log").write_text(
+            "▶ read\n▶ search\n▶ test\n",
+            encoding="utf-8",
+        )
+        (transcript_dir / "task_02_attempt1.log").write_text(
+            "╭─ Turn 4 ─╮\n▶ edit\n",
+            encoding="utf-8",
+        )
+        turns = task_turn_metrics(session)
+        check("task turn max per task counted", turns["task_turn_counts"] == {"task_01": 15, "task_02": 4}, turns)
+        check("max task turn gnome counted", turns["max_task_turn_count"] == 15, turns)
+        check("avg task turn gnome counted", turns["avg_task_turn_count"] == 9.5, turns)
+        check("total task turn gnome counted", turns["total_task_turn_count"] == 19, turns)
+
         attempt1 = root / "attempt-1"
         attempt2 = root / "attempt-2"
         attempt1.mkdir()

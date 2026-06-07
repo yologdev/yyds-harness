@@ -49,6 +49,19 @@ GNOME_KEYS = [
     "state_capture_coverage",
     "audit_capture_coverage",
     "closed_loop_fix_rate",
+    "evolution_friction_count",
+    "command_timeout_count",
+    "evaluator_timeout_count",
+    "search_error_count",
+    "protected_file_revert_count",
+    "task_revert_count",
+    "task_verification_rate",
+    "max_task_turn_count",
+    "avg_task_turn_count",
+    "total_task_turn_count",
+    "deepseek_cache_hit_ratio",
+    "deepseek_cache_hit_tokens",
+    "deepseek_cache_miss_tokens",
 ]
 
 
