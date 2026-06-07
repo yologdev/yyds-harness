@@ -562,15 +562,17 @@ HTML = r"""<!doctype html>
     }
 
     main {
-      padding: 24px clamp(18px, 4vw, 48px) 48px;
+      width: min(1480px, 100%);
+      margin: 0 auto;
+      padding: 32px clamp(18px, 4vw, 56px) 64px;
       display: grid;
-      gap: 18px;
+      gap: 32px;
     }
 
     .toolbar {
       display: grid;
       grid-template-columns: minmax(180px, 1fr) auto auto;
-      gap: 10px;
+      gap: 12px;
       align-items: center;
     }
 
@@ -589,10 +591,53 @@ HTML = r"""<!doctype html>
       font-weight: 800;
     }
 
-    .grid {
+    .hero-report {
       display: grid;
-      grid-template-columns: repeat(6, minmax(130px, 1fr));
-      gap: 12px;
+      grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr);
+      gap: 24px;
+      padding: clamp(20px, 4vw, 36px);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(230, 238, 232, 0.9), rgba(255, 253, 250, 0.92) 56%),
+        var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-title {
+      margin: 12px 0 0;
+      max-width: 920px;
+      font-size: clamp(28px, 5vw, 62px);
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+
+    .hero-copy {
+      margin: 16px 0 0;
+      max-width: 820px;
+      color: var(--muted);
+      font-size: clamp(15px, 1.5vw, 18px);
+    }
+
+    .hero-side {
+      align-self: stretch;
+      display: grid;
+      align-content: space-between;
+      gap: 18px;
+      border-left: 1px solid var(--line);
+      padding-left: 24px;
+    }
+
+    .hero-side .value {
+      font-size: clamp(34px, 5vw, 72px);
+    }
+
+    .grid,
+    .signal-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(170px, 1fr));
+      gap: 14px;
     }
 
     .metric, .panel {
@@ -603,8 +648,8 @@ HTML = r"""<!doctype html>
     }
 
     .metric {
-      min-height: 118px;
-      padding: 14px;
+      min-height: 132px;
+      padding: 18px;
       display: grid;
       align-content: space-between;
     }
@@ -632,49 +677,48 @@ HTML = r"""<!doctype html>
 
     .split {
       display: grid;
-      grid-template-columns: minmax(320px, 1.2fr) minmax(280px, 0.8fr);
-      gap: 18px;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 0.42fr);
+      gap: 24px;
       align-items: start;
     }
 
     .chart-dashboard {
       display: grid;
-      grid-template-columns: minmax(420px, 1.55fr) minmax(300px, 0.85fr);
-      gap: 18px;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 24px;
       align-items: start;
     }
 
     .chart-dashboard.secondary {
-      grid-template-columns: minmax(320px, 0.95fr) minmax(360px, 1.05fr) minmax(320px, 0.95fr);
+      grid-template-columns: minmax(320px, 0.9fr) minmax(420px, 1.1fr);
     }
 
     .signal-rail {
-      display: grid;
-      gap: 18px;
+      display: none;
     }
 
     .panel.feature .panel-body {
-      gap: 16px;
-      min-height: 430px;
+      gap: 22px;
+      min-height: 560px;
     }
 
     .panel.compact .panel-body {
-      gap: 12px;
+      gap: 16px;
     }
 
     .panel h2 {
       margin: 0;
-      padding: 14px 16px;
+      padding: 18px 22px;
       border-bottom: 1px solid var(--line);
-      font-size: 15px;
+      font-size: 17px;
       letter-spacing: 0;
       text-transform: uppercase;
     }
 
     .panel-body {
-      padding: 14px 16px 16px;
+      padding: 20px 22px 24px;
       display: grid;
-      gap: 14px;
+      gap: 20px;
     }
 
     .explain {
@@ -697,7 +741,7 @@ HTML = r"""<!doctype html>
     }
 
     .bar-track {
-      height: 14px;
+      height: 16px;
       border: 1px solid var(--line);
       border-radius: 999px;
       overflow: hidden;
@@ -743,7 +787,28 @@ HTML = r"""<!doctype html>
     .detail-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
+      gap: 14px;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: end;
+      margin-bottom: 14px;
+    }
+
+    .section-head h2 {
+      margin: 0;
+      font-size: clamp(22px, 3vw, 34px);
+      line-height: 1.05;
+      text-transform: uppercase;
+    }
+
+    .section-head p {
+      margin: 0;
+      max-width: 680px;
+      color: var(--muted);
     }
 
     .mini-list {
@@ -762,9 +827,40 @@ HTML = r"""<!doctype html>
 
     .work-row {
       display: grid;
-      grid-template-columns: minmax(180px, 0.7fr) minmax(260px, 1.3fr);
-      gap: 12px;
+      grid-template-columns: minmax(220px, 0.42fr) minmax(0, 1fr);
+      gap: 24px;
       align-items: start;
+      padding: 18px;
+    }
+
+    .work-meta {
+      display: grid;
+      gap: 10px;
+    }
+
+    .work-title {
+      font-size: 17px;
+      line-height: 1.25;
+    }
+
+    .work-facts {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(90px, 1fr));
+      gap: 10px;
+    }
+
+    .fact {
+      border-top: 2px solid var(--line);
+      padding-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .fact strong {
+      display: block;
+      color: var(--ink);
+      font-size: 18px;
+      line-height: 1.1;
     }
 
     details.work-details {
@@ -779,9 +875,9 @@ HTML = r"""<!doctype html>
 
     .sparkline {
       width: 100%;
-      min-height: 250px;
+      min-height: 420px;
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 8px;
       background:
         linear-gradient(rgba(21, 20, 15, 0.05) 1px, transparent 1px),
         linear-gradient(90deg, rgba(21, 20, 15, 0.03) 1px, transparent 1px),
@@ -793,15 +889,15 @@ HTML = r"""<!doctype html>
     .sparkline svg {
       display: block;
       width: 100%;
-      height: 250px;
+      height: 420px;
     }
 
     .panel.feature .sparkline {
-      min-height: 300px;
+      min-height: 440px;
     }
 
     .panel.feature .sparkline svg {
-      height: 300px;
+      height: 440px;
     }
 
     .sparkline text {
@@ -820,31 +916,31 @@ HTML = r"""<!doctype html>
 
     .heatmap {
       display: grid;
-      gap: 8px;
+      gap: 12px;
       overflow-x: auto;
     }
 
     .heat-row {
       display: grid;
-      grid-template-columns: minmax(180px, 0.7fr) minmax(240px, 1.3fr);
-      gap: 10px;
+      grid-template-columns: minmax(220px, 0.55fr) minmax(280px, 1fr);
+      gap: 16px;
       align-items: center;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 13px;
     }
 
     .heat-cells {
       display: grid;
       grid-auto-flow: column;
-      grid-auto-columns: 12px;
-      gap: 3px;
+      grid-auto-columns: 18px;
+      gap: 6px;
       min-width: max-content;
     }
 
     .heat-cell {
-      width: 12px;
-      height: 12px;
-      border-radius: 2px;
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
       border: 1px solid var(--line);
       background: #eef2ed;
     }
@@ -900,15 +996,15 @@ HTML = r"""<!doctype html>
     .violet { color: var(--violet); }
     .stack {
       display: grid;
-      gap: 10px;
-      padding: 14px;
+      gap: 14px;
+      padding: 0;
     }
 
     .item {
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 8px;
       background: #fffdf7;
-      padding: 11px;
+      padding: 14px;
     }
 
     .item strong {
@@ -935,16 +1031,30 @@ HTML = r"""<!doctype html>
     }
 
     @media (max-width: 980px) {
-      .grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
+      .hero-report,
+      .work-row { grid-template-columns: 1fr; }
+      .hero-side {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+        padding-left: 0;
+        padding-top: 18px;
+      }
+      .grid,
+      .signal-strip { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
       .chart-dashboard,
       .chart-dashboard.secondary { grid-template-columns: 1fr; }
       .split { grid-template-columns: 1fr; }
       .toolbar { grid-template-columns: 1fr; }
+      .work-facts { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
     }
 
     @media (max-width: 520px) {
-      .grid { grid-template-columns: 1fr; }
+      main { gap: 24px; }
+      .grid,
+      .signal-strip,
+      .work-facts { grid-template-columns: 1fr; }
       .detail-grid { grid-template-columns: 1fr; }
+      .section-head { display: grid; }
       header { position: static; }
     }
   </style>
@@ -971,69 +1081,53 @@ HTML = r"""<!doctype html>
       </select>
       <button id="reset" type="button">Reset</button>
     </section>
-    <section class="grid" id="summary"></section>
+    <section class="hero-report" id="heroSummary"></section>
+    <section class="signal-strip" id="summary"></section>
     <section class="chart-dashboard">
       <section class="panel feature">
-        <h2>Gnome Trends</h2>
+        <h2>Primary Gnome Trend</h2>
         <div class="panel-body">
-          <p class="explain">The main longitudinal view: select a numeric gnome and watch whether the harness is getting healthier across audited sessions. Missing values are gaps, not zeroes.</p>
+          <p class="explain">The main longitudinal view. Select one numeric gnome and read the trend without competing charts. Missing values are gaps, not zeroes.</p>
           <select id="gnomeMetric" aria-label="Gnome metric"></select>
           <div id="gnomeTrend"></div>
         </div>
       </section>
-      <aside class="signal-rail" aria-label="Run status charts">
-        <section class="panel compact">
-          <h2>Run Health</h2>
-          <div class="panel-body">
-            <p class="explain">Did the autonomous session complete useful work and keep the harness green?</p>
-            <div id="healthChart"></div>
-            <div class="legend">
-              <span class="passed">passed</span>
-              <span class="partial">partial</span>
-              <span class="attention">needs attention</span>
-              <span class="reverted">reverted</span>
-            </div>
-          </div>
-        </section>
-        <section class="panel compact">
-          <h2>Task Throughput</h2>
-          <div class="panel-body">
-            <p class="explain">Successful tasks divided by attempted tasks across the visible audit window.</p>
-            <div id="taskChart"></div>
-          </div>
-        </section>
-      </aside>
+    </section>
+    <section aria-label="Session work">
+      <div class="section-head">
+        <h2>Session Work</h2>
+        <p>What actually happened behind the metrics: completed tasks, changed files, validations, commits, and audit evidence.</p>
+      </div>
+      <div class="stack" id="sessionWork"></div>
     </section>
     <section class="chart-dashboard secondary">
       <section class="panel compact">
-        <h2>State Signals</h2>
+        <h2>Run Signals</h2>
         <div class="panel-body">
-          <p class="explain">Top observed event types from yoagent-state.</p>
+          <p class="explain">Compact operational signals for the visible audit window.</p>
+          <div id="healthChart"></div>
+          <div class="legend">
+            <span class="passed">passed</span>
+            <span class="partial">partial</span>
+            <span class="attention">needs attention</span>
+            <span class="reverted">reverted</span>
+          </div>
+          <div id="taskChart"></div>
           <div id="eventChart"></div>
         </div>
       </section>
       <section class="panel compact">
-        <h2>Latest Gnomes</h2>
+        <h2>Gnome Evidence</h2>
         <div class="panel-body">
-          <p class="explain">Compact health signals from state summaries: cost, latency, cache, failures, workflow quality, and feedback-loop quality.</p>
+          <p class="explain">Priority health signals first, followed by metric availability. Availability means the session emitted the metric; missing does not mean zero.</p>
           <div id="gnomes"></div>
-        </div>
-      </section>
-      <section class="panel compact">
-        <h2>Gnome Availability</h2>
-        <div class="panel-body">
-          <p class="explain">Which sessions emitted each metric. This explains why a trend may have gaps.</p>
           <div id="gnomeAvailability"></div>
         </div>
       </section>
     </section>
-    <section class="panel">
-      <h2>Session Work</h2>
-      <div class="stack" id="sessionWork"></div>
-    </section>
     <section class="split">
       <section class="panel">
-        <h2>Session Timeline</h2>
+        <h2>Raw Timeline</h2>
         <div class="table-wrap">
           <table>
             <thead>
@@ -1049,9 +1143,11 @@ HTML = r"""<!doctype html>
           </table>
         </div>
       </section>
-      <section class="panel">
+      <section class="panel compact">
         <h2>Evidence Queue</h2>
-        <div class="stack" id="evidence"></div>
+        <div class="panel-body">
+          <div class="stack" id="evidence"></div>
+        </div>
       </section>
     </section>
   </main>
@@ -1090,6 +1186,12 @@ HTML = r"""<!doctype html>
       audit_capture_coverage: "Audit capture",
       closed_loop_fix_rate: "Closed-loop fix rate"
     };
+    const priorityGnomes = [
+      "coding_log_score",
+      "task_success_rate",
+      "workflow_success_rate",
+      "state_capture_coverage"
+    ];
 
     function escapeHtml(value) {
       return String(value).replace(/[&<>"']/g, char => ({
@@ -1114,6 +1216,23 @@ HTML = r"""<!doctype html>
     function percent(value) {
       if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
       return `${fmt.format(Number(value) * 100)}%`;
+    }
+
+    function metricValue(key, value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return text(value);
+      const n = Number(value);
+      if (key.endsWith("_rate") || key.endsWith("_ratio") || key.endsWith("_coverage")) return percent(n);
+      if (key === "coding_log_score" || key === "coding_log_confidence") return fmt.format(n);
+      return text(n);
+    }
+
+    function latestSession(sessions) {
+      return (sessions || []).slice(-1)[0] || null;
+    }
+
+    function latestMetric(agg, key) {
+      const value = (agg.latest_gnomes || {})[key];
+      return value === undefined ? null : value;
     }
 
     function healthOf(session) {
@@ -1229,14 +1348,49 @@ HTML = r"""<!doctype html>
       </div>`;
     }
 
+    function renderHero(sessions, agg) {
+      const session = latestSession(sessions);
+      const health = session ? healthOf(session) : "attention";
+      const work = session ? (session.work_summary || {}) : {};
+      const score = latestMetric(agg, "coding_log_score");
+      const stateCapture = latestMetric(agg, "state_capture_coverage");
+      const heroTitle = session
+        ? `${text(session.id)} finished ${text(session.tasks_succeeded || 0)}/${text(session.tasks_attempted || 0)} tasks`
+        : "No audit-backed evolution sessions yet";
+      const heroCopy = session
+        ? text(work.headline || "No detailed work signals captured")
+        : "Run an evolution session and push audit evidence to populate this report.";
+      document.getElementById("heroSummary").innerHTML = `
+        <div>
+          <span class="pill ${healthClass(health)}">${text(health)}</span>
+          <h2 class="hero-title">${heroTitle}</h2>
+          <p class="hero-copy">${heroCopy}</p>
+        </div>
+        <aside class="hero-side">
+          <div>
+            <div class="label">Latest coding score</div>
+            <div class="value">${score === null ? "-" : metricValue("coding_log_score", score)}</div>
+            <p class="muted">Gnome score from the latest log-feedback evidence.</p>
+          </div>
+          <div class="detail-grid">
+            <div>
+              <div class="label">State capture</div>
+              <strong>${stateCapture === null ? "-" : metricValue("state_capture_coverage", stateCapture)}</strong>
+            </div>
+            <div>
+              <div class="label">Audit evals</div>
+              <strong>${text(agg.eval_count || 0)}</strong>
+            </div>
+          </div>
+        </aside>`;
+    }
+
     function renderSummary(agg) {
       const rate = agg.task_success_rate;
       const cards = [
         ["Sessions", agg.session_count || 0, "audit-backed runs"],
         ["Task success", rate === null || rate === undefined ? "-" : percent(rate), `${text(agg.tasks_succeeded || 0)}/${text(agg.tasks_attempted || 0)} tasks`],
         ["Green runs", agg.health?.passed || 0, "build + tests passed"],
-        ["Events", agg.event_count || 0, "state records"],
-        ["Evaluations", agg.eval_count || 0, "patch eval records"],
         ["Blockers", agg.blocker_count || 0, "real blocking signals"],
       ];
       document.getElementById("summary").innerHTML = cards.map(([label, value, hint]) => `
@@ -1265,13 +1419,20 @@ HTML = r"""<!doctype html>
         ? eventRows.map(([kind, count]) => barRow(kind, count, eventMax, "info")).join("")
         : `<div class="empty">No state events captured yet.</div>`;
 
-      const gnomeRows = Object.entries(agg.latest_gnomes || {}).slice(0, 12);
+      const allGnomes = agg.latest_gnomes || {};
+      const priorityRows = priorityGnomes
+        .filter(key => Object.prototype.hasOwnProperty.call(allGnomes, key))
+        .map(key => [key, allGnomes[key]]);
+      const fallbackRows = Object.entries(allGnomes)
+        .filter(([key]) => !priorityGnomes.includes(key))
+        .slice(0, Math.max(0, 4 - priorityRows.length));
+      const gnomeRows = priorityRows.concat(fallbackRows).slice(0, 4);
       document.getElementById("gnomes").innerHTML = gnomeRows.length
         ? `<div class="detail-grid">${gnomeRows.map(([key, value]) => `
           <article class="item">
-            <span class="pill soft">${text(key)}</span>
             <strong>${text(gnomeLabels[key] || key)}</strong>
-            <p>${text(value)}</p>
+            <p class="value">${metricValue(key, value)}</p>
+            <small class="muted">${text(key)}</small>
           </article>
         `).join("")}</div>`
         : (agg.gnome_keys || []).length
@@ -1293,7 +1454,7 @@ HTML = r"""<!doctype html>
         });
       });
       keys.sort();
-      const preferred = ["coding_log_score", "task_success_rate", "workflow_success_rate", "cache_hit_ratio"];
+      const preferred = ["coding_log_score", "task_success_rate", "workflow_success_rate", "state_capture_coverage", "cache_hit_ratio"];
       preferred.reverse().forEach(key => {
         const idx = keys.indexOf(key);
         if (idx >= 0) {
@@ -1325,9 +1486,10 @@ HTML = r"""<!doctype html>
       if (!key || points.length < 2) {
         return `<div class="empty">Need at least two sessions with numeric values for a trend.</div>`;
       }
-      const width = 720;
-      const height = 210;
-      const pad = 26;
+      const width = 920;
+      const height = 300;
+      const padX = 54;
+      const padY = 36;
       const values = points.map(point => point.value);
       let min = Math.min(...values);
       let max = Math.max(...values);
@@ -1337,8 +1499,8 @@ HTML = r"""<!doctype html>
       }
       const maxIndex = Math.max(rows.length - 1, 1);
       const xy = point => {
-        const x = pad + (point.index / maxIndex) * (width - pad * 2);
-        const y = height - pad - ((point.value - min) / (max - min)) * (height - pad * 2);
+        const x = padX + (point.index / maxIndex) * (width - padX * 2);
+        const y = height - padY - ((point.value - min) / (max - min)) * (height - padY * 2);
         return [x, y];
       };
       const path = points.map((point, idx) => {
@@ -1347,16 +1509,16 @@ HTML = r"""<!doctype html>
       }).join(" ");
       const circles = points.map(point => {
         const [x, y] = xy(point);
-        return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4"><title>${text(point.row.session_id)}: ${text(point.value)}</title></circle>`;
+        return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="6"><title>${text(point.row.session_id)}: ${text(point.value)}</title></circle>`;
       }).join("");
       return `<div class="sparkline">
         <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${text(key)} trend">
-          <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}" stroke="#cbd5cf" />
-          <line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" stroke="#cbd5cf" />
-          <text x="${pad}" y="16">${text(max)}</text>
-          <text x="${pad}" y="${height - 6}">${text(min)}</text>
-          <path d="${path}" fill="none" stroke="#285c92" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-          <g fill="#1b7a58" stroke="#fffdfa" stroke-width="2">${circles}</g>
+          <line x1="${padX}" y1="${padY}" x2="${padX}" y2="${height - padY}" stroke="#cbd5cf" />
+          <line x1="${padX}" y1="${height - padY}" x2="${width - padX}" y2="${height - padY}" stroke="#cbd5cf" />
+          <text x="${padX}" y="22">${text(max)}</text>
+          <text x="${padX}" y="${height - 8}">${text(min)}</text>
+          <path d="${path}" fill="none" stroke="#285c92" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+          <g fill="#1b7a58" stroke="#fffdfa" stroke-width="3">${circles}</g>
         </svg>
       </div>
       <div class="legend"><span><span class="dot"></span>${text(gnomeLabels[key] || key)}</span><span>${text(points.length)} of ${text(rows.length)} visible sessions emitted this metric</span></div>`;
@@ -1368,7 +1530,10 @@ HTML = r"""<!doctype html>
         panel.innerHTML = `<div class="empty">No gnome history in the current filter.</div>`;
         return;
       }
-      panel.innerHTML = `<div class="heatmap">${keys.slice(0, 12).map(key => `
+      const ordered = priorityGnomes
+        .filter(key => keys.includes(key))
+        .concat(keys.filter(key => !priorityGnomes.includes(key)));
+      panel.innerHTML = `<div class="heatmap">${ordered.slice(0, 12).map(key => `
         <div class="heat-row">
           <strong>${text(gnomeLabels[key] || key)}</strong>
           <div class="heat-cells">${rows.map(row => {
@@ -1376,7 +1541,7 @@ HTML = r"""<!doctype html>
             return `<span class="heat-cell ${on ? "on" : ""}" title="${text(row.session_id)} ${on ? text(row.values[key]) : "missing"}"></span>`;
           }).join("")}</div>
         </div>
-      `).join("")}</div>`;
+      `).join("")}</div><p class="explain">Each cell is one visible session. Filled means the metric was emitted; blank means missing, not zero.</p>`;
     }
 
     function renderGnomeHistory(sessions) {
@@ -1415,29 +1580,30 @@ HTML = r"""<!doctype html>
         const sourceFiles = (work.source_changed_files || []).length ? work.source_changed_files : work.edited_files;
         const phaseText = Object.entries(transcripts.phase_counts || {}).map(([phase, count]) => `${phase} ${count}`).join(", ");
         return `<article class="item work-row">
-          <div>
+          <div class="work-meta">
             <span class="pill ${healthClass(healthOf(session))}">${text(healthOf(session))}</span>
-            <strong>${text(session.id)}</strong>
+            <strong class="work-title">${text(session.id)}</strong>
             <p class="muted">${text(work.headline || "No detailed work signals captured")}</p>
           </div>
           <div>
-            <div class="legend">
-              <span>${text(phaseText || "no transcripts")}</span>
-              <span>${text(work.eval_count || 0)} evals</span>
-              <span>${text(work.landed_patch_count || work.source_patch_count || 0)} landed patches</span>
-              <span>${text(work.state_patch_count || 0)} state patches</span>
-              <span>${text(work.decision_count || 0)} decisions</span>
+            <div class="work-facts">
+              <div class="fact"><strong>${text(session.tasks_succeeded || 0)}/${text(session.tasks_attempted || 0)}</strong>tasks</div>
+              <div class="fact"><strong>${text(sourceFiles.length || 0)}</strong>repo files</div>
+              <div class="fact"><strong>${text(work.eval_count || 0)}</strong>evals</div>
+              <div class="fact"><strong>${text(work.landed_patch_count || work.source_patch_count || 0)}</strong>landed patches</div>
+              <div class="fact"><strong>${text(work.decision_count || 0)}</strong>decisions</div>
             </div>
             <details class="work-details">
-              <summary>Show work evidence</summary>
+              <summary>Open audit evidence</summary>
               <div class="detail-grid">
-                <div><strong>Repo files changed</strong>${listItems(sourceFiles, "No repo changes recorded.")}</div>
-                <div><strong>Landed commits</strong>${commitItems(work.commits)}</div>
-                <div><strong>Commands/checks</strong>${listItems(work.commands, "No command events recorded.")}</div>
-                <div><strong>State edit events</strong>${listItems(work.edited_files, "No FileEdited events recorded.")}</div>
-                <div><strong>Files read</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
+                <div><strong>Changed</strong>${listItems(sourceFiles, "No repo changes recorded.")}</div>
+                <div><strong>Committed</strong>${commitItems(work.commits)}</div>
+                <div><strong>Validated</strong>${listItems(work.commands, "No command events recorded.")}</div>
+                <div><strong>Read</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
+                <div><strong>State edits</strong>${listItems(work.edited_files, "No FileEdited events recorded.")}</div>
                 <div><strong>Failures</strong>${listItems(work.failed_commands, "No failed commands recorded.")}</div>
               </div>
+              <p class="muted">Transcript phases: ${text(phaseText || "no transcripts")}. Audit files: <a href="${text(session.audit_url)}">open session evidence</a>.</p>
             </details>
           </div>
         </article>`;
@@ -1503,6 +1669,7 @@ HTML = r"""<!doctype html>
       const data = state.data || { sessions: [], aggregate: {} };
       const filtered = (data.sessions || []).filter(matches);
       const visibleAgg = aggregateSessions(filtered, data.aggregate || {});
+      renderHero(filtered, visibleAgg);
       renderSummary(visibleAgg);
       renderCharts(visibleAgg);
       renderGnomeHistory(filtered);
