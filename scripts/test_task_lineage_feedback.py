@@ -237,7 +237,11 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(task["source_files"], ["src/state.rs"])
             self.assertEqual(task["eval"]["verdict"], "PASS")
             self.assertIn("coding_log_score", task["gnome_metrics"])
+            self.assertIn("task_manifest_available", task["gnome_metrics"])
+            self.assertIn("task_artifact_coverage", task["gnome_metrics"])
             self.assertGreater(task["gnome_deltas"]["coding_log_score"], 0)
+            self.assertIn("task_manifest_available", summary["latest_gnomes"])
+            self.assertIn("task_artifact_coverage", summary["latest_gnomes"])
 
     def test_summary_merges_post_wrapup_commit_links(self):
         with tempfile.TemporaryDirectory() as tmp:
