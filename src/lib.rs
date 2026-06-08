@@ -1023,6 +1023,7 @@ pub async fn run_cli() {
         }),
     ) {
         eprintln!("{RED}error:{RESET} failed to initialize state recorder: {e}");
+        state::stash_diagnostic_error(&format!("state init: {e}"));
         exit_with_state(1);
     }
     let _run_completion = state::RunCompletionGuard::completed_on_drop();
