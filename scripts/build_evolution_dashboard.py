@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from state_graph_tools import build_causal_chains, evolution_suggestions
+
 
 REPO_URL = "https://github.com/yologdev/yyds-harness"
 
@@ -399,6 +401,8 @@ def work_summary(
     transcript_data = transcript_summary(session_dir)
     task_manifest = task_manifest_summary(session_dir)
     task_artifacts = task_artifact_summary(session_dir)
+    causal_chains = build_causal_chains(session_dir)
+    suggestions = evolution_suggestions(session_dir)
     event_data = summarize_events_for_work(load_jsonl(session_dir / "state" / "events.jsonl"))
     source_files = compact_list(
         [
@@ -442,6 +446,8 @@ def work_summary(
         "transcripts": transcript_data,
         "task_manifest": task_manifest,
         "task_artifacts": task_artifacts,
+        "causal_chains": causal_chains,
+        "evolution_suggestions": suggestions,
         "edited_files": event_data["edited_files"],
         "source_changed_files": source_files,
         "commits": serialize_commits(commits),
@@ -1416,6 +1422,7 @@ HTML = r"""<!doctype html>
       task_manifest_available: "Task manifest available",
       task_artifact_coverage: "Task artifact coverage",
       task_spec_quality_score: "Task spec quality",
+      state_replay_integrity_rate: "State replay integrity",
       evaluator_unverified_count: "Evaluator unverified count",
       max_task_turn_count: "Max task turns",
       avg_task_turn_count: "Avg task turns",
@@ -1892,6 +1899,27 @@ HTML = r"""<!doctype html>
       }).join("");
     }
 
+    function renderCausalChains(work) {
+      const rows = (work.causal_chains || []).slice(0, 6);
+      if (!rows.length) return `<p class="muted">No causal-chain rows recorded yet.</p>`;
+      return `<ul class="mini-list">${rows.map(row => {
+        const planned = (row.planned_files || []).slice(0, 2).join(", ") || "no planned files";
+        const touched = (row.source_files || row.touched_files || []).slice(0, 2).join(", ") || "no touched files";
+        const commits = (row.commit_shas || []).map(sha => String(sha).slice(0, 7)).join(", ") || "no commit";
+        const evalText = row.eval_verdict || (row.eval_statuses || []).join(", ") || "no eval";
+        const deltaCount = Object.keys(row.gnome_deltas || {}).length;
+        return `<li>${text(row.task_id || "")}: ${text(row.title || "")}<br><span class="muted">plan ${text(planned)} → touched ${text(touched)} → ${text(commits)} → eval ${text(evalText)} → ${text(deltaCount)} gnome delta(s)</span></li>`;
+      }).join("")}</ul>`;
+    }
+
+    function renderEvolutionSuggestions(work) {
+      const rows = (work.evolution_suggestions || []).slice(0, 4);
+      if (!rows.length) return `<p class="muted">No graph-derived next-task suggestions for this session.</p>`;
+      return `<ul class="mini-list">${rows.map(row => {
+        return `<li><strong>${text(row.title || "")}</strong><br><span class="muted">${text(row.reason || "")} ${text(row.metric || "")}=${text(row.value)}</span></li>`;
+      }).join("")}</ul>`;
+    }
+
     function renderSessionWork(sessions) {
       const panel = document.getElementById("sessionWork");
       if (!sessions.length) {
@@ -1927,6 +1955,8 @@ HTML = r"""<!doctype html>
                 <div><strong>Source commits</strong>${sourceCommitItems(work)}</div>
                 <div><strong>Bookkeeping commits</strong>${bookkeepingCommitItems(work)}</div>
                 <div><strong>Task lineage</strong>${renderTaskLineage(work)}</div>
+                <div><strong>Causal chains</strong>${renderCausalChains(work)}</div>
+                <div><strong>Next-task suggestions</strong>${renderEvolutionSuggestions(work)}</div>
                 <div><strong>Task decision evidence</strong>${renderTaskArtifacts(session, work)}</div>
                 <div><strong>Agent transcripts</strong>${renderTranscriptList(session, work)}</div>
                 <div><strong>Validated</strong>${listItems(work.commands, "No command events recorded.")}</div>

@@ -90,6 +90,12 @@ during session wrap-up instead of inside the task loop, the harness records a
 `TaskLineageLinked` event that connects the wrap-up commit back to the task by
 source-file overlap.
 
+The state layer is intentionally ActiveGraph-inspired without depending on the
+ActiveGraph runtime: `state/events.jsonl` is the source of truth, while SQLite,
+task summaries, and dashboard JSON are rebuildable projections. The contract is
+documented in
+[`docs/activegraph-yoagent-state-contract.md`](docs/activegraph-yoagent-state-contract.md).
+
 ## Gnome Metrics
 
 Gnome metrics are the compact health signals that turn raw logs and state events
@@ -103,7 +109,7 @@ They help yyds evolve the harness in four practical ways:
 | Find weak spots | `distinct_failure_count`, `tool_error_count`, `json_error_count`, `state_failure_count`, `repair_loop_count` | Shows which friction happened during the run. |
 | Score whether a change helped | `coding_log_score`, `workflow_success_rate`, `session_success_rate`, `task_success_rate` | Compares the latest run against the previous baseline. |
 | Prioritize reusable fixes | `recurring_failure_count`, `max_failure_fingerprint_recurrence`, `closed_loop_fix_rate` | Promotes repeated friction into a harness-level fix. |
-| Check the feedback loop itself | `coding_log_available`, `coding_log_confidence`, `state_capture_coverage`, `audit_capture_coverage` | Verifies that evidence was captured well enough to learn from it. |
+| Check the feedback loop itself | `coding_log_available`, `coding_log_confidence`, `state_capture_coverage`, `audit_capture_coverage`, `state_replay_integrity_rate` | Verifies that evidence was captured well enough to learn from it and can be replayed from source events. |
 | Improve evolution ergonomics | `evolution_friction_count`, `command_timeout_count`, `evaluator_timeout_count`, `protected_file_revert_count`, `search_error_count`, `max_task_turn_count` | Turns real action-log and transcript friction into concrete harness tasks. |
 | Optimize DeepSeek usage | `deepseek_cache_hit_ratio`, `deepseek_cache_hit_tokens`, `deepseek_cache_miss_tokens` | Shows whether stable prompt prefixes are actually being reused. |
 
@@ -276,6 +282,7 @@ See [`docs/src/guides/fork.md`](docs/src/guides/fork.md) for the full guide.
 src/                         Rust CLI, REPL, tools, commands, state, DeepSeek support
 scripts/evolve.sh            Autonomous evolution session pipeline
 scripts/task_lineage.py       Per-task touched-file, commit, eval, and gnome lineage
+scripts/state_graph_tools.py  Replay checks, causal chains, baseline comparisons, suggestions
 scripts/log_feedback.py      GitHub Actions log feedback -> PatchEvaluated metrics
 scripts/summarize_state_gnomes.py
                              State events -> gnome summary

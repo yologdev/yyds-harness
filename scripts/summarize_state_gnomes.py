@@ -61,6 +61,7 @@ GNOME_KEYS = [
     "task_manifest_available",
     "task_artifact_coverage",
     "task_spec_quality_score",
+    "state_replay_integrity_rate",
     "evaluator_unverified_count",
     "max_task_turn_count",
     "avg_task_turn_count",

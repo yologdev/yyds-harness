@@ -25,6 +25,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from state_graph_tools import evolution_suggestions, ordered_sessions
+
 # ── Configuration constants ──────────────────────────────────────────────
 WINDOW_SESSIONS = 10           # last N sessions in the outcomes section
 WINDOW_DAYS = 14               # git log window
@@ -452,6 +454,27 @@ def render_log_feedback(feedbacks: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def render_graph_suggestions(audit_dir: Path) -> str:
+    sessions = ordered_sessions(audit_dir)
+    if not sessions:
+        return ""
+    latest = sessions[-1]
+    suggestions = evolution_suggestions(latest, limit=3)
+    if not suggestions:
+        return ""
+    lines = ["## Graph-derived next-task pressure"]
+    for suggestion in suggestions:
+        lines.append(
+            "- {} ({}={}): {}".format(
+                str(suggestion.get("title") or "")[:90],
+                suggestion.get("metric"),
+                suggestion.get("value"),
+                str(suggestion.get("reason") or "")[:100],
+            )
+        )
+    return "\n".join(lines)
+
+
 # ── Final assembly ───────────────────────────────────────────────────────
 
 
@@ -507,6 +530,9 @@ def main() -> int:
     if s:
         sections.append(s)
     s = render_log_feedback(log_feedback)
+    if s:
+        sections.append(s)
+    s = render_graph_suggestions(audit_dir)
     if s:
         sections.append(s)
 

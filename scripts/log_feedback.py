@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from state_graph_tools import replay_check_session
+
 
 ERROR_LINE_RE = re.compile(
     r"(##\[error\]|::error::|\berror(?:\[[^\]]+\])?:|\berror\[[^\]]+\]|\bfatal:|\bpanicked\b|\bexception\b|\btraceback\b|timed out|exit code [1-9]\d*|process completed with exit code [1-9]\d*|test result: failed)",
@@ -92,6 +94,7 @@ GNOME_KEYS = [
     "task_manifest_available",
     "task_artifact_coverage",
     "task_spec_quality_score",
+    "state_replay_integrity_rate",
     "evaluator_unverified_count",
     "max_task_turn_count",
     "avg_task_turn_count",
@@ -548,6 +551,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         if isinstance(score, (int, float)):
             quality_scores.append(float(score))
     artifact_coverage = ratio(len(task_dirs), attempted) if attempted else (1.0 if not task_dirs else None)
+    replay = replay_check_session(session_dir)
     return {
         "task_manifest_available": bool(manifest),
         "planner_no_task_count": 1 if planner.get("planning_failed") else 0,
@@ -558,6 +562,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "task_spec_quality_score": round(sum(quality_scores) / len(quality_scores), 4)
         if quality_scores
         else None,
+        "state_replay_integrity_rate": 1.0 if replay.get("ok") else 0.0,
     }
 
 
