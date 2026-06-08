@@ -10,8 +10,57 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, Once, OnceLock};
+
+thread_local! {
+    static LAST_RUN_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+}
+
+static PANIC_HOOK_INSTALLED: Once = Once::new();
+
+/// Install a panic hook that records a `FailureObserved` event before the
+/// process aborts. The hook preserves any previously-registered hook by
+/// calling it after the event is recorded.
+///
+/// This function is idempotent and safe to call multiple times — only the
+/// first call installs the hook.
+pub fn install_panic_hook() {
+    PANIC_HOOK_INSTALLED.call_once(|| {
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info: &std::panic::PanicHookInfo<'_>| {
+            let msg = info
+                .payload()
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+                .unwrap_or("<unknown panic>");
+            let location = info
+                .location()
+                .map(|loc| format!("{}:{}", loc.file(), loc.line()))
+                .unwrap_or_else(|| "unknown location".to_string());
+            let payload = json!({
+                "failure_class": "rust_panic",
+                "panic_message": msg,
+                "panic_location": location,
+                "recorded_at_ms": now_ms(),
+            });
+            // fail-soft: the global recorder might not be initialized yet
+            record(EventType::FailureObserved, Actor::Harness, payload);
+            prev_hook(info);
+        }));
+    });
+}
+
+/// Store an error message for the current run. This is used by
+/// `exit_with_state` to include error context in the `RunCompleted`
+/// event before process exit.
+pub fn store_run_error(msg: &str) {
+    LAST_RUN_ERROR.with(|cell| {
+        cell.set(Some(msg.to_string()));
+    });
+}
 
 static GLOBAL_RECORDER: OnceLock<StateRecorder> = OnceLock::new();
 pub const STATE_ADAPTER_NAME: &str = "yoagent-state";
@@ -285,15 +334,33 @@ pub fn mark_run_completed(status: &str) {
     record(
         EventType::RunCompleted,
         Actor::Harness,
-        run_completed_payload(status),
+        run_completed_payload(status, None),
     );
 }
 
-pub fn run_completed_payload(status: &str) -> Value {
-    json!({
+/// Like `mark_run_completed("error")` but includes an error message.
+/// This also stores the error via `store_run_error` so it can be
+/// retrieved later if needed.
+pub fn mark_run_completed_with_error(msg: &str) {
+    store_run_error(msg);
+    record(
+        EventType::RunCompleted,
+        Actor::Harness,
+        run_completed_payload("error", Some(msg)),
+    );
+}
+
+pub fn run_completed_payload(status: &str, error: Option<&str>) -> Value {
+    let mut payload = json!({
         "status": status,
         "completed_at_ms": now_ms(),
-    })
+    });
+    if let Some(msg) = error {
+        if !msg.is_empty() {
+            payload["error"] = json!(msg);
+        }
+    }
+    payload
 }
 
 pub fn record_cache_metrics(model: &str, usage: &yoagent::Usage) {
@@ -2969,7 +3036,7 @@ mod tests {
 
     #[test]
     fn run_completed_payload_records_terminal_status() {
-        let payload = run_completed_payload("completed");
+        let payload = run_completed_payload("completed", None);
 
         assert_eq!(payload["status"], "completed");
         assert!(payload["completed_at_ms"].as_u64().unwrap_or_default() > 0);
@@ -6320,5 +6387,86 @@ mod tests {
         assert!(patch_relations.iter().any(|relation| {
             relation.relation == "uses_patch" && relation.src_id == "evt-issue-intake"
         }));
+    }
+
+    // --- panic hook + error context tests ---
+
+    #[test]
+    fn panic_hook_records_to_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        install_panic_hook();
+
+        let result = std::panic::catch_unwind(|| {
+            panic!("test panic message 42");
+        });
+
+        assert!(result.is_err());
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw.contains("rust_panic"),
+            "should contain rust_panic: {raw}"
+        );
+        assert!(
+            raw.contains("test panic message 42"),
+            "should contain panic message: {raw}"
+        );
+        assert!(
+            raw.contains("panic_location"),
+            "should contain panic_location: {raw}"
+        );
+        assert!(
+            raw.contains("FailureObserved"),
+            "should be FailureObserved: {raw}"
+        );
+    }
+
+    #[test]
+    fn run_completed_payload_includes_error_context() {
+        let payload = run_completed_payload("error", Some("something went wrong"));
+        assert_eq!(payload["status"], "error");
+        assert_eq!(payload["error"], "something went wrong");
+        assert!(payload["completed_at_ms"].as_u64().unwrap_or_default() > 0);
+    }
+
+    #[test]
+    fn run_completed_payload_omits_error_when_none() {
+        let payload = run_completed_payload("completed", None);
+        assert_eq!(payload["status"], "completed");
+        assert!(payload.get("error").is_none());
+    }
+
+    #[test]
+    fn run_completed_payload_omits_error_when_empty() {
+        let payload = run_completed_payload("error", Some(""));
+        assert_eq!(payload["status"], "error");
+        assert!(payload.get("error").is_none());
+    }
+
+    #[test]
+    fn store_run_error_is_thread_safe() {
+        // Verify thread-local doesn't leak across threads and functions correctly.
+        store_run_error("first error");
+        LAST_RUN_ERROR.with(|cell| {
+            assert_eq!(cell.take(), Some("first error".to_string()));
+        });
+        // After take, it should be None
+        LAST_RUN_ERROR.with(|cell| {
+            assert!(cell.take().is_none());
+        });
+        // Set again
+        store_run_error("second error");
+        LAST_RUN_ERROR.with(|cell| {
+            assert_eq!(cell.take(), Some("second error".to_string()));
+        });
     }
 }

@@ -970,7 +970,11 @@ fn restore_session(agent: &mut Agent) {
 
 fn exit_with_state(code: i32) -> ! {
     let status = if code == 0 { "completed" } else { "error" };
-    state::mark_run_completed(status);
+    if code != 0 {
+        state::mark_run_completed_with_error(&format!("exit code {}", code));
+    } else {
+        state::mark_run_completed(status);
+    }
     std::process::exit(code);
 }
 
@@ -1022,6 +1026,8 @@ pub async fn run_cli() {
         exit_with_state(1);
     }
     let _run_completion = state::RunCompletionGuard::completed_on_drop();
+
+    state::install_panic_hook();
 
     if config.no_tools {
         eprintln!(
