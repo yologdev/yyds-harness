@@ -153,19 +153,30 @@ append_state_event_checked() {
     local stream_name="$2"
     local event_type="$3"
     local payload_json="${4:-{}}"
+    local payload_file
+    payload_file=$(mktemp "$SESSION_STAGING/state/payload.XXXXXX.json") || {
+        echo "  WARNING: failed to allocate state payload file for $stream_name $event_type" >&2
+        return 1
+    }
+    printf '%s' "$payload_json" > "$payload_file" || {
+        rm -f "$payload_file"
+        echo "  WARNING: failed to write state payload file for $stream_name $event_type" >&2
+        return 1
+    }
     if python3 scripts/append_state_event.py \
         --events "$events_path" \
         --event-type "$event_type" \
         --run-id "$STATE_RUN_ID" \
         --session-id "$STATE_SESSION_ID" \
         --trace-id "$STATE_TRACE_ID" \
-        --payload-json "$payload_json" 2>>"$STATE_APPEND_LOG"; then
+        --payload-file "$payload_file" 2>>"$STATE_APPEND_LOG"; then
+        rm -f "$payload_file"
         return 0
     fi
     echo "append_state_event.py failed for $stream_name $event_type; trying inline fallback" >>"$STATE_APPEND_LOG"
     if python3 -c 'import hashlib,json,os,pathlib,sys,time
-path,event_type,run_id,session_id,trace_id,raw=sys.argv[1:7]
-payload=json.loads(raw or "{}")
+path,event_type,run_id,session_id,trace_id,payload_path=sys.argv[1:7]
+payload=json.loads(pathlib.Path(payload_path).read_text(encoding="utf-8") or "{}")
 now_ms=int(time.time()*1000)
 seed=json.dumps({"actor":"harness","event_type":event_type,"payload":payload,"pid":os.getpid(),"run_id":run_id,"session_id":session_id,"time":now_ms,"trace_id":trace_id},sort_keys=True,separators=(",",":"))
 event={"event_id":"evt-harness-"+hashlib.sha1(seed.encode()).hexdigest()[:16],"event_type":event_type,"schema_version":1,"timestamp_ms":now_ms,"actor":"harness","run_id":run_id or None,"session_id":session_id or None,"trace_id":trace_id,"parent_event_ids":[],"payload":payload}
@@ -173,9 +184,11 @@ events_path=pathlib.Path(path)
 events_path.parent.mkdir(parents=True,exist_ok=True)
 with events_path.open("a",encoding="utf-8") as handle:
     handle.write(json.dumps(event,sort_keys=True,separators=(",",":"))+"\n")' \
-        "$events_path" "$event_type" "$STATE_RUN_ID" "$STATE_SESSION_ID" "$STATE_TRACE_ID" "$payload_json" 2>>"$STATE_APPEND_LOG"; then
+        "$events_path" "$event_type" "$STATE_RUN_ID" "$STATE_SESSION_ID" "$STATE_TRACE_ID" "$payload_file" 2>>"$STATE_APPEND_LOG"; then
+        rm -f "$payload_file"
         return 0
     fi
+    rm -f "$payload_file"
     echo "inline fallback failed for $stream_name $event_type" >>"$STATE_APPEND_LOG"
     echo "  WARNING: failed to record $stream_name state event $event_type" >&2
     return 1

@@ -26,6 +26,15 @@ def load_payload(raw: str) -> dict[str, Any]:
     return value
 
 
+def load_payload_arg(raw: str, payload_file: Path | None) -> dict[str, Any]:
+    if payload_file is not None:
+        try:
+            raw = payload_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SystemExit(f"invalid --payload-file: {exc}") from exc
+    return load_payload(raw)
+
+
 def append_event(
     events_path: Path,
     event_type: str,
@@ -85,23 +94,40 @@ def run_self_tests() -> int:
         assert rows[0]["event_id"] == event["event_id"]
         assert rows[0]["event_type"] == "RunStarted"
         assert rows[0]["payload"]["phase"] == "session"
+        payload_file = Path(tmp) / "payload.json"
+        payload_file.write_text('{"phase":"file"}', encoding="utf-8")
+        event = append_event(
+            path,
+            "DecisionRecorded",
+            "harness",
+            "run-1",
+            "session-1",
+            "trace-1",
+            load_payload_arg("{}", payload_file),
+        )
+        assert event["payload"]["phase"] == "file"
     print("append_state_event self-tests passed")
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--events", required=True, type=Path)
-    parser.add_argument("--event-type", required=True)
+    parser.add_argument("--events", type=Path)
+    parser.add_argument("--event-type")
     parser.add_argument("--actor", default="harness")
     parser.add_argument("--run-id", default="")
     parser.add_argument("--session-id", default="")
     parser.add_argument("--trace-id", default="")
     parser.add_argument("--payload-json", default="{}")
+    parser.add_argument("--payload-file", type=Path)
     parser.add_argument("--test", action="store_true")
     args = parser.parse_args()
     if args.test:
         return run_self_tests()
+    if args.events is None:
+        parser.error("--events is required unless --test is set")
+    if not args.event_type:
+        parser.error("--event-type is required unless --test is set")
     append_event(
         args.events,
         args.event_type,
@@ -109,7 +135,7 @@ def main() -> int:
         args.run_id,
         args.session_id,
         args.trace_id,
-        load_payload(args.payload_json),
+        load_payload_arg(args.payload_json, args.payload_file),
     )
     return 0
 

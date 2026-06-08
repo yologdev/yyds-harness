@@ -348,8 +348,14 @@ def work_summary(
     }
 
 
-def session_sort_key(path: Path) -> str:
-    return path.name
+def session_sort_key(path: Path) -> tuple[int, str, str]:
+    parts = path.name.split("-", 2)
+    if len(parts) == 3 and parts[0] == "day":
+        try:
+            return (int(parts[1]), parts[2], path.name)
+        except ValueError:
+            pass
+    return (-1, path.name, path.name)
 
 
 def is_real_blocker(blocker: dict[str, Any]) -> bool:

@@ -43,6 +43,8 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('STATE_APPEND_LOG="$SESSION_STAGING/state/append_state_event.log"', evolve)
         self.assertIn("append_state_event_checked()", evolve)
         self.assertIn("inline fallback failed", evolve)
+        self.assertIn('--payload-file "$payload_file"', evolve)
+        self.assertIn('payload=json.loads(pathlib.Path(payload_path).read_text', evolve)
         self.assertIn('append_state_event_checked "$STATE_EVENTS" "live"', evolve)
         self.assertIn('append_state_event_checked "$SESSION_STATE_EVENTS" "session"', evolve)
         self.assertIn('--events "$SESSION_STATE_EVENTS"', evolve)

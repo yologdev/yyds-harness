@@ -233,6 +233,29 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["aggregate"]["feedback_only_sessions"], 1)
             self.assertEqual(data["aggregate"]["full_trace_sessions"], 0)
 
+    def test_session_sort_is_natural_by_day_and_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sessions = root / "sessions"
+            for name, day, ts in [
+                ("day-99-20260607T224346Z", 99, "2026-06-07T22:43:46Z"),
+                ("day-100-20260608T003408Z", 100, "2026-06-08T00:34:08Z"),
+                ("day-98-20260606T163045Z", 98, "2026-06-06T16:30:45Z"),
+            ]:
+                write_json(sessions / name / "outcome.json", {"day": day, "ts": ts})
+                write_json(sessions / name / "state/summary.json", {})
+
+            data = build(sessions, root / "out")
+
+            self.assertEqual(
+                [session["id"] for session in data["sessions"]],
+                [
+                    "day-98-20260606T163045Z",
+                    "day-99-20260607T224346Z",
+                    "day-100-20260608T003408Z",
+                ],
+            )
+
     def test_missing_optional_artifacts_do_not_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
