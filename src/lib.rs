@@ -998,7 +998,7 @@ pub async fn run_cli() {
             "model": config.model.clone(),
             "state_adapter": crate::state::STATE_ADAPTER_NAME,
             "state_adapter_mode": crate::state::STATE_ADAPTER_MODE,
-            "system_prompt_version": crate::cli::SYSTEM_PROMPT_VERSION,
+            "system_prompt_version": config.system_prompt_version.clone(),
             "deepseek_native": config.deepseek_native,
             "deepseek_system_contract_version": if config.deepseek_native {
                 Some(crate::deepseek::DEEPSEEK_SYSTEM_CONTRACT_VERSION)
@@ -1886,6 +1886,7 @@ mod tests {
             base_url: None,
             skills: yoagent::skills::SkillSet::empty(),
             system_prompt: String::new(),
+            system_prompt_version: String::new(),
             thinking: ThinkingLevel::Off,
             max_tokens: None,
             temperature: None,

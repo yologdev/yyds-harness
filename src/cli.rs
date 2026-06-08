@@ -984,13 +984,30 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
                 std::process::exit(1);
             })
         });
+    let cli_system_file_supplied = system_from_file.is_some();
+    let cli_system_supplied = custom_system.is_some();
+    let config_system_file = file_config.get("system_file").cloned();
+    let config_system_prompt = file_config.get("system_prompt").cloned();
+    let config_system_file_supplied = config_system_file.is_some();
+    let config_system_prompt_supplied = config_system_prompt.is_some();
+    let mut system_prompt_version = if cli_system_file_supplied {
+        "custom_system_prompt:cli_file".to_string()
+    } else if cli_system_supplied {
+        "custom_system_prompt:cli_inline".to_string()
+    } else if config_system_file_supplied {
+        "custom_system_prompt:config_file".to_string()
+    } else if config_system_prompt_supplied {
+        "custom_system_prompt:config_inline".to_string()
+    } else {
+        SYSTEM_PROMPT_VERSION.to_string()
+    };
 
     // Precedence: CLI --system-file > CLI --system > config system_file > config system_prompt > default
     let mut system_prompt = resolve_system_prompt(
         system_from_file,
         custom_system,
-        file_config.get("system_file").cloned(),
-        file_config.get("system_prompt").cloned(),
+        config_system_file,
+        config_system_prompt,
     );
 
     if deepseek_native {
@@ -1036,6 +1053,7 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
 
     if lite && !user_set_system_prompt {
         system_prompt = LITE_SYSTEM_PROMPT.to_string();
+        system_prompt_version = LITE_SYSTEM_PROMPT_VERSION.to_string();
     }
 
     // --thinking <level> enables extended thinking (CLI overrides config file)
@@ -1119,6 +1137,7 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         base_url: mc.base_url,
         skills,
         system_prompt,
+        system_prompt_version,
         thinking,
         max_tokens,
         temperature,
@@ -1205,6 +1224,7 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
                     // Only override system_prompt if user didn't pass --system/--system-file
                     if !user_set_system_prompt {
                         config.system_prompt = LITE_SYSTEM_PROMPT.to_string();
+                        config.system_prompt_version = LITE_SYSTEM_PROMPT_VERSION.to_string();
                     }
 
                     // Only set disallowed_tools if user didn't pass --disallowed-tools
@@ -3363,6 +3383,34 @@ command = "server-two"
         ];
         let config = parse_args(&args).expect("should parse");
         assert_eq!(config.system_prompt, LITE_SYSTEM_PROMPT);
+        assert_eq!(config.system_prompt_version, LITE_SYSTEM_PROMPT_VERSION);
+    }
+
+    #[test]
+    fn test_default_system_prompt_version_is_recorded() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec!["yoyo".to_string(), "-p".to_string(), "hello".to_string()];
+        let config = parse_args(&args).expect("should parse");
+        assert!(config.system_prompt.starts_with(SYSTEM_PROMPT));
+        assert_eq!(config.system_prompt_version, SYSTEM_PROMPT_VERSION);
+    }
+
+    #[test]
+    fn test_cli_system_prompt_version_is_custom() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        let args = vec![
+            "yoyo".to_string(),
+            "--system".to_string(),
+            "You are a Rust expert.".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+        ];
+        let config = parse_args(&args).expect("should parse");
+        assert!(config.system_prompt.starts_with("You are a Rust expert."));
+        assert_eq!(
+            config.system_prompt_version,
+            "custom_system_prompt:cli_inline"
+        );
     }
 
     #[test]

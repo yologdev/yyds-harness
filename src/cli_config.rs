@@ -32,6 +32,7 @@ pub fn effective_context_tokens() -> u64 {
 pub const DEFAULT_SESSION_PATH: &str = "yoyo-session.json";
 pub const AUTO_SAVE_SESSION_PATH: &str = ".yoyo/last-session.json";
 pub const SYSTEM_PROMPT_VERSION: &str = "coding_system_prompt@v2";
+pub const LITE_SYSTEM_PROMPT_VERSION: &str = "lite_system_prompt@v1";
 
 pub const SYSTEM_PROMPT: &str = r#"# Role
 
@@ -120,6 +121,7 @@ pub struct Config {
     pub base_url: Option<String>,
     pub skills: SkillSet,
     pub system_prompt: String,
+    pub system_prompt_version: String,
     pub thinking: ThinkingLevel,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
@@ -172,6 +174,7 @@ mod tests {
         assert_eq!(DEFAULT_SESSION_PATH, "yoyo-session.json");
         assert_eq!(AUTO_SAVE_SESSION_PATH, ".yoyo/last-session.json");
         assert_eq!(SYSTEM_PROMPT_VERSION, "coding_system_prompt@v2");
+        assert_eq!(LITE_SYSTEM_PROMPT_VERSION, "lite_system_prompt@v1");
         assert!(SYSTEM_PROMPT.contains("coding assistant"));
         assert!(SYSTEM_PROMPT.contains("Evidence First"));
         assert!(SYSTEM_PROMPT.contains("available state"));

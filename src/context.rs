@@ -237,6 +237,7 @@ impl DeepSeekContextPreview {
             "context_policy": "deepseek_native",
             "prompt_version": format!("deepseek_native_prompt@v{}", self.layout_version),
             "prompt_contract_version": crate::deepseek::DEEPSEEK_PROMPT_CONTRACT_VERSION,
+            "system_contract_version": crate::deepseek::DEEPSEEK_SYSTEM_CONTRACT_VERSION,
             "layout_version": self.layout_version,
             "tool_schema_version": crate::deepseek::STRICT_SCHEMA_VERSION,
             "strict_tool_schema_versions": crate::deepseek::strict_schema_versioned_names(),
@@ -2069,7 +2070,11 @@ mod tests {
 
         assert_eq!(payload["context_policy"], "deepseek_native");
         assert_eq!(payload["prompt_version"], "deepseek_native_prompt@v7");
-        assert_eq!(payload["prompt_contract_version"], 1);
+        assert_eq!(payload["prompt_contract_version"], 2);
+        assert_eq!(
+            payload["system_contract_version"],
+            "deepseek_native_contract@v2"
+        );
         assert_eq!(payload["layout_version"], 7);
         assert_eq!(payload["tool_schema_version"], 1);
         assert!(payload["strict_tool_schema_versions"]

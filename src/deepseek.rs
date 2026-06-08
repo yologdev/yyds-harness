@@ -21,7 +21,7 @@ pub const FIM_MAX_OUTPUT_TOKENS: u32 = 4_096;
 pub const CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;
 pub const MAX_OUTPUT_TOKENS: u32 = 384_000;
 pub const HARNESS_GENOME_VERSION: &str = "ds-harness-genome-v1";
-pub const DEEPSEEK_PROMPT_CONTRACT_VERSION: u32 = 1;
+pub const DEEPSEEK_PROMPT_CONTRACT_VERSION: u32 = 2;
 pub const STRICT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
