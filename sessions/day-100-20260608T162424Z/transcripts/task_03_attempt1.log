@@ -1,0 +1,866 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the current state of both files and then execute the move plan.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read both files to understand the structure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs  ▶ search 'build_graph_hotspots' in src/commands_state.rs ✓ (12ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the actual functions in commands_state.rs and also the dispatch table in commands_state.rs where hotspots is invoked.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+Now let me read the actual function bodies in `commands_state.rs`:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:10680..10760  ▶ read src/commands_state.rs:18640..18670 ✓ (214ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to find:
+
+1. The `query_graph_hotspots` function that both build functions call
+2. The `GraphHotspot` struct used in these functions
+3. The `format_top_relation_counts` helper function
+4. The `GraphRelationStep` struct if used
+
+Let me search for these dependencies.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+Now I need to find the dependencies these functions use. Let me search for `query_graph_hotspots`, `GraphHotspot`, and `format_top_relation_counts`:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn query_graph_hotspots' in src/commands_state.rs  ▶ search 'struct GraphHotspot' in src/commands_state.rs  ▶ search 'fn format_top_relation_counts' in src/commands_state.rs ✓ (16ms)
+ ✓ (15ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the private helper functions and the struct:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.9s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:10841..10931  ▶ read src/commands_state.rs:4189..4209  ▶ read src/commands_state.rs:13445..13470 ✓ (35ms)
+ ✓ (22ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to check:
+
+1. Where is `GraphHotspot` with `Default` impl? Let me search for a Default derive or impl.
+2. What about `infer_graph_node_kind` - that's used in `query_graph_hotspots`.
+3. Where are the tests? At line 18640-18668 in commands_state.rs.
+4. How does the dispatch table in commands_state.rs call these functions (is there a match arm for "hotspots")?
+
+Let me also check:
+- Is `GraphHotspot` used by other graph functions (i.e., is it shared or only for hotspots)?
+- Is `format_top_relation_counts` shared or only used by hotspots?
+- Is `infer_graph_node_kind` shared or only used by hotspots?
+
+Let me search for usages.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 7.1s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'GraphHotspot' in src/commands_state.rs  ▶ search 'infer_graph_node_kind' in src/commands_state.rs  ▶ search 'format_top_relation_counts' in src/commands_state.rs ✓ (17ms)
+ ✓ (148ms)
+ ✓ (149ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So:
+
+1. `GraphHotspot` is ONLY used by hotspots (lines 4189, 4197, 10841-10904)
+2. `format_top_relation_counts` is used by hotspots (10708), but also by clusters (4393) and impact (4905)
+3. `infer_graph_node_kind` is used by hotspots AND many other graph functions
+4. `query_graph_hotspots` is private and only used by the two build functions
+
+So the plan is:
+- Move `GraphHotspot` struct + impl
+- Move `query_graph_hotspots` (private helper)
+- Move `build_graph_hotspots_report` and `build_graph_hotspots_payload` 
+- Keep `format_top_relation_counts` in commands_state.rs (shared by clusters, impact)
+- Keep `infer_graph_node_kind` in commands_state.rs (shared by everything)
+
+Now let me check if `GraphHotspot` has a `Default` impl. Let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.9s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'impl Default for GraphHotspot|derive.*Default.*GraphHotspot|…' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`GraphHotspot::default()` is called but there's no explicit `Default` impl. Let me check if it has `#[derive(Default)]` or if `Default` is manually implemented. Let me look more carefully at the struct definition.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:4185..4190 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`GraphHotspot` has `#[derive(Default)]`. So it's good.
+
+Now let me understand the dispatch - where does the "hotspots" subcommand get dispatched? Let me search for the dispatch table.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check how `handle_graph_hotspots` is called from `commands_state.rs`:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_graph_hotspots|\"hotspots\"' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, the handler is in `commands_state_graph.rs` (line 1144), not in `commands_state.rs`. Let me check if there are calls to the build functions from `commands_state.rs` directly (besides tests and re-exports). Let me search more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'hotspots' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand how the dispatch works. Let me look at how `"hotspots"` is handled as a subcommand. Let me search in `commands_state.rs` for the dispatch table.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me find the dispatch for "hotspots" in the handle_state_subcommand:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'hotspots' in src/commands_state.rs (*.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the dispatch in `commands_state.rs` for the "hotspots" subcommand. Let me find where `handle_state_subcommand` routes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ grep ✗ (11ms)
+    │ Tool grep not found
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me use search to find the dispatch for "hotspots" in the handle_state_subcommand function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search '"hotspots"' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The dispatch for "hotspots" isn't in `commands_state.rs` - it's in `commands_state_graph.rs`. Let me verify by reading the handle_state_subcommand and see how it routes to `handle_graph_subcommand`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search '\"graph\"' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The dispatch in `commands_state.rs` at line 68 is: `"graph" => crate::commands_state_graph::handle_graph_subcommand(args)`, which dispatches to the external module. So `commands_state_graph::handle_graph_subcommand` receives all graph sub-subcommands. It then uses the `use` imports to pull the build functions from `commands_state.rs`.
+
+Now the plan is clear:
+
+1. Move `GraphHotspot` struct + `Default` impl + `degree()` method to `commands_state_graph.rs`
+2. Move `query_graph_hotspots` to `commands_state_graph.rs`
+3. Move `build_graph_hotspots_report` and `build_graph_hotspots_payload` to `commands_state_graph.rs`
+4. Remove those from `commands_state.rs`
+5. Update imports in `commands_state_graph.rs` - replace the two `use` imports with the actual function bodies
+6. The tests in `commands_state.rs` (line 18646-18667) reference `build_graph_hotspots_report` and `build_graph_hotspots_payload`. They need to either: a) be moved too, or b) use `crate::commands_state_graph::build_graph_hotspots_report`. Since the test function `graph_hotspots_report_ranks_high_degree_projected_nodes` is in the `#[cfg(test)] mod tests` block of `commands_state.rs`, it will need to use the new path.
+
+Let me look at the test function and check what shared test infrastructure it uses (e.g., helper functions).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:18575..18680 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The test function is at line 18575 and uses `build_graph_hotspots_report` and `build_graph_hotspots_payload` directly (without module prefix) within the `#[cfg(test)] mod tests` block. I need to update those calls to use `crate::commands_state_graph::build_graph_hotspots_report` etc.
+
+Now let me also check what `infer_graph_node_kind` does - it's used by `query_graph_hotspots` but is shared across many functions. I need to make it `pub(crate)` so the moved code can still access it.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me read the `infer_graph_node_kind` function:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:12435..12465 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It's a private function. I need to make it `pub(crate)` so the moved code in `commands_state_graph.rs` can access it.
+
+Now let me also check what types/functions `query_graph_hotspots` depends on. It uses:
+- `Connection::open` from rusqlite
+- `crate::state::StateRelation`
+- `GraphHotspot` struct (will be moved)
+- `infer_graph_node_kind` (needs to become pub(crate))
+- `BTreeMap`
+
+Now let me plan the exact edits:
+
+### Part 1: In `commands_state.rs`:
+1. Make `infer_graph_node_kind` `pub(crate)` (line 12435)
+2. Remove `GraphHotspot` struct + impl + Default derive (lines 4188-4201)
+3. Remove `build_graph_hotspots_report` (lines 10688-10712)
+4. Remove `build_graph_hotspots_payload` (lines 10714-10740)
+5. Remove `query_graph_hotspots` (lines 10841-10905)
+6. Update test at 18575-18668 to use `crate::commands_state_graph::build_graph_hotspots_report` etc.
+
+### Part 2: In `commands_state_graph.rs`:
+1. Add the moved functions (GraphHotspot struct + impl, query_graph_hotspots, build_graph_hotspots_report, build_graph_hotspots_payload)
+2. Replace the `use` imports (lines 30-31) since they'll now be local
+3. Add any needed imports (rusqlite's Connection, serde_json, BTreeMap, etc.)
+
+Wait, let me check the existing imports in `commands_state_graph.rs`:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check what's already imported in `commands_state_graph.rs`:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search '^use ' in src/commands_state_graph.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Currently, `commands_state_graph.rs` imports `build_graph_hotspots_payload` and `build_graph_hotspots_report` from `commands_state.rs`. After the move, these become local functions.
+
+Now let me check if `commands_state_graph.rs` uses rusqlite or other things it will need after moving the query function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'rusqlite|Connection|BTreeMap|serde_json' in src/commands_state_graph.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting. The `commands_state_graph.rs` doesn't import rusqlite, BTreeMap, or serde_json. After moving the functions, it will need:
+- `std::collections::BTreeMap` (for GraphHotspot and query_graph_hotspots)
+- `rusqlite::Connection` (for query_graph_hotspots)
+- `serde_json::Value` (for build_graph_hotspots_payload)
+- `std::path::Path` (for function signatures)
+
+Let me also check what serde_json is used in the current file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'serde_json' in src/commands_state_graph.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `serde_json` is already used in `commands_state_graph.rs` but only as a path like `serde_json::to_string_pretty`. It's probably brought in transitively through `crate::format::*`. But `serde_json::json!` and `Value` will be needed for the moved payload function.
+
+Let me also check what `crate::format::*` provides and check the current Cargo.toml for dependencies. Actually, let me just check whether `serde_json` has a `use` statement in the file or is accessed via the full path.
+
+Since it's accessed as `serde_json::to_string_pretty`, it might be a crate-level dependency. Let me check if the `serde_json` crate is a dependency and what's in scope.
+
+Let me look at what imports are missing from commands_state.rs - what's used in the functions we're moving.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check what `use` statements are at the top of `commands_state.rs` that the hotspots functions need:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs (30 lines) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `commands_state.rs` imports:
+- `crate::format::*`
+- `crate::state::{Actor, EvalResult, EventType, HarnessPatch, StateConfig, StateRecorder}`
+- `rusqlite::{params, Connection}`
+- `serde_json::Value`
+- `std::collections::VecDeque`
+- `std::collections::{BTreeMap, BTreeSet}`
+- `std::path::{Path, PathBuf}`
+
+For the moved functions, I need:
+- `rusqlite::Connection` (and `params` from `crate::state` though it's not directly used in hotspots)
+- `serde_json::Value` and `serde_json::json!`
+- `std::collections::BTreeMap`
+- `std::path::Path`
+- `crate::state::StateRelation` (used in `query_graph_hotspots`)
+- `crate::commands_state::infer_graph_node_kind` (after making it pub(crate))
+
+Now let me plan all the edits. Let me also verify what `crate::format::*` brings (like YELLOW, RESET).
+
+Now let me execute the plan. I'll:
+
+1. Make `infer_graph_node_kind` `pub(crate)` in commands_state.rs
+2. Add the moved code to commands_state_graph.rs (after the last function, before the end)
+3. Remove the moved code from commands_state.rs (GraphHotspot, build functions, query function)
+4. Update the test to use `crate::commands_state_graph::build_graph_hotspots_report` etc.
+5. Update imports in commands_state_graph.rs
+
+Let me now execute step by step.
+
+First, let me also understand the full structure of what I'm moving to make sure I get the exact copy right. Let me read the complete block from GraphHotspot to the end of query_graph_hotspots.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me update the todo and start executing.
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me create the remaining tasks and start the work.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with step 1: making infer_graph_node_kind pub(crate).
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.0s (5 ✓)
+
+Step 1: Make `infer_graph_node_kind` pub(crate).
+  - fn infer_graph_node_kind(id: &str) -> String {
+  + pub(crate) fn infer_graph_node_kind(id: &str) -> String {
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 1 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (1 → 1 lines)
+  - fn infer_graph_node_kind(id: &str) -> String {
+  + pub(crate) fn infer_graph_node_kind(id: &str) -> String {
+ ✓ (2m 19s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the GraphHotspot struct, query function, and build functions to commands_state_graph.rs. Let me first look at the exact text I need to copy and the end of commands_state_graph.rs to know where to put it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the exact source text I need to copy. Let me read the GraphHotspot struct definition.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me read the exact lines to copy:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:4183..4203 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now Step 3: I need to add the GraphHotspot struct, query function, and build functions to commands_state_graph.rs. Let me first also read the end of commands_state_graph.rs to know where to insert.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me read the end of `commands_state_graph.rs` to know where to insert:
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:1155..1175 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now Step 3: Add the moved code to the end of commands_state_graph.rs. I need to:
+
+1. Replace the `use crate::commands_state::build_graph_hotspots_payload;` and `use crate::commands_state::build_graph_hotspots_report;` imports (lines 30-31)
+2. Add all the moved code after line 1168
+
+Wait, actually - should I just append the moved code and remove the `use` imports? Yes. After the move, `build_graph_hotspots_report` and `build_graph_hotspots_payload` are local functions. And `query_graph_hotspots` is a private helper local to this file.
+
+But wait - I also need to add imports for `rusqlite::Connection`, `serde_json::Value`, `std::collections::BTreeMap`, `std::path::Path`, and `crate::state::StateRelation` to `commands_state_graph.rs`. And `crate::commands_state::infer_graph_node_kind`.
+
+Let me do this step by step:
+
+First, add the imports to commands_state_graph.rs.
+Then, add the functions.
+Then, remove the two `use` lines for hotspots.
+Then, remove the moved code from commands_state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+Step 3a: Add imports to `commands_state_graph.rs`:
+    use crate::commands_state::default_events_path;
+    use crate::commands_state::default_store_path;
+    use crate::commands_state::flag_value;
+  + use crate::commands_state::infer_graph_node_kind;
+    use crate::format::*;
+  + use rusqlite::Connection;
+  + use serde_json::Value;
+  + use std::collections::BTreeMap;
+  + use std::path::Path;
+  ✓ Auto-approved: edit: src/commands_state_graph.rs (4 → 9 lines)
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_graph.rs (4 → 9 lines)
+    use crate::commands_state::default_events_path;
+    use crate::commands_state::default_store_path;
+    use crate::commands_state::flag_value;
+  + use crate::commands_state::infer_graph_node_kind;
+    use crate::format::*;
+  + use rusqlite::Connection;
+  + use serde_json::Value;
+  + use std::collections::BTreeMap;
+  + use std::path::Path;
+ ✓ (20.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The imports are unused because I haven't added the functions yet. That's expected. Let me now add the functions and remove the old `use` imports for the hotspots functions. Let me first do all the edits, and then build.
+────────────────────────────────────────────────────────────────────────────────
+
+The imports are currently unused because the functions aren't added yet. Let me continue - first remove the old `use` imports for hotspots, then add the functions:
+    use crate::commands_state::build_graph_evals_payload;
+    use crate::commands_state::build_graph_evals_report;
+  - use crate::commands_state::build_graph_hotspots_payload;
+  - use crate::commands_state::build_graph_hotspots_report;
+  ✓ Auto-approved: edit: src/commands_state_graph.rs (4 → 2 lines)
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_graph.rs (4 → 2 lines)
+    use crate::commands_state::build_graph_evals_payload;
+    use crate::commands_state::build_graph_evals_report;
+  - use crate::commands_state::build_graph_hotspots_payload;
+  - use crate::commands_state::build_graph_hotspots_report;
+ ✗ (178ms)
+    │ old_text not found in src/commands_state_graph.rs.
+
+  ✗ Watch failed: `cargo clippy --all-targets -- -D warnings && cargo test`
+[1m[92m    Checking[0m yoyo-ds-harness v0.1.14 (/home/runner/work/yyds-harness/yyds-harness)
+[1m[91merror[0m[1m: unused import: `crate::commands_state::infer_graph_node_kind`[0m
+ [1m[94m--> [0msrc/commands_state_graph.rs:8:5
+  [1m[94m|[0m
+[1m[94m8[0m [1m[94m|[0m use crate::commands_state::infer_graph_node_kind;
+  [1m[94m|[0m     [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: `-D unused-imports` implied by `-D warnings`
+  [1m[94m= [0m[1mhelp[0m: to override `-D warnings` add `#[allow(unused_imports)]`
+
+[1m[91merror[0m[1m: unused import: `rusqlite::Connection`[0m
+  [1m[94m--> [0msrc/commands_state_graph.rs:10:5
+   [1m[94m|[0m
+[1m[94m10[0m [1m[94m|[0m use rusqlite::Connection;
+   [1m[94m|[0m     [1m[91m^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: unused import: `serde_json::Value`[0m
+  [1m[94m--> [0msrc/commands_state_graph.rs:11:5
+   [1m[94m|[0m
+[1m[94m11[0m [1m[94m|[0m use serde_json::Value;
+   [1m[94m|[0m     [1m[91m^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: unused import: `std::collections::BTreeMap`[0m
+  [1m[94m--> [0msrc/commands_state_graph.rs:12:5
+   [1m[94m|[0m
+[1m[94m12[0m [1m[94m|[0m use std::collections::BTreeMap;
+   [1m[94m|[0m     [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: unused import: `std::path::Path`[0m
+  [1m[94m--> [0msrc/commands_state_graph.rs:13:5
+   [1m[94m|[0m
+[1m[94m13[0m [1m[94m|[0m use std::path::Path;
+   [1m[94m|[0m     [1m[91m^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m: could not compile `yoyo-ds-harness` (lib) due to 5 previous errors
+[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
+[1m[91merror[0m: could not compile `yoyo-ds-harness` (lib test) due to 5 previous errors
+  → Auto-fixing (attempt 1/3)...
+
+── Thinking ────────────────────────────────────────────────────────────────
+The lint errors are expected - I added the imports but haven't yet added the functions that would use them. I need to continue where I left off: add the functions to `commands_state_graph.rs`, then remove them from `commands_state.rs`, and update the imports.
+
+Let me first read the current state of both files to see exactly what's there.
+
+The plan:
+1. Add `GraphHotspot` struct, `query_graph_hotspots`, `build_graph_hotspots_report`, `build_graph_hotspots_payload`, and `format_top_relation_counts` to `commands_state_graph.rs`
+2. Remove `use crate::commands_state::build_graph_hotspots_payload` and `use crate::commands_state::build_graph_hotspots_report` from the imports in `commands_state_graph.rs`
+3. Remove the moved functions from `commands_state.rs`
+4. Update the test in `commands_state.rs` to use the new location
+5. Build and test
+
+Let me read the current state of `commands_state_graph.rs` first.
+────────────────────────────────────────────────────────────────────────────────
+
+I stopped mid-edit — the imports were added but the functions weren't moved yet. Let me complete the move.
+  ▶ read src/commands_state_graph.rs (20 lines) ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the imports are in place. Now I need to:
+
+1. Remove `use crate::commands_state::build_graph_hotspots_payload;` and `use crate::commands_state::build_graph_hotspots_report;` from `commands_state_graph.rs`
+2. Add `GraphHotspot` struct, `query_graph_hotspots`, `build_graph_hotspots_report`, `build_graph_hotspots_payload`, and `format_top_relation_counts` functions to `commands_state_graph.rs`
+3. Remove those functions from `commands_state.rs`
+
+Let me read the section of `commands_state_graph.rs` to find the hotspots imports:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:28..98 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to:
+1. Remove lines 35-36 (the hotspots imports) from `commands_state_graph.rs`
+2. Add the functions to `commands_state_graph.rs` before the closing of the file
+3. Remove the functions from `commands_state.rs`
+4. Update the test in `commands_state.rs`
+
+Let me also read the end of `commands_state_graph.rs` to know where to append the functions.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me remove the two hotspot import lines and add the functions. First, remove the imports:
+    use crate::commands_state::build_graph_files_report;
+  - use crate::commands_state::build_graph_hotspots_payload;
+  - use crate::commands_state::build_graph_hotspots_report;
+    use crate::commands_state::build_graph_hypotheses_payload;
+  ✓ Auto-approved: edit: src/commands_state_graph.rs (4 → 2 lines)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_graph.rs (4 → 2 lines)
+    use crate::commands_state::build_graph_files_report;
+  - use crate::commands_state::build_graph_hotspots_payload;
+  - use crate::commands_state::build_graph_hotspots_report;
+    use crate::commands_state::build_graph_hypotheses_payload;
+ ✓ (12.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - now the imports are removed but the functions aren't defined locally yet. I need to:
+1. Add the GraphHotspot struct, query_graph_hotspots, build_graph_hotspots_report, build_graph_hotspots_payload, and format_top_relation_counts to commands_state_graph.rs
+2. Remove them from commands_state.rs
+
+Let me append these functions to the end of commands_state_graph.rs (after `handle_graph_hotspots` which calls them).
+
+Let me read the end of the file to verify the exact content:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I need to add the actual function implementations to `commands_state_graph.rs`. Let me add them after the `handle_graph_hotspots` function:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:1145.. ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll add the `GraphHotspot` struct, `query_graph_hotspots`, `build_graph_hotspots_report`, `build_graph_hotspots_payload`, and `format_top_relation_counts` after `handle_graph_hotspots`.
+
+But `format_top_relation_counts` is used by other graph functions still in `commands_state.rs` (at lines 4393 and 4905), so I should NOT move it. Let me check again...
+
+Looking at the search results:
+```
+4393:            format_top_relation_counts(&cluster.relation_counts, 8)
+4905:        format_top_relation_counts(&impact.relation_counts, 10)
+10708:            format_top_relation_counts(&hotspot.relation_counts, 4)
+13445:fn format_top_relation_counts(counts: &BTreeMap<String, usize>, limit: usize) -> String {
+```
+
+`format_top_relation_counts` is used by clusters and impact functions too, so it should stay in `commands_state.rs`. I'll just make it `pub(crate)` instead of moving it.
+
+Actually, wait - the plan says "plus any private helpers they depend on". Since `format_top_relation_counts` is used by multiple callers, I should just make it `pub(crate)` in `commands_state.rs` and import it in `commands_state_graph.rs`. Or I could leave it as-is and the function will be accessible since `commands_state_graph` already imports from `commands_state`.
+
+Let me check if `format_top_relation_counts` is pub(crate) or private:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^fn format_top_relation_counts|^pub.*fn format_top_relation_…' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the exact line with format_top_relation_counts:
+
+It's at line 13445 and is `fn format_top_relation_counts(...)` - a private function. Since `commands_state_graph.rs` is a different module, I can't use a private function from `commands_state`. I need to either:
+1. Make it `pub(crate)` in `commands_state.rs` and import it
+2. Move it to `commands_state_graph.rs` - but it's used by other graph functions
+
+Let me check who else uses format_top_relation_counts:
+- Line 4393: in some cluster function
+- Line 4905: in some impact function  
+- Line 10708: in hotspots
+
+Since it's used by clusters and impact which will stay in `commands_state.rs`, I should make it `pub(crate)` and import it in `commands_state_graph.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+`format_top_relation_counts` is private and used by multiple graph functions. I'll make it `pub(crate)` in `commands_state.rs` and import it:
+  - fn format_top_relation_counts(counts: &BTreeMap<String, usize>, limit: usize) -> String {
+  + pub(crate) fn format_top_relation_counts(counts: &BTreeMap<String, usize>, limit: usize) -> String {
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 1 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (1 → 1 lines)
+  - fn format_top_relation_counts(counts: &BTreeMap<String, usize>, limit: usize) -> String {
+  + pub(crate) fn format_top_relation_counts(counts: &BTreeMap<String, usize>, limit: usize) -> String {
+ ✓ (13.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I need to add `GraphHotspot`, `query_graph_hotspots`, `build_graph_hotspots_report`, and `build_graph_hotspots_payload` to `commands_state_graph.rs`. Let me add them after the `handle_graph_hotspots` function.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add `GraphHotspot`, `query_graph_hotspots`, `build_graph_hotspots_report`, and `build_graph_hotspots_payload` to the end of `commands_state_graph.rs`:
+        match build_graph_hotspots_report(&sqlite_path, limit) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  +     }
+  + }
+  + 
+  + #[derive(Debug, Clone, Default, PartialEq, Eq)]
+  + struct GraphHotspot {
+  +     id: String,
+  +     kind: String,
+  +     incoming: usize,
+  +     outgoing: usize,
+  +     relation_counts: BTreeMap<String, usize>,
+  + }
+  + 
+  + impl GraphHotspot {
+  +     fn degree(&self) -> usize {
+  +         self.incoming + self.outgoing
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state_graph.rs (5 → 140 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_graph.rs (5 → 140 lines)
+        match build_graph_hotspots_report(&sqlite_path, limit) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  +     }
+  + }
+  + 
+  + #[derive(Debug, Clone, Default, PartialEq, Eq)]
+  + struct GraphHotspot {
+  +     id: String,
+  +     kind: String,
+  +     incoming: usize,
+  +     outgoing: usize,
+  +     relation_counts: BTreeMap<String, usize>,
+  + }
+  + 
+  + impl GraphHotspot {
+  +     fn degree(&self) -> usize {
+  +         self.incoming + self.outgoing
+  +     }
+  + }
+  ... (120 more lines)
+ ✓ (20.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good progress! Now I need to remove the duplicate functions from `commands_state.rs`. The dead-code warnings are expected since both copies exist. Let me remove `GraphHotspot`, `build_graph_hotspots_report`, `build_graph_hotspots_payload`, and `query_graph_hotspots` from `commands_state.rs`.
+
+Also, I need to check the test in `commands_state.rs` - it calls `build_graph_hotspots_report` and `build_graph_hotspots_payload` directly. I need to update those calls to use the functions from `commands_state_graph`.
+────────────────────────────────────────────────────────────────────────────────
+
+Good — both copies exist. Now remove them from `commands_state.rs`. Let me remove `GraphHotspot` first:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:4186..4206 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to remove the `GraphHotspot` struct + impl block from `commands_state.rs`. Let me also remove the three functions: `build_graph_hotspots_report`, `build_graph_hotspots_payload`, and `query_graph_hotspots`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - }
+  - 
+  - #[derive(Debug, Clone, Default, PartialEq, Eq)]
+  - struct GraphHotspot {
+  -     id: String,
+  -     kind: String,
+  -     incoming: usize,
+  -     outgoing: usize,
+  -     relation_counts: BTreeMap<String, usize>,
+  - }
+  - 
+  - impl GraphHotspot {
+  -     fn degree(&self) -> usize {
+  -         self.incoming + self.outgoing
+  -     }
+    }
+    
+    #[derive(Debug, Clone, PartialEq, Eq)]
+  ✓ Auto-approved: edit: src/commands_state.rs (19 → 4 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (19 → 4 lines)
+  - }
+  - 
+  - #[derive(Debug, Clone, Default, PartialEq, Eq)]
+  - struct GraphHotspot {
+  -     id: String,
+  -     kind: String,
+  -     incoming: usize,
+  -     outgoing: usize,
+  -     relation_counts: BTreeMap<String, usize>,
+  - }
+  - 
+  - impl GraphHotspot {
+  -     fn degree(&self) -> usize {
+  -         self.incoming + self.outgoing
+  -     }
+    }
+    
+    #[derive(Debug, Clone, PartialEq, Eq)]
+ ✓ (13.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I need to remove the remaining three functions from `commands_state.rs`: `build_graph_hotspots_report`, `build_graph_hotspots_payload`, and `query_graph_hotspots`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now remove the three hotspot functions from `commands_state.rs`:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:10670..10770 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+        nodes
+  - }
+  - 
+  - pub(crate) fn build_graph_hotspots_report(
+  -     sqlite_path: &Path,
+  -     limit: usize,
+  - ) -> Result<String, String> {
+  -     let limit = limit.clamp(1, 50);
+  -     let hotspots = query_graph_hotspots(sqlite_path, limit)?;
+  -     if hotspots.is_empty() {
+  -         return Err("no graph relations found".to_string());
+  -     }
+  - 
+  -     let mut out = String::new();
+  -     out.push_str(&format!("State graph hotspots limit={limit}\n"));
+  -     for hotspot in hotspots {
+  -         out.push_str(&format!(
+  -             "  {:<32} kind={:<10} degree={} in={} out={} relations={}\n",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (58 → 4 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (58 → 4 lines)
+        nodes
+  - }
+  - 
+  - pub(crate) fn build_graph_hotspots_report(
+  -     sqlite_path: &Path,
+  -     limit: usize,
+  - ) -> Result<String, String> {
+  -     let limit = limit.clamp(1, 50);
+  -     let hotspots = query_graph_hotspots(sqlite_path, limit)?;
+  -     if hotspots.is_empty() {
+  -         return Err("no graph relations found".to_string());
+  -     }
+  - 
+  -     let mut out = String::new();
+  -     out.push_str(&format!("State graph hotspots limit={limit}\n"));
+  -     for hotspot in hotspots {
+  -         out.push_str(&format!(
+  -             "  {:<32} kind={:<10} degree={} in={} out={} relations={}\n",
+  -             hotspot.id,
+  -             hotspot.kind,
+  ... (38 more lines)
+ ✓ (12.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait - `query_graph_hotspots` still exists in `commands_state.rs` and references the now-removed `GraphHotspot`. I need to remove `query_graph_hotspots` from `commands_state.rs` too. Let me read the area around it.
+────────────────────────────────────────────────────────────────────────────────
+
+Now remove `query_graph_hotspots` from `commands_state.rs`:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:10765..10860 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to remove `query_graph_hotspots` (lines 10772-10836) from `commands_state.rs`. Let me do that.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        Ok(steps)
+  - }
+  - 
+  - fn query_graph_hotspots(sqlite_path: &Path, limit: usize) -> Result<Vec<GraphHotspot>, String> {
+  -     let conn = Connection::open(sqlite_path)
+  -         .map_err(|e| format!("open sqlite projection '{}': {e}", sqlite_path.display()))?;
+  -     let mut stmt = conn
+  -         .prepare(
+  -             r#"
+  -             SELECT src_id, relation, dst_id, dst_kind
+  -             FROM state_relations
+  -             ORDER BY src_id, relation, dst_id
+  -             LIMIT 10000
+  -             "#,
+  -         )
+  -         .map_err(|e| format!("prepare state graph hotspot query: {e}"))?;
+  -     let rows = stmt
+  -         .query_map([], |row| {
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (70 → 4 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (70 → 4 lines)
+        Ok(steps)
+  - }
+  - 
+  - fn query_graph_hotspots(sqlite_path: &Path, limit: usize) -> Result<Vec<GraphHotspot>, String> {
+  -     let conn = Connection::open(sqlite_path)
+  -         .map_err(|e| format!("open sqlite projection '{}': {e}", sqlite_path.display()))?;
+  -     let mut stmt = conn
+  -         .prepare(
+  -             r#"
+  -             SELECT src_id, relation, dst_id, dst_kind
+  -             FROM state_relations
+  -             ORDER BY src_id, relation, dst_id
+  -             LIMIT 10000
+  -             "#,
+  -         )
+  -         .map_err(|e| format!("prepare state graph hotspot query: {e}"))?;
+  -     let rows = stmt
+  -         .query_map([], |row| {
+  -             Ok(crate::state::StateRelation {
+  -                 src_id: row.get(0)?,
+  ... (50 more lines)
+ ✓ (12.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the test in `commands_state.rs` can't find `build_graph_hotspots_report` and `build_graph_hotspots_payload`. I need to update the test to import them from `commands_state_graph`. Let me read the test function and update it.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the test to import from `commands_state_graph`:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:18440..18455 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to find the call sites and update them. The calls are:
+- `build_graph_hotspots_report(&sqlite_path, 3).unwrap()` → needs `crate::commands_state_graph::build_graph_hotspots_report(&sqlite_path, 3).unwrap()`
+- `build_graph_hotspots_payload(&sqlite_path, 3).unwrap()` → needs `crate::commands_state_graph::build_graph_hotspots_payload(&sqlite_path, 3).unwrap()`
+
+Let me find and replace those in the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         let report = build_graph_hotspots_report(&sqlite_path, 3).unwrap();
+  +         let report = crate::commands_state_graph::build_graph_hotspots_report(&sqlite_path, 3).unwrap();
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 1 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (1 → 1 lines)
+  -         let report = build_graph_hotspots_report(&sqlite_path, 3).unwrap();
+  +         let report = crate::commands_state_graph::build_graph_hotspots_report(&sqlite_path, 3).unwrap();
+ ✓ (12.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+One more call to fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         let payload = build_graph_hotspots_payload(&sqlite_path, 3).unwrap();
+  +         let payload = crate::commands_state_graph::build_graph_hotspots_payload(&sqlite_path, 3).unwrap();
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 1 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (1 → 1 lines)
+  -         let payload = build_graph_hotspots_payload(&sqlite_path, 3).unwrap();
+  +         let payload = crate::commands_state_graph::build_graph_hotspots_payload(&sqlite_path, 3).unwrap();
+ ✓ (1m 35s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run cargo clippy and cargo test to check if everything compiles.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the full build and test:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo clippy --all-targets -- … ✓ (20.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clippy passes. Now cargo build and cargo test.
+────────────────────────────────────────────────────────────────────────────────
+
+Clippy passes! Now build and test:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (135ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib 2>&1 ✓ (44.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 4194 tests pass. Let me also run cargo fmt and verify the output works.
+────────────────────────────────────────────────────────────────────────────────
+
+All 4194 tests pass. Let me run cargo fmt:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.0s)
+
+  ✓ Watch passed after fix (attempt 1)
+

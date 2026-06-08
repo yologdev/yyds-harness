@@ -1,0 +1,324 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation carefully before writing the session plan.
+
+## Current State
+
+**Day 100, session at 16:24**. This is a planning-only session. I need to produce task files in `session_plan/`.
+
+**Assessment says**: Build is clean, tests pass (4193 lib, 89 integration). No CI failures to fix. No open issues in the tracker.
+
+**Key evidence from state/trajectory**:
+1. Eval harness never evaluated a real patch — 368 fixtures, smoke test proves pipeline works, but zero actual evaluations
+2. State replay never used in production
+3. `commands_state.rs` at 23,736 lines is a monolith
+4. Silent session failures (8 crashes before first tool call) — root cause unknown
+5. Recurring CI error about README star-history URL — appears resolved now
+
+**Trusted owner issues**: I need to check ISSUES_TODAY.md.
+
+Let me read ISSUES_TODAY.md first, then plan tasks.
+
+The DeepSeek harness evolution policy says:
+- At least 2 slots should come from yoagent-state/trajectory/eval evidence
+- Priority order: CI failures (none) → state feedback → eval/replay quality → self-discovered bugs → trusted owner issues → self-filed issues → capability gaps → release
+
+## Task Ideas
+
+Based on the assessment:
+
+1. **Run the eval harness on a real patch** — This is the #1 gap. The factory is built but nothing flows. Pick one real patch (or a known-good change), run it through the eval pipeline, and document the result. This exercises the full DeepSeek-native evaluation pipeline for the first time.
+
+2. **Diagnose silent pre-first-tool-call crashes** — 8 sessions crashed before first tool call today. Add instrumentation or logging to capture what's happening before the first tool fires.
+
+3. **Split commands_state.rs** — The monolith at 23,736 lines. But this is a big task... the assessment says to break into one-module-at-a-time. Could start with extracting one clear subsystem (e.g., graph commands or memory commands).
+
+4. **Use state replay in a real session** — Feed past audit events into a current session to validate the replay pipeline.
+
+Let me think about what's highest impact and completable in 20 minutes:
+
+- Running eval on a real patch: This could be done by running the eval CLI against a recent commit diff. The smoke test proves the pipeline loads fixtures. Need to actually evaluate something.
+
+- Diagnosing silent crashes: This needs investigation, could be many things. Hard to guarantee completion in 20 min.
+
+- Splitting commands_state.rs: Too big for one task.
+
+- State replay: Could write a script that exercises it, but the infrastructure exists.
+
+Let me read ISSUES_TODAY.md first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read ISSUES_TODAY.md ✓ (83ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No trusted owner issues. That simplifies planning significantly. All 3 task slots go to DeepSeek harness work from state/trajectory evidence.
+
+Let me think about the best 3 tasks:
+
+**Evidence from state/trajectory/assessment:**
+
+1. **Eval harness never evaluated a real patch** — This is the single most concrete gap. The factory is built (368 fixtures, smoke test proves pipeline), but nothing has ever flowed through it. This is "factory built, nothing flowing." Running the eval on a real patch would exercise the full DeepSeek-native pipeline for the first time and produce actual eval evidence.
+
+2. **Silent pre-first-tool-call crashes** — 8 sessions crashed today before firing a single tool. The journal reports this but no diagnostic exists. This is a reliability gap. Adding instrumentation before the first tool call would make these failures diagnosable.
+
+3. **commands_state.rs monolithic size** — 23,736 lines. But splitting a monolith is too big for one 20-min task. I could extract one clear subsystem (like state memory commands, or graph commands). Let me think about what's practical...
+
+Actually, let me re-read the assessment more carefully. The silent session failures - 8 of them. The root cause is unknown. But adding instrumentation might be complex. Let me think about what a focused 20-min task could do...
+
+For the eval harness, the smoke test (`smoke_validate_fixture_pipeline_with_real_fixture_data`) already proves the pipeline loads. What would "run eval on a real patch" look like? We need:
+- A patch to evaluate (could use a recent commit diff)
+- Run it through the eval CLI
+- See if it produces meaningful results
+
+This is directly aligned with the DeepSeek harness mission. It exercises the eval pipeline end-to-end.
+
+For the silent crashes, adding a simple "session started" event or "prompt construction starting" log before the first tool call would give visibility into where crashes happen.
+
+For commands_state.rs, let me think smaller. The assessment mentions the file has graph commands, memory commands, etc. I could extract just one of those. But even that might be too big...
+
+Let me think about what's most impactful:
+
+Task 1: **Exercise eval harness on a real patch** — highest impact, directly addresses the assessment's "factory built, nothing flowing" finding. This is a DeepSeek harness task.
+
+Task 2: **Add pre-first-tool diagnostic instrumentation** — addresses the silent crash problem. Add a state event or log line that fires before the first tool call attempt, so crashes leave evidence of where they happened.
+
+Task 3: **Extract state memory module from commands_state.rs** — The memory subcommand handler (`handle_memory`) is in `commands_state_memory.rs` already (150 lines). Wait, it's already extracted? Let me check... The assessment says `commands_state.rs` is 23,736 lines. But `commands_state_memory.rs` exists at 150 lines. So maybe some pieces are already extracted?
+
+Let me look at what's actually in commands_state.rs vs what's already extracted. The repo map shows:
+- `src/commands_state.rs` (23736 lines) - the main file
+- `src/commands_state_graph.rs` (1168 lines) - graph subcommand extracted
+- `src/commands_state_memory.rs` (150 lines) - memory subcommand extracted
+
+So graph and memory are already extracted. What's still in the 23,736-line main file? Probably the main `handle_state_subcommand` dispatcher plus all the graph building functions. Let me look at the functions listed in commands_state.rs from the repo map... there's a LOT: build_graph_report, build_graph_summary_report, build_graph_summary_payload, build_graph_clusters_report, etc. All these graph functions are still in the main file even though `commands_state_graph.rs` exists.
+
+Wait, but the assessment says not to read source files. Let me think about what's achievable.
+
+Actually, I think the most valuable tasks given the evidence are:
+
+1. **Run eval on a real patch** — Exercise the eval harness end-to-end with a real code change. This produces actual eval evidence for the first time.
+
+2. **Add session-start diagnostic event** — Before the first prompt turn, record a state event with enough context to diagnose silent crashes. This addresses the 8-sessions-crashed-before-first-tool problem.
+
+3. For task 3... Let me think. The assessment mentions `commands_state.rs` at 23,736 lines. The graph functions (build_graph_*) are probably the bulk of it. Extracting those to `commands_state_graph.rs` where the dispatcher already lives would be a natural split. But there are 20+ build_graph_* functions — that's too many for one 20-min task.
+
+Alternative task 3: **Triage README star-history CI assertion** — The trajectory shows a recurring CI error about `star-history.com/#yologdev/yyds-harness&date` with assertion failures. The assessment says "appears resolved" but the trajectory still flags it. Let me verify and fix if needed.
+
+Actually wait — the assessment says build and tests pass. So if the README test was failing, it would show up. Let me re-read: "Current README.md contains correct URLs (`yologdev/yyds-harness`), and the test assertions match. This appears resolved — likely stale trajectory data from an earlier window." So this is stale data.
+
+Let me focus on what's highest-impact:
+
+Task 1: **Exercise eval harness on a real patch** 
+Task 2: **Add session-start diagnostic for silent pre-tool-call crashes**
+Task 3: **Extract graph build functions from commands_state.rs to commands_state_graph.rs**
+
+Wait, task 3 touches potentially many functions. Let me think smaller. Maybe I should just move the `build_graph_*` functions that are purely data-building (not the report rendering ones) and leave the dispatcher in place.
+
+Actually, looking more carefully at the repo map:
+- `commands_state_graph.rs` has `handle_graph_subcommand` 
+- `commands_state.rs` has all the `build_graph_*` functions
+
+The natural split is: move the pure data-building functions to `commands_state_graph.rs` and keep the dispatcher in `commands_state.rs`. But that's still 20+ functions.
+
+Let me reconsider. What if task 3 is something simpler and equally valuable?
+
+Looking at the assessment again: "State replay never used in production: `replay_state_events.py` is tested but hasn't fed a real session with multi-session context."
+
+Task 3 alternative: **Wire state replay into session startup** — When a new session starts, run `replay_state_events.py` to pour past audit events into the current session's state recorder. This exercises the replay pipeline in production.
+
+But that might require changes to the evolve.sh script, which the safety rules say not to modify. Let me check... The rules say "Never modify IDENTITY.md, PERSONALITY.md, ECONOMICS.md, scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, or .github/workflows/". So evolve.sh is protected.
+
+OK, what about wiring it into the Rust code? The `state.rs` module could call replay on startup. But that's complex.
+
+Let me go with a simpler task 3: **Extract graph evidence/build functions from commands_state.rs** — take one clear subset. Let me look at what functions are in commands_state.rs graph-related...
+
+From the repo map:
+- build_graph_report, build_graph_summary_report, build_graph_summary_payload
+- build_graph_clusters_report, build_graph_clusters_payload, build_graph_clusters
+- build_graph_impact_report, build_graph_impact_payload
+- build_graph_signals_report, build_graph_signals_payload
+- build_graph_timeline_report, build_graph_timeline_payload
+- build_graph_evidence_report, build_graph_evidence_payload
+- build_graph_files_report, build_graph_files_payload
+- build_graph_evals_report, build_graph_evals_payload
+- build_graph_patches_report, build_graph_patches_payload
+- build_graph_decisions_report, build_graph_decisions_payload
+- build_graph_hypotheses_report, build_graph_hypotheses_payload
+- build_graph_versions_report, build_graph_versions_payload
+- build_graph_runs_report, build_graph_runs_payload
+- build_graph_artifacts_report, build_graph_artifacts_payload
+- build_graph_models_report, build_graph_models_payload
+- build_graph_tools_report, build_graph_tools_payload
+- build_graph_commands_report, build_graph_commands_payload
+- build_graph_tests_report, build_graph_tests_payload
+- build_graph_commits_report, build_graph_commits_payload
+- build_graph_memories_report, build_graph_memories_payload
+- build_graph_issues_report, build_graph_issues_payload
+- build_graph_cache_report, build_graph_cache_payload
+- build_graph_failures_report, build_graph_failures_payload
+- build_graph_policies_report, build_graph_policies_payload
+- build_graph_protocol_report, build_graph_protocol_payload
+- build_graph_hotspots_report, build_graph_hotspots_payload
+- build_graph_path_report
+- build_state_memory_synthesis
+- record_state_memory_candidates
+- build_state_memory_records
+- record_state_memory_decision
+
+That's ~35 functions. Way too many to move in one 20-min task. And the task sizing rules say at most 3 source files per task, and large refactors must be broken into one-module-at-a-time tasks.
+
+OK, let me think about what's actually achievable and valuable:
+
+Task 1: **Run first real eval through the harness** — This is the highest-impact DeepSeek harness task. Pick a recent commit diff, run it through `yyds eval run`, verify the pipeline produces evidence.
+
+Task 2: **Add session-start state event for crash diagnostics** — Add a `SessionStarted` or `PromptConstructionStarted` event in the state recorder, fired before the first tool call. This gives visibility into silent pre-tool crashes.
+
+Task 3: **Extract one graph function group from commands_state.rs** — Pick one logical group (like `build_graph_hotspots_*` + helper) and move it to `commands_state_graph.rs`. This starts the monolith split with an independently verifiable chunk.
+
+Actually wait, let me re-read the task sizing rules: "Each task MUST touch at most 3 source files." Moving functions from commands_state.rs to commands_state_graph.rs touches 2 source files + potentially lib.rs for module declarations. That's 3 files max. 
+
+But actually, lib.rs probably already declares `commands_state_graph` since the file exists with `handle_graph_subcommand`. So I'd only touch:
+1. `src/commands_state.rs` (remove functions)
+2. `src/commands_state_graph.rs` (add functions)
+
+That's 2 files. Good.
+
+Let me finalize the plan:
+
+### Task 1: Run first real eval through the eval harness
+- Pick a recent, well-understood commit diff
+- Run `yyds eval run` against it with a subset of fixtures
+- Document results, fix any pipeline issues that surface
+- Files: potentially `src/commands_eval.rs` if fixes needed, fixture files, `eval/fixtures/`
+- This exercises the full DeepSeek-native evaluation pipeline
+
+### Task 2: Add session-start diagnostic event
+- Add a state event that fires before the first prompt/tool call
+- This makes silent pre-tool-call crashes diagnosable
+- Files: `src/state.rs`, `src/lib.rs` (or wherever session init happens)
+- Simple: record an event with timestamp and session info
+
+### Task 3: Extract graph hotspots functions from commands_state.rs
+- Move `build_graph_hotspots_report` and `build_graph_hotspots_payload` to `commands_state_graph.rs`
+- These are a self-contained, small group
+- Files: `src/commands_state.rs`, `src/commands_state_graph.rs`
+- First step in monolith split, independently verifiable
+
+Wait, I should also check: is there a release check? The assessment says to check the release skill. Let me think... v0.1.14 is current. Enough has accumulated? The assessment mentions lots of infrastructure built (state recording, eval harness, semantic index, embedding index). But the eval harness hasn't been exercised yet. I'd say: don't release until we've run at least one real eval through the pipeline. Defer release.
+
+Alright, let me also think about what each task's "Expected Evidence" would be:
+
+Task 1: state graph evals shows at least one eval relation; eval list shows evaluated patches
+Task 2: state events show a SessionStarted event before first tool call; crash sessions now have diagnostic content
+Task 3: cargo build passes; state graph hotspots still works; commands_state.rs is smaller
+
+Let me now write the plan files and issue_responses.md.
+
+Actually, I should double-check: does the assessment say anything about Task 1 being hard? The smoke test already proves the pipeline works with real fixture data. Running a real eval should be feasible. The risk is that the eval might reveal bugs in the harness, but finding and fixing those is exactly the point.
+
+Let me also think about whether these tasks follow the priority order:
+0. CI failures: none
+1. State feedback: Task 2 (crash diagnostics) and Task 3 (monolith split for better state graph) both address this
+2. Eval/replay quality: Task 1 directly addresses this
+3. Self-discovered bugs: Task 2 addresses the silent crash bug
+4. Trusted owner issues: none
+5. Self-filed issues: none
+6. Capability gaps: Task 1 addresses the eval gap
+7. Release: defer
+
+All three tasks come from state/trajectory evidence. Good.
+
+Now let me write the files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ mkdir -p session_plan && rm -f session_plan/task_*.md session_plan/issue_respons… ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, directory prepped. Now let me write the task files and issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll write the three task files and issue responses. The assessment and trajectory evidence point to three clear priorities: exercise the unused eval harness, diagnose silent session crashes, and begin splitting the `commands_state.rs` monolith.
+  + Title: Run first real eval through the eval harness
+  + Files: src/commands_eval.rs, eval/fixtures/local-smoke/ (new fixture if needed), session_plan/ (eval output)
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Exercise the eval harness end-to-end with a real code patch for the first time. The harness has 368 fixtures and a smoke test proving the pipeline loads, but zero actual evaluations have ever run. Pick one recent, well-understood commit diff (e.g., the Day 99 ANTHROPIC_API_KEY→DEEPSEEK_API_KEY fix in lib.rs, or the reverse-shell false-positive fix), run it through `yyds eval run`, and verify the pipeline produces meaningful evidence.
+  + 
+  + Why this matters:
+  + This is the assessment's #1 gap: "factory built, nothing flowing." The eval harness is the core DeepSeek-native differentiator — deterministic prompt layout, state-backed evaluation, promotion gates. But it's never been used. Running the first real eval converts infrastructure into evidence, exercises the full pipeline (fixture loading → agent execution → result recording → state graph evidence), and surfaces any bugs that only appear with real data.
+  + 
+  + Success Criteria:
+  + - At least one real patch evaluated through the eval harness
+  + - `yyds state graph evals` shows at least one eval relation after the run
+  + - The eval produces a result (pass, fail, or error) with meaningful output
+  + - If the pipeline breaks, diagnose and fix (within the 3-file task limit)
+  + 
+  + Verification:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (61 lines)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (61 lines) ✓ (2m 37s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Task 1 written. Now Task 2: Add session-start diagnostic event.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Add session-start diagnostic event for silent pre-tool-call crash visibility
+  + Files: src/state.rs, src/lib.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Add a state event that fires at session startup before the first prompt or tool call, capturing enough context to diagnose the "8 sessions crashed before first tool call" problem reported in today's journal. Currently, sessions that crash before firing a single tool produce only RunStarted and Error markers with no diagnostic content. A SessionStarted event with environment info (API key present, model name, skills loaded, context token count) would make these failures diagnosable.
+  + 
+  + Why this matters:
+  + The journal reports 8 sessions today crashed before the first tool call — silent red lights. We don't know if it's API auth failures, prompt construction panics, tokio runtime issues, or something else. Adding one state event at session init gives future crash sessions a diagnostic breadcrumb. This directly improves harness reliability observability — a core DeepSeek harness KPI.
+  + 
+  + Success Criteria:
+  + - A state event is recorded before the first prompt/tool call in every session
+  + - The event includes: timestamp, model name, API key presence (boolean, NOT the key), context token count, skills loaded count
+  + - On next session startup, `yyds state tail --limit 5` shows the SessionStarted event
+  + - If a session crashes before first tool call, the SessionStarted event survives in the state log providing diagnostic context
+  + 
+  + Verification:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (62 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (62 lines) ✓ (2m 33s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Task 2 written. Now Task 3: Extract graph hotspots functions from commands_state.rs to commands_state_graph.rs.
+
+Let me verify that commands_state_graph.rs already exists and has handle_graph_subcommand. The repo map shows it at 1168 lines with `handle_graph_subcommand`. Good.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Extract graph hotspots functions from commands_state.rs to commands_state_graph.rs
+  + Files: src/commands_state.rs, src/commands_state_graph.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Move the `build_graph_hotspots_report` and `build_graph_hotspots_payload` functions (plus any private helpers they depend on) from `src/commands_state.rs` (23,736-line monolith) to `src/commands_state_graph.rs` (1168 lines, already contains `handle_graph_subcommand`). This is the first step in splitting the monolith — one self-contained function group, independently verifiable, minimal risk.
+  + 
+  + Why this matters:
+  + `commands_state.rs` is 23,736 lines (16.5% of codebase) — 3.6x larger than the next-largest file. This was flagged in Day 99 assessment and hasn't been addressed. Monolithic files make editing risky (merge conflicts, accidental breakage) and slow down evolution sessions (more context consumed to find things). The graph subsystem is the natural split target because `commands_state_graph.rs` already exists as the dispatcher module. Moving one function group at a time is safe and verifiable.
+  + 
+  + Success Criteria:
+  + - `build_graph_hotspots_report` and `build_graph_hotspots_payload` live in `commands_state_graph.rs`
+  + - `commands_state.rs` no longer contains these functions
+  + - `cargo build` passes
+  + - `cargo test --lib` passes
+  + - `yyds state graph hotspots --limit 10` produces identical output to before the move
+  + - `commands_state.rs` line count decreases (even if modestly)
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_03.md (74 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_03.md (74 lines)

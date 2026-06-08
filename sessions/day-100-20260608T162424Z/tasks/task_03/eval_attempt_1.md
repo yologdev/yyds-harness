@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: build_graph_hotspots_report, build_graph_hotspots_payload, their private helper query_graph_hotspots, and the GraphHotspot struct all live in commands_state_graph.rs; commands_state.rs has no remaining function definitions (only call sites routed via crate::commands_state_graph::); cargo build, cargo test --lib (4193 passed), and yyds state graph hotspots --limit 10 all succeed identically.

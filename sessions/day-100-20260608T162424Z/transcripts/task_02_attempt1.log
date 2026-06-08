@@ -1,0 +1,420 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. Add a `SessionStarted` event type to the state system in `src/state.rs`
+2. Add a helper function to record it
+3. Call it from `src/lib.rs` before the first prompt/tool call
+4. The event should include: model name, API key presence (bool), context token count, skills loaded count, binary version
+
+Let me start by reading the relevant source files to understand the current state system.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the state.rs file to understand the EventType enum and how events are recorded.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.4s (5 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read key sections of state.rs and lib.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'enum EventType' in src/state.rs  ▶ search 'fn run_cli' in src/lib.rs ✓ (12ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the EventType enum and the surrounding area to understand the pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:85..145  ▶ read src/lib.rs:981..1081 ✓ (14ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand where the agent is built and where the first prompt is called, so I can inject the SessionStarted event between those two points. Let me continue reading lib.rs to find the `build_agent` call and the first prompt.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1080..1200 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The ideal injection point is after the agent is built and MCP/external servers are connected, but before the first prompt. Looking at lines 1087-1130:
+
+- Line 1087: `let mut agent = agent_config.build_agent();` — agent built
+- Lines 1090-1104: MCP/OpenAPI connection
+- Lines 1106-1108: Session restore
+- Lines 1111-1131: Single-prompt mode
+- Lines 1134-1151: Piped mode
+- Lines 1165-1177: REPL mode
+
+The best injection point is right before line 1087 (after agent_config is fully populated) or after line 1108 (after session restore). Actually, the task says "after AgentConfig is built, after build_agent() or equivalent, before run_prompt() or REPL start."
+
+I think right after line 1087 (after `build_agent()`) is a good place, since we have access to `agent_config` for model name, skills count, etc.
+
+Let me also check what's available in agent_config. Let me look at the AgentConfig struct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct AgentConfig' in src/agent_builder.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the AgentConfig struct to understand what fields are available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:389..439 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me look at the state.rs file for how existing state events are recorded. I need to understand:
+1. How the global state recorder works
+2. How existing events are appended
+3. Where the helper function should go
+
+Let me also look at the `RunStarted` event handling to see how it's similar.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at how state events are recorded and the `record` function:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record' in src/state.rs  ▶ search 'pub fn init_global' in src/state.rs ✓ (11ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the record function and how RunStarted is emitted to understand the pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:278..358 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check how the binary version is accessed in the codebase. Let me also check what `VERSION` constant is available.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check how the VERSION constant is accessed and look at cli_config.rs:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub const VERSION' in src/cli_config.rs  ▶ search 'skills_count|skill_count|skills\.len' in src ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how `cli::VERSION` is already used in lib.rs. Also let me check what `cli::effective_context_tokens` returns for the context token count.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn effective_context_tokens|set_effective_context_tokens' in src/cli_config.rs  ▶ search 'cli::VERSION' in src/lib.rs ✓ (10ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the `effective_context_tokens` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'effective_context_tokens' in src ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also understand how skills count is accessed. Let me check what `agent_config.skills` provides.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search '\.skills\.' in src (*.rs) ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `agent_config.skills.len()` gives us the count. And looking at repl.rs:631-632, `agent_config.skills.is_empty()` and `agent_config.skills.len()` are both available.
+
+Now let me also check where the VERSION from cli is accessible. It seems to be in `cli_config.rs` as `pub const VERSION` and re-exported in cli.rs. Let me confirm the import pattern.
+
+Let me now plan the exact implementation:
+
+1. **In `src/state.rs`:**
+   - Add `SessionStarted` to the `EventType` enum
+   - Add a helper function `record_session_started(model: &str, api_key_present: bool, context_tokens: u64, skills_count: usize)`
+
+2. **In `src/lib.rs`:**
+   - Call `state::record_session_started(...)` after `build_agent()` (line 1087) and MCP connection (line 1104), before the first prompt
+
+For the VERSION, I can use `cli::VERSION` or `env!("CARGO_PKG_VERSION")`.
+
+Let me now implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement the changes. First, I'll add the `SessionStarted` variant and helper function to state.rs, then call it from lib.rs.
+
+Let me also check if there are any tests in state.rs related to the EventType enum or any serialization tests that might need updating.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+Let me check for serialization tests in state.rs:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType' in src/state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the `event_type_label` function to see all EventType variants. This is a match expression that needs to be updated when adding a new variant.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:2847..2887 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to also check the `parse_event_type_label` function for the reverse mapping.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:2884..2924 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I see the `parse_event_type_label` function uses `serde::from_value` as a catch-all, so my new variant should be parsable from its PascalCase serialization automatically (since I have `#[serde(rename_all = "PascalCase")]` which means `SessionStarted` is the serialized name).
+
+However, I should also check if there are more match expressions on EventType that might need updating. Let me check if there's any exhaustive match. Let me search for "EventType::" in a way that identifies exhaustive matches.
+
+Actually, looking at the code, there are several match statements that seem to match on specific EventType variants. The compiler will flag any exhaustive match that doesn't include `SessionStarted`. Let me check for `=>` patterns that look like they might be exhaustive.
+
+Let me also look at how `now_ms()` is exported - I'll need a timestamp for the event.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check for `now_ms` in state.rs:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn now_ms' in src/state.rs ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also quickly check if there are any tests that specifically test the EventType enum's serialization or match exhaustively.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType::\w+ =>' in src/state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, now I'm confident about the changes needed. Let me implement them:
+
+1. **state.rs**: 
+   - Add `SessionStarted` to `EventType` enum (after `RunStarted` for logical grouping)
+   - Add the `event_type_label` match arm
+   - Add the helper function `record_session_started`
+
+2. **lib.rs**:
+   - Call `state::record_session_started(...)` after agent build but before first prompt
+
+Let me now make the edits.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, I have a clear picture. Now let me implement. First, add the `SessionStarted` variant to the enum:
+        RunStarted,
+        RunCompleted,
+  +     SessionStarted,
+        ModelCallStarted,
+  ✓ Auto-approved: edit: src/state.rs (3 → 4 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (3 → 4 lines)
+        RunStarted,
+        RunCompleted,
+  +     SessionStarted,
+        ModelCallStarted,
+ ✓ (12.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The compiler is pointing me to an exhaustive match. Let me add the match arm to `event_type_label`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the match arm in `event_type_label`:
+            EventType::ToolSchemaFailure => "ToolSchemaFailure",
+  +         EventType::SessionStarted => "SessionStarted",
+        }
+  ✓ Auto-approved: edit: src/state.rs (2 → 3 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (2 → 3 lines)
+            EventType::ToolSchemaFailure => "ToolSchemaFailure",
+  +         EventType::SessionStarted => "SessionStarted",
+        }
+ ✓ (3m 1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check if there are other exhaustive match expressions. Let me check the `parse_event_type_label` function. It uses a catch-all, so that should be fine. Let me also check for other match arms that might be exhaustive.
+
+Let me search for more exhaustive match patterns that need updating.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check for other exhaustive matches:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | head -30 ✓ (109ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build succeeds. Now let me check for other exhaustive matches in the state.rs file that might be in `commands_state.rs` or other files that import EventType.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo clippy --all-targets -- … ✓ (19.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build and clippy pass. Now let me add the helper function. Let me find a good location in state.rs for the helper function — near `record_cache_metrics` seems appropriate since it's another event-recording helper.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, no more exhaustive match issues. Now add the helper function near `record_cache_metrics`:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:362..402 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll add the `record_session_started` function right after `record_cache_metrics` and before the test section.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        record(EventType::CacheMetricsRecorded, Actor::Harness, payload);
+  + }
+  + 
+  + /// Record a SessionStarted event at session initialization, before the first
+  + /// prompt or tool call. Provides diagnostic context for sessions that crash
+  + /// before producing any other events.
+  + pub fn record_session_started(
+  +     model: &str,
+  +     api_key_present: bool,
+  +     context_tokens: u64,
+  +     skills_count: usize,
+  + ) {
+  +     let payload = json!({
+  +         "model": model,
+  +         "api_key_present": api_key_present,
+  +         "context_tokens": context_tokens,
+  +         "skills_count": skills_count,
+  +         "binary_version": crate::cli::VERSION,
+  +         "ts_ms": now_ms(),
+  +     });
+  ... (4 more lines)
+  ✓ Auto-approved: edit: src/state.rs (4 → 24 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (4 → 24 lines)
+        record(EventType::CacheMetricsRecorded, Actor::Harness, payload);
+  + }
+  + 
+  + /// Record a SessionStarted event at session initialization, before the first
+  + /// prompt or tool call. Provides diagnostic context for sessions that crash
+  + /// before producing any other events.
+  + pub fn record_session_started(
+  +     model: &str,
+  +     api_key_present: bool,
+  +     context_tokens: u64,
+  +     skills_count: usize,
+  + ) {
+  +     let payload = json!({
+  +         "model": model,
+  +         "api_key_present": api_key_present,
+  +         "context_tokens": context_tokens,
+  +         "skills_count": skills_count,
+  +         "binary_version": crate::cli::VERSION,
+  +         "ts_ms": now_ms(),
+  +     });
+  ... (4 more lines)
+ ✓ (19.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The function isn't called yet. I need to add the call from lib.rs. Let me also add `#[allow(dead_code)]` temporarily until the call in lib.rs is added, or just add the call right now.
+
+Let me add the call in lib.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the call in `lib.rs`. The right spot is after `build_agent()` and MCP connection, before the first prompt:
+        if continue_session {
+            restore_session(&mut agent);
+        }
+  + 
+  +     // Record SessionStarted event for pre-tool-call crash visibility.
+  +     // Must fire before the first prompt/tool call so sessions that crash
+  +     // silently have at least one diagnostic breadcrumb.
+  +     state::record_session_started(
+  +         &agent_config.model,
+  +         std::env::var("DEEPSEEK_API_KEY").is_ok(),
+  +         crate::cli::effective_context_tokens(),
+  +         agent_config.skills.len(),
+  +     );
+    
+        // --prompt / -p: single-shot mode
+  ✓ Auto-approved: edit: src/lib.rs (5 → 15 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (5 → 15 lines)
+        if continue_session {
+            restore_session(&mut agent);
+        }
+  + 
+  +     // Record SessionStarted event for pre-tool-call crash visibility.
+  +     // Must fire before the first prompt/tool call so sessions that crash
+  +     // silently have at least one diagnostic breadcrumb.
+  +     state::record_session_started(
+  +         &agent_config.model,
+  +         std::env::var("DEEPSEEK_API_KEY").is_ok(),
+  +         crate::cli::effective_context_tokens(),
+  +         agent_config.skills.len(),
+  +     );
+    
+        // --prompt / -p: single-shot mode
+ ✓ (3m 1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check if `std::env` is already imported in lib.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check if `std::env` is already available in lib.rs:
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ search '^use std::' in src/lib.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'm using `std::env::var(...)` which needs `std::env` in scope. Let me check if there's a different import. Actually, `std::env::var` can be called with a full path like `std::env::var("DEEPSEEK_API_KEY").is_ok()` which is the form I'm already using. That should work without an explicit `use std::env`.
+
+Let me try building.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (107ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let's run clippy and tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo clippy --all-targets -- … ✓ (19.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clippy passes. Now let's run cargo test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib 2>&1 ✓ (2m 1s)
+
+  ✓ Watch passed: `cargo clippy --all-targets -- -D warnings && cargo test`
+
