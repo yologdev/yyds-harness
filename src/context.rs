@@ -371,7 +371,7 @@ fn ensure_embedding_index() {
     if path.exists() {
         // Check freshness before deciding it's good enough.
         // If the index is stale (all files changed or >2/3 stale),
-        // delete it and report.
+        // delete it and rebuild.
         if let Some(index) = load_persistent_embedding_index(path) {
             let (fresh, stale, _missing) = count_fresh_index_files(
                 index
@@ -393,12 +393,41 @@ fn ensure_embedding_index() {
             let _ = std::fs::remove_file(path);
         }
     }
-    // No builder exists yet — embedding-based context ranking requires an
-    // external embedding model or API.  Print a diagnostic so the missing
-    // index is observable rather than silently absent.
-    eprintln!(
-        "\x1b[33m  embedding index is missing — embedding-based context ranking is unavailable (requires an external embedding model)\x1b[0m"
-    );
+    // Build from semantic index using deterministic hash-based embeddings.
+    // No external model required — term vectors are computed via hash projection
+    // and file embeddings are the average of their constituent term vectors.
+    let semantic_path = Path::new(DEFAULT_SEMANTIC_INDEX_PATH);
+    let Some(semantic_index) = load_persistent_semantic_index(semantic_path) else {
+        eprintln!("\x1b[33m  embedding index cannot be built — semantic index is missing\x1b[0m");
+        return;
+    };
+    let index = build_persistent_embedding_index(&semantic_index);
+    if index.files.is_empty() {
+        eprintln!("\x1b[33m  embedding index is empty — no file embeddings computed\x1b[0m");
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(&index) {
+        Ok(raw) => {
+            if std::fs::write(path, format!("{raw}\n")).is_ok() {
+                eprintln!(
+                    "\x1b[32m  embedding index built: {} files, {} terms\x1b[0m",
+                    index.files.len(),
+                    index.terms.len()
+                );
+            } else {
+                eprintln!(
+                    "\x1b[33m  embedding index failed to write to {}\x1b[0m",
+                    path.display()
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("\x1b[33m  embedding index serialization failed: {e}\x1b[0m");
+        }
+    }
 }
 
 pub fn build_deepseek_context_preview() -> DeepSeekContextPreview {
@@ -1066,6 +1095,93 @@ fn build_persistent_semantic_index(
         file_count: files.len(),
         files,
     })
+}
+
+fn hash_term_to_vector(term: &str, dimensions: usize) -> Vec<f32> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut vec = vec![0.0f32; dimensions];
+
+    // Deterministic hash → pseudo-random unit vector via xorshift64.
+    let mut hasher = DefaultHasher::new();
+    term.hash(&mut hasher);
+    let mut state: u64 = hasher.finish();
+
+    for value in vec.iter_mut().take(dimensions) {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        // Map u64 → [-1.0, 1.0]
+        *value = ((state as f64) / (u64::MAX as f64)) as f32 * 2.0 - 1.0;
+    }
+
+    // Normalise to unit length so cosine similarity is well-behaved.
+    let norm: f32 = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for v in &mut vec {
+            *v /= norm;
+        }
+    }
+
+    vec
+}
+
+fn build_persistent_embedding_index(
+    semantic_index: &PersistentSemanticIndex,
+) -> PersistentEmbeddingIndex {
+    const EMBEDDING_DIMENSIONS: usize = 128;
+
+    // Collect every unique term and compute its hash-based embedding.
+    let mut term_map: HashMap<String, Vec<f32>> = HashMap::new();
+    for file in &semantic_index.files {
+        for term in &file.terms {
+            term_map
+                .entry(term.clone())
+                .or_insert_with(|| hash_term_to_vector(term, EMBEDDING_DIMENSIONS));
+        }
+    }
+
+    let terms: Vec<PersistentEmbeddingIndexTerm> = term_map
+        .into_iter()
+        .map(|(term, embedding)| PersistentEmbeddingIndexTerm { term, embedding })
+        .collect();
+
+    // Build a fast lookup: term → &[f32] slice.
+    let lookup: HashMap<&str, &[f32]> = terms
+        .iter()
+        .map(|t| (t.term.as_str(), t.embedding.as_slice()))
+        .collect();
+
+    // File embedding = average of its term vectors.
+    let mut files = Vec::new();
+    for file in &semantic_index.files {
+        if file.terms.is_empty() {
+            continue;
+        }
+        let vectors: Vec<&[f32]> = file
+            .terms
+            .iter()
+            .filter_map(|t| lookup.get(t.as_str()).copied())
+            .collect();
+        let embedding = match average_embedding_vectors(&vectors) {
+            Some(v) => v,
+            None => continue,
+        };
+        files.push(PersistentEmbeddingIndexFile {
+            path: file.path.clone(),
+            len_bytes: file.len_bytes,
+            modified_ms: file.modified_ms,
+            embedding,
+        });
+    }
+
+    PersistentEmbeddingIndex {
+        schema_version: EMBEDDING_INDEX_SCHEMA_VERSION,
+        generated_at_ms: now_ms(),
+        files,
+        terms,
+    }
 }
 
 fn load_persistent_semantic_index(path: &Path) -> Option<PersistentSemanticIndex> {
