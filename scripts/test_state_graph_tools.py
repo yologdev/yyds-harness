@@ -114,6 +114,19 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(comparison["candidate_session"], "day-2")
             self.assertAlmostEqual(comparison["gnome_deltas"]["coding_log_score"]["delta"], 0.2)
 
+    def test_replay_check_requires_state_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            session.mkdir(parents=True)
+
+            replay = state_graph_tools.replay_check(session.parent)
+            self.assertEqual(replay["state_replay_integrity_rate"], 0.0)
+            self.assertFalse(replay["sessions"][0]["ok"])
+            self.assertFalse(replay["sessions"][0]["events_available"])
+            self.assertFalse(replay["sessions"][0]["summary_available"])
+            self.assertIn("missing_state_events_jsonl", replay["sessions"][0]["mismatches"])
+            self.assertIn("missing_state_summary_json", replay["sessions"][0]["mismatches"])
+
 
 if __name__ == "__main__":
     unittest.main()

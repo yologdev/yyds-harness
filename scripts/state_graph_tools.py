@@ -199,8 +199,10 @@ def build_causal_chains(session_dir: Path) -> list[dict[str, Any]]:
 
 
 def replay_check_session(session_dir: Path) -> dict[str, Any]:
-    summary = load_json(session_dir / "state" / "summary.json")
-    events = load_jsonl(session_dir / "state" / "events.jsonl")
+    summary_path = session_dir / "state" / "summary.json"
+    events_path = session_dir / "state" / "events.jsonl"
+    summary = load_json(summary_path)
+    events = load_jsonl(events_path)
     manifest = task_manifest(session_dir)
     tasks = selected_tasks(manifest)
     task_dirs = sorted(
@@ -211,6 +213,10 @@ def replay_check_session(session_dir: Path) -> dict[str, Any]:
     counts = event_counts(events)
     summary_counts = summary.get("event_counts") if isinstance(summary.get("event_counts"), dict) else {}
     mismatches: list[str] = []
+    if not events_path.is_file():
+        mismatches.append("missing_state_events_jsonl")
+    if not summary_path.is_file():
+        mismatches.append("missing_state_summary_json")
     if summary and int(summary.get("event_count") or 0) != len(events):
         mismatches.append("summary_event_count_mismatch")
     for kind, count in counts.items():
@@ -234,7 +240,8 @@ def replay_check_session(session_dir: Path) -> dict[str, Any]:
         "task_artifact_dir_count": len(task_dirs),
         "planning_failed": planning_failed,
         "manifest_available": bool(manifest),
-        "summary_available": bool(summary),
+        "events_available": events_path.is_file(),
+        "summary_available": summary_path.is_file(),
         "ok": not mismatches,
         "mismatches": mismatches,
     }
