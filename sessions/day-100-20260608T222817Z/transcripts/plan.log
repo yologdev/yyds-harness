@@ -1,0 +1,453 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The user wants me to plan a session for Day 100. Let me analyze the situation:
+
+1. **CI FAILURE**: There's a failing test `dispatch_sub::tests::test_resolve_api_key_from_env` that MUST be fixed first. The assertion fails: `left: Some("sk-from-env")` vs `right: Some("sk-test-review")`. This is priority 0.
+
+2. **Assessment findings**: 
+   - Crash reporter is built but uncommitted
+   - Eval pipeline is cold (never run)
+   - `commands_state.rs` is 23,804 lines
+   - No cache metrics recording
+
+3. **Trusted owner issues**: Need to check ISSUES_TODAY.md
+
+Let me first create the session_plan directory, then read ISSUES_TODAY.md to see if there are owner issues, then look at the failing test to understand what needs fixing.
+
+Let me start by reading the failing test and understanding the issue.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && rm -f session_plan/task_*.md  ▶ read ISSUES_TODAY.md  ▶ read src/dispatch_sub.rs:1150..1230 ✓ (14ms)
+ ✓ (11ms)
+ ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The CI failure is on `test_resolve_api_key_from_env`. The test sets `ANTHROPIC_API_KEY` to `sk-test-review` and expects `resolve_api_key` to return it. But the CI output shows it got `sk-from-env` instead. This means the env var `ANTHROPIC_API_KEY` is already set to `sk-from-env` in the CI environment, and the test's `set_var` is not overriding it, OR another test (`test_resolve_api_key_flag_overrides_env`) is running first and leaking `sk-from-env`.
+
+Wait, let me re-read: the failure is on `test_resolve_api_key_from_env` (line 1175), and the assertion says `left: Some("sk-from-env")` vs `right: Some("sk-test-review")`. So the function returned `sk-from-env` when the test expected `sk-test-review`.
+
+This means the CI environment already has `ANTHROPIC_API_KEY=sk-from-env` set in the environment BEFORE the test runs. The test does `set_var("ANTHROPIC_API_KEY", "sk-test-review")` but `resolve_api_key` might be reading the env var differently — perhaps from a cached value, or the `set_var` isn't taking effect properly in a concurrent test scenario.
+
+No, more likely: `test_resolve_api_key_flag_overrides_env` runs BEFORE `test_resolve_api_key_from_env` and sets `ANTHROPIC_API_KEY=sk-from-env`, then calls `resolve_api_key` and then `remove_var`. But... wait, `remove_var` is called at the end.
+
+Actually, looking more carefully: tests run in parallel. `test_resolve_api_key_flag_overrides_env` sets `ANTHROPIC_API_KEY=sk-from-env` and `test_resolve_api_key_from_env` also sets `ANTHROPIC_API_KEY=sk-test-review`. If they race, the env var state is undefined. This is a classic flaky test due to shared mutable state (env vars).
+
+But wait — the CI failure says the test runs sequentially (it lists many tests, all `ok`, and then this one fails). The specific error: `left: Some("sk-from-env")` — the function returned the env value instead of the test's set value. This suggests `resolve_api_key` might be using `DEEPSEEK_API_KEY` instead of `ANTHROPIC_API_KEY`, or there's a caching issue, or the env var resolution order is wrong.
+
+Let me look at `resolve_api_key` to understand the logic.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.2s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn resolve_api_key' in src/dispatch_sub.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the resolve_api_key function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:412..472 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the issue. `resolve_api_key` is called with provider `"anthropic"`. The provider-specific env var for anthropic is `ANTHROPIC_API_KEY`. The function checks:
+
+1. `--api-key` flag
+2. Provider-specific env var (`ANTHROPIC_API_KEY` for anthropic)
+3. Fallback: `ANTHROPIC_API_KEY`
+4. Fallback: `API_KEY`
+5. Config file
+
+The test `test_resolve_api_key_from_env` sets `ANTHROPIC_API_KEY=sk-test-review` and expects it to be returned. But the CI environment has `DEEPSEEK_API_KEY=sk-from-env` or something like that, OR the CI environment has `ANTHROPIC_API_KEY` already set.
+
+Wait, the CI failure says `left: Some("sk-from-env")`. The other test (`test_resolve_api_key_flag_overrides_env`) sets `ANTHROPIC_API_KEY=sk-from-env`. If tests run in parallel, the env var from one test leaks into the other. This is the classic env var test race condition.
+
+But actually, let me re-read: in Rust tests, by default they run in parallel. `test_resolve_api_key_flag_overrides_env` sets `ANTHROPIC_API_KEY=sk-from-env` and then `test_resolve_api_key_from_env` sets `ANTHROPIC_API_KEY=sk-test-review`. But they race.
+
+Wait - looking at the test output more carefully, it shows sequential test execution with `--test-threads=1`? No, the CI might not use that. But even with `--test-threads=1`, the test `test_resolve_api_key_flag_overrides_env` might NOT be running before `test_resolve_api_key_from_env` if they're in a different order...
+
+Actually, looking at the CI output, it says test_run at line 9325 panicked. The assertion is:
+```
+left: Some("sk-from-env")
+right: Some("sk-test-review")
+```
+
+This means `resolve_api_key` returned `Some("sk-from-env")` when it should have returned `Some("sk-test-review")`. 
+
+The value `sk-from-env` is set by `test_resolve_api_key_flag_overrides_env`. If that test runs first and doesn't properly clean up (it calls `remove_var` at the end but tests are parallel), then the env var leaks.
+
+The fix is to make these tests use a mutex or run them serially, or better yet, not mutate global env vars. But a simpler fix: the test should also check/clear the env var before setting it. Or better: use `std::sync::Once` or `serial_test` crate. But simplest: ensure the test properly isolates by saving and restoring the original value.
+
+Actually, the simplest correct fix: since these tests can race in parallel execution, use a global mutex to serialize the env var tests, or use the `serial_test` crate. But `serial_test` might not be a dependency.
+
+Let me look at what dependencies are available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'serial_test' in Cargo.toml  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test dispatch_sub::tests… ✓ (16ms)
+ ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes in isolation with `--test-threads=1`. This confirms it's a race condition with the other env var test. When both tests run in parallel, `test_resolve_api_key_flag_overrides_env` sets `ANTHROPIC_API_KEY=sk-from-env` and this leaks into `test_resolve_api_key_from_env`.
+
+Since `serial_test` is available as a dependency, I can use `#[serial]` to serialize these tests. But actually, looking at the test code, both tests should properly save and restore the env var. The issue is that `remove_var` at the end doesn't help if the other test was running concurrently.
+
+The best fix: use `#[serial]` on both tests, or combine them, or save/restore the original value using a proper env guard pattern.
+
+Actually, let me check if `serial_test` is already used elsewhere in the codebase.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'serial_test' in src ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`serial_test::serial` is widely used in the codebase. Let me look at how it's used in `dispatch_sub.rs` already to understand the pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+The `serial_test` crate is already in use. Let me look at how the existing env var tests in `dispatch_sub.rs` handle serialization — there's already a `use serial_test::serial` at line 536.
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:530..560 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `serial` macro is imported but the env var tests don't use it. The fix is straightforward: add `#[serial]` to both `test_resolve_api_key_from_env` and `test_resolve_api_key_flag_overrides_env`.
+
+Now let me plan the session. Here's what I need to do:
+
+**Priority 0: Fix CI** — `test_resolve_api_key_from_env` flaky test. Add `#[serial]` to both env var tests in dispatch_sub.rs.
+
+**Priority 1-2: DeepSeek harness work from assessment**:
+The assessment identifies these key gaps:
+1. Crash reporter is uncommitted (`stash_diagnostic_error()`/`take_diagnostic_error()` in `src/state.rs`, wired into `src/lib.rs`, plus `/state crashes` command in `src/commands_state.rs`)
+2. Eval pipeline never run (368 fixtures, zero evaluations)
+3. No cache metrics recording to state
+
+Let me think about what fits in 3 task slots (with task sizing rules of max 3 source files each):
+
+**Task 1: Fix CI** — 1 file, trivial fix.
+
+**Task 2: Commit the crash reporter** — The assessment says it's built but uncommitted. Let me check what's actually in the working tree. But wait, the assessment says "uncommitted files: `.yoyo/context-embedding-index.json`, `.yoyo/context-semantic-index.json`" and then separately says the crash reporter is "uncommitted" — I need to verify this.
+
+Actually, looking more carefully at the assessment: "Crash reporter (uncommitted, from journal entry at 20:39): stash_diagnostic_error() and take_diagnostic_error() in src/state.rs, wired into state init failure in src/lib.rs, plus /state crashes command in src/commands_state.rs. Built but NOT committed — sitting in working tree."
+
+If it's "built but NOT committed — sitting in working tree", that means the code changes exist but haven't been committed. Let me verify.
+
+**Task 3: Activate eval pipeline** — Run the eval harness against at least one fixture to prove the pipeline works end-to-end. This could involve adding a small test or fixing whatever blocks eval from running.
+
+But wait, the task sizing rules say max 3 source files per task, and each task must be completable in 20 minutes. Let me think about what's realistic.
+
+For the eval pipeline, I need to:
+- Understand why it's never been run
+- Fix any blockers
+- Actually run it
+
+This could be complex. Let me first check git status to see what's actually uncommitted, then decide.
+
+Let me also re-read the crash reporter situation more carefully. If it's truly built and in the working tree, then committing it is a small task. If the code needs to be written from scratch, that's bigger.
+
+Let me check git status first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status --short 2>&1 | head…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat HEAD 2>&1 | he… ✓ (88ms)
+ ✓ (20.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's nothing uncommitted related to the crash reporter! The assessment's claim about "built but NOT committed" must be wrong. Only the context index files are modified. Let me search for `stash_diagnostic_error` and `take_diagnostic_error` to see if they exist in the codebase.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 24.9s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'stash_diagnostic_error|take_diagnostic_error'  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -20 ✓ (9ms)
+ ✗ (6.0s)
+    │ Search error: grep: ./.yoyo/state/state.sqlite: binary file matches
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search for `stash_diagnostic_error` and `take_diagnostic_error` found no results in source files (only in the binary SQLite file). So the crash reporter is NOT built — the assessment was wrong about that. It was described in the journal but never actually implemented.
+
+Let me verify by searching more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.5s (1 ✓, 1 ✗)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -r "stash_diagnostic\|tak…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn "fn handle_state_cras… ✓ (9ms)
+ ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the crash reporter IS already committed! Both `stash_diagnostic_error` and `take_diagnostic_error` exist in `src/state.rs`, and `state crashes` handler exists in `src/commands_state.rs`. The assessment was wrong — it said these were uncommitted, but they're actually in the committed code.
+
+Let me verify they were part of the most recent commits.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline --all -- src…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -5 ✓ (34ms)
+ ✓ (124ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture:
+
+1. **CI failure**: `test_resolve_api_key_from_env` flaky due to parallel env var mutation. Fix: add `#[serial]` to both env var tests. **1 file, trivial**.
+
+2. **Crash reporter**: Already committed. The assessment was wrong. This is NOT a task.
+
+3. **Eval pipeline never run**: The assessment says 368 fixtures, zero evaluations. This is a real gap. Let me check what the eval pipeline looks like.
+
+4. **Cache metrics not recorded**: The assessment mentions this. Let me check.
+
+Let me reconsider the task priorities based on what's actually true:
+
+- Task 1: Fix CI (flaky test) — mandatory
+- Task 2: ???
+- Task 3: ???
+
+Let me check the eval pipeline to see if there's a concrete, scoped task that can activate it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | tail -5 ✓ (2m 51s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if the CI failure can be reproduced in parallel mode (which is the default when `--test-threads=1` is not specified).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test dispatch_sub::tests… ✓ (143ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed: the flaky test reproduces with parallel execution (`--test-threads=4`). The fix is to add `#[serial]` to both env var tests.
+
+Now let me think about what other tasks to plan. Let me look at:
+1. The eval pipeline status — can I create a task to exercise it?
+2. The cache metrics recording — is there a gap?
+3. Any other state-driven DeepSeek harness work
+
+Let me check the eval pipeline quickly.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me check the eval pipeline to understand what task 2 could be.
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- eval 2>&1 …  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn "pub fn" src/commands… ✓ (8ms)
+ ✓ (7.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the eval fixtures to understand what "368 fixtures, zero evaluations" means.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.6s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && head -60 src/eval_fixtures.rs  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && wc -l src/eval_fixtures.rs src… ✓ (19ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the eval fixtures directory to see what fixtures exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls eval/fixtures/ 2>&1 | head …  ▶ read src/commands_eval.rs:770..810 ✓ (5ms)
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me get a better picture. There are no TOML fixture files. Let me check how many YAML/JSON fixture files there are and what the eval infrastructure actually looks like.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && find eval/ -type f 2>/dev/null…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls eval/fixtures/local-smoke/ … ✓ (10ms)
+ ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are 368 JSON fixture files! Let me read one to understand the format and then understand why the eval pipeline has never been run.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/001-context-failing-files.json  ▶ read eval/fixtures/local-smoke/009-yyds-alias.json ✓ (15ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the eval pipeline better. The fixtures exist, but the eval has never been run. Let me check if there's a way to run evals, or if the infrastructure for running them is incomplete.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state evals 2>&1  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- eval --help 2>&1 … ✓ (219ms)
+ ✓ (267ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `eval` subcommand isn't showing up in help. Let me check `dispatch_sub.rs` for eval handling.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '"eval"' src/dispatch_…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn "run_eval\|handle_eva… ✓ (21ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `yyds eval` is wired up but doesn't appear in `--help`. Let me check the eval command options.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- eval list 2>&1 | … ✓ (139ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the eval pipeline. There are fixtures, and `yyds eval` is wired up. Let me check what happens when I try to list fixtures or validate them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- eval fixtures lis…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- eval fixtures val… ✓ (226ms)
+ ✓ (234ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+368 fixtures, all valid. Let me try a dry-run to see what happens.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- eval fixtures run… ✓ (153ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The eval pipeline exists and is functional. The "never run" claim might be about the `run` command never having been executed in CI/evolution. Let me look at what `eval run` actually does and if I can create a small task to activate part of it. 
+
+But wait — I need to focus the session plan. Let me reconsider:
+
+1. **Task 1 (mandatory)**: Fix CI — flaky `test_resolve_api_key_from_env`. Add `#[serial]` to both env var tests. 1 file. Verified with `cargo test`.
+
+2. **Task 2**: Something that improves the DeepSeek harness using state evidence. Let me think about what's high impact and fits in 20 minutes, 3 files max.
+
+The assessment says the eval pipeline is "cold" — fixtures exist but have never been run through. A good task would be to run the eval pipeline against a small subset of fixtures and record the results, or fix any blockers that prevent it from running in CI.
+
+Actually, looking at the "required_gates" in the DeepSeek harness policy:
+```
+required_gates:
+- cargo fmt --check
+- cargo check
+- cargo test --bin yyds -- --test-threads=1
+- cargo test --test integration -- --test-threads=1
+```
+
+The eval pipeline is separate from the required gates. Let me think about what would be most impactful.
+
+3. **Task 3**: Cache metrics recording. The assessment says cache policy exists but metrics aren't being captured to state. Let me check this.
+
+Actually, let me look at the cache metrics situation more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn "cache_metrics\|Cache…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state why last-fa… ✓ (19ms)
+ ✓ (188ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, cache metrics ARE being recorded (`record_cache_metrics` is called in prompt.rs). Let me check if there are any cache metric events in the state.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- deepseek cache-re… ✓ (198ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Cache metrics ARE being recorded. The assessment was wrong about that too. There's 1 event with 94.9% hit ratio.
+
+OK, so let me re-evaluate. The assessment's claims about uncommitted crash reporter and missing cache metrics were incorrect. What's actually true:
+
+1. **CI failure**: This is real and must be fixed (flaky test).
+2. **Eval pipeline**: 368 valid fixtures, but has it ever actually been run? The `yyds eval fixtures run` command exists. Let me check if there are any eval results in state.
+3. **`commands_state.rs` at 23,804 lines**: This is a real structural issue but too big for one task.
+
+Let me look at the trajectory and state evidence to find meaningful DeepSeek harness tasks.
+
+Actually, let me step back and think about what would actually improve the harness. The assessment identifies:
+
+1. Fix CI (flaky test) — concrete, must do
+2. Run eval pipeline — existence proof that it works end-to-end
+3. State evidence gaps — the assessment mentions things like "no eval results", "no harness patches"
+
+The CI fix is one file, trivial. For the eval pipeline, I need to understand what "running" it means and if there's a blocker.
+
+Let me also think about what kind of task could improve the DeepSeek harness's reliability. The trajectory shows all runs are successful now, which is good. The eval pipeline being cold is a real gap because it means we can't measure whether changes improve anything.
+
+For the session plan, let me propose:
+
+**Task 1**: Fix flaky `test_resolve_api_key_from_env` by adding `#[serial]` to both env var tests in `src/dispatch_sub.rs`. 1 file, trivial.
+
+**Task 2**: Run the eval pipeline against the simplest fixtures and record results, or fix any blockers. This activates the eval pipeline for the first time.
+
+**Task 3**: Something else meaningful from state evidence. Let me think...
+
+Actually, looking at the trajectory more carefully:
+- "Recurring CI errors" lists `public_readme_metadata_uses_yoyo_ds_harness_identity` with "assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"". This is a README test that checks for a specific URL.
+
+But the trajectory also says 0 reverts in the last 10 sessions, and 0 sessions with reverts. So the recurring CI error might have been fixed already.
+
+Let me check what else I could do. Let me look at the `state graph` output more carefully to find anomalies.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state graph hotsp…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state crashes --l… ✓ (252ms)
+ ✓ (259ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The crashes are all from "1m ago" — these are the tool call failures from THIS session (the very session doing the assessment). These are normal tool call failures, not agent crashes. The crash reporter is already working and categorizing these.
+
+Now let me step back and think about what tasks would be truly valuable:
+
+1. **Fix CI (mandatory)**: The flaky test. 1 file.
+
+2. For the other two task slots, I want to find something that:
+   - Is backed by state/trajectory evidence
+   - Improves the DeepSeek harness
+   - Fits in 20 minutes / 3 files
+
+Looking at the trajectory, the state shows:
+- No eval results ever recorded
+- No harness patches ever proposed/promoted
+- No rollbacks
+- The eval pipeline is valid but never exercised
+
+A good task would be to **run the eval pipeline for the first time** — pick a small subset of fixtures and actually run them, recording results. This activates the feedback loop.
+
+But wait — would running evals require an API key? Let me check what `eval fixtures run` actually does.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.2s (2 ✓)
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "fn handle_eval_fixtur… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "fixtures.*run\|run_fi… ✓ (8ms)
+
+  ✓ Watch passed: `cargo clippy --all-targets -- -D warnings && cargo test`
+
