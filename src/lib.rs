@@ -17,22 +17,22 @@
 //!
 //! Commands:
 //!   /quit, /exit    Exit the agent
-//!   /add <path>     Add file contents to conversation (supports globs and line ranges)
+//!   /add `<path>`     Add file contents to conversation (supports globs and line ranges)
 //!   /clear          Clear conversation history
-//!   /commit [msg]   Commit staged changes (AI-generates message if no msg)
-//!   /docs <crate>   Look up docs.rs documentation for a Rust crate
-//!   /docs <c> <i>   Look up a specific item within a crate
-//!   /export [path]  Export conversation as readable markdown
-//!   /find <pattern> Fuzzy-search project files by name
+//!   /commit \[msg\]   Commit staged changes (AI-generates message if no msg)
+//!   /docs `<crate>`   Look up docs.rs documentation for a Rust crate
+//!   /docs `<c>` `<i>`   Look up a specific item within a crate
+//!   /export \[path\]  Export conversation as readable markdown
+//!   /find `<pattern>` Fuzzy-search project files by name
 //!   /fix            Auto-fix build/lint errors (runs checks, sends failures to AI)
-//!   /git <subcmd>   Quick git: status, log, add, diff, branch, stash
-//!   /model <name>   Switch model mid-session
-//!   /search <query> Search conversation history
-//!   /spawn <task>   Spawn a subagent with fresh context
-//!   /tree [depth]   Show project directory tree
+//!   /git `<subcmd>`   Quick git: status, log, add, diff, branch, stash
+//!   /model `<name>`   Switch model mid-session
+//!   /search `<query>` Search conversation history
+//!   /spawn `<task>`   Spawn a subagent with fresh context
+//!   /tree \[depth\]   Show project directory tree
 //!   /test           Auto-detect and run project tests
 //!   /lint           Auto-detect and run project linter
-//!   /pr [number]    List open PRs, view/diff/comment/checkout a PR, or create one
+//!   /pr \[number\]    List open PRs, view/diff/comment/checkout a PR, or create one
 //!   /retry          Re-send the last user input
 
 mod agent_builder;
