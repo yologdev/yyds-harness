@@ -108,6 +108,35 @@ class BuildEvolutionDashboard(unittest.TestCase):
             (session / "transcripts/plan.log").write_text("plan\n", encoding="utf-8")
             (session / "transcripts/task_01_attempt1.log").write_text("task\nline2\n", encoding="utf-8")
             (session / "tasks/task_01").mkdir(parents=True)
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {
+                        "planning_failed": False,
+                        "task_count": 1,
+                        "selected_task_count": 1,
+                        "assessment_present": True,
+                    },
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Improve dashboard",
+                            "files": ["scripts/build_evolution_dashboard.py"],
+                            "issue": "none",
+                            "origin": "planner",
+                            "artifact_path": "tasks/task_01/task.md",
+                            "quality": {"score": 1.0, "generic_self_improvement": False},
+                        }
+                    ],
+                    "artifacts": {
+                        "manifest": "tasks/manifest.json",
+                        "assessment": "tasks/assessment.md",
+                    },
+                    "warnings": [],
+                },
+            )
+            (session / "tasks/assessment.md").write_text("# Assessment\n", encoding="utf-8")
             (session / "tasks/task_01/task.md").write_text("Title: Improve dashboard\nFiles: scripts/build_evolution_dashboard.py\n", encoding="utf-8")
             (session / "tasks/task_01/attempts.jsonl").write_text(
                 json.dumps(
@@ -160,6 +189,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["commands"], ["cargo test"])
             self.assertEqual(work["transcripts"]["phase_counts"], {"plan": 1, "task": 1})
             self.assertEqual(work["transcripts"]["files"][1]["line_count"], 2)
+            self.assertEqual(work["task_manifest"]["selected_task_count"], 1)
+            self.assertFalse(work["task_manifest"]["planning_failed"])
+            self.assertEqual(work["task_manifest"]["tasks"][0]["quality_score"], 1.0)
             self.assertEqual(work["task_artifacts"][0]["task_id"], "task_01")
             self.assertEqual(work["task_artifacts"][0]["attempt_count"], 1)
             self.assertEqual(work["task_artifacts"][0]["eval_statuses"], ["pass"])

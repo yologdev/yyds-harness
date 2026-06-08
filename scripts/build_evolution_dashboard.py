@@ -307,6 +307,44 @@ def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def task_manifest_summary(session_dir: Path) -> dict[str, Any]:
+    manifest = load_json(session_dir / "tasks" / "manifest.json")
+    if not manifest:
+        return {}
+    planner = manifest.get("planner") if isinstance(manifest.get("planner"), dict) else {}
+    artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), dict) else {}
+    selected = manifest.get("selected_tasks") if isinstance(manifest.get("selected_tasks"), list) else []
+    tasks: list[dict[str, Any]] = []
+    for task in selected[:8]:
+        if not isinstance(task, dict):
+            continue
+        quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
+        tasks.append(
+            {
+                "task_id": task.get("task_id"),
+                "task_number": task.get("task_number"),
+                "title": task.get("title"),
+                "files": task.get("files") or [],
+                "issue": task.get("issue"),
+                "origin": task.get("origin"),
+                "artifact_path": task.get("artifact_path"),
+                "quality_score": quality.get("score"),
+                "generic_self_improvement": quality.get("generic_self_improvement"),
+            }
+        )
+    return {
+        "planning_failed": bool(planner.get("planning_failed")),
+        "task_count": int(planner.get("task_count") or 0),
+        "selected_task_count": int(planner.get("selected_task_count") or 0),
+        "assessment_present": bool(planner.get("assessment_present")),
+        "issue_responses_present": bool(planner.get("issue_responses_present")),
+        "planning_failure_present": bool(planner.get("planning_failure_present")),
+        "tasks": tasks,
+        "warnings": manifest.get("warnings") if isinstance(manifest.get("warnings"), list) else [],
+        "artifacts": artifacts,
+    }
+
+
 def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     edited_files: list[str] = []
     read_files: list[str] = []
@@ -359,6 +397,7 @@ def work_summary(
     commits: list[dict[str, Any]],
 ) -> dict[str, Any]:
     transcript_data = transcript_summary(session_dir)
+    task_manifest = task_manifest_summary(session_dir)
     task_artifacts = task_artifact_summary(session_dir)
     event_data = summarize_events_for_work(load_jsonl(session_dir / "state" / "events.jsonl"))
     source_files = compact_list(
@@ -382,6 +421,8 @@ def work_summary(
     labels: list[str] = []
     if attempted:
         labels.append(f"{succeeded}/{attempted} tasks completed")
+    elif task_manifest.get("planning_failed"):
+        labels.append("planning produced no task files")
     if source_files:
         labels.append(f"{len(source_files)} source file(s) changed")
     elif event_data["edited_files"]:
@@ -399,6 +440,7 @@ def work_summary(
         "headline": "; ".join(labels[:4]),
         "labels": labels,
         "transcripts": transcript_data,
+        "task_manifest": task_manifest,
         "task_artifacts": task_artifacts,
         "edited_files": event_data["edited_files"],
         "source_changed_files": source_files,
@@ -1804,9 +1846,29 @@ HTML = r"""<!doctype html>
     }
 
     function renderTaskArtifacts(session, work) {
+      const manifest = work.task_manifest || {};
       const rows = (work.task_artifacts || []).slice(0, 6);
-      if (!rows.length) return `<p class="muted">No per-task artifact bundle recorded yet.</p>`;
-      return rows.map(task => {
+      const manifestArtifacts = manifest.artifacts || {};
+      const manifestLinks = [
+        manifestArtifacts.manifest ? auditLink(session, manifestArtifacts.manifest, "manifest.json") : "",
+        manifestArtifacts.assessment ? auditLink(session, manifestArtifacts.assessment, "assessment.md") : "",
+        manifestArtifacts.planning_failure ? auditLink(session, manifestArtifacts.planning_failure, "planning_failure.md") : "",
+        manifestArtifacts.issue_responses ? auditLink(session, manifestArtifacts.issue_responses, "issue_responses.md") : ""
+      ].filter(Boolean).join(" · ");
+      const manifestTasks = (manifest.tasks || []).slice(0, 4).map(task => {
+        const quality = task.quality_score === undefined || task.quality_score === null ? "-" : task.quality_score;
+        const files = (task.files || []).slice(0, 3).join(", ") || "no files";
+        const link = task.artifact_path ? auditLink(session, task.artifact_path, task.task_id || task.title) : text(task.task_id || task.title || "");
+        return `${link} <span class="muted">${text(task.title || "")} / ${text(files)} / quality ${text(quality)}</span>`;
+      }).join("</li><li>");
+      const manifestBlock = manifest.task_count !== undefined ? `<div class="task-evidence">
+          <strong>Plan decision ${manifest.planning_failed ? "(planning failed)" : ""}</strong>
+          <p class="muted">${text(manifest.selected_task_count || 0)} selected of ${text(manifest.task_count || 0)} task file(s). ${text((manifest.warnings || []).join(", ") || "No manifest warnings.")}</p>
+          ${manifestLinks ? `<p class="muted">${manifestLinks}</p>` : ""}
+          ${manifestTasks ? `<ul class="mini-list"><li>${manifestTasks}</li></ul>` : ""}
+        </div>` : "";
+      if (!rows.length) return manifestBlock || `<p class="muted">No per-task artifact bundle recorded yet.</p>`;
+      return manifestBlock + rows.map(task => {
         const statuses = (task.eval_statuses || []).length ? task.eval_statuses.join(", ") : "no eval artifact";
         const attempts = (task.attempts || []).slice(0, 4).map(attempt => {
           const name = attempt.transcript_path ? auditLink(session, attempt.transcript_path, attempt.stage_name || attempt.phase) : text(attempt.stage_name || attempt.phase || "attempt");
@@ -1859,8 +1921,8 @@ HTML = r"""<!doctype html>
                 <div><strong>Source commits</strong>${sourceCommitItems(work)}</div>
                 <div><strong>Bookkeeping commits</strong>${bookkeepingCommitItems(work)}</div>
                 <div><strong>Task lineage</strong>${renderTaskLineage(work)}</div>
-                <div><strong>Task artifacts</strong>${renderTaskArtifacts(session, work)}</div>
-                <div><strong>Transcripts</strong>${renderTranscriptList(session, work)}</div>
+                <div><strong>Task decision evidence</strong>${renderTaskArtifacts(session, work)}</div>
+                <div><strong>Agent transcripts</strong>${renderTranscriptList(session, work)}</div>
                 <div><strong>Validated</strong>${listItems(work.commands, "No command events recorded.")}</div>
                 <div><strong>Read</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
                 <div><strong>State edits</strong>${listItems(work.edited_files, "No FileEdited events recorded.")}</div>

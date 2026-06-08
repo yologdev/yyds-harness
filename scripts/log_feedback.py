@@ -46,6 +46,7 @@ EVALUATOR_UNVERIFIED_RE = re.compile(
     re.IGNORECASE,
 )
 SEARCH_ERROR_RE = re.compile(r"\bSearch error:\s*", re.IGNORECASE)
+PLANNER_NO_TASK_RE = re.compile(r"Planning agent produced 0 tasks", re.IGNORECASE)
 PROTECTED_FILE_RE = re.compile(r"modified protected files(?:\s*:|\s+[—-]\s+reverting)", re.IGNORECASE)
 TASK_STARTED_RE = re.compile(r"(?:→|->)\s*Task\s+\d+:", re.IGNORECASE)
 TASK_VERIFIED_RE = re.compile(r"\bTask\s+\d+:\s+verified OK\b", re.IGNORECASE)
@@ -86,6 +87,12 @@ GNOME_KEYS = [
     "protected_file_revert_count",
     "task_revert_count",
     "task_verification_rate",
+    "task_mechanical_verification_rate",
+    "planner_no_task_count",
+    "task_manifest_available",
+    "task_artifact_coverage",
+    "task_spec_quality_score",
+    "evaluator_unverified_count",
     "max_task_turn_count",
     "avg_task_turn_count",
     "total_task_turn_count",
@@ -269,6 +276,8 @@ def parse_log(log_text: str) -> dict[str, Any]:
     task_mechanical_verified = 0
     task_evaluator_verified = 0
     task_reverts = 0
+    planner_no_tasks = 0
+    evaluator_unverified = 0
     current_task_eval_infra_failed = False
     cache_ratio: float | None = None
     cache_hit_tokens: int | None = None
@@ -286,7 +295,10 @@ def parse_log(log_text: str) -> dict[str, Any]:
         if EVALUATOR_TIMEOUT_RE.search(message):
             evaluator_timeouts += 1
         if EVALUATOR_UNVERIFIED_RE.search(message):
+            evaluator_unverified += 1
             current_task_eval_infra_failed = True
+        if PLANNER_NO_TASK_RE.search(message):
+            planner_no_tasks += 1
         if SEARCH_ERROR_RE.search(message):
             search_errors += 1
         if PROTECTED_FILE_RE.search(message):
@@ -343,6 +355,7 @@ def parse_log(log_text: str) -> dict[str, Any]:
 
     ordered = sorted(fingerprints.values(), key=lambda item: (-int(item["count"]), item["fingerprint"]))
     task_verification_rate = ratio(task_evaluator_verified, task_started) if task_started else None
+    task_mechanical_verification_rate = ratio(task_mechanical_verified, task_started) if task_started else None
     evolution_friction_count = (
         command_timeouts
         + evaluator_timeouts
@@ -369,6 +382,9 @@ def parse_log(log_text: str) -> dict[str, Any]:
         "task_mechanical_verified_count": task_mechanical_verified,
         "task_revert_count": task_reverts,
         "task_verification_rate": task_verification_rate,
+        "task_mechanical_verification_rate": task_mechanical_verification_rate,
+        "planner_no_task_count": planner_no_tasks,
+        "evaluator_unverified_count": evaluator_unverified,
         "deepseek_cache_hit_ratio": cache_ratio,
         "deepseek_cache_hit_tokens": cache_hit_tokens,
         "deepseek_cache_miss_tokens": cache_miss_tokens,
@@ -514,6 +530,37 @@ def task_turn_metrics(session_dir: Path) -> dict[str, Any]:
     }
 
 
+def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
+    manifest = load_json(session_dir / "tasks" / "manifest.json")
+    planner = manifest.get("planner") if isinstance(manifest.get("planner"), dict) else {}
+    tasks = manifest.get("selected_tasks") if isinstance(manifest.get("selected_tasks"), list) else []
+    task_dirs = [
+        path
+        for path in sorted((session_dir / "tasks").glob("task_*"))
+        if path.is_dir()
+    ]
+    quality_scores: list[float] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
+        score = quality.get("score")
+        if isinstance(score, (int, float)):
+            quality_scores.append(float(score))
+    artifact_coverage = ratio(len(task_dirs), attempted) if attempted else (1.0 if not task_dirs else None)
+    return {
+        "task_manifest_available": bool(manifest),
+        "planner_no_task_count": 1 if planner.get("planning_failed") else 0,
+        "planned_task_count": int(planner.get("task_count") or len(tasks) or 0),
+        "selected_task_count": int(planner.get("selected_task_count") or len(tasks) or 0),
+        "task_artifact_count": len(task_dirs),
+        "task_artifact_coverage": artifact_coverage,
+        "task_spec_quality_score": round(sum(quality_scores) / len(quality_scores), 4)
+        if quality_scores
+        else None,
+    }
+
+
 def gnome_deltas(metrics: dict[str, Any], previous: list[dict[str, Any]]) -> dict[str, Any]:
     current = gnome_values(metrics)
     previous_metrics: dict[str, Any] = {}
@@ -646,6 +693,8 @@ def score_assessment(metrics: dict[str, Any]) -> float:
             + float(metrics.get("tool_error_count") or 0)
             + float(metrics.get("recurring_failure_count") or 0) * 2.0
             + float(metrics.get("evolution_friction_count") or 0)
+            + float(metrics.get("planner_no_task_count") or 0) * 3.0
+            + float(metrics.get("evaluator_unverified_count") or 0)
         )
         / 12.0,
     )
@@ -684,6 +733,11 @@ def build_assessment(
 
     attempted = int(outcome.get("tasks_attempted") or 0)
     succeeded = int(outcome.get("tasks_succeeded") or 0)
+    artifact_metrics = task_artifact_metrics(session_dir, attempted)
+    artifact_metrics["planner_no_task_count"] = max(
+        int(parsed.get("planner_no_task_count") or 0),
+        int(artifact_metrics.get("planner_no_task_count") or 0),
+    )
     task_success_rate = ratio(succeeded, attempted)
     workflow_success = workflow_conclusion.lower() in {"success", "passed"}
     build_ok = bool(outcome.get("build_ok"))
@@ -693,6 +747,7 @@ def build_assessment(
         build_ok
         and test_ok
         and not reverted
+        and int(artifact_metrics.get("planner_no_task_count") or 0) == 0
         and (attempted == 0 or succeeded >= attempted)
     )
     retry_success_rate = None
@@ -728,6 +783,7 @@ def build_assessment(
         "audit_capture_coverage": audit_capture_coverage,
         "state_event_count": state_events,
         **parsed,
+        **artifact_metrics,
         **turn_metrics,
         **recurrences,
     }
@@ -751,6 +807,14 @@ def build_assessment(
 
 def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     lessons: list[dict[str, Any]] = []
+    if int(metrics.get("planner_no_task_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "planner_no_tasks",
+                "fingerprint": "planning agent produced no concrete task files",
+                "action": "tighten task schema adherence and preserve planner failure evidence instead of running generic fallback work",
+            }
+        )
     if int(metrics.get("protected_file_revert_count") or 0) > 0:
         lessons.append(
             {
@@ -1014,6 +1078,7 @@ def run_self_tests() -> int:
                 "evolve\tRun evolution session\t2026-06-07T04:50:22Z ^G    BLOCKED: Task 2 modified protected files: .github/workflows/ci.yml",
                 "evolve\tRun evolution session\t2026-06-07T04:50:22Z     Reverting Task 2 (resetting to 041da74)",
                 "evolve\tRun evolution session\t2026-06-07T04:24:55Z     │ Search error: grep: ./target/debug/deps/yyds: binary file matches",
+                "evolve\tRun evolution session\t2026-06-07T04:24:58Z   Planning agent produced 0 tasks — recording planning failure; no fake task will run.",
                 "evolve\tRun evolution session\t2026-06-07T04:24:22Z   → Task 1: First real eval run",
                 "evolve\tRun evolution session\t2026-06-07T05:05:46Z    Evaluator: timed out — skipping eval (build+test passed)",
                 "evolve\tRun evolution session\t2026-06-07T04:33:47Z     Task 1: verified OK",
@@ -1028,6 +1093,8 @@ def run_self_tests() -> int:
     check("protected file reverts counted", operational["protected_file_revert_count"] == 3, operational)
     check("task reverts counted", operational["task_revert_count"] == 1, operational)
     check("search errors counted", operational["search_error_count"] == 1, operational)
+    check("planner no-task counted", operational["planner_no_task_count"] == 1, operational)
+    check("evaluator unverified counted", operational["evaluator_unverified_count"] == 1, operational)
     check("mechanical verification counted", operational["task_mechanical_verified_count"] == 1, operational)
     check("evaluator timeout blocks verification rate", operational["task_verification_rate"] == 0.0, operational)
     check("cache hit tokens parsed", operational["deepseek_cache_hit_tokens"] == 572800, operational)

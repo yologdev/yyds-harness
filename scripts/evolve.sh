@@ -1104,6 +1104,23 @@ Each file should contain:
 Title: [short task title]
 Files: [files to modify]
 Issue: #N (or "none")
+Origin: planner
+
+Objective:
+[One concrete outcome this task should achieve for yyds as a DeepSeek coding/general-purpose agent.]
+
+Why this matters:
+[Tie the task to yoagent-state evidence, gnome/KPI movement, DeepSeek reliability, coding-task quality, or trusted owner feedback.]
+
+Success Criteria:
+- [Specific observable result]
+- [Specific artifact, command, or user-visible behavior]
+
+Verification:
+- [Focused commands/checks the implementation agent should run]
+
+Expected Evidence:
+- [What should appear in task lineage, dashboard artifacts, state events, or gnome metrics if this task worked]
 
 [Detailed description of what to do — specific enough for a focused implementation agent.
 Include which docs need updating (CLAUDE.md, README.md, docs/src/) if the task changes behavior, features, or architecture.]
@@ -1150,20 +1167,44 @@ fi
 # Check if planning agent produced tasks
 TASK_COUNT=0
 for _f in session_plan/task_*.md; do [ -f "$_f" ] && TASK_COUNT=$((TASK_COUNT + 1)); done
+PLANNING_FAILED=false
 if [ "$TASK_COUNT" -eq 0 ]; then
-    echo "  Planning agent produced 0 tasks — falling back to single task."
+    echo "  Planning agent produced 0 tasks — recording planning failure; no fake task will run."
     mkdir -p session_plan
-    cat > session_plan/task_01.md <<FALLBACK
-Title: Self-improvement
-Files: src/
-Issue: none
+    cat > session_plan/planning_failure.md <<PLANFAIL
+# Planning Failure — Day $DAY ($SESSION_TIME)
 
-Read your own source code, identify the most impactful improvement you can make, implement it, and commit. Follow evolve skill rules.
-FALLBACK
-    echo "  Fallback task written to session_plan/task_01.md"
-    TASK_COUNT=1
+The planning agent produced no \`session_plan/task_*.md\` files, so the harness will not fabricate a generic self-improvement task.
+
+Why this matters:
+- Fake fallback tasks make the dashboard look productive while hiding that no concrete DeepSeek harness work was selected.
+- The next session should use this evidence to improve planning reliability, task schema adherence, or prompt/context quality.
+
+Expected follow-up:
+- Preserve assessment and planning transcripts as audit evidence.
+- Improve the planner prompt, task schema validation, or state/gnome feedback loop so yyds selects concrete, verifiable tasks.
+PLANFAIL
+    PLANNING_FAILED=true
 fi
-record_state_event "DecisionRecorded" "{\"phase\":\"plan\",\"decision_type\":\"session_plan\",\"decision\":\"tasks_selected\",\"task_count\":$TASK_COUNT,\"selected_task_count\":$(( TASK_COUNT > 3 ? 3 : TASK_COUNT )),\"assessment_present\":$([ -n "$ASSESSMENT" ] && echo true || echo false),\"reason\":\"planning phase selected implementation tasks for this evolution session\"}"
+mkdir -p "$SESSION_STAGING/tasks"
+[ -f session_plan/assessment.md ] && cp session_plan/assessment.md "$SESSION_STAGING/tasks/assessment.md" 2>/dev/null || true
+[ -f session_plan/issue_responses.md ] && cp session_plan/issue_responses.md "$SESSION_STAGING/tasks/issue_responses.md" 2>/dev/null || true
+[ -f session_plan/planning_failure.md ] && cp session_plan/planning_failure.md "$SESSION_STAGING/tasks/planning_failure.md" 2>/dev/null || true
+TASK_MANIFEST_ARGS=(
+    --session-plan-dir session_plan
+    --assessment-file session_plan/assessment.md
+    --issue-responses-file session_plan/issue_responses.md
+    --planning-failure-file session_plan/planning_failure.md
+    --selected-limit 3
+    --output "$SESSION_STAGING/tasks/manifest.json"
+    --write-task-decisions
+    --decision-payload
+)
+if [ "$PLANNING_FAILED" = true ]; then
+    TASK_MANIFEST_ARGS+=(--planning-failed)
+fi
+PLAN_DECISION_PAYLOAD=$(python3 scripts/task_manifest.py "${TASK_MANIFEST_ARGS[@]}" 2>/dev/null || echo "{\"phase\":\"plan\",\"decision_type\":\"session_plan\",\"decision\":\"tasks_selected\",\"task_count\":$TASK_COUNT,\"selected_task_count\":$(( TASK_COUNT > 3 ? 3 : TASK_COUNT )),\"assessment_present\":$([ -n "$ASSESSMENT" ] && echo true || echo false),\"planning_failed\":$PLANNING_FAILED,\"reason\":\"planning phase selected implementation tasks for this evolution session\",\"tasks\":[]}")
+record_state_event "DecisionRecorded" "$PLAN_DECISION_PAYLOAD"
 
 echo "  Planning complete."
 echo ""
