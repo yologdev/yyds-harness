@@ -998,7 +998,13 @@ pub async fn run_cli() {
             "model": config.model.clone(),
             "state_adapter": crate::state::STATE_ADAPTER_NAME,
             "state_adapter_mode": crate::state::STATE_ADAPTER_MODE,
+            "system_prompt_version": crate::cli::SYSTEM_PROMPT_VERSION,
             "deepseek_native": config.deepseek_native,
+            "deepseek_system_contract_version": if config.deepseek_native {
+                Some(crate::deepseek::DEEPSEEK_SYSTEM_CONTRACT_VERSION)
+            } else {
+                None
+            },
             "deepseek_request_meta": if config.deepseek_native {
                 Some(serde_json::to_value(crate::deepseek::DeepSeekRequestMeta::default()).unwrap_or_default())
             } else {

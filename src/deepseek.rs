@@ -1107,12 +1107,17 @@ fn transport_decision_reason(
     }
 }
 
+pub const DEEPSEEK_SYSTEM_CONTRACT_VERSION: &str = "deepseek_native_contract@v2";
+
 pub fn stable_system_contract() -> &'static str {
     r#"# DeepSeek Native Harness Contract
 
 - Preserve a deterministic prompt layout: stable policy, tools, project instructions, repo map, then dynamic task context.
+- Use state, eval, logs, command output, and git evidence before drawing conclusions.
+- Keep source inspection bounded: search first, then read targeted files, functions, or line ranges.
 - Use thinking for root-cause analysis, patch planning, risky edits, and failed-task repair.
 - Do not treat raw reasoning content as durable truth; distill decisions into hypotheses, evidence, risks, and patch intent.
+- Do not claim completion unless code, artifacts, state events, or verification results support it.
 - Prefer structured outputs for decisions that affect state, evaluation, or harness evolution.
 - Keep edits narrow, verify with tests when practical, and record failures as evidence."#
 }
@@ -2591,6 +2596,20 @@ mod tests {
     fn native_models_use_v4_names() {
         assert_eq!(DeepSeekModel::V4Pro.as_str(), "deepseek-v4-pro");
         assert_eq!(DeepSeekModel::V4Flash.as_str(), "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn stable_system_contract_keeps_prompt_quality_rules() {
+        let contract = stable_system_contract();
+        assert_eq!(
+            DEEPSEEK_SYSTEM_CONTRACT_VERSION,
+            "deepseek_native_contract@v2"
+        );
+        assert!(contract.contains("deterministic prompt layout"));
+        assert!(contract.contains("state, eval, logs"));
+        assert!(contract.contains("source inspection bounded"));
+        assert!(contract.contains("Do not claim completion"));
+        assert!(contract.contains("structured outputs"));
     }
 
     #[test]
