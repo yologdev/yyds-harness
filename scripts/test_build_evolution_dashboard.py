@@ -106,7 +106,44 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
             (session / "transcripts").mkdir()
             (session / "transcripts/plan.log").write_text("plan\n", encoding="utf-8")
-            (session / "transcripts/task_01_attempt1.log").write_text("task\n", encoding="utf-8")
+            (session / "transcripts/task_01_attempt1.log").write_text("task\nline2\n", encoding="utf-8")
+            (session / "tasks/task_01").mkdir(parents=True)
+            (session / "tasks/task_01/task.md").write_text("Title: Improve dashboard\nFiles: scripts/build_evolution_dashboard.py\n", encoding="utf-8")
+            (session / "tasks/task_01/attempts.jsonl").write_text(
+                json.dumps(
+                    {
+                        "task_id": "task_01",
+                        "phase": "implementation",
+                        "attempt": 1,
+                        "stage_name": "task_01_attempt1",
+                        "transcript_path": "transcripts/task_01_attempt1.log",
+                        "exit_code": 0,
+                        "status": "completed",
+                        "line_count": 2,
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {
+                    "task_id": "task_01",
+                    "attempt": 1,
+                    "status": "pass",
+                    "verdict": "Verdict: PASS",
+                    "transcript_path": "transcripts/eval_task1_attempt1.log",
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Improve dashboard",
+                    "status": "completed",
+                },
+            )
 
             data = build(root / "sessions", root / "out")
 
@@ -122,6 +159,12 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["edited_files"], ["scripts/build_evolution_dashboard.py"])
             self.assertEqual(work["commands"], ["cargo test"])
             self.assertEqual(work["transcripts"]["phase_counts"], {"plan": 1, "task": 1})
+            self.assertEqual(work["transcripts"]["files"][1]["line_count"], 2)
+            self.assertEqual(work["task_artifacts"][0]["task_id"], "task_01")
+            self.assertEqual(work["task_artifacts"][0]["attempt_count"], 1)
+            self.assertEqual(work["task_artifacts"][0]["eval_statuses"], ["pass"])
+            self.assertTrue(work["task_artifacts"][0]["has_outcome"])
+            self.assertIn("task.md", [row["name"] for row in work["task_artifacts"][0]["artifacts"]])
             self.assertEqual(work["patch_count"], 1)
             self.assertEqual(work["decision_count"], 1)
             self.assertEqual(work["task_lineage"][0]["task_id"], "task_01")

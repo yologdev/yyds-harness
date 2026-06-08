@@ -224,6 +224,125 @@ task_lineage_payload() {
             "$TASK_NUM" "$task_title" "$status" "$base_sha" "$reason"
 }
 
+append_task_attempt_evidence() {
+    local task_id="$1"
+    local phase="$2"
+    local attempt="$3"
+    local stage_name="$4"
+    local transcript_path="$5"
+    local exit_code="$6"
+    local status="$7"
+    local output_path="$SESSION_STAGING/tasks/$task_id/attempts.jsonl"
+    mkdir -p "$(dirname "$output_path")"
+    TASK_ID="$task_id" \
+    TASK_PHASE="$phase" \
+    TASK_ATTEMPT="$attempt" \
+    TASK_STAGE_NAME="$stage_name" \
+    TASK_TRANSCRIPT_PATH="$transcript_path" \
+    TASK_EXIT_CODE="$exit_code" \
+    TASK_STATUS="$status" \
+    SESSION_STAGING="$SESSION_STAGING" \
+    TASK_ATTEMPTS_OUT="$output_path" \
+        python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+transcript = os.environ.get("TASK_TRANSCRIPT_PATH", "")
+line_count = None
+byte_count = None
+if transcript:
+    path = Path(os.environ.get("SESSION_STAGING", "")) / transcript
+    try:
+        data = path.read_bytes()
+        byte_count = len(data)
+        line_count = len(data.splitlines())
+    except OSError:
+        pass
+
+row = {
+    "task_id": os.environ.get("TASK_ID"),
+    "phase": os.environ.get("TASK_PHASE"),
+    "attempt": int(os.environ.get("TASK_ATTEMPT") or 0),
+    "stage_name": os.environ.get("TASK_STAGE_NAME"),
+    "transcript_path": transcript or None,
+    "exit_code": int(os.environ.get("TASK_EXIT_CODE") or 0),
+    "status": os.environ.get("TASK_STATUS"),
+    "line_count": line_count,
+    "byte_count": byte_count,
+}
+out = Path(os.environ["TASK_ATTEMPTS_OUT"])
+with out.open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+}
+
+write_task_eval_evidence() {
+    local task_id="$1"
+    local attempt="$2"
+    local status="$3"
+    local exit_code="$4"
+    local verdict="$5"
+    local reason="$6"
+    local transcript_path="$7"
+    local eval_file="session_plan/eval_task_${TASK_NUM}.md"
+    local evidence_dir="$SESSION_STAGING/tasks/$task_id"
+    mkdir -p "$evidence_dir"
+    if [ -f "$eval_file" ]; then
+        cp "$eval_file" "$evidence_dir/eval_attempt_${attempt}.md" 2>/dev/null || true
+    fi
+    TASK_ID="$task_id" \
+    EVAL_ATTEMPT="$attempt" \
+    EVAL_STATUS="$status" \
+    EVAL_EXIT_CODE="$exit_code" \
+    EVAL_VERDICT_TEXT="$verdict" \
+    EVAL_REASON_TEXT="$reason" \
+    EVAL_TRANSCRIPT_PATH="$transcript_path" \
+    EVAL_HAS_FILE="$([ -f "$eval_file" ] && echo true || echo false)" \
+    EVAL_JSON_OUT="$evidence_dir/eval_attempt_${attempt}.json" \
+        python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+row = {
+    "task_id": os.environ.get("TASK_ID"),
+    "attempt": int(os.environ.get("EVAL_ATTEMPT") or 0),
+    "status": os.environ.get("EVAL_STATUS"),
+    "exit_code": int(os.environ.get("EVAL_EXIT_CODE") or 0),
+    "verdict": os.environ.get("EVAL_VERDICT_TEXT") or None,
+    "reason": os.environ.get("EVAL_REASON_TEXT") or None,
+    "transcript_path": os.environ.get("EVAL_TRANSCRIPT_PATH") or None,
+    "verdict_file": f"eval_attempt_{os.environ.get('EVAL_ATTEMPT')}.md"
+        if os.environ.get("EVAL_HAS_FILE") == "true" else None,
+}
+Path(os.environ["EVAL_JSON_OUT"]).write_text(
+    json.dumps(row, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+write_task_outcome_evidence() {
+    local task_id="$1"
+    local payload_json="$2"
+    local output_path="$SESSION_STAGING/tasks/$task_id/outcome.json"
+    mkdir -p "$(dirname "$output_path")"
+    TASK_OUTCOME_JSON="$payload_json" \
+    TASK_OUTCOME_OUT="$output_path" \
+        python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+payload = json.loads(os.environ.get("TASK_OUTCOME_JSON") or "{}")
+Path(os.environ["TASK_OUTCOME_OUT"]).write_text(
+    json.dumps(payload, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
 # ── Step 1c: Compute YOUR TRAJECTORY block (read-only audit-log fetch) ──
 # Aggregates audit-log session outcomes + git log + recent CI runs into a
 # structured markdown summary, injected ONLY into Phase A1 (assess) and
@@ -1075,6 +1194,10 @@ for TASK_FILE in session_plan/task_*.md; do
     TASK_DESC=$(cat "$TASK_FILE")
     task_title=$(grep '^Title:' "$TASK_FILE" | head -1 | sed 's/^Title:[[:space:]]*//' || true)
     task_title="${task_title:-Task $TASK_NUM}"
+    TASK_ID=$(printf 'task_%02d' "$TASK_NUM")
+    TASK_EVIDENCE_DIR="$SESSION_STAGING/tasks/$TASK_ID"
+    mkdir -p "$TASK_EVIDENCE_DIR"
+    cp "$TASK_FILE" "$TASK_EVIDENCE_DIR/task.md" 2>/dev/null || true
 
     echo "  → Task $TASK_NUM: $task_title"
 
@@ -1129,17 +1252,28 @@ TEOF
 
         TASK_LOG=$(mktemp)
         TASK_EXIT=0
-        STAGE_NAME="task_$(printf '%02d_attempt%d' "$TASK_NUM" "$ATTEMPT")" \
+        TASK_STAGE_NAME="task_$(printf '%02d_attempt%d' "$TASK_NUM" "$ATTEMPT")"
+        STAGE_NAME="$TASK_STAGE_NAME" \
             run_agent_with_fallback "$IMPL_TIMEOUT" "$TASK_PROMPT" "$TASK_LOG" "--context-strategy checkpoint" || TASK_EXIT=$?
         rm -f "$TASK_PROMPT"
 
+        TASK_ATTEMPT_STATUS="completed"
         if [ "$TASK_EXIT" -eq 124 ]; then
             echo "    WARNING: Task $TASK_NUM TIMED OUT after ${IMPL_TIMEOUT}s (attempt $ATTEMPT)."
+            TASK_ATTEMPT_STATUS="timeout"
         elif [ "$TASK_EXIT" -eq 2 ]; then
             echo "    Task $TASK_NUM: checkpoint-restart triggered (attempt $ATTEMPT)."
+            TASK_ATTEMPT_STATUS="checkpoint_restart"
         elif [ "$TASK_EXIT" -ne 0 ]; then
             echo "    WARNING: Task $TASK_NUM exited with code $TASK_EXIT (attempt $ATTEMPT)."
+            TASK_ATTEMPT_STATUS="nonzero"
         fi
+        if grep -q '"type":"error"' "$TASK_LOG" 2>/dev/null; then
+            TASK_ATTEMPT_STATUS="api_error"
+        fi
+        append_task_attempt_evidence \
+            "$TASK_ID" "implementation" "$ATTEMPT" "$TASK_STAGE_NAME" \
+            "transcripts/${TASK_STAGE_NAME}.log" "$TASK_EXIT" "$TASK_ATTEMPT_STATUS" || true
 
         # Abort on API errors (after fallback attempt if configured) — revert partial work and stop
         if grep -q '"type":"error"' "$TASK_LOG" 2>/dev/null; then
@@ -1230,6 +1364,10 @@ and commit if needed."
 
     # Preserve original break behavior for API errors
     if [ "$API_ERROR_ABORT" = true ]; then
+        REVERT_REASON="Implementation agent API error"
+        TASK_LINEAGE_PAYLOAD=$(task_lineage_payload "reverted" "$PRE_TASK_SHA" "$REVERT_REASON")
+        write_task_outcome_evidence "$TASK_ID" "$TASK_LINEAGE_PAYLOAD" || true
+        record_state_event "RunCompleted" "$TASK_LINEAGE_PAYLOAD"
         break
     fi
 
@@ -1346,19 +1484,29 @@ After fixing, run: cargo fmt && cargo build && cargo test
 BFIXEOF
         BFIX_LOG=$(mktemp)
         BFIX_EXIT=0
-        STAGE_NAME="bfix_task${TASK_NUM}_attempt${BUILD_FIX_ATTEMPT}" \
+        BFIX_STAGE_NAME="bfix_task${TASK_NUM}_attempt${BUILD_FIX_ATTEMPT}"
+        STAGE_NAME="$BFIX_STAGE_NAME" \
             run_agent_with_fallback "$BFIX_TIMEOUT" "$BFIX_PROMPT" "$BFIX_LOG" "--context-strategy checkpoint" || BFIX_EXIT=$?
+        BFIX_STATUS="completed"
         if [ "$BFIX_EXIT" -eq 124 ]; then
             echo "    WARNING: Build-fix agent timed out after ${BFIX_TIMEOUT}s."
+            BFIX_STATUS="timeout"
         elif grep -q '"type":"error"' "$BFIX_LOG" 2>/dev/null; then
             echo "    WARNING: Build-fix agent hit API error — aborting fix loop."
+            append_task_attempt_evidence \
+                "$TASK_ID" "build_fix" "$BUILD_FIX_ATTEMPT" "$BFIX_STAGE_NAME" \
+                "transcripts/${BFIX_STAGE_NAME}.log" "$BFIX_EXIT" "api_error" || true
             rm -f "$BFIX_PROMPT" "$BFIX_LOG"
             TASK_OK=false
             REVERT_REASON="Build-fix agent API error; $BUILD_FAILED still failing"
             break
         elif [ "$BFIX_EXIT" -ne 0 ]; then
             echo "    WARNING: Build-fix agent exited with code $BFIX_EXIT."
+            BFIX_STATUS="nonzero"
         fi
+        append_task_attempt_evidence \
+            "$TASK_ID" "build_fix" "$BUILD_FIX_ATTEMPT" "$BFIX_STAGE_NAME" \
+            "transcripts/${BFIX_STAGE_NAME}.log" "$BFIX_EXIT" "$BFIX_STATUS" || true
         rm -f "$BFIX_PROMPT" "$BFIX_LOG"
 
         # Re-check protected files after fix agent (committed + staged)
@@ -1438,7 +1586,8 @@ EVALEOF
 
         EVAL_LOG=$(mktemp)
         EVAL_EXIT=0
-        STAGE_NAME="eval_task${TASK_NUM}_attempt${EVAL_ATTEMPT}" \
+        EVAL_STAGE_NAME="eval_task${TASK_NUM}_attempt${EVAL_ATTEMPT}"
+        STAGE_NAME="$EVAL_STAGE_NAME" \
             run_agent_with_fallback "$EVAL_TIMEOUT" "$EVAL_PROMPT" "$EVAL_LOG" || EVAL_EXIT=$?
         rm -f "$EVAL_PROMPT"
 
@@ -1451,6 +1600,9 @@ EVALEOF
         if echo "$EVAL_VERDICT" | grep -qi "FAIL"; then
             EVAL_REASON=$(grep -i '^Reason:' "session_plan/eval_task_${TASK_NUM}.md" | head -1 | sed 's/^Reason:[[:space:]]*//' || true)
             echo "    Evaluator: FAIL — $EVAL_REASON"
+            write_task_eval_evidence \
+                "$TASK_ID" "$EVAL_ATTEMPT" "fail" "$EVAL_EXIT" "$EVAL_VERDICT" "$EVAL_REASON" \
+                "transcripts/${EVAL_STAGE_NAME}.log" || true
 
             if [ "$EVAL_ATTEMPT" -lt "$MAX_EVAL_ATTEMPTS" ]; then
                 # ── Fix attempt: feed evaluator feedback back to agent ──
@@ -1474,15 +1626,23 @@ After fixing, run: cargo fmt && cargo clippy --all-targets -- -D warnings && car
 FIXEOF
                 FIX_LOG=$(mktemp)
                 FIX_EXIT=0
-                STAGE_NAME="fix_task${TASK_NUM}_attempt${EVAL_ATTEMPT}" \
+                FIX_STAGE_NAME="fix_task${TASK_NUM}_attempt${EVAL_ATTEMPT}"
+                STAGE_NAME="$FIX_STAGE_NAME" \
                     run_agent_with_fallback "$FIX_TIMEOUT" "$FIX_PROMPT" "$FIX_LOG" "--context-strategy checkpoint" || FIX_EXIT=$?
+                FIX_STATUS="completed"
                 if [ "$FIX_EXIT" -eq 124 ]; then
                     echo "    WARNING: Fix agent timed out after ${FIX_TIMEOUT}s."
+                    FIX_STATUS="timeout"
                 elif grep -q '"type":"error"' "$FIX_LOG" 2>/dev/null; then
                     echo "    WARNING: Fix agent hit API error."
+                    FIX_STATUS="api_error"
                 elif [ "$FIX_EXIT" -ne 0 ]; then
                     echo "    WARNING: Fix agent exited with code $FIX_EXIT."
+                    FIX_STATUS="nonzero"
                 fi
+                append_task_attempt_evidence \
+                    "$TASK_ID" "eval_fix" "$EVAL_ATTEMPT" "$FIX_STAGE_NAME" \
+                    "transcripts/${FIX_STAGE_NAME}.log" "$FIX_EXIT" "$FIX_STATUS" || true
                 rm -f "$FIX_PROMPT" "$FIX_LOG"
 
                 # Re-check protected files after fix agent
@@ -1537,18 +1697,34 @@ $(cat "session_plan/eval_task_${TASK_NUM}.md" 2>/dev/null || echo 'no eval file 
             fi
         elif echo "$EVAL_VERDICT" | grep -qi "PASS"; then
             echo "    Evaluator: PASS"
+            EVAL_REASON=$(grep -i '^Reason:' "session_plan/eval_task_${TASK_NUM}.md" | head -1 | sed 's/^Reason:[[:space:]]*//' || true)
+            write_task_eval_evidence \
+                "$TASK_ID" "$EVAL_ATTEMPT" "pass" "$EVAL_EXIT" "$EVAL_VERDICT" "$EVAL_REASON" \
+                "transcripts/${EVAL_STAGE_NAME}.log" || true
             break
         elif [ "$EVAL_EXIT" -eq 124 ]; then
             echo "    Evaluator: timed out — skipping eval (build+test passed)"
+            write_task_eval_evidence \
+                "$TASK_ID" "$EVAL_ATTEMPT" "timeout" "$EVAL_EXIT" "$EVAL_VERDICT" "" \
+                "transcripts/${EVAL_STAGE_NAME}.log" || true
             break
         elif grep -q '"type":"error"' "$EVAL_LOG" 2>/dev/null; then
             echo "    Evaluator: API error — skipping eval (build+test passed)"
+            write_task_eval_evidence \
+                "$TASK_ID" "$EVAL_ATTEMPT" "api_error" "$EVAL_EXIT" "$EVAL_VERDICT" "" \
+                "transcripts/${EVAL_STAGE_NAME}.log" || true
             break
         elif [ -z "$EVAL_VERDICT" ]; then
             echo "    Evaluator: no verdict produced — skipping eval (build+test passed)"
+            write_task_eval_evidence \
+                "$TASK_ID" "$EVAL_ATTEMPT" "no_verdict" "$EVAL_EXIT" "$EVAL_VERDICT" "" \
+                "transcripts/${EVAL_STAGE_NAME}.log" || true
             break
         else
             echo "    Evaluator: unrecognized verdict '$EVAL_VERDICT' — skipping eval (build+test passed)"
+            write_task_eval_evidence \
+                "$TASK_ID" "$EVAL_ATTEMPT" "unrecognized" "$EVAL_EXIT" "$EVAL_VERDICT" "" \
+                "transcripts/${EVAL_STAGE_NAME}.log" || true
             break
         fi
 
@@ -1560,6 +1736,7 @@ $(cat "session_plan/eval_task_${TASK_NUM}.md" 2>/dev/null || echo 'no eval file 
     # Revert task if verification or evaluation failed
     if [ "$TASK_OK" = false ]; then
         TASK_LINEAGE_PAYLOAD=$(task_lineage_payload "reverted" "$PRE_TASK_SHA" "$REVERT_REASON")
+        write_task_outcome_evidence "$TASK_ID" "$TASK_LINEAGE_PAYLOAD" || true
         echo "    Reverting Task $TASK_NUM (resetting to $PRE_TASK_SHA)"
         if ! git reset --hard "$PRE_TASK_SHA"; then
             echo "    FATAL: git reset --hard failed. Cannot guarantee clean state."
@@ -1607,7 +1784,9 @@ ${REVERT_DETAILS:-no details captured}" 2>/dev/null; then
         record_state_event "RunCompleted" "$TASK_LINEAGE_PAYLOAD"
     else
         echo "    Task $TASK_NUM: verified OK"
-        record_state_event "RunCompleted" "$(task_lineage_payload "completed" "$PRE_TASK_SHA")"
+        TASK_LINEAGE_PAYLOAD=$(task_lineage_payload "completed" "$PRE_TASK_SHA")
+        write_task_outcome_evidence "$TASK_ID" "$TASK_LINEAGE_PAYLOAD" || true
+        record_state_event "RunCompleted" "$TASK_LINEAGE_PAYLOAD"
     fi
 
 done

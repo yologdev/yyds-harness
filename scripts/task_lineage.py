@@ -249,6 +249,22 @@ def build_link_payload(args: argparse.Namespace) -> dict[str, Any]:
                 "linked_commits": linked,
             }
         )
+    unassigned = [
+        commit for commit in commits if commit["sha"] not in known and commit["sha"] not in assigned
+    ]
+    if len(tasks) == 1 and unassigned:
+        task = tasks[0]
+        assigned.update(str(commit["sha"]) for commit in unassigned)
+        linked_tasks.append(
+            {
+                "task_id": task.get("task_id"),
+                "task_number": task.get("task_number"),
+                "task_title": task.get("task_title"),
+                "linked_by": "single_task_unassigned_source_commit",
+                "linked_commit_shas": [commit["sha"] for commit in unassigned],
+                "linked_commits": unassigned,
+            }
+        )
     return {
         "phase": "task_commit_linkage",
         "decision_type": "task_commit_linkage",

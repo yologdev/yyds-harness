@@ -52,6 +52,14 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('--events "$SESSION_STATE_EVENTS"', evolve)
         self.assertIn('--link-commits \\\n    --events "$SESSION_STATE_EVENTS"', evolve)
         self.assertNotIn('tail -n +"$((STATE_BASE_LINES + 1))"', evolve)
+        self.assertIn('TASK_EVIDENCE_DIR="$SESSION_STAGING/tasks/$TASK_ID"', evolve)
+        self.assertIn('cp "$TASK_FILE" "$TASK_EVIDENCE_DIR/task.md"', evolve)
+        self.assertIn('append_task_attempt_evidence()', evolve)
+        self.assertIn('write_task_eval_evidence()', evolve)
+        self.assertIn('write_task_outcome_evidence()', evolve)
+        self.assertIn('attempts.jsonl', evolve)
+        self.assertIn('eval_attempt_${attempt}.json', evolve)
+        self.assertIn('outcome.json', evolve)
 
     def test_task_lineage_payload_captures_source_commits(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -99,6 +107,62 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(payload["source_files"], ["src/lib.rs"])
             self.assertEqual(len(payload["commit_shas"]), 1)
             self.assertEqual(payload["eval"], {"verdict": "PASS", "reason": "works"})
+
+    def test_single_task_linkage_claims_unassigned_source_commits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            (repo / "src").mkdir()
+            (repo / "state").mkdir()
+            (repo / "src/lib.rs").write_text("pub fn before() {}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+            base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+            (repo / "state/events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "event_type": "RunCompleted",
+                        "payload": {
+                            "phase": "task",
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "task_title": "Finish wrap-up source",
+                            "status": "completed",
+                            "source_files": [],
+                            "commit_shas": [],
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (repo / "src/lib.rs").write_text("pub fn after() {}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-m", "Day 1 (00:00): session wrap-up"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+
+            args = type(
+                "Args",
+                (),
+                {
+                    "repo_root": repo,
+                    "base": base,
+                    "head": "",
+                    "events": repo / "state/events.jsonl",
+                },
+            )()
+            payload = task_lineage.build_link_payload(args)
+
+            self.assertEqual(payload["unassigned_source_commits"], [])
+            self.assertEqual(payload["tasks"][0]["task_id"], "task_01")
+            self.assertEqual(payload["tasks"][0]["linked_by"], "single_task_unassigned_source_commit")
+            self.assertEqual(len(payload["tasks"][0]["linked_commit_shas"]), 1)
 
     def test_log_feedback_links_gnome_deltas_to_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:

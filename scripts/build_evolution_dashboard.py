@@ -225,12 +225,86 @@ def transcript_summary(session_dir: Path) -> dict[str, Any]:
         else:
             phase = "other"
         phase_counts[phase] += 1
-        transcript_rows.append({"name": name, "phase": phase, "path": f"transcripts/{name}"})
+        try:
+            raw = path.read_bytes()
+            line_count = len(raw.splitlines())
+            byte_count = len(raw)
+        except OSError:
+            line_count = 0
+            byte_count = 0
+        transcript_rows.append(
+            {
+                "name": name,
+                "phase": phase,
+                "path": f"transcripts/{name}",
+                "line_count": line_count,
+                "byte_count": byte_count,
+            }
+        )
     return {
         "count": len(files),
         "phase_counts": {key: value for key, value in phase_counts.items() if value},
         "files": transcript_rows[:16],
     }
+
+
+def file_stats(path: Path) -> dict[str, int]:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return {"line_count": 0, "byte_count": 0}
+    return {"line_count": len(raw.splitlines()), "byte_count": len(raw)}
+
+
+def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
+    tasks_dir = session_dir / "tasks"
+    if not tasks_dir.is_dir():
+        return []
+    rows: list[dict[str, Any]] = []
+    for task_dir in sorted(path for path in tasks_dir.iterdir() if path.is_dir()):
+        task_id = task_dir.name
+        attempts = load_jsonl(task_dir / "attempts.jsonl")
+        evals: list[dict[str, Any]] = []
+        for path in sorted(task_dir.glob("eval_attempt_*.json")):
+            eval_data = load_json(path)
+            if eval_data:
+                evals.append(eval_data)
+        artifact_paths: list[dict[str, Any]] = []
+        for path in sorted(task_dir.iterdir()):
+            if not path.is_file():
+                continue
+            rel = f"tasks/{task_id}/{path.name}"
+            stats = file_stats(path)
+            artifact_paths.append(
+                {
+                    "name": path.name,
+                    "path": rel,
+                    "line_count": stats["line_count"],
+                    "byte_count": stats["byte_count"],
+                }
+            )
+        task_file = task_dir / "task.md"
+        outcome = load_json(task_dir / "outcome.json")
+        rows.append(
+            {
+                "task_id": task_id,
+                "has_task_file": task_file.is_file(),
+                "has_outcome": bool(outcome),
+                "task_title": outcome.get("task_title") if isinstance(outcome, dict) else None,
+                "status": outcome.get("status") if isinstance(outcome, dict) else None,
+                "attempt_count": len(attempts),
+                "attempts": attempts[:8],
+                "eval_statuses": [
+                    str(eval_data.get("status"))
+                    for eval_data in evals
+                    if isinstance(eval_data, dict) and eval_data.get("status")
+                ],
+                "evals": evals[:8],
+                "artifacts": artifact_paths,
+                "task_line_count": file_stats(task_file)["line_count"] if task_file.is_file() else 0,
+            }
+        )
+    return rows
 
 
 def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -285,6 +359,7 @@ def work_summary(
     commits: list[dict[str, Any]],
 ) -> dict[str, Any]:
     transcript_data = transcript_summary(session_dir)
+    task_artifacts = task_artifact_summary(session_dir)
     event_data = summarize_events_for_work(load_jsonl(session_dir / "state" / "events.jsonl"))
     source_files = compact_list(
         [
@@ -324,6 +399,7 @@ def work_summary(
         "headline": "; ".join(labels[:4]),
         "labels": labels,
         "transcripts": transcript_data,
+        "task_artifacts": task_artifacts,
         "edited_files": event_data["edited_files"],
         "source_changed_files": source_files,
         "commits": serialize_commits(commits),
@@ -1713,6 +1789,41 @@ HTML = r"""<!doctype html>
       return `<ul class="mini-list">${rows.map(commit => `<li>${text(commit.short_sha || "")} ${text(commit.subject || "")}</li>`).join("")}</ul>`;
     }
 
+    function auditLink(session, path, label) {
+      if (!session.audit_url || !path) return text(label || path || "");
+      return `<a href="${text(session.audit_url)}/${text(path)}">${text(label || path)}</a>`;
+    }
+
+    function renderTranscriptList(session, work) {
+      const rows = ((work.transcripts || {}).files || []).slice(0, 10);
+      if (!rows.length) return `<p class="muted">No transcript files recorded.</p>`;
+      return `<ul class="mini-list">${rows.map(row => {
+        const size = `${text(row.line_count || 0)} lines`;
+        return `<li>${auditLink(session, row.path, row.name)} <span class="muted">${text(row.phase || "other")} / ${size}</span></li>`;
+      }).join("")}</ul>`;
+    }
+
+    function renderTaskArtifacts(session, work) {
+      const rows = (work.task_artifacts || []).slice(0, 6);
+      if (!rows.length) return `<p class="muted">No per-task artifact bundle recorded yet.</p>`;
+      return rows.map(task => {
+        const statuses = (task.eval_statuses || []).length ? task.eval_statuses.join(", ") : "no eval artifact";
+        const attempts = (task.attempts || []).slice(0, 4).map(attempt => {
+          const name = attempt.transcript_path ? auditLink(session, attempt.transcript_path, attempt.stage_name || attempt.phase) : text(attempt.stage_name || attempt.phase || "attempt");
+          return `${name} <span class="muted">${text(attempt.status || "-")} / ${text(attempt.line_count || 0)} lines</span>`;
+        }).join("</li><li>");
+        const artifacts = (task.artifacts || []).slice(0, 6).map(artifact =>
+          `${auditLink(session, artifact.path, artifact.name)} <span class="muted">${text(artifact.line_count || 0)} lines</span>`
+        ).join("</li><li>");
+        return `<div class="task-evidence">
+          <strong>${text(task.task_id || "")} ${text(task.status || "")}: ${text(task.task_title || "")}</strong>
+          <p class="muted">${text(task.attempt_count || 0)} attempt artifact(s); eval ${text(statuses)}; task file ${text(task.task_line_count || 0)} lines</p>
+          ${attempts ? `<ul class="mini-list"><li>${attempts}</li></ul>` : ""}
+          ${artifacts ? `<ul class="mini-list"><li>${artifacts}</li></ul>` : ""}
+        </div>`;
+      }).join("");
+    }
+
     function renderSessionWork(sessions) {
       const panel = document.getElementById("sessionWork");
       if (!sessions.length) {
@@ -1748,6 +1859,8 @@ HTML = r"""<!doctype html>
                 <div><strong>Source commits</strong>${sourceCommitItems(work)}</div>
                 <div><strong>Bookkeeping commits</strong>${bookkeepingCommitItems(work)}</div>
                 <div><strong>Task lineage</strong>${renderTaskLineage(work)}</div>
+                <div><strong>Task artifacts</strong>${renderTaskArtifacts(session, work)}</div>
+                <div><strong>Transcripts</strong>${renderTranscriptList(session, work)}</div>
                 <div><strong>Validated</strong>${listItems(work.commands, "No command events recorded.")}</div>
                 <div><strong>Read</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
                 <div><strong>State edits</strong>${listItems(work.edited_files, "No FileEdited events recorded.")}</div>
@@ -1860,7 +1973,8 @@ HTML = r"""<!doctype html>
         const evalVerdict = task.eval && task.eval.verdict ? ` / eval ${task.eval.verdict}` : "";
         const deltaCount = Object.keys(task.gnome_deltas || {}).length;
         const deltaText = deltaCount ? ` / ${deltaCount} gnome delta(s)` : "";
-        return `<li>${text(task.task_id || "")} ${text(task.status || "-")}: ${text(task.task_title || "")} (${text(fileCount)} files, ${text(commitCount)} commits${evalVerdict}${deltaText})</li>`;
+        const method = task.commit_linkage_method ? ` / ${task.commit_linkage_method}` : "";
+        return `<li>${text(task.task_id || "")} ${text(task.status || "-")}: ${text(task.task_title || "")} (${text(fileCount)} files, ${text(commitCount)} commits${method}${evalVerdict}${deltaText})</li>`;
       }).join("")}</ul>`;
     }
 
