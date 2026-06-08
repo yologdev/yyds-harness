@@ -16,6 +16,7 @@ use std::sync::{LazyLock, Once, OnceLock};
 
 thread_local! {
     static LAST_RUN_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+    static LAST_DIAGNOSTIC_ERROR: Cell<Option<String>> = const { Cell::new(None) };
 }
 
 static PANIC_HOOK_INSTALLED: Once = Once::new();
@@ -60,6 +61,22 @@ pub fn store_run_error(msg: &str) {
     LAST_RUN_ERROR.with(|cell| {
         cell.set(Some(msg.to_string()));
     });
+}
+
+/// Stash a diagnostic error for inclusion in the next `RunCompleted`
+/// error payload. Call this before `exit_with_state` so the actual
+/// failure reason (auth error, config parse failure, network timeout)
+/// is captured alongside the generic exit-code message.
+#[allow(dead_code)]
+pub fn stash_diagnostic_error(msg: &str) {
+    LAST_DIAGNOSTIC_ERROR.with(|cell| {
+        cell.set(Some(msg.to_string()));
+    });
+}
+
+/// Take and clear the last stashed diagnostic error.
+pub fn take_diagnostic_error() -> Option<String> {
+    LAST_DIAGNOSTIC_ERROR.with(|cell| cell.take())
 }
 
 static GLOBAL_RECORDER: OnceLock<StateRecorder> = OnceLock::new();
@@ -336,23 +353,32 @@ pub fn mark_run_completed(status: &str) {
     record(
         EventType::RunCompleted,
         Actor::Harness,
-        run_completed_payload(status, None),
+        run_completed_payload(status, None, None),
     );
 }
 
 /// Like `mark_run_completed("error")` but includes an error message.
 /// This also stores the error via `store_run_error` so it can be
 /// retrieved later if needed.
+///
+/// If a diagnostic error was stashed via `stash_diagnostic_error` before
+/// this call, it is included as `error_detail` in the payload alongside
+/// the explicit `msg` (typically the exit code).
 pub fn mark_run_completed_with_error(msg: &str) {
     store_run_error(msg);
+    let error_detail = take_diagnostic_error();
     record(
         EventType::RunCompleted,
         Actor::Harness,
-        run_completed_payload("error", Some(msg)),
+        run_completed_payload("error", Some(msg), error_detail.as_deref()),
     );
 }
 
-pub fn run_completed_payload(status: &str, error: Option<&str>) -> Value {
+pub fn run_completed_payload(
+    status: &str,
+    error: Option<&str>,
+    error_detail: Option<&str>,
+) -> Value {
     let mut payload = json!({
         "status": status,
         "completed_at_ms": now_ms(),
@@ -360,6 +386,11 @@ pub fn run_completed_payload(status: &str, error: Option<&str>) -> Value {
     if let Some(msg) = error {
         if !msg.is_empty() {
             payload["error"] = json!(msg);
+        }
+    }
+    if let Some(detail) = error_detail {
+        if !detail.is_empty() {
+            payload["error_detail"] = json!(detail);
         }
     }
     payload
@@ -3061,7 +3092,7 @@ mod tests {
 
     #[test]
     fn run_completed_payload_records_terminal_status() {
-        let payload = run_completed_payload("completed", None);
+        let payload = run_completed_payload("completed", None, None);
 
         assert_eq!(payload["status"], "completed");
         assert!(payload["completed_at_ms"].as_u64().unwrap_or_default() > 0);
@@ -6457,7 +6488,7 @@ mod tests {
 
     #[test]
     fn run_completed_payload_includes_error_context() {
-        let payload = run_completed_payload("error", Some("something went wrong"));
+        let payload = run_completed_payload("error", Some("something went wrong"), None);
         assert_eq!(payload["status"], "error");
         assert_eq!(payload["error"], "something went wrong");
         assert!(payload["completed_at_ms"].as_u64().unwrap_or_default() > 0);
@@ -6465,14 +6496,14 @@ mod tests {
 
     #[test]
     fn run_completed_payload_omits_error_when_none() {
-        let payload = run_completed_payload("completed", None);
+        let payload = run_completed_payload("completed", None, None);
         assert_eq!(payload["status"], "completed");
         assert!(payload.get("error").is_none());
     }
 
     #[test]
     fn run_completed_payload_omits_error_when_empty() {
-        let payload = run_completed_payload("error", Some(""));
+        let payload = run_completed_payload("error", Some(""), None);
         assert_eq!(payload["status"], "error");
         assert!(payload.get("error").is_none());
     }

@@ -67,6 +67,7 @@ pub fn handle_state_subcommand(args: &[String]) {
         }
         "graph" => crate::commands_state_graph::handle_graph_subcommand(args),
         "failures" => handle_failures(&args[3..]),
+        "crashes" => handle_crashes(&args[3..]),
         "cache" => handle_cache(&args[3..]),
         "policies" => handle_policies(&args[3..]),
         "fixes" => handle_fixes(&args[3..]),
@@ -724,6 +725,206 @@ fn handle_failures(args: &[String]) {
     match build_recent_failure_report(&events, limit) {
         Ok(report) => println!("{report}"),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+    }
+}
+
+fn handle_crashes(args: &[String]) {
+    let limit = flag_value(args, "--limit")
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(10);
+    let json_output = args.iter().any(|a| a == "--json");
+    let path = default_events_path();
+    let Ok(events) = read_events(&path) else {
+        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+        return;
+    };
+    match build_crashes_report(&events, limit, json_output) {
+        Ok(report) => println!("{report}"),
+        Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CrashEntry {
+    run_id: String,
+    ts_ms: i64,
+    api_key_present: bool,
+    error_detail: String,
+    duration_ms: i64,
+}
+
+fn build_crashes_report(
+    events: &[Value],
+    limit: usize,
+    json_output: bool,
+) -> Result<String, String> {
+    // Find all RunCompleted events with status=error, collect crashes
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    // Build a map run_id -> SessionStarted (timestamp_ms, api_key_present)
+    let mut sessions: std::collections::HashMap<String, (i64, bool)> =
+        std::collections::HashMap::new();
+    // Track tool calls per run_id: set of run_ids that have at least one ToolCallStarted
+    let mut tool_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for event in events {
+        let event_type = event_string(event, "event_type").unwrap_or("");
+        let run_id = event_string(event, "run_id").unwrap_or("").to_string();
+        if run_id.is_empty() {
+            continue;
+        }
+        match event_type {
+            "SessionStarted" => {
+                let ts = event_timestamp_ms(event).unwrap_or(0);
+                let api_key = event
+                    .get("payload")
+                    .and_then(|p| p.get("api_key_present"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                sessions.insert(run_id, (ts, api_key));
+            }
+            "ToolCallStarted" => {
+                tool_calls.insert(run_id);
+            }
+            _ => {}
+        }
+    }
+
+    // Now scan RunCompleted events (most recent first), find crashes
+    let mut crashes: Vec<CrashEntry> = Vec::new();
+    for event in events.iter().rev() {
+        if crashes.len() >= limit {
+            break;
+        }
+        let event_type = event_string(event, "event_type").unwrap_or("");
+        if event_type != "RunCompleted" {
+            continue;
+        }
+        let run_id = event_string(event, "run_id").unwrap_or("").to_string();
+        if run_id.is_empty() {
+            continue;
+        }
+        let status = event
+            .get("payload")
+            .and_then(|p| p.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if status != "error" {
+            continue;
+        }
+
+        // Must have a matching SessionStarted
+        let Some(&(session_ts, api_key_present)) = sessions.get(&run_id) else {
+            continue; // incomplete data
+        };
+
+        // Crash condition: api_key_present == false OR no tool calls
+        let has_tool_calls = tool_calls.contains(&run_id);
+        if api_key_present && has_tool_calls {
+            continue; // not a crash session
+        }
+
+        let ts_ms = event_timestamp_ms(event).unwrap_or(0);
+        let error_detail = event
+            .get("payload")
+            .and_then(|p| p.get("error_detail"))
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                event
+                    .get("payload")
+                    .and_then(|p| p.get("error"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("")
+            .to_string();
+        let duration_ms = ts_ms.saturating_sub(session_ts);
+
+        crashes.push(CrashEntry {
+            run_id,
+            ts_ms,
+            api_key_present,
+            error_detail,
+            duration_ms,
+        });
+    }
+
+    let total_crashes = crashes.len();
+    let window_sessions = sessions.len();
+
+    if json_output {
+        let entries: Vec<Value> = crashes
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "run_id": c.run_id,
+                    "ts_ms": c.ts_ms,
+                    "api_key_present": c.api_key_present,
+                    "error_detail": c.error_detail,
+                    "duration_ms": c.duration_ms,
+                })
+            })
+            .collect();
+        let output = serde_json::json!({
+            "crashes": entries,
+            "total_crashes": total_crashes,
+            "window_sessions": window_sessions,
+        });
+        return serde_json::to_string_pretty(&output).map_err(|e| format!("serialize JSON: {e}"));
+    }
+
+    // Human-readable table
+    if crashes.is_empty() {
+        return Ok("No crash sessions found in recent history.".to_string());
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    let header = format!("Crashed sessions (last {}):", crashes.len());
+    lines.push(header);
+    lines.push(format!(
+        "  {:<40} {:<18} {:<5}  {}",
+        "RUN", "WHEN", "KEY?", "ERROR"
+    ));
+
+    for crash in &crashes {
+        let when = if now > crash.ts_ms {
+            format_relative_ms(now - crash.ts_ms)
+        } else {
+            format_timestamp_ms(crash.ts_ms)
+        };
+        let key_str = if crash.api_key_present { "yes" } else { "no" };
+        let err = if crash.error_detail.is_empty() {
+            "(none)"
+        } else {
+            &crash.error_detail
+        };
+        // Truncate run_id for display
+        let short_run = if crash.run_id.len() > 38 {
+            format!("{}…", &crash.run_id[..37])
+        } else {
+            crash.run_id.clone()
+        };
+        lines.push(format!(
+            "  {:<40} {:<18} {:<5}  {}",
+            short_run, when, key_str, err
+        ));
+    }
+
+    Ok(lines.join("\n"))
+}
+
+fn format_relative_ms(diff_ms: i64) -> String {
+    let secs = diff_ms / 1000;
+    if secs < 60 {
+        format!("{}s ago", secs)
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
     }
 }
 
@@ -13882,7 +14083,7 @@ fn extract_patch_id(payload: &Value) -> Option<&str> {
 
 fn print_usage() {
     println!(
-        "Usage: yoyo state <command>\n\n  init\n  tail [--limit N]\n  trace <run-id|trace-id>\n  project --rebuild\n  migrate\n  recover [--output PATH] [--replace]\n  retention [--days N] [--archive PATH] [--prune]\n  memory synthesize [--output PATH] [--record]\n  memory list [--status proposed|promoted|rejected]\n  memory promote <candidate-id> [--reason TEXT]\n  memory reject <candidate-id> [--reason TEXT]\n  journal generate [--output PATH]\n  export <path>\n  import <path> [--replace]\n  graph <event-id|patch-id|eval-id|commit> [--depth N] [--to TARGET]\n  graph summary <event-id|patch-id|eval-id|commit> [--depth N]\n  graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph hotspots [--limit N] [--json]\n  policies --recent [--limit N]\n  fixes --recent [--class CLASS] [--limit N]\n  rollbacks --recent [--limit N] [--json]\n  evals [--harness-version VERSION] [--patch-id PATCH]\n  patches [--status STATUS]\n  patches show <patch-id>\n  why <event-id|last-failure|patch-id|commit|run-id>\n  lineage <event-id|patch-id|commit>\n  failures --recent\n  cache --recent"
+        "Usage: yoyo state <command>\n\n  init\n  tail [--limit N]\n  trace <run-id|trace-id>\n  project --rebuild\n  migrate\n  recover [--output PATH] [--replace]\n  retention [--days N] [--archive PATH] [--prune]\n  memory synthesize [--output PATH] [--record]\n  memory list [--status proposed|promoted|rejected]\n  memory promote <candidate-id> [--reason TEXT]\n  memory reject <candidate-id> [--reason TEXT]\n  journal generate [--output PATH]\n  export <path>\n  import <path> [--replace]\n  graph <event-id|patch-id|eval-id|commit> [--depth N] [--to TARGET]\n  graph summary <event-id|patch-id|eval-id|commit> [--depth N]\n  graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph hotspots [--limit N] [--json]\n  policies --recent [--limit N]\n  fixes --recent [--class CLASS] [--limit N]\n  rollbacks --recent [--limit N] [--json]\n  evals [--harness-version VERSION] [--patch-id PATCH]\n  patches [--status STATUS]\n  patches show <patch-id>\n  why <event-id|last-failure|patch-id|commit|run-id>\n  lineage <event-id|patch-id|commit>\n  failures --recent\n  crashes [--limit N] [--json]\n  cache --recent"
     );
     println!("  graph summary accepts --json for machine-readable output");
     println!("  graph clusters accepts --json for machine-readable output");
