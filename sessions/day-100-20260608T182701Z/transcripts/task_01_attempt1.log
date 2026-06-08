@@ -1,0 +1,829 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. I need to capture early-exit error context for silent crash diagnosis. The key insight is that when a session crashes before making its first tool call, the error detail is lost - only "exit code 1" is recorded. I need to:
+
+1. Add a thread-local stash for diagnostic errors in `src/state.rs`
+2. Modify `mark_run_completed_with_error` to include the stashed error as `error_detail`
+3. Instrument key error paths in `src/lib.rs` to stash diagnostic errors before exiting
+
+Let me start by reading the relevant files to understand the current code structure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the relevant sections of state.rs and lib.rs to understand the current architecture.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 2.1s (6 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the state.rs file to understand the existing error handling.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'mark_run_completed_with_error' in src/state.rs  ▶ search 'run_completed_payload' in src/state.rs  ▶ search 'exit_with_state' in src/lib.rs ✓ (19ms)
+ ✓ (19ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant functions in state.rs and lib.rs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:330..370  ▶ read src/lib.rs:960..1040 ✓ (6ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current code. Let me read more of lib.rs to see the key error paths and the rest of run_cli.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1040..1160 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the rest of run_cli to see all the error paths.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1159..1209  ▶ read src/lib.rs:440..470 ✓ (18ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the architecture. Let me also look at the `store_run_error` function and the panic hook:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn store_run_error' in src/state.rs  ▶ search 'fn install_panic_hook' in src/state.rs ✓ (13ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read those functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:29..69  ▶ read src/state.rs:55..95 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - `store_run_error` already exists with a `LAST_RUN_ERROR` thread_local. Let me find its definition:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'LAST_RUN_ERROR' in src/state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see this more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1..31 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. There's already a `LAST_RUN_ERROR` thread-local and a `store_run_error` function. The task says to add `stash_diagnostic_error` and `take_diagnostic_error`, and modify `mark_run_completed_with_error` to include the stashed error as `error_detail`.
+
+Looking at the existing code:
+1. `LAST_RUN_ERROR: Cell<Option<String>>` — thread_local already exists
+2. `store_run_error(msg)` — sets it
+3. `mark_run_completed_with_error(msg)` — records RunCompleted with error, also calls `store_run_error(msg)`
+
+But wait — the task says:
+- Add `stash_diagnostic_error(msg)` which sets the thread_local
+- Add `take_diagnostic_error() -> Option<String>` which takes and clears it
+- Modify `mark_run_completed_with_error(msg)` to call `take_diagnostic_error()` and append it to the payload
+
+The existing infrastructure is remarkably close. The key change is:
+1. Rename `LAST_RUN_ERROR` to something like `LAST_DIAGNOSTIC_ERROR` (or keep it and add new functions)
+2. Add `stash_diagnostic_error` and `take_diagnostic_error`
+3. Modify `mark_run_completed_with_error` to include the stashed error as `error_detail`
+4. In `lib.rs`, instrument error paths to call `stash_diagnostic_error`
+
+Actually, looking more carefully: `store_run_error` already exists and `mark_run_completed_with_error` already calls `store_run_error`. The problem is that the error message passed to `mark_run_completed_with_error` from `exit_with_state` is just "exit code 1" — not the actual diagnostic error.
+
+The plan should be:
+1. Add `stash_diagnostic_error` as a new function (or reuse `store_run_error`)
+2. Add `take_diagnostic_error`
+3. In `mark_run_completed_with_error`, call `take_diagnostic_error()` and add it as `error_detail` in the payload
+4. In `lib.rs`, before `exit_with_state(1)` in error paths, call `state::stash_diagnostic_error()` with descriptive error context
+
+Let me think about whether to reuse `store_run_error` or add a separate function. The task says to add `stash_diagnostic_error` and `take_diagnostic_error`. Let me follow the task spec.
+
+Actually, looking at the existing code again: `mark_run_completed_with_error` already calls `store_run_error(msg)`. But `store_run_error` just sets the thread_local and never reads it. There's no function currently that reads from `LAST_RUN_ERROR`. 
+
+The task says:
+- Add `stash_diagnostic_error(msg)` that sets the thread_local
+- Add `take_diagnostic_error() -> Option<String>` that takes and clears
+- Modify `mark_run_completed_with_error` to call `take_diagnostic_error()` and include it as `error_detail`
+
+So the flow is:
+1. Error path in lib.rs: `state::stash_diagnostic_error("failed to init state: {e}")`, then `exit_with_state(1)`
+2. `exit_with_state(1)` calls `mark_run_completed_with_error("exit code 1")`
+3. `mark_run_completed_with_error` calls `take_diagnostic_error()` which returns the stashed message
+4. Payload now has both `error: "exit code 1"` and `error_detail: "failed to init state: ..."`
+
+This makes sense! The `error` field keeps the exit code, and `error_detail` adds the actual diagnostic.
+
+Now, I need to decide: should I reuse the existing `LAST_RUN_ERROR` cell, or create a new one? The task says to add a new thread_local `LAST_DIAGNOSTIC_ERROR`. Let me follow the task spec exactly.
+
+Actually, let me look at the tests to understand:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6459..6509 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me plan the implementation:
+
+**In `src/state.rs`:**
+1. Add a `LAST_DIAGNOSTIC_ERROR` thread_local (or reuse `LAST_RUN_ERROR` — but the task says to add new functions)
+2. Add `stash_diagnostic_error(msg: &str)` — sets the thread_local
+3. Add `take_diagnostic_error() -> Option<String>` — takes and clears
+4. Modify `mark_run_completed_with_error` to call `take_diagnostic_error()` and include it as `error_detail` in the payload if present
+
+Wait, I could also just:
+- Keep `LAST_RUN_ERROR` as is
+- Add `stash_diagnostic_error` as an alias/re-export that calls `store_run_error`
+- Add `take_diagnostic_error` that reads from `LAST_RUN_ERROR`
+- Modify `mark_run_completed_with_error` to also include the stashed error
+
+Actually, let me re-read the task more carefully:
+
+> 1. In `src/state.rs`:
+>    - Add a `thread_local!` static `LAST_DIAGNOSTIC_ERROR: RefCell<Option<String>>`
+>    - Add a public function `stash_diagnostic_error(msg: String)` that sets it
+>    - Add a public function `take_diagnostic_error() -> Option<String>` that takes and clears it
+>    - Modify `mark_run_completed_with_error` to call `take_diagnostic_error()` and append it to the payload as `error_detail` if present
+
+OK so the task wants a separate thread_local. But we already have `LAST_RUN_ERROR` which serves this exact purpose. The task was written without knowledge of `store_run_error` existing.
+
+I have two options:
+1. Follow the task literally and add a new thread_local + functions (duplication)
+2. Use the existing infrastructure (cleaner)
+
+The task says "The changes are additive (new functions, new fields in payloads, new call sites). No existing behavior is removed." So adding new functions that wrap the existing thread_local would be additive while not duplicating storage.
+
+Let me go with: add `stash_diagnostic_error` and `take_diagnostic_error` as public functions that use the existing `LAST_RUN_ERROR` cell. Then modify `mark_run_completed_with_error` to also include the diagnostic error.
+
+Actually, wait. Let me reconsider. The `mark_run_completed_with_error` currently:
+- Calls `store_run_error(msg)` — stores "exit code 1" in the thread_local
+- Then records the payload with "error": "exit code 1"
+
+If I add `take_diagnostic_error()` call inside `mark_run_completed_with_error`, it would get... nothing, because `store_run_error` was called with "exit code 1" and there's no mechanism to differentiate between "exit code 1" and diagnostic errors.
+
+I think the task intends:
+1. Error path in lib.rs calls `stash_diagnostic_error("real error")` BEFORE `exit_with_state(1)`
+2. `exit_with_state(1)` calls `mark_run_completed_with_error("exit code 1")`
+3. `mark_run_completed_with_error` calls `take_diagnostic_error()` which returns "real error"
+4. Payload: `error: "exit code 1"`, `error_detail: "real error"`
+
+The key insight: `store_run_error`/`mark_run_completed_with_error` stores the exit code message, while `stash_diagnostic_error` stores the actual diagnostic. They need to be separate.
+
+So I DO need a separate thread_local for diagnostic errors. Let me use the existing `LAST_RUN_ERROR` for the exit code message (already works), and add a new `LAST_DIAGNOSTIC_ERROR` for the detailed diagnostic.
+
+OR... I could simplify: just have one thread_local, and in `mark_run_completed_with_error`:
+1. Take the current value as `error_detail` (this is set by `stash_diagnostic_error` before `exit_with_state` is called)
+2. Store the exit code message as the main error
+
+Wait, that doesn't work either because `store_run_error` is called INSIDE `mark_run_completed_with_error` with the exit code message.
+
+OK let me just follow the task spec. Add a new thread_local `LAST_DIAGNOSTIC_ERROR`.
+
+Let me now also check the existing tests for `mark_run_completed_with_error`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'mark_run_completed_with_error' in src/state.rs  ▶ search 'mark_run_completed_with_error' in src/lib.rs ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also check the `RunCompletionGuard` to see how it uses `mark_run_completed`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.1s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:309..339 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. The `RunCompletionGuard` drops and calls `mark_run_completed("completed")`. For error exits, `exit_with_state` calls `mark_run_completed_with_error("exit code 1")` before calling `std::process::exit(1)`.
+
+The key issue: `exit_with_state` is called from many places, but the real diagnostic error (like "failed to initialize state recorder: ...") is only printed to stderr, not captured.
+
+Here's my implementation plan:
+
+### state.rs changes:
+
+1. Add a new thread_local `LAST_DIAGNOSTIC_ERROR: Cell<Option<String>>`
+2. Add `pub fn stash_diagnostic_error(msg: &str)` — sets the thread_local
+3. Add `pub fn take_diagnostic_error() -> Option<String>` — takes and clears
+4. Modify `mark_run_completed_with_error(msg)` to:
+   - Call `take_diagnostic_error()` to get any stashed diagnostic
+   - Include it as `error_detail` in the payload if present
+   - The `run_completed_payload` function needs a new parameter or we modify `mark_run_completed_with_error` to build the payload inline
+
+Looking at `run_completed_payload`, it takes `status` and `error: Option<&str>`. I need to also pass `error_detail: Option<&str>`. Let me add that parameter.
+
+### lib.rs changes:
+
+Instrument key error paths to call `state::stash_diagnostic_error()`:
+1. State init failure (line 1025-1026): `state::stash_diagnostic_error(&format!("failed to initialize state recorder: {e}"))`
+2. Setup wizard failure (line 1081-1082): `state::stash_diagnostic_error("setup wizard declined or failed")`
+3. Image read error (line 456-458): `state::stash_diagnostic_error(&format!("failed to read image: {e}"))`
+
+Let me also check for other exit_with_state call sites with code 1:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:580..610  ▶ read src/lib.rs:635..665  ▶ read src/lib.rs:710..750  ▶ read src/lib.rs:845..875 ✓ (48ms)
+ ✓ (39ms)
+ ✓ (32ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a comprehensive view. Let me also look at the error paths in piped mode:
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.5s (4 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:740..800 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a comprehensive understanding. Let me proceed to implement.
+
+Summary of `exit_with_state(1)` call sites in lib.rs (error exits that need enrichment):
+1. Line 458: image read error
+2. Line 478: (let me check this)
+3. Line 588: single prompt non-zero exit
+4. Line 594: single prompt Err
+5. Line 642: text-only prompt non-zero exit
+6. Line 720: stdin read error
+7. Line 725: empty stdin
+8. Line 753: stream-json api failure
+9. Line 857: piped should_exit_error
+10. Line 1026: state init failure
+
+And `exit_with_state(2)`:
+- Line 690: (let me check)
+- Line 737: slash command in piped mode
+- Line 860: checkpoint triggered
+
+The task says to instrument `exit_with_state(1)` call sites, especially those after SessionStarted and before the first tool call. The most critical ones for "silent crashes" are:
+- State init failure (line 1026) - BEFORE SessionStarted
+- Any early exit in run_single_prompt or run_piped_mode after SessionStarted
+
+But the task specifically says:
+> Key error paths to instrument in `src/lib.rs`:
+> - State init failure (line 1025): already has `e` — stash it
+> - Setup wizard failure (line 1081-1082): stash what failed
+> - Any path where the process exits with code 1 after SessionStarted
+
+Let me also look at the setup wizard path:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'run_setup_wizard' in src/lib.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the setup wizard function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:913..953 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the context. Let me implement this.
+
+The plan:
+1. In `src/state.rs`:
+   - Add `LAST_DIAGNOSTIC_ERROR` thread_local
+   - Add `stash_diagnostic_error` and `take_diagnostic_error` functions
+   - Modify `mark_run_completed_with_error` to include `error_detail`
+   - Add tests
+
+2. In `src/lib.rs`:
+   - Before `exit_with_state(1)` at line 1026 (state init failure): stash the error
+   - Before line 1082 (setup wizard failure): stash diagnostic
+   - Before other error exit paths: stash diagnostic where meaningful
+
+Let me start implementing.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the changes.
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start implementing in state.rs. I need to:
+
+1. Add `LAST_DIAGNOSTIC_ERROR` thread_local near the existing `LAST_RUN_ERROR`
+2. Add `stash_diagnostic_error` and `take_diagnostic_error` functions near `store_run_error`
+3. Modify `mark_run_completed_with_error` to include `error_detail`
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+First, let me add the thread_local and functions in `src/state.rs`:
+    thread_local! {
+        static LAST_RUN_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+  +     static LAST_DIAGNOSTIC_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+    }
+  ✓ Auto-approved: edit: src/state.rs (3 → 4 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (3 → 4 lines)
+    thread_local! {
+        static LAST_RUN_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+  +     static LAST_DIAGNOSTIC_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+    }
+ ✓ (3m 0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add `stash_diagnostic_error` and `take_diagnostic_error` functions.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the `stash_diagnostic_error` and `take_diagnostic_error` functions after `store_run_error`:
+    /// event before process exit.
+    pub fn store_run_error(msg: &str) {
+        LAST_RUN_ERROR.with(|cell| {
+  +         cell.set(Some(msg.to_string()));
+  +     });
+  + }
+  + 
+  + /// Stash a diagnostic error for inclusion in the next `RunCompleted`
+  + /// error payload. Call this before `exit_with_state` so the actual
+  + /// failure reason (auth error, config parse failure, network timeout)
+  + /// is captured alongside the generic exit-code message.
+  + pub fn stash_diagnostic_error(msg: &str) {
+  +     LAST_DIAGNOSTIC_ERROR.with(|cell| {
+            cell.set(Some(msg.to_string()));
+        });
+  + }
+  + 
+  + /// Take and clear the last stashed diagnostic error.
+  + pub fn take_diagnostic_error() -> Option<String> {
+  +     LAST_DIAGNOSTIC_ERROR.with(|cell| cell.take())
+  ... (1 more lines)
+  ✓ Auto-approved: edit: src/state.rs (8 → 23 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (8 → 23 lines)
+    /// event before process exit.
+    pub fn store_run_error(msg: &str) {
+        LAST_RUN_ERROR.with(|cell| {
+  +         cell.set(Some(msg.to_string()));
+  +     });
+  + }
+  + 
+  + /// Stash a diagnostic error for inclusion in the next `RunCompleted`
+  + /// error payload. Call this before `exit_with_state` so the actual
+  + /// failure reason (auth error, config parse failure, network timeout)
+  + /// is captured alongside the generic exit-code message.
+  + pub fn stash_diagnostic_error(msg: &str) {
+  +     LAST_DIAGNOSTIC_ERROR.with(|cell| {
+            cell.set(Some(msg.to_string()));
+        });
+  + }
+  + 
+  + /// Take and clear the last stashed diagnostic error.
+  + pub fn take_diagnostic_error() -> Option<String> {
+  +     LAST_DIAGNOSTIC_ERROR.with(|cell| cell.take())
+  ... (1 more lines)
+ ✓ (26.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The functions aren't used yet — I need to use them in `mark_run_completed_with_error` first. Let me modify `mark_run_completed_with_error` to call `take_diagnostic_error()`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now modify `mark_run_completed_with_error` to include the stashed diagnostic error:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:355..385 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to modify `run_completed_payload` to accept an optional `error_detail` parameter, and then modify `mark_run_completed_with_error` to pass it through.
+────────────────────────────────────────────────────────────────────────────────
+
+
+    /// Like `mark_run_completed("error")` but includes an error message.
+    /// This also stores the error via `store_run_error` so it can be
+    /// retrieved later if needed.
+  + ///
+  + /// If a diagnostic error was stashed via `stash_diagnostic_error` before
+  + /// this call, it is included as `error_detail` in the payload alongside
+  + /// the explicit `msg` (typically the exit code).
+    pub fn mark_run_completed_with_error(msg: &str) {
+        store_run_error(msg);
+  +     let error_detail = take_diagnostic_error();
+        record(
+            EventType::RunCompleted,
+            Actor::Harness,
+  -         run_completed_payload("error", Some(msg)),
+  +         run_completed_payload("error", Some(msg), error_detail.as_deref()),
+        );
+    }
+    
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (24 → 38 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (24 → 38 lines)
+    /// Like `mark_run_completed("error")` but includes an error message.
+    /// This also stores the error via `store_run_error` so it can be
+    /// retrieved later if needed.
+  + ///
+  + /// If a diagnostic error was stashed via `stash_diagnostic_error` before
+  + /// this call, it is included as `error_detail` in the payload alongside
+  + /// the explicit `msg` (typically the exit code).
+    pub fn mark_run_completed_with_error(msg: &str) {
+        store_run_error(msg);
+  +     let error_detail = take_diagnostic_error();
+        record(
+            EventType::RunCompleted,
+            Actor::Harness,
+  -         run_completed_payload("error", Some(msg)),
+  +         run_completed_payload("error", Some(msg), error_detail.as_deref()),
+        );
+    }
+    
+  - pub fn run_completed_payload(status: &str, error: Option<&str>) -> Value {
+  + pub fn run_completed_payload(
+  ... (19 more lines)
+ ✓ (17.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to update all call sites to pass the new third parameter. The existing calls:
+1. `mark_run_completed` calls `run_completed_payload(status, None)` → need to add `None` for error_detail
+2. Tests call `run_completed_payload("completed", None)` → need to add `None`
+3. Tests call `run_completed_payload("error", Some(...))` → need to add `None`
+
+Let me find all call sites.
+────────────────────────────────────────────────────────────────────────────────
+
+I need to update the existing call sites. The `mark_run_completed` function and all tests that call `run_completed_payload` need the new parameter:
+  -         run_completed_payload(status, None),
+  +         run_completed_payload(status, None, None),
+  ✓ Auto-approved: edit: src/state.rs (1 → 1 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (1 → 1 lines)
+  -         run_completed_payload(status, None),
+  +         run_completed_payload(status, None, None),
+ ✓ (17.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are more call sites in the tests. Let me fix all of them.
+────────────────────────────────────────────────────────────────────────────────
+
+There are test call sites too. Let me fix them all:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6490..6520 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to update the test calls at lines 6490, 6498, and 6505.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         let payload = run_completed_payload("error", Some("something went wrong"));
+  +         let payload = run_completed_payload("error", Some("something went wrong"), None);
+  ✓ Auto-approved: edit: src/state.rs (1 → 1 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (1 → 1 lines)
+  -         let payload = run_completed_payload("error", Some("something went wrong"));
+  +         let payload = run_completed_payload("error", Some("something went wrong"), None);
+ ✓ (16.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Two more call sites to fix: line 3094 and 6498. Also 6505. Let me fix them all at once.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         let payload = run_completed_payload("completed", None);
+  +         let payload = run_completed_payload("completed", None, None);
+            assert_eq!(payload["status"], "completed");
+            assert!(payload.get("error").is_none());
+        }
+    
+        #[test]
+        fn run_completed_payload_omits_error_when_empty() {
+  -         let payload = run_completed_payload("error", Some(""));
+  +         let payload = run_completed_payload("error", Some(""), None);
+  ✓ Auto-approved: edit: src/state.rs (8 → 8 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (8 → 8 lines)
+  -         let payload = run_completed_payload("completed", None);
+  +         let payload = run_completed_payload("completed", None, None);
+            assert_eq!(payload["status"], "completed");
+            assert!(payload.get("error").is_none());
+        }
+    
+        #[test]
+        fn run_completed_payload_omits_error_when_empty() {
+  -         let payload = run_completed_payload("error", Some(""));
+  +         let payload = run_completed_payload("error", Some(""), None);
+ ✓ (16.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 3094 still needs fixing. Let me find it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3092..3097 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Ah, there are two tests named `run_completed_payload_omits_error_when_none` — the original one at line 3094 and the one I just fixed. Let me search for both:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ search 'run_completed_payload_records_terminal_status' in src/state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — the test at line 3093-3094 is actually `run_completed_payload_records_terminal_status` not `run_completed_payload_omits_error_when_none`. There are TWO tests: one at ~3094 (`run_completed_payload_records_terminal_status`) and another at ~6498 (`run_completed_payload_omits_error_when_none`). I fixed the one at 6498 but not the one at 3094. Let me fix it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         let payload = run_completed_payload("completed", None);
+  -  
+  -         assert_eq!(payload["status"], "completed");
+  +         let payload = run_completed_payload("completed", None, None);
+  ✓ Auto-approved: edit: src/state.rs (3 → 1 lines)
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (3 → 1 lines)
+  -         let payload = run_completed_payload("completed", None);
+  -  
+  -         assert_eq!(payload["status"], "completed");
+  +         let payload = run_completed_payload("completed", None, None);
+ ✗ (10ms)
+    │ old_text not found in src/state.rs.
+
+  ✗ Watch failed: `cargo clippy --all-targets -- -D warnings && cargo test`
+[1m[92m    Checking[0m yoyo-ds-harness v0.1.14 (/home/runner/work/yyds-harness/yyds-harness)
+[1m[91merror[0m[1m: function `stash_diagnostic_error` is never used[0m
+  [1m[94m--> [0msrc/state.rs:70:8
+   [1m[94m|[0m
+[1m[94m70[0m [1m[94m|[0m pub fn stash_diagnostic_error(msg: &str) {
+   [1m[94m|[0m        [1m[91m^^^^^^^^^^^^^^^^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: `-D dead-code` implied by `-D warnings`
+   [1m[94m= [0m[1mhelp[0m: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+[1m[91merror[E0061][0m[1m: this function takes 3 arguments but 2 arguments were supplied[0m
+    [1m[94m--> [0msrc/state.rs:3094:23
+     [1m[94m|[0m
+[1m[94m3094[0m [1m[94m|[0m         let payload = run_completed_payload("completed", None);
+     [1m[94m|[0m                       [1m[91m^^^^^^^^^^^^^^^^^^^^^[0m[1m[94m-------------------[0m [1m[94margument #3 of type `std::option::Option<&str>` is missing[0m
+     [1m[94m|[0m
+[1m[92mnote[0m: function defined here
+    [1m[94m--> [0msrc/state.rs:376:8
+     [1m[94m|[0m
+[1m[94m 376[0m [1m[94m|[0m pub fn run_completed_payload(
+     [1m[94m|[0m        [1m[92m^^^^^^^^^^^^^^^^^^^^^[0m
+[1m[94m...[0m
+[1m[94m 379[0m [1m[94m|[0m     error_detail: Option<&str>,
+     [1m[94m|[0m     [1m[94m--------------------------[0m
+[1m[96mhelp[0m: provide the argument
+     [1m[94m|[0m
+[1m[94m3094[0m [1m[94m| [0m        let payload = run_completed_payload("completed", None[92m, /* std::option::Option<&str> */[0m);
+     [1m[94m|[0m                                                              [92m+++++++++++++++++++++++++++++++++[0m
+
+[1m[91merror[0m: could not compile `yoyo-ds-harness` (lib) due to 1 previous error
+[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
+[1mFor more information about this error, try `rustc --explain E0061`.[0m
+[1m[91merror[0m: could not compile `yoyo-ds-har...
+(truncated)
+  → Auto-fixing (attempt 1/3)...
+
+── Thinking ────────────────────────────────────────────────────────────────
+The user is telling me that my changes caused lint failures. There are two issues:
+
+1. `stash_diagnostic_error` is never used — because I haven't instrumented `lib.rs` yet. I need to either add the `#[allow(dead_code)]` attribute or actually use it. Since we're in the middle of implementing, I'll add `#[allow(dead_code)]` for now, as it will be used once we instrument `lib.rs`.
+
+2. `run_completed_payload` at line 3094 still has 2 args instead of 3 — I missed one call site.
+
+Let me fix both issues.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/state.rs:3092..3097  ▶ read src/state.rs:68..73 ✓ (15ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the issue - the old text at line 3094 still has `"completed", None)` without the third arg. Let me also check if there are any other call sites I missed. Let me do a broader search.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'run_completed_payload\("' in src/state.rs ✗ (11ms)
+    │ Search error: grep: Unmatched ( or \(
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me escape the parentheses properly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'run_completed_payload' in src/state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's still one call site at line 3094 with `"completed", None)` — missing the third arg. Let me fix this and add `#[allow(dead_code)]` on `stash_diagnostic_error`.
+────────────────────────────────────────────────────────────────────────────────
+
+Two fixes needed: the missed call site at line 3094, and add `#[allow(dead_code)]` on `stash_diagnostic_error` (it'll be used once we instrument lib.rs).
+  -         let payload = run_completed_payload("completed", None);
+  -         
+  -         assert_eq!(payload["status"], "completed");
+  +         let payload = run_completed_payload("completed", None, None);
+  ✓ Auto-approved: edit: src/state.rs (3 → 1 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (3 → 1 lines)
+  -         let payload = run_completed_payload("completed", None);
+  -         
+  -         assert_eq!(payload["status"], "completed");
+  +         let payload = run_completed_payload("completed", None, None);
+ ✗ (12ms)
+    │ old_text not found in src/state.rs.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edit_file is being finicky about whitespace matching. Let me use bash to fix the remaining call site with sed, and also add the dead_code attribute.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -i '3094s/run_completed_pa… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `#[allow(dead_code)]` was placed between the doc comment and the function, which doesn't look great. Let me move it to be directly above the fn signature instead. Actually, looking at it again, `#[allow(dead_code)]` placed between the doc comment and the function signature is not standard Rust style. Let me fix that - either put it above the doc comment or remove the intervening doc comment line. Actually, the simplest fix: put it above the doc comment.
+
+Wait, actually the placement is between `/// is captured alongside the generic exit-code message.` and `pub fn stash_diagnostic_error`. That's not ideal. Let me just move the `#[allow(dead_code)]` to be above the doc comment for stash_diagnostic_error instead.
+
+Actually, in Rust, `#[allow(dead_code)]` can be placed on the function itself, not in between the doc comment and function. Let me do a better edit.
+
+Let me just put it directly above `pub fn stash_diagnostic_error`, replacing the doc comment line that I inserted it after.
+
+Let me clean this up.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:64..79 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The sed inserted `#[allow(dead_code)]` between two doc comment lines. Let me fix this properly by moving it before the doc comment.
+────────────────────────────────────────────────────────────────────────────────
+
+
+    /// Stash a diagnostic error for inclusion in the next `RunCompleted`
+    /// error payload. Call this before `exit_with_state` so the actual
+    /// failure reason (auth error, config parse failure, network timeout)
+  - #[allow(dead_code)]
+    /// is captured alongside the generic exit-code message.
+  + #[allow(dead_code)]
+    pub fn stash_diagnostic_error(msg: &str) {
+        LAST_DIAGNOSTIC_ERROR.with(|cell| {
+            cell.set(Some(msg.to_string()));
+  ✓ Auto-approved: edit: src/state.rs (10 → 10 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (10 → 10 lines)
+    /// Stash a diagnostic error for inclusion in the next `RunCompleted`
+    /// error payload. Call this before `exit_with_state` so the actual
+    /// failure reason (auth error, config parse failure, network timeout)
+  - #[allow(dead_code)]
+    /// is captured alongside the generic exit-code message.
+  + #[allow(dead_code)]
+    pub fn stash_diagnostic_error(msg: &str) {
+        LAST_DIAGNOSTIC_ERROR.with(|cell| {
+            cell.set(Some(msg.to_string()));
+ ✓ (2m 59s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run `cargo clippy --all-targets -- -D warnings && cargo test` to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo clippy --all-targets -- … ✓ (2m 26s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clippy passed and tests are running. Let me wait for the full test output, but it looks like it's running. The output is truncated. Let me check if all tests passed by running just `cargo test` again with a simpler output capture.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | tail -20 ✓ (1m 38s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 89 tests pass, 1 ignored, 0 failed. Clippy passes too. Now let me proceed to instrument lib.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+All checks pass. Now let's instrument `lib.rs` error paths.
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to instrument the key error paths in `lib.rs`. Let me look at all the `exit_with_state(1)` and `exit_with_state(2)` call sites and identify which ones are early-exit paths that could benefit from diagnostic error context.
+
+Let me re-read the key error paths:
+
+1. Line 458: `exit_with_state(1)` — image read error (in run_single_prompt)
+2. Line 478: `exit_with_state(1)` — prompt error return  
+3. Line 588: `exit_with_state(1)` — json output error
+4. Line 594: `exit_with_state(1)` — prompt error
+5. Line 642: `exit_with_state(1)` — json output error
+6. Line 690: `exit_with_state(2)` — checkpoint
+7. Line 720: `exit_with_state(1)` — stdin read error
+8. Line 725: `exit_with_state(1)` — empty stdin
+9. Line 737: `exit_with_state(2)` — slash command in piped mode
+10. Line 753: `exit_with_state(1)` — stream json api failure
+11. Line 857: `exit_with_state(1)` — piped mode error
+12. Line 860: `exit_with_state(2)` — checkpoint triggered
+13. Line 1026: `exit_with_state(1)` — state init failure
+
+The most critical early-exit paths are:
+- Line 1026: state init failure (already prints error to stderr)
+- Lines 720, 725: stdin errors in piped mode
+- Line 458: image read error
+
+Let me instrument these. For each, I'll call `state::stash_diagnostic_error()` before `exit_with_state()`.
+
+Actually, looking at this more carefully, the task says:
+- State init failure (line 1025): already has `e` — stash it
+- Setup wizard failure (line 1081-1082): stash what failed
+- Any path where the process exits with code 1 after SessionStarted
+
+The key paths are:
+1. Line 1026: state init failure — stash the error from `e`
+2. Lines 720, 725: piped mode stdin errors
+3. Line 458: image read error
+
+Let me also look at the setup wizard path. Line 1081-1082: `if !run_setup_wizard_if_needed(is_interactive, &mut agent_config) { return; }`. This returns (doesn't call exit_with_state), but it does exit implicitly through the RunCompletionGuard.
+
+Let me now instrument these key paths.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.5s (2 ✓)
+
+Now let me instrument the key error paths in `lib.rs`. Let me read each one carefully:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1020..1030  ▶ read src/lib.rs:715..725  ▶ read src/lib.rs:453..461 ✓ (28ms)
+ ✓ (23ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me instrument these error paths. I also need to remove `#[allow(dead_code)]` from `stash_diagnostic_error` once it's used.
+
+Let me make the three edits:
+
+1. Line 1026: state init failure — stash the error `e`
+2. Line 720: stdin read error — stash the error  
+3. Line 458: image read error — stash the error
+4. Line 725: empty stdin — stash a message
+5. Also line 594: prompt error — stash the error
+
+Let me also check the setup wizard path and other exit paths more carefully. Let me look at lines around 1081.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.6s (3 ✓)
+
+
+        ) {
+            eprintln!("{RED}error:{RESET} failed to initialize state recorder: {e}");
+  +         state::stash_diagnostic_error(&format!("state init: {e}"));
+            exit_with_state(1);
+        }
+  ✓ Auto-approved: edit: src/lib.rs (4 → 5 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (4 → 5 lines)
+        ) {
+            eprintln!("{RED}error:{RESET} failed to initialize state recorder: {e}");
+  +         state::stash_diagnostic_error(&format!("state init: {e}"));
+            exit_with_state(1);
+        }
+ ✓ (2m 54s)
+

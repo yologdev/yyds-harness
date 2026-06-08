@@ -1,0 +1,466 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this carefully. The task is to verify that the task implementation was correct. The changes made are listed as empty (no git diff), but build and tests pass. Let me check the actual state of the files to determine if the implementation matches what was asked for.
+
+Let me start by reviewing the task description and then checking what was actually implemented.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 --stat 2>/dev/…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5 ✓ (9ms)
+ ✓ (311ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there is a diff. The task description says "CHANGES MADE (git diff) === [empty]" which seems to be a placeholder. But git shows actual changes. Let me look at the diff for the relevant files (`src/state.rs` and `src/lib.rs`) to see what was actually implemented.
+
+The HEAD commit is "Expose task evidence gnomes in state summaries" which seems unrelated to the task. Let me check the actual changes.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- src/state.r… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the implementation against the task description.
+
+The task asked for:
+
+1. **In `src/state.rs`:**
+   - Add `thread_local!` static `LAST_DIAGNOSTIC_ERROR` - **DONE** (using `Cell<Option<String>>`, not `RefCell` but `Cell` is fine for `Option<String>`)
+   - Add `stash_diagnostic_error(msg: String)` - **DONE** (but takes `&str` instead of `String`, which is fine)
+   - Add `take_diagnostic_error() -> Option<String>` - **DONE**
+   - Modify `mark_run_completed_with_error` to call `take_diagnostic_error()` and append it as `error_detail` - **DONE**
+   - `run_completed_payload` function should include `error_detail` field - **DONE**
+
+2. **In `src/lib.rs`:**
+   - At `exit_with_state` call site, check if error is just "exit code N" and enrich it - **PARTIALLY DONE**
+   - The task says to stash diagnostic error at state init failure - **DONE** (line 1023)
+   - The task says to instrument setup wizard failure and any path where process exits with code 1 after SessionStarted - Let me check...
+
+Let me check more paths in `src/lib.rs` to see if other error paths are instrumented.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'exit_with_state\(1\)' in /home/runner/work/yyds-harness/yyds-harness/src/lib.rs  ▶ search 'stash_diagnostic_error' in /home/runner/work/yyds-harness/yyds-harness/src/lib.rs ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So only one `stash_diagnostic_error` call site was added — at the state init failure in line 1026. Let me check where `exit_with_state` is called in `lib.rs` to see all the exit paths.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'exit_with_state' in /home/runner/work/yyds-harness/yyds-harness/src/lib.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are many `exit_with_state` call sites. Let me check the implementation more carefully.
+
+The task says:
+- Key error paths to instrument:
+  - State init failure (line 1025): already has `e` — stash it → DONE
+  - Setup wizard failure (line 1081-1082): stash what failed → Let me check
+  - Any path where the process exits with code 1 after SessionStarted
+
+But looking at the diff, only ONE call to `stash_diagnostic_error` was added (at state init failure). 
+
+However, let me re-read the task description more carefully:
+
+"The key change: before any early return/exit in `run_cli()` that indicates failure, call `state::stash_diagnostic_error()` with a descriptive message about what went wrong"
+
+"Key error paths to instrument in src/lib.rs:
+- State init failure (line 1025): already has e — stash it
+- Setup wizard failure (line 1081-1082): stash what failed
+- Any path where the process exits with code 1 after SessionStarted"
+
+So the task asked for multiple instrumentation points. But only one was added. Let me check if the setup wizard failure was instrumented. Let me look at the actual code around line 1081-1082.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:1070..1100  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:960..980 ✓ (17ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture:
+
+1. The `exit_with_state` function in `src/lib.rs` at line 971-979 handles ALL exit paths. The function calls `mark_run_completed_with_error` which now captures the stashed diagnostic error via `take_diagnostic_error()`.
+
+2. The task's implementation plan says to add `stash_diagnostic_error` calls before each early exit. But there's only ONE such call added (at state init failure).
+
+3. However, looking at the architecture, the approach is different from what the task plan described. The task said to instrument each exit point individually. But the actual implementation adds a centralized mechanism:
+   - `stash_diagnostic_error` sets a thread-local
+   - `exit_with_state` → `mark_run_completed_with_error` → `take_diagnostic_error` automatically picks it up
+   - So any code path that calls `stash_diagnostic_error` before `exit_with_state(1)` will have its error captured
+
+4. The only call site added is at state init failure. The setup wizard failure and other paths were NOT instrumented.
+
+Now, is this a FAIL?
+
+The task says:
+- "Key error paths to instrument in src/lib.rs:
+   - State init failure (line 1025): already has e — stash it ✓
+   - Setup wizard failure (line 1081-1082): stash what failed ✗
+   - Any path where the process exits with code 1 after SessionStarted ✗"
+
+So only 1 out of 3 key error paths was instrumented. And there are 13 other `exit_with_state` call sites that could benefit from this but weren't instrumented.
+
+However, the task also says to be "strict but fair" and fail only for "The implementation doesn't match the task description."
+
+This is a partial implementation. The core mechanism is in place (the state.rs changes), but the instrumentation in lib.rs only covers one of the requested paths.
+
+Let me reconsider: the task says "Any path where the process exits with code 1 after SessionStarted." Given that `SessionStarted` is already recorded, the idea is to instrument paths after that point. Let me check which exit paths happen after SessionStarted.
+
+Let me look at the SessionStarted recording location and the flow.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.7s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'SessionStarted' in /home/runner/work/yyds-harness/yyds-harness/src/lib.rs  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:440..500 ✓ (5ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the SessionStarted recording and check the full flow.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:1100..1140 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the full flow after SessionStarted to see which exit paths are relevant. Let me also check whether the setup wizard failure path was instrumented.
+
+The setup wizard failure path is at line 1082:
+```rust
+if !run_setup_wizard_if_needed(is_interactive, &mut agent_config) {
+    return;  // This returns from run_cli(), which then...
+}
+```
+
+Let me check what happens after run_cli returns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:1140..1190 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the main function to understand the full flow, and also check the setup wizard failure path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:993..1023 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now think about the evaluation.
+
+The task asked for:
+1. Add `LAST_DIAGNOSTIC_ERROR` thread-local, `stash_diagnostic_error`, `take_diagnostic_error` in state.rs ✓
+2. Modify `mark_run_completed_with_error` to include `error_detail` ✓
+3. Modify `run_completed_payload` to include `error_detail` field ✓
+4. Instrument multiple error paths in lib.rs:
+   - State init failure ✓ (DONE)
+   - Setup wizard failure ✗ (NOT DONE)
+   - Any path where process exits with code 1 after SessionStarted ✗ (NOT DONE)
+
+So this is a partial implementation. The infrastructure (state.rs) is fully in place, but the instrumentation (lib.rs) only covers one of several requested paths.
+
+Now, the question is: is this a FAIL?
+
+The task says "Be strict but fair. FAIL only if: The implementation doesn't match the task description."
+
+The implementation partially matches the task description. The core mechanism is correct, but the instrumentation coverage is incomplete.
+
+However, let me reconsider. The task description says:
+
+"Key error paths to instrument in src/lib.rs:
+- State init failure (line 1025): already has e — stash it
+- Setup wizard failure (line 1081-1082): stash what failed
+- Any path where the process exits with code 1 after SessionStarted"
+
+"Design constraint: Do NOT change the behavior of exit_with_state for success cases (code 0). Only enrich error exits."
+
+The success criteria says:
+- "RunCompleted events for crashed sessions include an error_detail field with the actual error message (not just 'exit code 1')"
+- "The error capture mechanism works for both panic paths and clean-exit paths"
+
+The panic path hook might already be in place. Let me check if there's a panic hook.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:30..60 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the panic hook already records `FailureObserved` events. The task is about capturing diagnostic errors for clean-exit paths (where `exit_with_state(1)` is called) — not panics. Let me check where `store_run_error` is used vs where `stash_diagnostic_error` should be used.
+
+The panic hook records FailureObserved events, and `exit_with_state` records RunCompleted with either "completed" or "error" status. The `mark_run_completed_with_error` now captures both the explicit msg (exit code 1) and the stashed diagnostic error.
+
+Now, let me check: the setup wizard failure at line 1082 returns early. Let me check what happens after `run_cli()` returns in main.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn main' in /home/runner/work/yyds-harness/yyds-harness/src (*.rs) ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look specifically at `main.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'run_cli' in /home/runner/work/yyds-harness/yyds-harness/src (main.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, let me check entry point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/main.rs (30 lines) ✗ (10ms)
+    │ Cannot access /home/runner/work/yyds-harness/yyds-harness/src/main.rs: No such file or directory (os error 2)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ ls /home/runner/work/yyds-harness/yyds-harness/src (main*) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what the binary entry point is.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search '\\[\\[bin\\]\\]' in /home/runner/work/yyds-harness/yyds-harness (Cargo.toml) ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the Cargo.toml.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/Cargo.toml ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the entry point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/bin/yyds.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `run_cli()` returns and then the process exits. When `run_cli()` returns normally (including early returns like the setup wizard failure), no `exit_with_state` is called. Let me check what happens when `run_cli()` returns.
+
+The `run_cli` function doesn't have a return type... actually looking at the code:
+
+```rust
+pub async fn run_cli() {
+```
+
+So it returns `()`. When `run_cli()` returns, `main()` returns, and the process exits with code 0 (Rust's default for returning from `main()`).
+
+The early returns (like setup wizard failure at line 1082) would exit with code 0, not code 1. So those paths don't go through `exit_with_state(1)`.
+
+This is actually a subtlety — the setup wizard failure returns with code 0 (success), not code 1. The `exit_with_state` function is only called explicitly with non-zero codes in other places.
+
+OK, so the task asked for instrumentation of:
+1. State init failure → DONE (this goes through `exit_with_state(1)`)
+2. Setup wizard failure → This returns early to `main()` which exits with 0. The task says to stash diagnostic error here, but it doesn't go through `exit_with_state(1)`. The `stash_diagnostic_error` would still be useful if it's followed by an `exit_with_state(1)`, but since it returns from `run_cli()` and the process exits with 0, the stashed error would be picked up by `mark_run_completed_with_error`... wait, no. When `run_cli()` returns, `main()` returns, and the process exits. There's no `exit_with_state` call. The `mark_run_completed` is NOT called in this path!
+
+Actually wait, let me re-read the code. Is there something that runs on drop? Let me check `RunCompletionGuard`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'RunCompletionGuard' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:334..359 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so when `run_cli()` returns (including early returns), the `RunCompletionGuard` is dropped and calls `mark_run_completed("completed")`. This marks the run as completed successfully, even for setup wizard failure! So the error detail mechanism wouldn't apply here since it's marked as "completed", not "error".
+
+But the `exit_with_state` function calls `mark_run_completed_with_error` or `mark_run_completed` directly, and the `RunCompletionGuard` will also fire on drop. Let me check if there's a way to prevent the double-fire.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search '_run_completion' in /home/runner/work/yyds-harness/yyds-harness/src/lib.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting. So `_run_completion` is the RunCompletionGuard. If `exit_with_state(1)` is called before `run_cli()` returns, the guard will be dropped and call `mark_run_completed("completed")`, but then `std::process::exit(code)` will terminate the process immediately without running destructors for local variables...
+
+Wait, actually `std::process::exit` does NOT run destructors. From the Rust docs: "Terminates the current process with the specified exit code. This function will never return and will immediately terminate the current process. No destructors on the current stack or any other thread's stack will be run."
+
+So when `exit_with_state(1)` is called:
+1. It calls `mark_run_completed_with_error("exit code 1")` — records the RunCompleted event
+2. Then calls `std::process::exit(1)` — which terminates WITHOUT dropping `_run_completion`
+
+So the RunCompletionGuard only fires for normal return from `run_cli()`.
+
+Now, back to the evaluation:
+
+The implementation adds:
+1. `LAST_DIAGNOSTIC_ERROR` thread-local in state.rs ✓
+2. `stash_diagnostic_error` function ✓
+3. `take_diagnostic_error` function ✓
+4. `mark_run_completed_with_error` modified to include error_detail ✓
+5. `run_completed_payload` modified to include error_detail field ✓
+6. One `stash_diagnostic_error` call in lib.rs at state init failure ✓
+
+Missing:
+- Setup wizard failure instrumentation ✗
+- Other "exit with code 1 after SessionStarted" paths ✗
+
+But wait — the exit paths after SessionStarted (line 1111-1119) still go through `exit_with_state(1)`, which now calls `mark_run_completed_with_error`, which now picks up any stashed diagnostic error. The issue is that nobody is stashing errors before those exit paths.
+
+Let me look at the exit paths that happen after SessionStarted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:1120..1200 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Looking at the code, the post-SessionStarted paths either:
+- Call `run_single_prompt` which exits with `exit_with_state(1)` on error
+- Call `run_piped_mode` which also exits on error  
+- Call `repl::run_repl` which also exits on error
+- Return normally to main() → RunCompletionGuard fires → `mark_run_completed("completed")`
+
+The single prompt and REPL modes have their own error handling. Let me check what happens in `run_single_prompt` when it fails.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:425..470 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The image read failure at line 458 calls `exit_with_state(1)` — this would benefit from `stash_diagnostic_error` being called before it.
+
+At line 478, API failure also exits:
+```rust
+if response.last_api_error.is_some() {
+    ...
+    exit_with_state(1);
+}
+```
+
+Neither of these paths has a `stash_diagnostic_error` call.
+
+OK so the evaluation comes down to: The implementation is partial. The infrastructure in `state.rs` is correctly implemented, but the instrumentation in `lib.rs` only covers 1 of several requested paths.
+
+Now the question is: does this constitute a FAIL? Let me re-read the success criteria:
+
+"Success Criteria:
+- RunCompleted events for crashed sessions include an error_detail field with the actual error message (not just 'exit code 1')
+- The error capture mechanism works for both panic paths and clean-exit paths
+- cargo build && cargo test passes with no regressions"
+
+The first criterion: "RunCompleted events for crashed sessions include an error_detail field" — The mechanism is in place, but for most crash paths, `error_detail` will be missing because nobody called `stash_diagnostic_error`. For the state init failure, it WILL include error_detail.
+
+The second criterion: "The error capture mechanism works for both panic paths and clean-exit paths" — The panic path was already handled by the existing panic hook. The clean-exit path now has the mechanism but only one call site uses it.
+
+I think this is a FAIL because:
+1. The task explicitly says to instrument multiple error paths, but only one was done
+2. The success criteria says "RunCompleted events for crashed sessions include an error_detail field" — but for most crashed sessions, the error_detail will be missing
+3. The task says "Key error paths to instrument" and lists 3 — only 1 was done
+
+But wait, let me re-read the task description more carefully:
+
+"The key change: before any early return/exit in `run_cli()` that indicates failure, call `state::stash_diagnostic_error()` with a descriptive message about what went wrong"
+
+But actually, looking at the code, the `stash_diagnostic_error` mechanism is designed so that any code that calls `stash_diagnostic_error` before `exit_with_state(1)` will have its error captured. The `exit_with_state` function itself doesn't need changes — it already calls `mark_run_completed_with_error` which calls `take_diagnostic_error()`.
+
+But the task says to add `stash_diagnostic_error` calls at specific failure points. Only ONE was added.
+
+Let me check if there's an `exit_with_state(0)` call — maybe that's the setup wizard path?
+
+Looking at the code: the setup wizard failure at line 1082 just returns from `run_cli()`. It doesn't call `exit_with_state`. The `RunCompletionGuard` will fire and mark it as "completed" with status "completed", not "error". So even if `stash_diagnostic_error` was called before the return, it wouldn't be picked up.
+
+But actually... wait. Let me re-check. The task says "Setup wizard failure (line 1081-1082): stash what failed" — maybe the intent was to change the `return` to `exit_with_state(1)` and also stash the error? Or just stash and let the RunCompletionGuard handle it? But the RunCompletionGuard calls `mark_run_completed` which uses `run_completed_payload("completed", None, None)` — it doesn't check for stashed errors.
+
+So the setup wizard failure path would need more changes than just a `stash_diagnostic_error` call. Either:
+- Change `return` to `exit_with_state(1)` 
+- Or modify `mark_run_completed` to also check for stashed errors
+
+The task didn't specify changing the setup wizard's return to exit_with_state. So maybe the task's intention for that path was underspecified.
+
+Let me review once more. The task says:
+
+"2. In src/lib.rs:
+- At the exit_with_state call site (line 974), before calling mark_run_completed_with_error, check if the error message is just "exit code N" and if so, try to enrich it by calling state::stash_diagnostic_error() with any available context"
+
+Wait, this says to modify `exit_with_state` itself! The task says to check at line 974 (which is the `exit_with_state` function) if the message is just "exit code N" and enrich it. But the implementation didn't modify `exit_with_state` — it changed `mark_run_completed_with_error` in `state.rs`.
+
+Actually, re-reading: "At the `exit_with_state` call site (line 974), before calling `mark_run_completed_with_error`, check if the error message is just 'exit code N' and if so, try to enrich it by calling `state::stash_diagnostic_error()` with any available context"
+
+Hmm, this is oddly phrased. `exit_with_state` at line 971-979 already calls `mark_run_completed_with_error`. The task seems to suggest modifying `exit_with_state` to also call `stash_diagnostic_error` before `mark_run_completed_with_error` — but `stash_diagnostic_error` is about storing context for LATER retrieval, not enriching the current call.
+
+Wait, I think I'm overcomplicating this. Let me re-read what the implementation does:
+
+In `exit_with_state`:
+```rust
+fn exit_with_state(code: i32) -> ! {
+    let status = if code == 0 { "completed" } else { "error" };
+    if code != 0 {
+        state::mark_run_completed_with_error(&format!("exit code {}", code));
+    } else {
+        state::mark_run_completed(status);
+    }
+    std::process::exit(code);
+}
+```
+
+This is unchanged. And `mark_run_completed_with_error` now:
+```rust
+pub fn mark_run_completed_with_error(msg: &str) {
+    store_run_error(msg);
+    let error_detail = take_diagnostic_error();
+    record(
+        EventType::RunCompleted,
+        Actor::Harness,
+        run_completed_payload("error", Some(msg), error_detail.as_deref()),
+    );
+}
+```
+
+So the flow is:
+1. Some code calls `stash_diagnostic_error("some useful error")` before the exit
+2. `exit_with_state(1)` calls `mark_run_completed_with_error("exit code 1")`
+3. `mark_run_completed_with_error` calls `take_diagnostic_error()` which returns the stashed error
+4. `run_completed_payload("error", Some("exit code 1"), Some("some useful error"))` includes both
+
+This is a clean design. The only issue is insufficient call sites for `stash_diagnostic_error`.
+
+OK, I'm going to make a decision. I'll run the tests first to verify everything passes, then write the verdict.
+
+Actually, the build status already says "Build: PASS, Tests: PASS". But let me verify myself.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- --tes… ✓ (139ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The binary tests have 0 tests. Let me run the full test suite.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | tail -30
