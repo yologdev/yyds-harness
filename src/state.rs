@@ -112,6 +112,7 @@ pub enum EventType {
     MemoryPromoted,
     MemoryRejected,
     DecisionRecorded,
+    TaskLineageLinked,
     HumanApprovalRequested,
     HumanApprovalReceived,
     CommitCreated,
@@ -2868,6 +2869,7 @@ fn event_type_label(event_type: &EventType) -> &'static str {
         EventType::MemoryPromoted => "MemoryPromoted",
         EventType::MemoryRejected => "MemoryRejected",
         EventType::DecisionRecorded => "DecisionRecorded",
+        EventType::TaskLineageLinked => "TaskLineageLinked",
         EventType::HumanApprovalRequested => "HumanApprovalRequested",
         EventType::HumanApprovalReceived => "HumanApprovalReceived",
         EventType::CommitCreated => "CommitCreated",
@@ -2889,6 +2891,7 @@ fn parse_event_type_label(label: &str) -> Result<EventType, String> {
         "ToolCallCompleted" | "tool.finished" => EventType::ToolCallCompleted,
         "FailureObserved" | "failure.observed" => EventType::FailureObserved,
         "PatchProposed" | "patch.proposed" => EventType::PatchProposed,
+        "TaskLineageLinked" | "task.lineage_linked" => EventType::TaskLineageLinked,
         other => serde_json::from_value(Value::String(other.to_string()))
             .map_err(|e| format!("invalid event type '{other}': {e}"))?,
     };

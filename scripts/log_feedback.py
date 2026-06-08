@@ -41,6 +41,10 @@ TOOL_ERROR_RE = re.compile(r"(tool call|tool schema|malformed tool|invalid tool)
 STATE_ERROR_RE = re.compile(r"(state|audit-log|events\.jsonl|state\.sqlite).*(error|fail|missing)", re.IGNORECASE)
 COMMAND_TIMEOUT_RE = re.compile(r"Command timed out after (\d+)s|timed out after (\d+)s", re.IGNORECASE)
 EVALUATOR_TIMEOUT_RE = re.compile(r"Evaluator:\s*timed out", re.IGNORECASE)
+EVALUATOR_UNVERIFIED_RE = re.compile(
+    r"Evaluator:\s*(?:timed out|API error|no verdict produced|unrecognized verdict)",
+    re.IGNORECASE,
+)
 SEARCH_ERROR_RE = re.compile(r"\bSearch error:\s*", re.IGNORECASE)
 PROTECTED_FILE_RE = re.compile(r"modified protected files(?:\s*:|\s+[—-]\s+reverting)", re.IGNORECASE)
 TASK_STARTED_RE = re.compile(r"(?:→|->)\s*Task\s+\d+:", re.IGNORECASE)
@@ -262,8 +266,10 @@ def parse_log(log_text: str) -> dict[str, Any]:
     search_errors = 0
     protected_file_reverts = 0
     task_started = 0
-    task_verified = 0
+    task_mechanical_verified = 0
+    task_evaluator_verified = 0
     task_reverts = 0
+    current_task_eval_infra_failed = False
     cache_ratio: float | None = None
     cache_hit_tokens: int | None = None
     cache_miss_tokens: int | None = None
@@ -279,14 +285,19 @@ def parse_log(log_text: str) -> dict[str, Any]:
             command_timeouts += 1
         if EVALUATOR_TIMEOUT_RE.search(message):
             evaluator_timeouts += 1
+        if EVALUATOR_UNVERIFIED_RE.search(message):
+            current_task_eval_infra_failed = True
         if SEARCH_ERROR_RE.search(message):
             search_errors += 1
         if PROTECTED_FILE_RE.search(message):
             protected_file_reverts += 1
         if TASK_STARTED_RE.search(message):
             task_started += 1
+            current_task_eval_infra_failed = False
         if TASK_VERIFIED_RE.search(message):
-            task_verified += 1
+            task_mechanical_verified += 1
+            if not current_task_eval_infra_failed:
+                task_evaluator_verified += 1
         if TASK_REVERT_RE.search(message):
             task_reverts += 1
         cache_match = CACHE_PERCENT_RE.search(message)
@@ -331,7 +342,7 @@ def parse_log(log_text: str) -> dict[str, Any]:
             evidence.append(line[:240])
 
     ordered = sorted(fingerprints.values(), key=lambda item: (-int(item["count"]), item["fingerprint"]))
-    task_verification_rate = ratio(task_verified, task_started) if task_started else None
+    task_verification_rate = ratio(task_evaluator_verified, task_started) if task_started else None
     evolution_friction_count = (
         command_timeouts
         + evaluator_timeouts
@@ -354,7 +365,8 @@ def parse_log(log_text: str) -> dict[str, Any]:
         "search_error_count": search_errors,
         "protected_file_revert_count": protected_file_reverts,
         "task_started_count": task_started,
-        "task_verified_count": task_verified,
+        "task_verified_count": task_evaluator_verified,
+        "task_mechanical_verified_count": task_mechanical_verified,
         "task_revert_count": task_reverts,
         "task_verification_rate": task_verification_rate,
         "deepseek_cache_hit_ratio": cache_ratio,
@@ -999,11 +1011,11 @@ def run_self_tests() -> int:
         "\n".join(
             [
                 "evolve\tRun evolution session\t2026-06-07T04:26:23Z     │ Command timed out after 60s",
-                "evolve\tRun evolution session\t2026-06-07T05:05:46Z    Evaluator: timed out — skipping eval (build+test passed)",
                 "evolve\tRun evolution session\t2026-06-07T04:50:22Z ^G    BLOCKED: Task 2 modified protected files: .github/workflows/ci.yml",
                 "evolve\tRun evolution session\t2026-06-07T04:50:22Z     Reverting Task 2 (resetting to 041da74)",
                 "evolve\tRun evolution session\t2026-06-07T04:24:55Z     │ Search error: grep: ./target/debug/deps/yyds: binary file matches",
                 "evolve\tRun evolution session\t2026-06-07T04:24:22Z   → Task 1: First real eval run",
+                "evolve\tRun evolution session\t2026-06-07T05:05:46Z    Evaluator: timed out — skipping eval (build+test passed)",
                 "evolve\tRun evolution session\t2026-06-07T04:33:47Z     Task 1: verified OK",
                 "evolve\tRun evolution session\t2026-06-07T04:09:25Z - Cache: 84.38% hit ratio, 572,800 hit tokens, 106,004 miss tokens",
                 "evolve\tRun evolution session\t2026-06-07T04:50:23Z     Build-fix agent modified protected files — reverting",
@@ -1016,7 +1028,8 @@ def run_self_tests() -> int:
     check("protected file reverts counted", operational["protected_file_revert_count"] == 3, operational)
     check("task reverts counted", operational["task_revert_count"] == 1, operational)
     check("search errors counted", operational["search_error_count"] == 1, operational)
-    check("task verification rate derived", operational["task_verification_rate"] == 1.0, operational)
+    check("mechanical verification counted", operational["task_mechanical_verified_count"] == 1, operational)
+    check("evaluator timeout blocks verification rate", operational["task_verification_rate"] == 0.0, operational)
     check("cache hit tokens parsed", operational["deepseek_cache_hit_tokens"] == 572800, operational)
     check("cache miss tokens parsed", operational["deepseek_cache_miss_tokens"] == 106004, operational)
     check(
