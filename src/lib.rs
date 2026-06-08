@@ -1107,6 +1107,16 @@ pub async fn run_cli() {
         restore_session(&mut agent);
     }
 
+    // Record SessionStarted event for pre-tool-call crash visibility.
+    // Must fire before the first prompt/tool call so sessions that crash
+    // silently have at least one diagnostic breadcrumb.
+    state::record_session_started(
+        &agent_config.model,
+        std::env::var("DEEPSEEK_API_KEY").is_ok(),
+        crate::cli::effective_context_tokens(),
+        agent_config.skills.len(),
+    );
+
     // --prompt / -p: single-shot mode
     if let Some(prompt_text) = config.prompt_arg {
         // --print: suppress color on terminal stdout and disable color codes

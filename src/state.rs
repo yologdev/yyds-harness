@@ -91,6 +91,7 @@ impl Default for StateConfig {
 pub enum EventType {
     RunStarted,
     RunCompleted,
+    SessionStarted,
     ModelCallStarted,
     ModelCallCompleted,
     ToolCallStarted,
@@ -369,6 +370,26 @@ pub fn record_cache_metrics(model: &str, usage: &yoagent::Usage) {
         return;
     };
     record(EventType::CacheMetricsRecorded, Actor::Harness, payload);
+}
+
+/// Record a SessionStarted event at session initialization, before the first
+/// prompt or tool call. Provides diagnostic context for sessions that crash
+/// before producing any other events.
+pub fn record_session_started(
+    model: &str,
+    api_key_present: bool,
+    context_tokens: u64,
+    skills_count: usize,
+) {
+    let payload = json!({
+        "model": model,
+        "api_key_present": api_key_present,
+        "context_tokens": context_tokens,
+        "skills_count": skills_count,
+        "binary_version": crate::cli::VERSION,
+        "ts_ms": now_ms(),
+    });
+    record(EventType::SessionStarted, Actor::Harness, payload);
 }
 
 fn cache_metrics_payload(model: &str, usage: &yoagent::Usage) -> Option<Value> {
@@ -2878,6 +2899,7 @@ fn event_type_label(event_type: &EventType) -> &'static str {
         EventType::CacheMetricsRecorded => "CacheMetricsRecorded",
         EventType::JsonOutputFailure => "JsonOutputFailure",
         EventType::ToolSchemaFailure => "ToolSchemaFailure",
+        EventType::SessionStarted => "SessionStarted",
     }
 }
 

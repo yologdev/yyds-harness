@@ -5,7 +5,12 @@
 use crate::commands_state::default_events_path;
 use crate::commands_state::default_store_path;
 use crate::commands_state::flag_value;
+use crate::commands_state::infer_graph_node_kind;
 use crate::format::*;
+use rusqlite::Connection;
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::commands_state::build_graph_artifacts_payload;
 use crate::commands_state::build_graph_artifacts_report;
@@ -27,8 +32,6 @@ use crate::commands_state::build_graph_failures_payload;
 use crate::commands_state::build_graph_failures_report;
 use crate::commands_state::build_graph_files_payload;
 use crate::commands_state::build_graph_files_report;
-use crate::commands_state::build_graph_hotspots_payload;
-use crate::commands_state::build_graph_hotspots_report;
 use crate::commands_state::build_graph_hypotheses_payload;
 use crate::commands_state::build_graph_hypotheses_report;
 use crate::commands_state::build_graph_impact_payload;
@@ -1165,4 +1168,139 @@ fn handle_graph_hotspots(limit: usize, json_output: bool) {
         Ok(report) => println!("{report}"),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct GraphHotspot {
+    id: String,
+    kind: String,
+    incoming: usize,
+    outgoing: usize,
+    relation_counts: BTreeMap<String, usize>,
+}
+
+impl GraphHotspot {
+    fn degree(&self) -> usize {
+        self.incoming + self.outgoing
+    }
+}
+
+pub(crate) fn build_graph_hotspots_report(
+    sqlite_path: &Path,
+    limit: usize,
+) -> Result<String, String> {
+    let limit = limit.clamp(1, 50);
+    let hotspots = query_graph_hotspots(sqlite_path, limit)?;
+    if hotspots.is_empty() {
+        return Err("no graph relations found".to_string());
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!("State graph hotspots limit={limit}\n"));
+    for hotspot in hotspots {
+        out.push_str(&format!(
+            "  {:<32} kind={:<10} degree={} in={} out={} relations={}\n",
+            hotspot.id,
+            hotspot.kind,
+            hotspot.degree(),
+            hotspot.incoming,
+            hotspot.outgoing,
+            crate::commands_state::format_top_relation_counts(&hotspot.relation_counts, 4)
+        ));
+    }
+    Ok(out.trim_end().to_string())
+}
+
+pub(crate) fn build_graph_hotspots_payload(
+    sqlite_path: &Path,
+    limit: usize,
+) -> Result<Value, String> {
+    let limit = limit.clamp(1, 50);
+    let hotspots = query_graph_hotspots(sqlite_path, limit)?;
+    if hotspots.is_empty() {
+        return Err("no graph relations found".to_string());
+    }
+
+    Ok(serde_json::json!({
+        "diagnostic": "state_graph_hotspots",
+        "limit": limit,
+        "hotspot_count": hotspots.len(),
+        "hotspots": hotspots
+            .iter()
+            .map(|hotspot| serde_json::json!({
+                "id": &hotspot.id,
+                "kind": &hotspot.kind,
+                "degree": hotspot.degree(),
+                "incoming": hotspot.incoming,
+                "outgoing": hotspot.outgoing,
+                "relations": &hotspot.relation_counts,
+            }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+fn query_graph_hotspots(sqlite_path: &Path, limit: usize) -> Result<Vec<GraphHotspot>, String> {
+    let conn = Connection::open(sqlite_path)
+        .map_err(|e| format!("open sqlite projection '{}': {e}", sqlite_path.display()))?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT src_id, relation, dst_id, dst_kind
+            FROM state_relations
+            ORDER BY src_id, relation, dst_id
+            LIMIT 10000
+            "#,
+        )
+        .map_err(|e| format!("prepare state graph hotspot query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(crate::state::StateRelation {
+                src_id: row.get(0)?,
+                relation: row.get(1)?,
+                dst_id: row.get(2)?,
+                dst_kind: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("query state graph hotspots: {e}"))?;
+
+    let mut hotspots = BTreeMap::<String, GraphHotspot>::new();
+    for row in rows {
+        let relation = row.map_err(|e| format!("read state graph hotspot row: {e}"))?;
+        let src = hotspots
+            .entry(relation.src_id.clone())
+            .or_insert_with(|| GraphHotspot {
+                id: relation.src_id.clone(),
+                kind: infer_graph_node_kind(&relation.src_id),
+                ..GraphHotspot::default()
+            });
+        src.outgoing += 1;
+        *src.relation_counts
+            .entry(relation.relation.clone())
+            .or_default() += 1;
+
+        let dst = hotspots
+            .entry(relation.dst_id.clone())
+            .or_insert_with(|| GraphHotspot {
+                id: relation.dst_id.clone(),
+                kind: relation.dst_kind.clone(),
+                ..GraphHotspot::default()
+            });
+        dst.incoming += 1;
+        if dst.kind == "unknown" && relation.dst_kind != "unknown" {
+            dst.kind = relation.dst_kind.clone();
+        }
+        *dst.relation_counts
+            .entry(relation.relation.clone())
+            .or_default() += 1;
+    }
+
+    let mut hotspots = hotspots.into_values().collect::<Vec<_>>();
+    hotspots.sort_by(|a, b| {
+        b.degree()
+            .cmp(&a.degree())
+            .then_with(|| b.incoming.cmp(&a.incoming))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    hotspots.truncate(limit.clamp(1, 50));
+    Ok(hotspots)
 }
