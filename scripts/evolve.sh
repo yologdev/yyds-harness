@@ -133,6 +133,7 @@ SESSION_STAGING="${RUNNER_TEMP:-/tmp}/yoyo-session-staging-${STATE_SESSION_ID}-$
 STATE_EVENTS=".yoyo/state/events.jsonl"
 SESSION_STATE_EVENTS="$SESSION_STAGING/state/events.jsonl"
 STATE_REPLAY_MANIFEST="$SESSION_STAGING/state_replay.json"
+STATE_APPEND_LOG="$SESSION_STAGING/state/append_state_event.log"
 STATE_BASE_LINES=0
 rm -rf "$SESSION_STAGING"
 mkdir -p "$SESSION_STAGING/transcripts" "$SESSION_STAGING/state"
@@ -147,23 +148,44 @@ SESSION_TASKS_ATTEMPTED=0
 SESSION_TASKS_SUCCEEDED=0
 SESSION_REVERTED="false"
 
+append_state_event_checked() {
+    local events_path="$1"
+    local stream_name="$2"
+    local event_type="$3"
+    local payload_json="${4:-{}}"
+    if python3 scripts/append_state_event.py \
+        --events "$events_path" \
+        --event-type "$event_type" \
+        --run-id "$STATE_RUN_ID" \
+        --session-id "$STATE_SESSION_ID" \
+        --trace-id "$STATE_TRACE_ID" \
+        --payload-json "$payload_json" 2>>"$STATE_APPEND_LOG"; then
+        return 0
+    fi
+    echo "append_state_event.py failed for $stream_name $event_type; trying inline fallback" >>"$STATE_APPEND_LOG"
+    if python3 -c 'import hashlib,json,os,pathlib,sys,time
+path,event_type,run_id,session_id,trace_id,raw=sys.argv[1:7]
+payload=json.loads(raw or "{}")
+now_ms=int(time.time()*1000)
+seed=json.dumps({"actor":"harness","event_type":event_type,"payload":payload,"pid":os.getpid(),"run_id":run_id,"session_id":session_id,"time":now_ms,"trace_id":trace_id},sort_keys=True,separators=(",",":"))
+event={"event_id":"evt-harness-"+hashlib.sha1(seed.encode()).hexdigest()[:16],"event_type":event_type,"schema_version":1,"timestamp_ms":now_ms,"actor":"harness","run_id":run_id or None,"session_id":session_id or None,"trace_id":trace_id,"parent_event_ids":[],"payload":payload}
+events_path=pathlib.Path(path)
+events_path.parent.mkdir(parents=True,exist_ok=True)
+with events_path.open("a",encoding="utf-8") as handle:
+    handle.write(json.dumps(event,sort_keys=True,separators=(",",":"))+"\n")' \
+        "$events_path" "$event_type" "$STATE_RUN_ID" "$STATE_SESSION_ID" "$STATE_TRACE_ID" "$payload_json" 2>>"$STATE_APPEND_LOG"; then
+        return 0
+    fi
+    echo "inline fallback failed for $stream_name $event_type" >>"$STATE_APPEND_LOG"
+    echo "  WARNING: failed to record $stream_name state event $event_type" >&2
+    return 1
+}
+
 record_state_event() {
     local event_type="$1"
     local payload_json="${2:-{}}"
-    python3 scripts/append_state_event.py \
-        --events "$STATE_EVENTS" \
-        --event-type "$event_type" \
-        --run-id "$STATE_RUN_ID" \
-        --session-id "$STATE_SESSION_ID" \
-        --trace-id "$STATE_TRACE_ID" \
-        --payload-json "$payload_json" 2>/dev/null || true
-    python3 scripts/append_state_event.py \
-        --events "$SESSION_STATE_EVENTS" \
-        --event-type "$event_type" \
-        --run-id "$STATE_RUN_ID" \
-        --session-id "$STATE_SESSION_ID" \
-        --trace-id "$STATE_TRACE_ID" \
-        --payload-json "$payload_json" 2>/dev/null || true
+    append_state_event_checked "$STATE_EVENTS" "live" "$event_type" "$payload_json" || true
+    append_state_event_checked "$SESSION_STATE_EVENTS" "session" "$event_type" "$payload_json" || true
 }
 
 task_lineage_payload() {

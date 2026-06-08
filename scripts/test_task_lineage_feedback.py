@@ -40,8 +40,12 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('SESSION_STAGING="${RUNNER_TEMP:-/tmp}/yoyo-session-staging-${STATE_SESSION_ID}-$$"', evolve)
         self.assertNotIn('SESSION_STAGING=".yoyo/session_staging"', evolve)
         self.assertIn('SESSION_STATE_EVENTS="$SESSION_STAGING/state/events.jsonl"', evolve)
+        self.assertIn('STATE_APPEND_LOG="$SESSION_STAGING/state/append_state_event.log"', evolve)
+        self.assertIn("append_state_event_checked()", evolve)
+        self.assertIn("inline fallback failed", evolve)
+        self.assertIn('append_state_event_checked "$STATE_EVENTS" "live"', evolve)
+        self.assertIn('append_state_event_checked "$SESSION_STATE_EVENTS" "session"', evolve)
         self.assertIn('--events "$SESSION_STATE_EVENTS"', evolve)
-        self.assertIn('--events "$STATE_EVENTS"', evolve)
         self.assertIn('--link-commits \\\n    --events "$SESSION_STATE_EVENTS"', evolve)
         self.assertNotIn('tail -n +"$((STATE_BASE_LINES + 1))"', evolve)
 
