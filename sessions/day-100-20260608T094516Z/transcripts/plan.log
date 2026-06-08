@@ -1,0 +1,617 @@
+[33m  embedding index is missing — embedding-based context ranking is unavailable (requires an external embedding model)[0m
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the current state and plan the session. Let me start by understanding what's needed:
+
+1. Check the assessment for key findings
+2. Look at ISSUES_TODAY.md for any trusted owner issues
+3. Review state/evidence for DeepSeek harness priorities
+4. Create task files
+
+Let me gather the information I need.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cat /home/runner/work/yyds-harness/yyds-harness/ISSUES_TODAY.md 2>/dev/null || e…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && mkdir -p session_plan && rm -f…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls session_plan/ 2>/dev/null &… ✓ (35ms)
+ ✓ (34ms)
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - no trusted owner issues today, and the session_plan directory is clean. Let me now analyze the assessment and trajectory evidence to determine the 3 task slots.
+
+Key evidence from the assessment and trajectory:
+
+**From Assessment:**
+1. **State recording gap (critical):** When a run crashes before any tool call, state records shape (start/error) but no content — failures are unlearnable. A `RunError` event with actual error message would close this gap.
+2. **Eval pipeline never run against real patches:** 368 fixtures, zero real evaluations.
+3. **`commands_state.rs` is 23,736 lines:** 15% of codebase in one file.
+4. **Context embedding index still missing:** semantic index works, embedding index absent.
+5. **No non-interactive mode for most features.**
+6. **No open issues** — several surfaced items should be tracked.
+
+**From Trajectory:**
+- 10 sessions, 0 reverts — strong reliability
+- 91% cache hit ratio — excellent
+- 8 rapid-error runs (Day 100 red-light sessions) — state recording gap confirmed
+- 3 recurring CI errors about `test_watch_result_failed_with_error` and `public_readme_metadata_uses_yoyo_ds_harness_identity` — but these are `ok` and assertion failures about README content (star-history URL). Let me check if those CI errors are actually current.
+
+Wait, looking more carefully:
+- `[3×] test watch::tests::test_watch_result_failed_with_error ... ok` — this is shown as "recurring CI error" but says "ok". That seems like the trajectory extractor might be miscategorizing.
+- `[3×] thread 'release::tests::public_readme_metadata_uses_yoyo_ds_harness_identity' (1` — this seems truncated but might indicate a real failure.
+- `[3×] ^[[1m^[[91merror^[[0m: test failed, to rerun pass `--lib`` — ANSI codes in error output.
+- `[2×] assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"` — README assertion failure.
+
+Wait, these might be historical CI errors from the window, not current. Let me verify the current state.
+
+Actually, the assessment says build is green. Let me verify.
+
+Let me also check the .yoyo/goal.md and .yoyo/state for any evidence.
+
+Let me figure out the 3 task slots based on priority:
+
+**Priority 0: CI failures.** Let me verify.
+
+**Priority 1: State-driven DeepSeek harness work.** The state recording gap (RunError event for early crashes) is the clearest piece of evidence. This is a harness improvement that directly addresses the 8 rapid-error runs that are unlearnable.
+
+**Priority 2: Eval/replay/promotion quality.**
+
+**Priority 3: Self-discovered bugs.**
+
+Let me check current CI first, then the state evidence, then plan.
+
+Actually, let me also think about the task sizing rules. 3 files max per task, completable in 20 min.
+
+For the state recording gap: adding a `RunError` event with error details when a run crashes before any tool call. This would touch:
+- `src/state.rs` (the state recording engine)
+- Possibly `scripts/evolve.sh` (if tracking is there)
+- `scripts/append_state_event.py` (if new event type)
+
+That's 3 files max. Good.
+
+Let me verify CI status and read relevant state files.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 22.8s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib 2>&1 | tail -…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --test integration …  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds 2>&1 ✓ (428ms)
+ ✓ (16.7s)
+ ✓ (47.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Build is green. No CI failures to fix. Good.
+
+Now let me look at the state evidence more carefully, especially the 8 rapid-error runs and what state recording looks like.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 54.1s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state why …  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cat .yoyo/goal.md 2>/dev/null … ✓ (11ms)
+ ✓ (55ms)
+ ✓ (345ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The state tail confirms the 8 rapid-error runs. Each one is `RunStarted` → `RunCompleted status=error` with no intermediate tool calls or error messages. These are truly unlearnable failures.
+
+Now let me look at the state recording code to understand what needs to change to capture error messages for early crashes.
+
+Let me also think about the 3 task slots:
+
+1. **State recording gap - add RunError event**: This is the clearest piece of state evidence. When a run crashes before any tool call, we get `RunStarted` → `RunCompleted status=error` with no content. We need to capture the actual error message/diagnostic so these failures become learnable. This likely touches `src/state.rs` and `scripts/append_state_event.py`.
+
+2. **File issues for surfaced gaps**: The assessment surfaced several items that should be tracked as issues: missing eval runs, 23K-line file, embedding index, state recording gap. This would be a quick task to create agent-self issues.
+
+3. **`commands_state.rs` decomposition - first module**: Start breaking down the 23,736-line file. Extract one module — perhaps the graph subcommand handlers which already have their own file at `commands_state_graph.rs`.
+
+Wait, let me think more carefully about what the state-driven evidence is telling me:
+
+The assessment says 3 slots, with at least 2 from state/trajectory/eval evidence:
+- Slot 1: State recording gap (state evidence)
+- Slot 2: File issues for surfaced gaps (ensuring problems are tracked)
+- Slot 3: Either start `commands_state.rs` decomposition or add OpenSearch-based semantic search
+
+But actually, let me re-read the priorities:
+
+0. Fix CI failures — none
+1. yoagent-state DeepSeek feedback — state recording gap, 8 rapid errors
+2. DeepSeek harness eval/replay/promotion quality — eval pipeline never run
+3. Self-discovered bugs — state recording gap overlaps
+4. Trusted owner issues — none
+5. Agent-self issues — file issues for gaps
+6. Capability gaps — commands_state.rs decomposition
+7. Release check
+
+Given the state evidence and the clear gap around run-error recording, let me plan:
+
+**Task 1: Record RunError events for early-run crashes**
+Files: src/state.rs, scripts/append_state_event.py (maybe scripts/evolve.sh)
+The 8 rapid-error runs from Day 100 show RunStarted → RunCompleted status=error with zero intermediate events. The error message is never captured, making these failures unlearnable. Add a RunError event that carries the actual error content (exit code, stderr, exception type) so future sessions can diagnose crash-at-start failures from state alone.
+
+**Task 2: Create agent-self issues for surfaced assessment gaps**
+Files: none (just gh CLI)
+File issues for: (a) eval pipeline has never been run against real patches, (b) commands_state.rs at 23,736 lines needs decomposition, (c) embedding index is missing, (d) state recording gap for early-run crashes (if not fully resolved by Task 1).
+
+**Task 3: Extract graph command handlers from commands_state.rs**
+Files: src/commands_state.rs, src/commands_state_graph.rs
+The graph subcommand handlers are already in their own file (commands_state_graph.rs at 1,168 lines). But the graph query functions (build_graph_*_report, build_graph_*_payload) live in commands_state.rs and call into the graph module. This suggests partial extraction. Either: (a) move the build_graph_* functions to commands_state_graph.rs, or (b) extract a different module like the memory synthesis functions. Let me check what's actually in commands_state.rs.
+
+Actually, let me check if there's already a commands_state_graph.rs first. And check what's in commands_state.rs beyond graph functions.
+
+Let me read the relevant files to understand the structure better for planning.
+
+Actually wait, the assessment already told me a lot. Let me focus on what's actually actionable:
+
+1. State recording gap: This is the clearest, most evidence-backed task. The 8 rapid-error runs are directly visible in `state tail` output, and the journal entry confirms they're unlearnable. 
+
+Let me think about what exactly needs to change in the state system to capture error details:
+
+Currently: `RunStarted` → `RunCompleted status=error` (no error details)
+Desired: `RunStarted` → `RunError {message, exit_code, ...}` → `RunCompleted status=error`
+
+Or alternatively, just include the error in `RunCompleted`.
+
+Let me read state.rs to understand the event types.
+
+Actually, for planning I don't need to read source files. The assessment is comprehensive enough. Let me figure out the tasks and write the plan.
+
+Let me think about task sizing for each:
+
+**Task 1: Add error detail capture to RunCompleted/state events**
+- This touches `src/state.rs` (add error field or new event type) and potentially `scripts/evolve.sh` or `scripts/append_state_event.py` for CLI recording.
+- Need to check how RunCompleted is emitted and where the error message is available.
+- This is a focused change: add an `error` field to the RunCompleted event or add a separate RunError event.
+- Verifiable by: `cargo build && cargo test`, then checking state output shows error messages.
+
+**Task 2: File agent-self issues for surfaced gaps**
+- Simple task: use `gh issue create` to file 3-4 issues.
+- No source changes, just issue tracking.
+
+**Task 3: Start commands_state.rs decomposition**
+- Need to extract one clear module. Looking at the repo map, I see functions like `handle_state_subcommand`, `build_graph_*_report`, `build_graph_*_payload`, `build_state_memory_synthesis`, `record_state_memory_*`. The graph functions are already partially externalized (`commands_state_graph.rs` at 1,168 lines).
+- The memory synthesis functions (`build_state_memory_synthesis`, `record_state_memory_candidates`, `build_state_memory_records`, `record_state_memory_decision`) seem like a clean, self-contained module to extract — maybe 200-400 lines.
+- This would be `src/commands_state_memory.rs` or similar.
+
+Actually, let me re-think. The repo map shows `commands_state_graph.rs` exists at 1,168 lines. The build_graph_* functions are all in `commands_state.rs` at 23,736 lines. So the partial extraction was done — graph handlers moved out but graph query/report functions stayed. 
+
+For a single-session task, extracting the memory synthesis functions seems clean:
+- `build_state_memory_synthesis` 
+- `record_state_memory_candidates`
+- `build_state_memory_records`
+- `record_state_memory_decision`
+- `StateMemoryRecord` struct
+
+This is a self-contained group. Move them to `src/commands_state_memory.rs` (new file), re-export from `commands_state.rs`.
+
+Verifiable by: `cargo build && cargo test`.
+
+OK let me also think about whether task 2 (filing issues) is really worth a full task slot vs just doing it inline. The assessment says "This is a gap — the assessment has surfaced several items that should be tracked as issues." Filing issues is quick but important for continuity.
+
+Let me consider: should I swap task 2 for something more impactful? The eval pipeline never being run is a big deal — 368 fixtures, zero evaluations. But running the eval pipeline might be too big for one 20-min task. Maybe a smaller sub-task: "Audit eval pipeline: run a smoke evaluation against a known change."
+
+Actually, let me reconsider the 3 slots:
+
+1. **Add RunError event for early-crash state recording** — state evidence, clear gap, focused change
+2. **Audit and smoke-test eval fixture pipeline** — the 368 fixtures have never been run against a real patch. Run one real evaluation to verify the pipeline works end-to-end and fix any breakage found.
+3. **File agent-self issues + begin commands_state.rs decomposition** — or pick one of these.
+
+Hmm, but the eval task might be larger than it seems. Let me think about what "audit and smoke-test" means:
+- Run `cargo test` on the eval fixtures to verify they pass
+- Pick one fixture and run a real evaluation
+- Report findings
+
+Actually, let me check: are eval fixtures tests? If so, they run with `cargo test`. Let me verify.
+
+The assessment says `cargo test` is all green with "89 integration tests pass, all 68 release tests pass". Are eval fixtures a separate thing?
+
+From the repo map: `src/eval_fixtures.rs` (1,456 lines) with `BenchmarkTask`, `FixtureSuite`, `FixtureTaskResult`, etc. And `src/commands_eval.rs` (6,517 lines) with the eval CLI.
+
+Let me reconsider my task plan. I think the clearest plan is:
+
+**Task 1: Add RunError event for early-crash state recording** 
+This is the most evidence-backed task from state feedback.
+
+**Task 2: Smoke-test the eval fixture pipeline against a real patch**
+The eval pipeline (368 fixtures) has never been run. A smoke test validates it works end-to-end.
+
+**Task 3: Create agent-self issues for surfaced gaps + start commands_state.rs memory module extraction**
+Actually, filing issues is a 5-minute task, not a 20-minute one. Let me combine it with the decomposition.
+
+Or maybe Task 3 is just: Extract memory synthesis module from commands_state.rs. And I file the issues as a side note in the issue_responses.md.
+
+Actually, I think the plan should be:
+
+1. Task 1: Record RunError details for crash-at-start runs (state.rs change)
+2. Task 2: File agent-self issues for assessment gaps (tracking)
+3. Task 3: Extract StateMemory module from commands_state.rs (decomposition step 1)
+
+Wait, Task 2 is too small. Let me reconsider.
+
+What about: instead of Task 2 being "file issues", make it "add a RunError event type to the state protocol and update the CLI to display error details for failed runs"?
+
+Actually, let me combine: Task 1 covers the state recording change, and Task 2 could be about making the state CLI (`yyds state why last-failure`) actually display the error message from the new event type.
+
+Let me look at what `state why last-failure` currently outputs to understand what needs to change.
+
+From the state tail output, the rapid-error runs show `RunCompleted status=error` with no error payload. The fix needs to:
+1. Capture the error when a run fails early
+2. Store it in the event
+3. Display it in the CLI
+
+Let me split this:
+- Task 1: Add error detail to RunCompleted event emission (state.rs + evolve.sh/append_state_event.py)
+- Task 2: Display error details in `state why` CLI (commands_state.rs section)
+- Task 3: Extract memory synthesis module (commands_state.rs → commands_state_memory.rs)
+
+This is 3 focused tasks, each touching ≤3 files.
+
+Actually, wait. Let me re-read the task sizing rules: "Each task MUST touch at most 3 source files." The state recording change might only need 1-2 files. Let me check:
+
+- `src/state.rs` — the state recording engine. This is where events are emitted.
+- `scripts/evolve.sh` — if the run lifecycle is managed here.
+
+Let me think about where RunCompleted events are actually emitted. In the evolver, the `run_agent_with_fallback` function in evolve.sh probably captures exit codes. The state events might be emitted by the binary itself (via `state record` commands) or by the shell script.
+
+Let me look at how RunStarted/RunCompleted events are created.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1m 3s (3 ✓)
+
+Let me understand the state recording architecture before writing the plan.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "RunCompleted\|RunStar…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "RunCompleted\|RunStar…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "RunCompleted\|RunStar… ✓ (35ms)
+ ✓ (34ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the flow:
+
+1. `scripts/evolve.sh` calls `record_state_event "RunStarted"` and `record_state_event "RunCompleted"` 
+2. `record_state_event` calls `scripts/append_state_event.py` to write to the JSONL
+3. `src/state.rs` has its own `RunStarted`/`RunCompleted` event types (lines 43-44) that are used in-memory
+
+The rapid-error runs come from `scripts/evolve.sh` line 1082 where it records `RunStarted` before a task, and line 1601/1604 where it records `RunCompleted` after.
+
+The key insight: when a run crashes early (before any tool calls), the `RunCompleted` event should carry the error message. Currently it just says `status=error` with no details.
+
+Let me look at how `record_state_event` works and how the error exit code is captured.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.2s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1070..1130  ▶ read scripts/evolve.sh:1580..1640  ▶ read scripts/evolve.sh:280..320 ✓ (30ms)
+ ✓ (24ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the flow:
+
+1. `scripts/evolve.sh` records `RunStarted` before starting a task (line 1082)
+2. After the task completes/fails, it records `RunCompleted` with either:
+   - `$TASK_LINEAGE_PAYLOAD` (for failed/reverted tasks, line 1601)
+   - `task_lineage_payload "completed" "$PRE_TASK_SHA"` (for successful tasks, line 1604)
+
+The `task_lineage_payload` function generates the JSON payload. Let me look at it to see what it currently includes.
+
+The rapid-error runs happen when the binary crashes before it can call any tools — this is visible when `RunStarted` is immediately followed by `RunCompleted status=error` with ~50ms in between. The crash info (exit code, error message) seems to be lost because `record_state_event` doesn't capture it.
+
+Let me check the `record_state_event` function and `task_lineage_payload`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 7.9s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "record_state_event\|t…  ▶ read scripts/evolve.sh:224..254 ✓ (10ms)
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the `record_state_event` and `task_lineage_payload` functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:197..227 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. Let me check `scripts/task_lineage.py` to understand the payload format.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls scripts/task_lineage.py 2>/…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "append_state_event_ch… ✓ (10ms)
+ ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the full picture:
+
+1. `scripts/evolve.sh` runs the agent, records `RunStarted` and `RunCompleted` events
+2. When a run fails (rapid-error), the exit code is in `$TASK_EXIT` (from `run_agent_with_fallback`) but it's never captured in the `RunCompleted` payload
+3. The error message from stderr is also lost
+
+The key gap: `task_lineage_payload` function doesn't receive or capture the exit code or error output.
+
+Now let me also understand the `run_agent_with_fallback` function to see where errors are captured.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.7s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "run_agent_with_fallba…  ▶ read scripts/evolve.sh:119..169 ✓ (6ms)
+ ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see `run_agent_with_fallback` to understand how it handles exit codes and error capture.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:427..507 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the gap:
+
+1. `run_agent_with_fallback` runs the binary, captures exit code in `$exit_code` 
+2. The caller checks `$TASK_EXIT` but the error is not captured into state
+3. When a run fails, line 1601 records `RunCompleted` with `$TASK_LINEAGE_PAYLOAD` — this payload doesn't include the exit code or error output
+4. The log file (`$TASK_LOG`) has all the error output, but it's not extracted
+
+The fix needs to:
+1. Capture exit code and tail of error log when a run fails
+2. Include it in the `RunCompleted` payload or in a separate `RunError` event
+
+Let me now plan the 3 tasks. Based on the evidence:
+
+**Task 1: Capture crash-at-start error details in RunCompleted state events**
+This is the clearest state-driven evidence. When a run crashes before any tool call (RunStarted → RunCompleted error in ~50ms), the exit code and stderr tail should be recorded in the state event payload so these failures become diagnosable.
+
+Files: `scripts/evolve.sh` (capture exit code + log tail, add to RunCompleted payload)
+
+This is a shell-only task — modifying `run_agent_with_fallback` to also output error details, and modifying the `RunCompleted` recording to include them.
+
+**Task 2: Add `state why last-failure` error detail display**
+Once Task 1 captures error details in the RunCompleted payload, the `state why` CLI should display them. Currently it just shows the event type without error context.
+
+Files: `src/commands_state.rs` (the `state why` handler section)
+
+**Task 3: File agent-self issues for assessment gaps**
+The assessment surfaced several items that need tracking. File issues for: eval pipeline never run, commands_state.rs decomposition, missing embedding index.
+
+Files: none (gh CLI only)
+
+Wait, Task 3 is too small. Let me think about something more substantial.
+
+Actually, looking at the trajectory more carefully:
+
+The CI shows `[2×] assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"` — this is a README assertion that fails occasionally. But the assessment says all tests are green, so this might be historical.
+
+Let me think about what other evidence-based tasks I can do:
+
+The assessment mentions "Context embedding index still missing" — the semantic index works (537 files, 81K terms) but the embedding index is absent. The Day 99 task "Add ensure_embedding_index() scaffold with clear diagnostic" was already completed. So the scaffold exists but the actual embedding index isn't built yet.
+
+Let me check what was done in that task.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "ensure_embedding_inde…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "state why\|last.failu… ✓ (21ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now understand the `state why last-failure` handler to see what information it currently displays for failed runs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13790..13890 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the issue: `is_failure_event_type` only recognizes `FailureObserved`, `JsonOutputFailure`, and `ToolSchemaFailure` — it doesn't recognize `RunCompleted` with `status=error` as a failure. So `state why last-failure` wouldn't even find these rapid-error runs. The fix needs to:
+
+1. In `scripts/evolve.sh`, capture exit code and tail of error log when a run fails, include in `RunCompleted` payload
+2. In `src/commands_state.rs`, make `find_target_event` and `is_failure_event_type` also recognize `RunCompleted` events with `status=error` as failure events
+3. In `src/commands_state.rs`, display the error details when available
+
+Actually, let me look at what `build_why_report` does with the found event.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "fn build_why_report" … ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `build_why_report` to see how it constructs the output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2281..2401 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me also look at what the rapid-error `RunCompleted` payload looks like. From the `state tail` output, the rapid-error runs show:
+
+```
+RunCompleted event_xxx run=run-xxx status=error
+```
+
+The payload for these rapid-error runs is generated by `task_lineage_payload "reverted" "$PRE_TASK_SHA" "$REVERT_REASON"` on line 1556 of evolve.sh.
+
+Let me check where `TASK_LINEAGE_PAYLOAD` is set and what goes into it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1530..1585 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. The `REVERT_REASON` and `REVERT_DETAILS` variables capture error information for reverted tasks. But the rapid-error runs (RunStarted → RunCompleted error in ~50ms) happen BEFORE the task gets to the verification/evaluation phase — they crash at the very beginning.
+
+Let me trace back to understand the rapid-error flow. Looking at lines 1125-1128:
+
+```bash
+TASK_LOG=$(mktemp)
+TASK_EXIT=0
+STAGE_NAME="task_$(printf '%02d_attempt%d' "$TASK_NUM" "$ATTEMPT")" \
+    run_agent_with_fallback "$IMPL_TIMEOUT" "$TASK_PROMPT" "$TASK_LOG" "--context-strategy checkpoint" || TASK_EXIT=$?
+rm -f "$TASK_PROMPT"
+```
+
+When `run_agent_with_fallback` returns a non-zero exit code, `TASK_EXIT` is set. But the rapid-error runs seem to have `TASK_OK=false` set somehow, which triggers the revert path. Let me find where `TASK_OK` is set.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "TASK_OK\|TASK_EXIT\|R… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the section right after `run_agent_with_fallback` where `TASK_EXIT` is handled, to understand how rapid-error flows into TASK_OK=false.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1125..1180 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The rapid-error runs work like this:
+
+1. Line 1082: `record_state_event "RunStarted"` — before running the agent
+2. Line 1125-1127: `run_agent_with_fallback ... || TASK_EXIT=$?` — runs the agent
+3. The agent crashes immediately (exit code non-zero, no tools called)
+4. Line 1139: Checks for API errors in the log — if found, reverts
+5. If not an API error, falls through to lines 1231+: sets `TASK_OK=true`, then checks build/tests
+
+But wait — when the agent crashes before calling any tools, where does `TASK_OK=false` get set? Let me look at the lines between the agent run and the verification phase.
+
+Actually, looking at the code more carefully: the rapid-error runs have RunCompleted recorded with `status=error` at line 1601. This happens because the agent exits with a non-zero code but NOT an API error. The flow continues past the API error check (line 1139), past the interrupted check (line 1153), and into the verification phase (line 1231+). At the verification phase, `TASK_OK=true` is initially set, then build/test checks run. If the agent didn't make any changes (because it crashed), the build/tests might pass (no changes = no breakage), and the task would be marked as verified OK with `RunCompleted status=completed`.
+
+But the state tail shows `RunCompleted status=error` — which means `TASK_OK=false` at line 1601. This means the rapid-error runs DID fail somewhere in the verification phase.
+
+Let me look more carefully. When the agent crashes immediately (before making any code changes), git diff would show no changes. Then `POST_TASK_SHA` would equal `PRE_TASK_SHA`. Let me check if there's a check for "no changes made."
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1228..1258 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK wait, the protected files check in line 1237 uses `git diff --name-only "$PRE_TASK_SHA"..HEAD` — this would fail if `HEAD` is still at `$PRE_TASK_SHA` (no commits made). Actually no, `git diff A..B` with A=B would still succeed, just produce empty output.
+
+Hmm, but the rapid-error runs show `RunCompleted status=error` at line 1601. Let me look at what causes `TASK_OK=false` when the agent crashes with a non-zero exit code.
+
+Wait — I re-read the flow. Lines 1130-1136 log the exit code, then line 1139 checks for API errors, then line 1153 checks if interrupted, then lines 1159+ handle checkpoint-restart. Then the verification phase starts at line 1231.
+
+But what triggers `TASK_OK=false` when the agent crashes? The agent crashes with a non-zero exit code. This means:
+- `TASK_EXIT != 0`
+- But it's NOT interrupted (line 1153 doesn't match)
+- The checkpoint section (line 1159+) might do something
+
+Actually wait — let me re-read. The checkpoint check at line 1161:
+```bash
+if [ "$INTERRUPTED" = true ] && [ "$CURRENT_SHA" != "$PRE_TASK_SHA" ] && [ "$ATTEMPT" -eq 1 ]; then
+```
+This only triggers if INTERRUPTED=true AND there are changes. If the agent crashes immediately, INTERRUPTED=false and CURRENT_SHA=PRE_TASK_SHA, so this doesn't trigger.
+
+Then we go to line 1231 where `TASK_OK=true` is set. The protected files check passes (no changes). Then build/tests should pass (no changes = clean state). So the task would be verified OK!
+
+But the state shows `RunCompleted status=error` for these rapid-error runs. That means `TASK_OK=false` at line 1601.
+
+Wait, I need to re-read the state tail output more carefully. The rapid-error runs are from Day 100 (2026-06-08). Let me look at the actual payload:
+
+```
+RunCompleted event_c30472a6ca124884aaf1d26a95ebfe1a run=run-1780912583938-34505 status=error
+```
+
+The `status=error` might come from the payload JSON, not from a different code path. Let me check — what does `task_lineage_payload` with status "reverted" output?
+
+Actually, I think the rapid-error runs are from a DIFFERENT path than the task execution path. Let me look at the `RunStarted` payload for the rapid-error runs:
+
+The `state tail` output shows `RunStarted` with a `deepseek_request_meta` payload — these are the binary-level RunStarted events, not the shell-level ones. These come from within the `yyds` binary itself, probably from the state recording in `src/state.rs`.
+
+Let me check `src/state.rs` for where RunStarted/RunCompleted are emitted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:225..285 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see it. The `RunCompletionGuard` is a drop guard that records `RunCompleted` when it goes out of scope. Let me see how it's used and how errors are handled.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:284..314  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "RunCompletionGuard\|m… ✓ (18ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the relevant section in `src/lib.rs` where the run completion guard and error handling live.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:960..1040 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture:
+
+1. `exit_with_state(code)` is called with status "error" when the process exits non-zero (line 971-975)
+2. `RunCompletionGuard` is created at line 1024 with status "completed" — this fires on normal exit
+3. If `init_global` fails, `exit_with_state(1)` is called — this records `RunCompleted status=error`
+
+The rapid-error runs in the state tail show `RunCompleted status=error` from the binary, not from the shell script. These come from the `exit_with_state` function, which fires when the process exits with a non-zero code before the `RunCompletionGuard` is dropped.
+
+But looking at the RunStarted payloads in the state tail, they have `"deepseek_native":true` and `"deepseek_request_meta"` — these are the startup payload from line 992-1019. The RunCompleted events show `status=error` but NO error message or exit code.
+
+The gap is clear: `mark_run_completed("error")` in `exit_with_state` only records `{"status": "error", "completed_at_ms": ...}` — no exit code, no error message, no diagnostic info. The actual error (which caused exit code 1) is lost.
+
+Now, the rapid-error runs happen when the binary crashes very early. The likely causes:
+- API key missing/invalid
+- Model routing failure
+- Network error
+- Prompt construction error
+
+These errors are printed to stderr but never captured in the state event.
+
+So my task plan is:
+
+**Task 1: Capture error details in RunCompleted/exit_with_state for crash-at-start runs**
+Modify `exit_with_state` and `mark_run_completed` to accept and record error details (exit code, last error message). This closes the state recording gap identified in the assessment.
+
+Files: `src/state.rs`, `src/lib.rs` (the `exit_with_state` function)
+
+**Task 2: Make `state why last-failure` recognize RunCompleted error events**
+Currently `is_failure_event_type` only recognizes `FailureObserved`, `JsonOutputFailure`, `ToolSchemaFailure`. It should also recognize `RunCompleted` with `status=error` as a failure, so `state why last-failure` can find and display these rapid-crash failures.
+
+Files: `src/commands_state.rs`
+
+**Task 3: Extract StateMemory module from commands_state.rs to start decomposition**
+The `commands_state.rs` is 23,736 lines. The memory synthesis functions (`build_state_memory_synthesis`, `record_state_memory_candidates`, `build_state_memory_records`, `record_state_memory_decision`, `StateMemoryRecord`) are a self-contained group that can be extracted to a new `src/commands_state_memory.rs`.
+
+Files: `src/commands_state.rs`, `src/commands_state_memory.rs` (new), `src/lib.rs` (add mod declaration if needed)
+
+Actually, wait. Let me check if `commands_state_memory.rs` already exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls src/commands_state*.rs  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "mod commands_state" s… ✓ (23ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`commands_state_memory.rs` already exists! And it's already declared in `lib.rs`. Let me check what's in it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_memory.rs (30 lines)  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && wc -l src/commands_state_memor… ✓ (16ms)
+ ✓ (15ms)
+  2 tools completed in 26ms (2 ✓)
+
+  ✓ Watch passed: `cargo clippy --all-targets -- -D warnings && cargo test`
+
