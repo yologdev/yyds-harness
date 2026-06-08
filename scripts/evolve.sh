@@ -152,7 +152,10 @@ append_state_event_checked() {
     local events_path="$1"
     local stream_name="$2"
     local event_type="$3"
-    local payload_json="${4:-{}}"
+    local payload_json="${4:-}"
+    if [ -z "$payload_json" ]; then
+        payload_json="{}"
+    fi
     local payload_file
     payload_file=$(mktemp "$SESSION_STAGING/state/payload.XXXXXX.json") || {
         echo "  WARNING: failed to allocate state payload file for $stream_name $event_type" >&2
@@ -196,7 +199,10 @@ with events_path.open("a",encoding="utf-8") as handle:
 
 record_state_event() {
     local event_type="$1"
-    local payload_json="${2:-{}}"
+    local payload_json="${2:-}"
+    if [ -z "$payload_json" ]; then
+        payload_json="{}"
+    fi
     append_state_event_checked "$STATE_EVENTS" "live" "$event_type" "$payload_json" || true
     append_state_event_checked "$SESSION_STATE_EVENTS" "session" "$event_type" "$payload_json" || true
 }

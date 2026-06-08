@@ -14,13 +14,13 @@ from pathlib import Path
 from typing import Any
 
 
-def load_payload(raw: str) -> dict[str, Any]:
+def load_payload(raw: str, source: str = "--payload-json") -> dict[str, Any]:
     if not raw:
         return {}
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise SystemExit(f"invalid --payload-json: {exc}") from exc
+        raise SystemExit(f"invalid {source}: {exc}") from exc
     if not isinstance(value, dict):
         raise SystemExit("--payload-json must decode to an object")
     return value
@@ -32,7 +32,7 @@ def load_payload_arg(raw: str, payload_file: Path | None) -> dict[str, Any]:
             raw = payload_file.read_text(encoding="utf-8")
         except OSError as exc:
             raise SystemExit(f"invalid --payload-file: {exc}") from exc
-    return load_payload(raw)
+    return load_payload(raw, "--payload-file" if payload_file is not None else "--payload-json")
 
 
 def append_event(
