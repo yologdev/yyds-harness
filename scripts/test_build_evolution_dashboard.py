@@ -29,6 +29,40 @@ def write_events(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class BuildEvolutionDashboard(unittest.TestCase):
+    def test_data_contract_reports_generated_at_and_latest_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            older = root / "sessions/day-2-20260602T000000Z"
+            newer = root / "sessions/day-10-20260610T000000Z"
+            write_json(
+                older / "outcome.json",
+                {
+                    "day": 2,
+                    "ts": "2026-06-02T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(older / "state/summary.json", {"latest_gnomes": {"coding_log_score": 0.2}})
+            write_json(
+                newer / "outcome.json",
+                {
+                    "day": 10,
+                    "ts": "2026-06-10T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(newer / "state/summary.json", {"latest_gnomes": {"coding_log_score": 0.9}})
+
+            data = build(root / "sessions", root / "out")
+
+            self.assertRegex(data["generated_at"], r"^\d{4}-\d{2}-\d{2}T")
+            self.assertEqual([session["id"] for session in data["sessions"]], [older.name, newer.name])
+            self.assertEqual(data["aggregate"]["latest_session_id"], newer.name)
+            self.assertEqual(data["aggregate"]["latest_ts"], "2026-06-10T00:00:00Z")
+            self.assertEqual(data["aggregate"]["latest_gnomes"]["coding_log_score"], 0.9)
+
     def test_derives_work_summary_and_gnome_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

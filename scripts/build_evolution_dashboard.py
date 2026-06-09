@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1247,6 +1248,7 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "session_count": len(sessions),
+        "latest_session_id": sessions[-1].get("id") if sessions else None,
         "eval_count": evals,
         "promoted_decisions": promoted,
         "rejected_decisions": rejected,
@@ -2193,6 +2195,8 @@ HTML = r"""<!doctype html>
       return {
         ...fallback,
         session_count: sessions.length,
+        latest_session_id: sessions.length ? sessions[sessions.length - 1].id : null,
+        latest_ts: sessions.length ? sessions[sessions.length - 1].ts : null,
         event_count: eventCount,
         trace_event_count: traceEventCount,
         full_trace_sessions: fullTraceSessions,
@@ -2871,6 +2875,7 @@ def build(audit_sessions: Path, output_dir: Path, repo_root: Path | None = None)
     gnome_history, gnome_numeric_keys = build_gnome_history(sessions)
     data = {
         "schema_version": 2,
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "source": str(audit_sessions),
         "aggregate": aggregate(sessions),
         "gnome_history": gnome_history,
