@@ -30,9 +30,9 @@ def load_jsonl(path: Path) -> list[tuple[dict[str, Any], str]]:
 
 
 def event_key(event: dict[str, Any], raw: str) -> str:
-    event_id = event.get("event_id")
+    event_id = event.get("event_id") or event.get("id")
     if isinstance(event_id, str) and event_id:
-        return event_id
+        return f"id:{event_id}"
     return "raw:" + hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()
 
 
@@ -104,6 +104,40 @@ def run_self_tests() -> int:
         assert stats["added"] == 2, stats
         assert stats["skipped_duplicate"] == 1, stats
         assert [row["event_id"] for row in rows] == ["dup", "tool", "tool-done"]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        live = root / "live.jsonl"
+        session = root / "session.jsonl"
+        live.write_text(
+            "\n".join(
+                [
+                    json.dumps({"id": "old", "kind": "RunStarted"}),
+                    json.dumps({"id": "same-yoyo-id", "kind": "ToolCallStarted", "payload": {"tool_name": "bash"}}),
+                    json.dumps({"id": "new-yoyo-id", "kind": "ToolCallCompleted", "payload": {"tool_name": "bash"}}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        session.write_text(
+            json.dumps(
+                {
+                    "kind": "ToolCallStarted",
+                    "id": "same-yoyo-id",
+                    "payload": {"tool_name": "bash"},
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        stats = merge_delta(live, session, 1)
+        rows = [json.loads(line) for line in session.read_text(encoding="utf-8").splitlines()]
+        assert stats["added"] == 1, stats
+        assert stats["skipped_duplicate"] == 1, stats
+        assert [row["id"] for row in rows] == ["same-yoyo-id", "new-yoyo-id"]
     print("merge_state_delta self-tests passed")
     return 0
 
