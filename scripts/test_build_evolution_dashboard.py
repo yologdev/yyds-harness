@@ -528,14 +528,33 @@ class BuildEvolutionDashboard(unittest.TestCase):
                         "deepseek_cache_hit_tokens",
                         "deepseek_cache_miss_tokens",
                     ],
+                    "evals": [
+                        {
+                            "suite": "log-feedback",
+                            "status": "passed",
+                            "gnomes": {
+                                "deepseek_cache_hit_ratio": 0.91,
+                                "deepseek_cache_hit_tokens": None,
+                                "deepseek_cache_miss_tokens": None,
+                            },
+                        }
+                    ],
                 },
             )
 
             data = build(root / "sessions", root / "out")
-            latest = data["sessions"][0]["latest_gnomes"]
+            session_data = data["sessions"][0]
+            latest = session_data["latest_gnomes"]
 
             self.assertIsNone(latest["deepseek_cache_hit_ratio"])
             self.assertEqual(latest["deepseek_cache_ratio_unverified_count"], 1)
+            self.assertIsNone(session_data["latest_eval"]["gnomes"]["deepseek_cache_hit_ratio"])
+            self.assertEqual(
+                session_data["latest_eval"]["gnome_corrections"]["deepseek_cache_hit_ratio"],
+                {"from": 0.91, "to": None},
+            )
+            self.assertNotIn("deepseek_cache_hit_ratio", data["gnome_history"][0]["values"])
+            self.assertEqual(data["gnome_history"][0]["values"]["deepseek_cache_ratio_unverified_count"], 1.0)
             self.assertIn("deepseek_cache_ratio_unverified_count", data["aggregate"]["gnome_keys"])
             self.assertIn("deepseek_cache_ratio_unverified_count", data["gnome_numeric_keys"])
 

@@ -853,6 +853,31 @@ def numeric_value(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def gnome_corrections(raw: dict[str, Any], corrected: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    corrections: dict[str, dict[str, Any]] = {}
+    for key in sorted(set(raw) | set(corrected)):
+        if raw.get(key) != corrected.get(key):
+            corrections[str(key)] = {"from": raw.get(key), "to": corrected.get(key)}
+    return corrections
+
+
+def normalize_latest_eval_gnomes(
+    evals: list[dict[str, Any]],
+    corrected: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, dict[str, Any]]]:
+    if not evals:
+        return [], {}, {}
+    normalized = [dict(row) for row in evals]
+    latest = dict(normalized[-1])
+    raw = latest.get("gnomes") if isinstance(latest.get("gnomes"), dict) else {}
+    corrections = gnome_corrections(raw, corrected)
+    latest["gnomes"] = dict(corrected)
+    if corrections:
+        latest["gnome_corrections"] = corrections
+    normalized[-1] = latest
+    return normalized, latest, corrections
+
+
 def normalize_task_gnome_snapshot(row: dict[str, Any], corrected: dict[str, Any]) -> None:
     if not corrected:
         return
@@ -957,6 +982,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         work = work_summary(session_dir, outcome, summary, evals, blockers, commits)
         latest_gnomes = corrected_gnomes(summary, work)
         normalize_work_gnome_snapshots(work, latest_gnomes)
+        evals, latest_eval, latest_eval_corrections = normalize_latest_eval_gnomes(evals, latest_gnomes)
         session = {
             "id": session_dir.name,
             "day": outcome.get("day"),
@@ -973,9 +999,14 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
             "event_counts": summary.get("event_counts", {}),
             "trace_quality": trace,
             "latest_gnomes": latest_gnomes,
+            "gnome_corrections": gnome_corrections(
+                summary.get("latest_gnomes") if isinstance(summary.get("latest_gnomes"), dict) else {},
+                latest_gnomes,
+            ),
             "gnome_keys": summary.get("gnome_keys", []),
             "evals": evals,
             "latest_eval": latest_eval,
+            "latest_eval_gnome_corrections": latest_eval_corrections,
             "latest_decision": latest_decision,
             "patches": summary.get("patches", []),
             "decisions": summary.get("decisions", []),
@@ -1096,6 +1127,9 @@ def numeric_gnome_values(session: dict[str, Any]) -> dict[str, float]:
             if isinstance(value, (int, float)):
                 values[str(key)] = float(value)
     for key, value in (session.get("latest_gnomes") or {}).items():
+        if value is None:
+            values.pop(str(key), None)
+            continue
         if isinstance(value, bool) or value is None:
             continue
         if isinstance(value, (int, float)):
