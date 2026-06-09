@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: All three requirements are met — `install_panic_hook` calls `stash_diagnostic_error` with `"rust_panic: {msg} at {location}"` (line 53), `#[allow(dead_code)]` is removed from `stash_diagnostic_error` (line 72), and the new test `panic_hook_stashes_diagnostic_error` (line 6530) verifies the diagnostic is stashed and retrievable after a panic. Build compiles clean, test passes.

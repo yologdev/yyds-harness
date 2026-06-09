@@ -1,0 +1,441 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task carefully. I need to make `state why last-failure` find `RunCompleted` events with `"error"` status. The plan is clear:
+
+1. Modify the `last-failure` lookup in `find_target_event` to also match `RunCompleted` events with `status: "error"`
+2. Do NOT modify `is_failure_event_type` since it's used elsewhere
+3. Add tests
+4. Verify with build, test, clippy, fmt
+
+Let me start by reading the relevant code sections.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me start by reading the relevant code to understand the current implementation.
+  ▶ search 'fn find_target_event' in src/commands_state.rs  ▶ search 'fn is_failure_event_type' in src/commands_state.rs ✓ (10ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13916..13946 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also check where `is_failure_event_type` is used elsewhere (the plan mentions `build_why_report` at line 2584).
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check where `is_failure_event_type` is used elsewhere and search for existing tests near `find_target_event`:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'is_failure_event_type' in src/commands_state.rs  ▶ search 'test_find_target_event' in src/commands_state.rs ✓ (10ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the other usages of `is_failure_event_type` to understand the impact:
+
+- Line 1795: used in some report building
+- Line 2035: used in some report building
+- Line 2491: used in some report building
+- Line 2543: used in some report building
+- Line 2584: used in `build_why_report` for dispatching to `append_failure_explanation`
+- Line 3871: used in some other context
+
+Let me check lines 2584 context (the `build_why_report` usage) and 3871 context.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+Let me check the other usages to confirm the plan's risk is real — that we shouldn't add RunCompleted to `is_failure_event_type`:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2580..2600  ▶ read src/commands_state.rs:3865..3895 ✓ (14ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The `is_failure_event_type` is used in multiple places:
+- `build_why_report` at line 2584: dispatches to `append_failure_explanation` which likely expects FailureObserved-specific payload structure
+- Line 3871: filters events in `find_related_failures` — also expects FailureObserved-like payload structure
+- Lines 1795, 2035, 2491, 2543: other filtering contexts
+
+So the plan's approach is correct:
+1. Do NOT modify `is_failure_event_type` 
+2. Only modify the `last-failure` branch in `find_target_event` to handle `RunCompleted` with `status: "error"`
+
+Now let me also check if there are tests near the function to see the test style:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+Now let me look at the test style in the file and check where to add tests:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search '#\[test\]' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test module structure to understand where to add tests. Let me also look at the area around line 14196 to see the test module start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14185..14225 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the helper functions used in tests (the `event` function). I need to understand the test pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me find the test helper functions:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^    fn event\(' in src/commands_state.rs ✗ (14ms)
+    │ Search error: grep: Unmatched ( or \(
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search with a simpler pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event\_' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test module start and the helper functions:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14170..14230 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the `event` function definition:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14150..14180 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture of:
+
+1. The test module structure (uses `#[cfg(test)] mod tests` with `use super::*;` and `use serde_json::json;`)
+2. The `event()` helper
+3. The current `find_target_event` at line 13916
+4. The current `is_failure_event_type` at line 13930
+
+Now let me also check how `RunCompleted` events look in the actual codebase — what's the payload structure? Let me search for how RunCompleted events are created.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also check how RunCompleted error events are created to understand the payload structure:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'RunCompleted' in src ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how `mark_run_completed_with_error` works to understand the payload structure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'mark_run_completed_with_error' in src ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the state.rs implementation:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:365..395 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The RunCompleted payload with error has:
+- `status: "error"`
+- `error`: the error message (e.g. "exit code 1")
+- `error_detail`: optional diagnostic detail (e.g. panic message)
+- `completed_at_ms`: timestamp
+
+Now I have all the information I need. Let me implement the changes:
+
+1. Modify `find_target_event` to handle RunCompleted with error status in the `last-failure` branch
+2. Add tests
+
+Let me also check if there's a specific location where tests related to `find_target_event` should go. Let me look at the end of the records section or search for tests that use `find_target_event`:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me find where tests for `find_target_event` or `last-failure` already exist:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'find_target_event|last.failure' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No existing tests for these. Now let me also check where the `state why` subcommand handler is, to understand how `find_target_event` is called:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also check the `state why` handler to see how `find_target_event` is called:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search '"why".*find_target_event|find_target_event.*"why' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search '\"last-failure\"' in src/commands_state.rs ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the `build_why_report` function and how it calls `find_target_event`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2526..2566 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I notice at line 2539-2546, the guidance also uses `is_failure_event_type` to count failures, meaning the guidance will miss RunCompleted errors too. But the plan says NOT to modify `is_failure_event_type` because it affects other logic (like `build_why_report` line 2584 which dispatches to `append_failure_explanation`).
+
+However, the guidance message on line 2552-2563 also uses `is_failure_event_type` and would show "0 failures recorded" when there are actually RunCompleted error events. This would be misleading but is a secondary concern.
+
+For now, let me follow the plan exactly:
+1. Modify `find_target_event` to handle RunCompleted(error) in the `last-failure` branch
+2. Keep `is_failure_event_type` unchanged
+3. Add tests
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have complete understanding. Let me implement the changes as planned.
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (4ms)
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with Step 1: Modify `find_target_event` to handle `RunCompleted(error)` events in the `last-failure` branch.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.7s (4 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the edit. The plan says to NOT modify `is_failure_event_type` and to handle the RunCompleted case only in the `last-failure` lookup.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me implement the change to `find_target_event`:
+  -     if id == "last-failure" {
+  -         return events.iter().rev().find(|event| {
+  -             event
+  -                 .get("event_type")
+  -                 .and_then(|v| v.as_str())
+  -                 .map(is_failure_event_type)
+  -                 .unwrap_or(false)
+  -         });
+  -     }
+  ✓ Auto-approved: edit: <unknown> (9 → 0 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit ?
+  -     if id == "last-failure" {
+  -         return events.iter().rev().find(|event| {
+  -             event
+  -                 .get("event_type")
+  -                 .and_then(|v| v.as_str())
+  -                 .map(is_failure_event_type)
+  -                 .unwrap_or(false)
+  -         });
+  -     }
+ ✗ (13ms)
+    │ Invalid arguments: missing 'path' parameter
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me make the actual edit. I need to replace the `last-failure` branch in `find_target_event`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        if id == "last-failure" {
+            return events.iter().rev().find(|event| {
+  -             event
+  +             let event_type = event
+                    .get("event_type")
+                    .and_then(|v| v.as_str())
+  -                 .map(is_failure_event_type)
+  -                 .unwrap_or(false)
+  +                 .unwrap_or("");
+  +             if matches!(
+  +                 event_type,
+  +                 "FailureObserved" | "JsonOutputFailure" | "ToolSchemaFailure"
+  +             ) {
+  +                 return true;
+  +             }
+  +             if event_type == "RunCompleted" {
+  +                 // Only match RunCompleted events with error status
+  +                 return event
+  +                     .get("payload")
+  +                     .and_then(|p| p.get("status"))
+  ... (7 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (9 → 24 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (9 → 24 lines)
+        if id == "last-failure" {
+            return events.iter().rev().find(|event| {
+  -             event
+  +             let event_type = event
+                    .get("event_type")
+                    .and_then(|v| v.as_str())
+  -                 .map(is_failure_event_type)
+  -                 .unwrap_or(false)
+  +                 .unwrap_or("");
+  +             if matches!(
+  +                 event_type,
+  +                 "FailureObserved" | "JsonOutputFailure" | "ToolSchemaFailure"
+  +             ) {
+  +                 return true;
+  +             }
+  +             if event_type == "RunCompleted" {
+  +                 // Only match RunCompleted events with error status
+  +                 return event
+  +                     .get("payload")
+  +                     .and_then(|p| p.get("status"))
+  ... (7 more lines)
+ ✓ (2m 56s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The edit was applied. Now let me verify the edit looks correct, then add tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the edit:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13916..13946 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edit looks correct. Now let me add the tests. I need to add them in the `#[cfg(test)] mod tests` block. Let me find a good spot to add them. Let me look at the test section near where tests for `last-failure` or `build_why_report` already exist.
+
+The `build_why_report` tests are at lines 15417, 15471, 15807, etc. Let me find the appropriate area.
+
+Actually, let me look at the test that exists at line 15417 to understand the test pattern better.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the tests. Let me find a good insertion point:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:15410..15440 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me add my tests after the existing `why_report_finds_last_failure` test at line 15436. That's a natural location. Let me add three tests:
+
+1. `test_find_last_failure_finds_run_completed_error` - RunCompleted(error) is found when no FailureObserved exists
+2. `test_find_last_failure_prefers_most_recent_failure` - When both exist, most recent in reverse iteration wins
+3. `test_find_last_failure_skips_run_completed_success` - RunCompleted(completed) is not matched
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert!(report.contains("Related timeline"));
+  +     }
+  + 
+  +     #[test]
+  +     fn find_last_failure_finds_run_completed_error() {
+  +         // RunCompleted(error) should be found even when no FailureObserved exists
+  +         let events = vec![
+  +             event("evt-1", "RunStarted", "run-1", json!({})),
+  +             event(
+  +                 "evt-2",
+  +                 "RunCompleted",
+  +                 "run-1",
+  +                 json!({"status": "error", "error": "exit code 1"}),
+  +             ),
+  +         ];
+  +         let found = find_target_event(&events, "last-failure");
+  +         assert!(
+  +             found.is_some(),
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (2 → 67 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (2 → 67 lines)
+            assert!(report.contains("Related timeline"));
+  +     }
+  + 
+  +     #[test]
+  +     fn find_last_failure_finds_run_completed_error() {
+  +         // RunCompleted(error) should be found even when no FailureObserved exists
+  +         let events = vec![
+  +             event("evt-1", "RunStarted", "run-1", json!({})),
+  +             event(
+  +                 "evt-2",
+  +                 "RunCompleted",
+  +                 "run-1",
+  +                 json!({"status": "error", "error": "exit code 1"}),
+  +             ),
+  +         ];
+  +         let found = find_target_event(&events, "last-failure");
+  +         assert!(
+  +             found.is_some(),
+  +             "should find RunCompleted(error) as last failure"
+  +         );
+  ... (47 more lines)
+ ✓ (2m 55s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, tests added. Now let me mark task 1 as done and task 2 as done, then run the verification steps.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let's run the tests first.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.9s (3 ✓)
+
+Now let me run the new tests to verify:
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- commands_s… ✓ (141ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 3 tests pass. Now let me run the full commands_state test suite and then cargo build, clippy, fmt.
+────────────────────────────────────────────────────────────────────────────────
+
+All 3 new tests pass. Now let me run the full test suite and clippy:
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Need to run `cargo fmt` to fix formatting.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run cargo fmt --check again, then cargo build, cargo clippy, and cargo test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && c… ✓ (16.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now let me run clippy and the full test suite.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now clippy and full test suite:
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo clippy --all-targets -- … ✓ (24.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clippy passes. Now run the full test suite.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- --tes… ✓ (670ms)
+
+  ✓ Watch passed: `cargo clippy --all-targets -- -D warnings && cargo test`
+
