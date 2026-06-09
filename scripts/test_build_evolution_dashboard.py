@@ -698,6 +698,63 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["aggregate"]["feedback_only_sessions"], 1)
             self.assertEqual(data["aggregate"]["full_trace_sessions"], 0)
 
+    def test_transcript_actions_fill_work_evidence_when_state_events_are_sparse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 3,
+                    "event_counts": {"RunStarted": 1, "RunCompleted": 1, "PatchEvaluated": 1},
+                    "evals": [{"suite": "log-feedback", "status": "failed", "score": 0.4}],
+                },
+            )
+            (session / "transcripts").mkdir(parents=True)
+            (session / "transcripts/task_01_attempt1.log").write_text(
+                "\n".join(
+                    [
+                        "  ▶ read src/state.rs:30..80 ✓ (5ms)",
+                        "  ▶ search 'fn build_why_report' in src/commands_state.rs ✗ (17ms)",
+                        "  ▶ edit src/state.rs (3 → 5 lines)",
+                        "  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::panic_hook ✓ (141ms)",
+                        "  ✗ Watch failed: `cargo clippy --all-targets -- -D warnings && cargo test`",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            data = build(root / "sessions", root / "out")
+            work = data["sessions"][0]["work_summary"]
+
+            self.assertEqual(work["read_files"], ["src/state.rs", "src/commands_state.rs"])
+            self.assertEqual(work["edited_files"], ["src/state.rs"])
+            self.assertEqual(work["touched_source_files"], ["src/state.rs"])
+            self.assertEqual(
+                work["commands"],
+                [
+                    "cargo test state::tests::panic_hook",
+                    "cargo clippy --all-targets -- -D warnings && cargo test",
+                ],
+            )
+            self.assertIn(
+                "cargo clippy --all-targets -- -D warnings && cargo test",
+                work["failed_commands"],
+            )
+            self.assertIn("1 source file(s) touched", work["headline"])
+            self.assertIn("2 command/check signal(s)", work["headline"])
+            self.assertEqual(work["transcript_actions"]["edited_files"], ["src/state.rs"])
+
     def test_session_sort_is_natural_by_day_and_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

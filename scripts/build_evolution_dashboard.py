@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -15,6 +16,10 @@ from task_manifest import parse_task as parse_task_file
 
 
 REPO_URL = "https://github.com/yologdev/yyds-harness"
+TRANSCRIPT_ACTION_RE = re.compile(r"▶\s+([^▶\n]+)")
+TRANSCRIPT_STATUS_RE = re.compile(r"\s+[✓✗]\s*\([^)]*\)\s*$")
+WATCH_RE = re.compile(r"([✓✗])\s+Watch\s+(?:passed|failed):\s+`([^`]+)`")
+WORKSPACE_PREFIX_RE = re.compile(r"/home/runner/work/yyds-harness/yyds-harness/?")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -77,6 +82,82 @@ def compact_list(values: list[str], limit: int) -> list[str]:
         if len(out) >= limit:
             break
     return out
+
+
+def clean_transcript_action(value: str) -> str:
+    text = TRANSCRIPT_STATUS_RE.sub("", str(value)).strip()
+    text = WORKSPACE_PREFIX_RE.sub(".", text)
+    return re.sub(r"\bcd\s+\.\s*&&\s*", "", text).strip()
+
+
+def transcript_path_token(value: str) -> str:
+    text = str(value).strip().strip("`'\"")
+    text = text.split()[0] if text.split() else text
+    text = text.split(":", 1)[0]
+    text = WORKSPACE_PREFIX_RE.sub("", text).strip()
+    return "" if text in {"?", "-", "."} else text
+
+
+def summarize_transcript_actions(session_dir: Path) -> dict[str, Any]:
+    transcript_dir = session_dir / "transcripts"
+    files = sorted(transcript_dir.glob("*.log")) if transcript_dir.is_dir() else []
+    commands: list[str] = []
+    failed_commands: list[str] = []
+    read_files: list[str] = []
+    edited_files: list[str] = []
+
+    for path in files:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            for marker, command in WATCH_RE.findall(line):
+                command_text = clean_transcript_action(command)
+                commands.append(command_text)
+                if marker == "✗":
+                    failed_commands.append(command_text)
+            for match in TRANSCRIPT_ACTION_RE.finditer(line):
+                raw = match.group(1)
+                action = clean_transcript_action(raw)
+                if not action or action == "todo":
+                    continue
+                failed = "✗" in raw
+                if action.startswith("$ "):
+                    command = action[2:].strip()
+                    if command:
+                        commands.append(command)
+                        if failed:
+                            failed_commands.append(command)
+                    continue
+                if action.startswith("read "):
+                    target = transcript_path_token(action.removeprefix("read "))
+                    if target:
+                        read_files.append(target)
+                    continue
+                if action.startswith("edit "):
+                    target = transcript_path_token(action.removeprefix("edit "))
+                    if target:
+                        edited_files.append(target)
+                    continue
+                if action.startswith("write "):
+                    target = transcript_path_token(action.removeprefix("write "))
+                    if target:
+                        edited_files.append(target)
+                    continue
+                if action.startswith("search ") and " in " in action:
+                    target = transcript_path_token(action.rsplit(" in ", 1)[1])
+                    if target and target not in {"src", "src/"}:
+                        read_files.append(target)
+                if failed and action:
+                    failed_commands.append(action)
+
+    return {
+        "commands": compact_list(commands, 12),
+        "failed_commands": compact_list(failed_commands, 8),
+        "read_files": compact_list(read_files, 12),
+        "edited_files": compact_list(edited_files, 12),
+    }
 
 
 def source_file(path: str) -> bool:
@@ -630,6 +711,7 @@ def work_summary(
     causal_chains = build_causal_chains(session_dir)
     suggestions = evolution_suggestions(session_dir)
     event_data = summarize_events_for_work(load_jsonl(session_dir / "state" / "events.jsonl"))
+    transcript_actions = summarize_transcript_actions(session_dir)
     source_files = compact_list(
         [
             path
@@ -639,6 +721,11 @@ def work_summary(
         ],
         16,
     )
+    edited_files = compact_list(event_data["edited_files"] + transcript_actions["edited_files"], 12)
+    touched_source_files = compact_list([path for path in edited_files if source_file(path)], 12)
+    read_files = compact_list(event_data["read_files"] + transcript_actions["read_files"], 12)
+    commands = compact_list(event_data["commands"] + transcript_actions["commands"], 12)
+    failed_commands = compact_list(event_data["failed_commands"] + transcript_actions["failed_commands"], 8)
     attempted = int(outcome.get("tasks_attempted") or 0)
     succeeded = int(outcome.get("tasks_succeeded") or 0)
     patches = summary.get("patches", []) if isinstance(summary.get("patches"), list) else []
@@ -661,10 +748,13 @@ def work_summary(
         labels.append("planning produced no task files")
     if source_files:
         labels.append(f"{len(source_files)} source file(s) changed")
-    elif event_data["edited_files"]:
-        labels.append(f"{len(event_data['edited_files'])} file(s) edited")
-    if event_data["command_count"]:
-        labels.append(f"{event_data['command_count']} command event(s)")
+    elif touched_source_files:
+        labels.append(f"{len(touched_source_files)} source file(s) touched")
+    elif edited_files:
+        labels.append(f"{len(edited_files)} file(s) edited")
+    command_count = len(commands)
+    if command_count:
+        labels.append(f"{command_count} command/check signal(s)")
     if evals:
         labels.append(f"{len(evals)} eval record(s)")
     if blockers:
@@ -681,15 +771,17 @@ def work_summary(
         "task_verification": task_verification,
         "causal_chains": causal_chains,
         "evolution_suggestions": suggestions,
-        "edited_files": event_data["edited_files"],
+        "edited_files": edited_files,
+        "touched_source_files": touched_source_files,
         "source_changed_files": source_files,
         "commits": serialize_commits(commits),
         "source_commits": serialize_commits(source_commits),
         "bookkeeping_commits": serialize_commits(bookkeeping_commits),
         "task_lineage": [task for task in task_lineage if isinstance(task, dict)],
-        "read_files": event_data["read_files"],
-        "commands": event_data["commands"],
-        "failed_commands": event_data["failed_commands"],
+        "read_files": read_files,
+        "commands": commands,
+        "failed_commands": failed_commands,
+        "transcript_actions": transcript_actions,
         "tool_counts": event_data["tool_counts"],
         "patch_count": len(patches),
         "state_patch_count": len(patches),
@@ -2297,7 +2389,7 @@ HTML = r"""<!doctype html>
         const trace = session.trace_quality || {};
         const transcripts = work.transcripts || {};
         const verification = work.task_verification || {};
-        const sourceFiles = (work.source_changed_files || []).length ? work.source_changed_files : work.edited_files;
+        const sourceFiles = (work.source_changed_files || []).length ? work.source_changed_files : ((work.touched_source_files || []).length ? work.touched_source_files : work.edited_files);
         const phaseText = Object.entries(transcripts.phase_counts || {}).map(([phase, count]) => `${phase} ${count}`).join(", ");
         return `<article class="item work-row">
           <div class="work-meta">
