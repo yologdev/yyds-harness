@@ -316,6 +316,9 @@ row = {
     "verdict_file": f"eval_attempt_{os.environ.get('EVAL_ATTEMPT')}.md"
         if os.environ.get("EVAL_HAS_FILE") == "true" else None,
 }
+row["timed_out_after_verdict"] = bool(
+    row["exit_code"] == 124 and (row["verdict"] or row["reason"] or row["verdict_file"])
+)
 Path(os.environ["EVAL_JSON_OUT"]).write_text(
     json.dumps(row, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",
@@ -1791,6 +1794,15 @@ $(echo "$TEST_OUT" | tail -30)
                 REVERT_DETAILS="Evaluator feedback:
 $(cat "session_plan/eval_task_${TASK_NUM}.md" 2>/dev/null || echo 'no eval file available')"
             fi
+        elif [ "$EVAL_VERDICT_TOKEN" = "PASS" ] && [ "$EVAL_EXIT" -eq 124 ]; then
+            echo "    Evaluator: timed out after writing PASS verdict — failing task because verifier completion is uncertain"
+            EVAL_REASON=$(grep -i '^Reason:' "session_plan/eval_task_${TASK_NUM}.md" | head -1 | sed 's/^Reason:[[:space:]]*//' || true)
+            write_task_eval_evidence \
+                "$TASK_ID" "$EVAL_ATTEMPT" "timeout_with_verdict" "$EVAL_EXIT" "$EVAL_VERDICT" "$EVAL_REASON" \
+                "transcripts/${EVAL_STAGE_NAME}.log" || true
+            TASK_OK=false
+            REVERT_REASON="Evaluator timed out after writing PASS verdict"
+            break
         elif [ "$EVAL_VERDICT_TOKEN" = "PASS" ]; then
             echo "    Evaluator: PASS"
             EVAL_REASON=$(grep -i '^Reason:' "session_plan/eval_task_${TASK_NUM}.md" | head -1 | sed 's/^Reason:[[:space:]]*//' || true)

@@ -96,6 +96,7 @@ GNOME_KEYS = [
     "task_spec_quality_score",
     "state_replay_integrity_rate",
     "evaluator_unverified_count",
+    "evaluator_timeout_with_verdict_count",
     "task_unlanded_source_count",
     "max_task_turn_count",
     "avg_task_turn_count",
@@ -109,6 +110,29 @@ GNOME_KEYS = [
 def explicit_pass(value: Any) -> bool:
     text = str(value or "").strip().lower()
     return text in {"pass", "passed", "ok", "success"} or text.startswith("pass:")
+
+
+def explicit_fail(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"fail", "failed", "failure"} or text.startswith("fail:")
+
+
+def eval_timed_out_after_verdict(row: dict[str, Any]) -> bool:
+    if int(row.get("exit_code") or 0) != 124:
+        return False
+    return (
+        explicit_pass(row.get("status"))
+        or explicit_pass(row.get("verdict"))
+        or explicit_fail(row.get("status"))
+        or explicit_fail(row.get("verdict"))
+        or bool(row.get("verdict_file"))
+    )
+
+
+def clean_eval_pass(row: dict[str, Any]) -> bool:
+    return not eval_timed_out_after_verdict(row) and (
+        explicit_pass(row.get("status")) or explicit_pass(row.get("verdict"))
+    )
 
 
 def warn(message: str) -> None:
@@ -564,15 +588,14 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     artifact_coverage = ratio(len(task_dirs), attempted) if attempted else (1.0 if not task_dirs else None)
     strict_verified = 0
     evaluator_unverified = 0
+    evaluator_timeout_with_verdict = 0
     unlanded_source = 0
     for task_dir in task_dirs:
         outcome = load_json(task_dir / "outcome.json")
         evals = [load_json(path) for path in sorted(task_dir.glob("eval_attempt_*.json"))]
         evals = [row for row in evals if row]
-        has_pass = any(
-            explicit_pass(row.get("status")) or explicit_pass(row.get("verdict"))
-            for row in evals
-        )
+        has_pass = any(clean_eval_pass(row) for row in evals)
+        has_timeout_with_verdict = any(eval_timed_out_after_verdict(row) for row in evals)
         touched = outcome.get("source_files") or outcome.get("touched_files") or []
         landed = bool(outcome.get("commit_shas") or outcome.get("commits"))
         has_landed_source = not touched or landed
@@ -580,6 +603,8 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             strict_verified += 1
         elif outcome.get("status") == "completed" or evals:
             evaluator_unverified += 1
+        if has_timeout_with_verdict:
+            evaluator_timeout_with_verdict += 1
         if outcome.get("status") == "completed" and has_pass and touched and not landed:
             unlanded_source += 1
     replay = replay_check_session(session_dir)
@@ -592,6 +617,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "task_artifact_coverage": artifact_coverage,
         "task_strict_verified_count": strict_verified,
         "evaluator_unverified_count": evaluator_unverified,
+        "evaluator_timeout_with_verdict_count": evaluator_timeout_with_verdict,
         "task_unlanded_source_count": unlanded_source,
         "task_spec_quality_score": round(sum(quality_scores) / len(quality_scores), 4)
         if quality_scores
@@ -734,6 +760,7 @@ def score_assessment(metrics: dict[str, Any]) -> float:
             + float(metrics.get("evolution_friction_count") or 0)
             + float(metrics.get("planner_no_task_count") or 0) * 3.0
             + float(metrics.get("evaluator_unverified_count") or 0)
+            + float(metrics.get("evaluator_timeout_with_verdict_count") or 0) * 2.0
             + float(metrics.get("task_unlanded_source_count") or 0) * 2.0
         )
         / 12.0,
@@ -876,6 +903,14 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "evaluator_timeout",
                 "fingerprint": "task evaluator timed out after build/test passed",
                 "action": "make evaluator checks cheaper, bounded, or resumable so quality evidence is not skipped",
+            }
+        )
+    if int(metrics.get("evaluator_timeout_with_verdict_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "evaluator_timeout_with_verdict",
+                "fingerprint": "evaluator wrote a verdict but the process still timed out",
+                "action": "make evaluator agents exit immediately after writing verdicts or stop the wrapper once the verdict file exists",
             }
         )
     if int(metrics.get("command_timeout_count") or 0) > 0:
@@ -1213,6 +1248,40 @@ def run_self_tests() -> int:
         check("max task turn gnome counted", turns["max_task_turn_count"] == 15, turns)
         check("avg task turn gnome counted", turns["avg_task_turn_count"] == 9.5, turns)
         check("total task turn gnome counted", turns["total_task_turn_count"] == 19, turns)
+
+        task_dir = session / "tasks" / "task_01"
+        task_dir.mkdir(parents=True)
+        (session / "tasks" / "manifest.json").write_text(
+            json.dumps({"planner": {"task_count": 1, "selected_task_count": 1}, "selected_tasks": [{}]}),
+            encoding="utf-8",
+        )
+        (task_dir / "outcome.json").write_text(
+            json.dumps(
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": ["abc123"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (task_dir / "eval_attempt_1.json").write_text(
+            json.dumps(
+                {
+                    "task_id": "task_01",
+                    "status": "pass",
+                    "exit_code": 124,
+                    "verdict": "Verdict: PASS",
+                    "verdict_file": "eval_attempt_1.md",
+                }
+            ),
+            encoding="utf-8",
+        )
+        artifacts = task_artifact_metrics(session, attempted=1)
+        check("timed-out verdict counted", artifacts["evaluator_timeout_with_verdict_count"] == 1, artifacts)
+        check("timed-out verdict is not strict verified", artifacts["task_strict_verified_count"] == 0, artifacts)
+        check("timed-out verdict is evaluator-unverified", artifacts["evaluator_unverified_count"] == 1, artifacts)
 
         attempt1 = root / "attempt-1"
         attempt2 = root / "attempt-2"

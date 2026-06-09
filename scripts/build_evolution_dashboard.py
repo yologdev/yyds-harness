@@ -330,14 +330,36 @@ def explicit_pass(value: Any) -> bool:
     return text in {"pass", "passed", "ok", "success"} or text.startswith("pass:")
 
 
+def explicit_fail(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"fail", "failed", "failure"} or text.startswith("fail:")
+
+
+def eval_timed_out_after_verdict(eval_data: dict[str, Any]) -> bool:
+    if int(eval_data.get("exit_code") or 0) != 124:
+        return False
+    return (
+        explicit_pass(eval_data.get("status"))
+        or explicit_pass(eval_data.get("verdict"))
+        or explicit_fail(eval_data.get("status"))
+        or explicit_fail(eval_data.get("verdict"))
+        or bool(eval_data.get("verdict_file"))
+    )
+
+
 def eval_passed(evals: list[dict[str, Any]], lineage_eval: Any) -> bool:
+    if evals:
+        return any(
+            isinstance(eval_data, dict)
+            and not eval_timed_out_after_verdict(eval_data)
+            and (
+                explicit_pass(eval_data.get("status"))
+                or explicit_pass(eval_data.get("verdict"))
+            )
+            for eval_data in evals
+        )
     if isinstance(lineage_eval, dict):
         if explicit_pass(lineage_eval.get("verdict")):
-            return True
-    for eval_data in evals:
-        if not isinstance(eval_data, dict):
-            continue
-        if explicit_pass(eval_data.get("status")) or explicit_pass(eval_data.get("verdict")):
             return True
     return False
 
@@ -390,7 +412,12 @@ def task_verification_summary(
             if sha
         ]
         overlap = file_overlap(planned, touched) if planned and touched else False
-        verified = eval_passed(artifact.get("evals") or [], lineage.get("eval"))
+        artifact_evals = artifact.get("evals") or []
+        timeout_with_verdict = any(
+            isinstance(eval_data, dict) and eval_timed_out_after_verdict(eval_data)
+            for eval_data in artifact_evals
+        )
+        verified = eval_passed(artifact_evals, lineage.get("eval"))
         outcome_status = str(artifact.get("status") or lineage.get("status") or "")
         problems: list[str] = []
         if not planned:
@@ -399,6 +426,8 @@ def task_verification_summary(
             problems.append("no_touched_files")
         if planned and touched and not overlap:
             problems.append("no_planned_file_overlap")
+        if timeout_with_verdict:
+            problems.append("evaluator_timed_out_after_verdict")
         if not verified:
             problems.append("no_passing_verifier")
         if touched and outcome_status == "completed" and not landed_commits:
@@ -439,6 +468,12 @@ def augment_evolution_suggestions(
         for row in rows
         if isinstance(row, dict) and "no_landed_source_commit" in (row.get("problems") or [])
     )
+    timeout_with_verdict = sum(
+        1
+        for row in rows
+        if isinstance(row, dict)
+        and "evaluator_timed_out_after_verdict" in (row.get("problems") or [])
+    )
     unverified = int(task_verification.get("unverified_task_count") or 0)
     out = [dict(row) for row in suggestions if isinstance(row, dict)]
 
@@ -467,6 +502,15 @@ def augment_evolution_suggestions(
             "evaluator_unverified_count",
             unverified,
             90,
+        )
+    if timeout_with_verdict:
+        upsert(
+            "eval",
+            "Stop evaluator once verdict evidence exists",
+            "An evaluator wrote a verdict but still timed out, making verifier evidence ambiguous.",
+            "evaluator_timeout_with_verdict_count",
+            timeout_with_verdict,
+            92,
         )
     if unlanded:
         upsert(
@@ -674,11 +718,21 @@ def corrected_gnomes(summary: dict[str, Any], work: dict[str, Any]) -> dict[str,
             for row in (verification.get("rows") or [])
             if isinstance(row, dict) and "no_landed_source_commit" in (row.get("problems") or [])
         )
+        timeout_with_verdict = sum(
+            1
+            for row in (verification.get("rows") or [])
+            if isinstance(row, dict)
+            and "evaluator_timed_out_after_verdict" in (row.get("problems") or [])
+        )
         gnomes["task_success_rate"] = verified / task_count
         gnomes["session_success_rate"] = 1.0 if verified == task_count else 0.0
         gnomes["evaluator_unverified_count"] = max(
             int(gnomes.get("evaluator_unverified_count") or 0),
             unverified,
+        )
+        gnomes["evaluator_timeout_with_verdict_count"] = max(
+            int(gnomes.get("evaluator_timeout_with_verdict_count") or 0),
+            timeout_with_verdict,
         )
         gnomes["task_unlanded_source_count"] = max(
             int(gnomes.get("task_unlanded_source_count") or 0),
@@ -1659,6 +1713,7 @@ HTML = r"""<!doctype html>
       task_spec_quality_score: "Task spec quality",
       state_replay_integrity_rate: "State replay integrity",
       evaluator_unverified_count: "Evaluator unverified count",
+      evaluator_timeout_with_verdict_count: "Evaluator verdict timeouts",
       task_unlanded_source_count: "Unlanded source tasks",
       max_task_turn_count: "Max task turns",
       avg_task_turn_count: "Avg task turns",
