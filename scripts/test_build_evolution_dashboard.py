@@ -230,6 +230,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["decision_count"], 1)
             self.assertEqual(work["task_lineage"][0]["task_id"], "task_01")
             self.assertEqual(work["task_lineage"][0]["gnome_deltas"], {"coding_log_score": 0.1})
+            self.assertTrue(work["task_lineage"][0]["strict_success"])
+            self.assertEqual(work["task_lineage"][0]["verification_status"], "strict_pass")
+            self.assertEqual(work["task_lineage"][0]["verification_problems"], [])
             self.assertEqual(data["sessions"][0]["trace_quality"]["status"], "full")
             self.assertEqual(data["sessions"][0]["health"], "passed")
 
@@ -856,6 +859,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(lineage["eval"]["status"], "timeout")
             self.assertIn("timed out", lineage["eval"]["reason"])
             self.assertEqual(lineage["eval"]["transcript_path"], "transcripts/eval_task1_attempt1.log")
+            self.assertFalse(lineage["strict_success"])
+            self.assertEqual(lineage["verification_status"], "strict_failed")
+            self.assertIn("no_passing_verifier", lineage["verification_problems"])
             self.assertEqual(verification["verified_task_count"], 0)
             self.assertIn("no_passing_verifier", verification["rows"][0]["problems"])
 

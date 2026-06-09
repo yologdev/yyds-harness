@@ -621,6 +621,38 @@ def task_verification_summary(
     }
 
 
+def annotate_task_lineage_verification(
+    task_lineage: list[dict[str, Any]],
+    task_verification: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows_by_id = {
+        str(row.get("task_id")): row
+        for row in (task_verification.get("rows") or [])
+        if isinstance(row, dict) and row.get("task_id")
+    }
+    annotated: list[dict[str, Any]] = []
+    for task in task_lineage:
+        if not isinstance(task, dict):
+            continue
+        next_task = dict(task)
+        verification = rows_by_id.get(str(next_task.get("task_id") or ""))
+        if verification:
+            strict_success = bool(verification.get("strict_success"))
+            problems = [
+                str(problem)
+                for problem in (verification.get("problems") or [])
+                if problem
+            ]
+            next_task["strict_success"] = strict_success
+            next_task["verification_status"] = "strict_pass" if strict_success else "strict_failed"
+            next_task["verification_problems"] = problems
+            next_task["verification_planned_files"] = verification.get("planned_files") or []
+            next_task["verification_touched_files"] = verification.get("touched_files") or []
+            next_task["landed_commit_shas"] = verification.get("landed_commit_shas") or []
+        annotated.append(next_task)
+    return annotated
+
+
 def augment_evolution_suggestions(
     suggestions: list[dict[str, Any]],
     task_verification: dict[str, Any],
@@ -818,6 +850,7 @@ def work_summary(
     task_lineage = summary.get("task_lineage") if isinstance(summary.get("task_lineage"), list) else []
     task_lineage = enrich_task_lineage_with_artifacts(task_lineage, task_artifacts)
     task_verification = task_verification_summary(task_manifest, task_artifacts, task_lineage)
+    task_lineage = annotate_task_lineage_verification(task_lineage, task_verification)
     suggestions = augment_evolution_suggestions(suggestions, task_verification)
     source_patch_count = len(source_commits)
     labels: list[str] = []
@@ -2674,7 +2707,12 @@ HTML = r"""<!doctype html>
         const correctionCount = Object.keys(task.gnome_corrections || {}).length;
         const correctionText = correctionCount ? ` / ${correctionCount} corrected gnome(s)` : "";
         const method = task.commit_linkage_method ? ` / ${task.commit_linkage_method}` : "";
-        return `<li>${text(task.task_id || "")} ${text(task.status || "-")}: ${text(task.task_title || "")} (${text(fileCount)} files, ${text(commitCount)} commits${method}${evalVerdict}${deltaText}${correctionText})</li>`;
+        const strict = task.verification_status || (task.strict_success ? "strict_pass" : "");
+        const strictClass = strict === "strict_pass" ? "good" : (strict === "strict_failed" ? "warn" : "muted");
+        const problems = (task.verification_problems || []).slice(0, 3).join(", ");
+        const strictText = strict ? ` / ${strict.replace("_", " ")}` : "";
+        const problemText = problems ? ` / ${problems}` : "";
+        return `<li><span class="${strictClass}">${text(task.task_id || "")} ${text(task.status || "-")}</span>: ${text(task.task_title || "")} (${text(fileCount)} files, ${text(commitCount)} commits${method}${evalVerdict}${strictText}${problemText}${deltaText}${correctionText})</li>`;
       }).join("")}</ul>`;
     }
 
@@ -2696,7 +2734,10 @@ HTML = r"""<!doctype html>
           const commits = (task.commit_shas || []).length;
           const deltas = Object.keys(task.gnome_deltas || {}).length;
           const corrections = Object.keys(task.gnome_corrections || {}).length;
-          items.push({ kind: "Task link", className: deltas || corrections ? "good" : "info", session: session.id, title: `${task.task_id || ""} ${task.task_title || ""}`, detail: `${task.status || "-"} / ${files} files / ${commits} commits / ${deltas} gnome deltas / ${corrections} corrected gnomes` });
+          const strictFailed = task.verification_status === "strict_failed";
+          const className = strictFailed ? "warn" : (task.verification_status === "strict_pass" || deltas || corrections ? "good" : "info");
+          const verification = task.verification_status ? ` / ${task.verification_status.replace("_", " ")}` : "";
+          items.push({ kind: "Task link", className, session: session.id, title: `${task.task_id || ""} ${task.task_title || ""}`, detail: `${task.status || "-"}${verification} / ${files} files / ${commits} commits / ${deltas} gnome deltas / ${corrections} corrected gnomes` });
         });
         (session.evals || []).slice(-2).forEach(evalData => {
           items.push({ kind: "Eval", className: evalData.status === "passed" ? "good" : "warn", session: session.id, title: evalData.eval_id || evalData.suite || "evaluation", detail: `${evalData.suite || "-"} ${evalData.status || "-"} score ${evalData.score === undefined ? "-" : evalData.score}` });
