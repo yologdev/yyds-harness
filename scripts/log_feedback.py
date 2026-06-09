@@ -105,6 +105,11 @@ GNOME_KEYS = [
 ]
 
 
+def explicit_pass(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"pass", "passed", "ok", "success"} or text.startswith("pass:")
+
+
 def warn(message: str) -> None:
     print(f"log_feedback: WARN: {message}", file=sys.stderr)
 
@@ -551,6 +556,20 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         if isinstance(score, (int, float)):
             quality_scores.append(float(score))
     artifact_coverage = ratio(len(task_dirs), attempted) if attempted else (1.0 if not task_dirs else None)
+    strict_verified = 0
+    evaluator_unverified = 0
+    for task_dir in task_dirs:
+        outcome = load_json(task_dir / "outcome.json")
+        evals = [load_json(path) for path in sorted(task_dir.glob("eval_attempt_*.json"))]
+        evals = [row for row in evals if row]
+        has_pass = any(
+            explicit_pass(row.get("status")) or explicit_pass(row.get("verdict"))
+            for row in evals
+        )
+        if outcome.get("status") == "completed" and has_pass:
+            strict_verified += 1
+        elif outcome.get("status") == "completed" or evals:
+            evaluator_unverified += 1
     replay = replay_check_session(session_dir)
     return {
         "task_manifest_available": bool(manifest),
@@ -559,6 +578,8 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "selected_task_count": int(planner.get("selected_task_count") or len(tasks) or 0),
         "task_artifact_count": len(task_dirs),
         "task_artifact_coverage": artifact_coverage,
+        "task_strict_verified_count": strict_verified,
+        "evaluator_unverified_count": evaluator_unverified,
         "task_spec_quality_score": round(sum(quality_scores) / len(quality_scores), 4)
         if quality_scores
         else None,
@@ -743,7 +764,13 @@ def build_assessment(
         int(parsed.get("planner_no_task_count") or 0),
         int(artifact_metrics.get("planner_no_task_count") or 0),
     )
-    task_success_rate = ratio(succeeded, attempted)
+    artifact_metrics["evaluator_unverified_count"] = max(
+        int(parsed.get("evaluator_unverified_count") or 0),
+        int(artifact_metrics.get("evaluator_unverified_count") or 0),
+    )
+    strict_succeeded = int(artifact_metrics.get("task_strict_verified_count") or 0)
+    counted_succeeded = strict_succeeded if attempted and artifact_metrics.get("task_manifest_available") else succeeded
+    task_success_rate = ratio(counted_succeeded, attempted)
     workflow_success = workflow_conclusion.lower() in {"success", "passed"}
     build_ok = bool(outcome.get("build_ok"))
     test_ok = bool(outcome.get("test_ok"))
@@ -782,7 +809,8 @@ def build_assessment(
         "session_success_rate": 1.0 if session_success else 0.0,
         "task_success_rate": task_success_rate,
         "tasks_attempted": attempted,
-        "tasks_succeeded": succeeded,
+        "tasks_succeeded": counted_succeeded,
+        "raw_tasks_succeeded": succeeded,
         "retry_success_rate": retry_success_rate,
         "state_capture_coverage": state_capture_coverage,
         "audit_capture_coverage": audit_capture_coverage,

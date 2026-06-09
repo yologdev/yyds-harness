@@ -177,14 +177,30 @@ class BuildEvolutionDashboard(unittest.TestCase):
             data = build(root / "sessions", root / "out")
 
             self.assertEqual(data["schema_version"], 2)
-            self.assertEqual(data["gnome_numeric_keys"], ["coding_log_score", "evolution_friction_count"])
+            self.assertEqual(
+                data["gnome_numeric_keys"],
+                [
+                    "coding_log_score",
+                    "evaluator_unverified_count",
+                    "evolution_friction_count",
+                    "session_success_rate",
+                    "task_success_rate",
+                ],
+            )
             self.assertEqual(
                 data["gnome_history"][0]["values"],
-                {"coding_log_score": 0.8, "evolution_friction_count": 2.0},
+                {
+                    "coding_log_score": 0.8,
+                    "evaluator_unverified_count": 0.0,
+                    "evolution_friction_count": 2.0,
+                    "session_success_rate": 1.0,
+                    "task_success_rate": 1.0,
+                },
             )
 
             work = data["sessions"][0]["work_summary"]
-            self.assertIn("2/2 tasks completed", work["headline"])
+            self.assertIn("1/1 verified tasks", work["headline"])
+            self.assertIn("outcome reported 2/2 tasks", work["headline"])
             self.assertEqual(work["edited_files"], ["scripts/build_evolution_dashboard.py"])
             self.assertEqual(work["commands"], ["cargo test"])
             self.assertEqual(work["transcripts"]["phase_counts"], {"plan": 1, "task": 1})
@@ -196,6 +212,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["task_artifacts"][0]["attempt_count"], 1)
             self.assertEqual(work["task_artifacts"][0]["eval_statuses"], ["pass"])
             self.assertTrue(work["task_artifacts"][0]["has_outcome"])
+            self.assertEqual(work["task_verification"]["verified_task_count"], 1)
+            self.assertEqual(work["task_verification"]["unverified_task_count"], 0)
             self.assertEqual(work["causal_chains"][0]["task_id"], "task_01")
             self.assertEqual(work["causal_chains"][0]["planned_files"], ["scripts/build_evolution_dashboard.py"])
             self.assertEqual(work["causal_chains"][0]["commit_shas"], ["abc123"])

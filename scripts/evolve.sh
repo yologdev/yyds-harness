@@ -1125,6 +1125,11 @@ Expected Evidence:
 [Detailed description of what to do — specific enough for a focused implementation agent.
 Include which docs need updating (CLAUDE.md, README.md, docs/src/) if the task changes behavior, features, or architecture.]
 
+PLANNER OUTPUT GUARD:
+- By the time your final third of turns begins, at least one valid session_plan/task_*.md file must already exist.
+- If you cannot select implementation work, write session_plan/planning_failure.md explaining the blocker and STOP.
+- Do not spend the whole planning budget analyzing without creating task files; the harness will fail the planning phase and skip implementation.
+
 TASK SIZING RULES — follow these strictly:
 - Each task MUST touch at most 3 source files. If a change needs more, split it into multiple tasks.
 - Large refactors (module splits, multi-file renames) MUST be broken into one-module-at-a-time tasks.
@@ -1169,12 +1174,19 @@ TASK_COUNT=0
 for _f in session_plan/task_*.md; do [ -f "$_f" ] && TASK_COUNT=$((TASK_COUNT + 1)); done
 PLANNING_FAILED=false
 if [ "$TASK_COUNT" -eq 0 ]; then
-    echo "  Planning agent produced 0 tasks — recording planning failure; no fake task will run."
+    echo "  Planning guard failed: planning agent produced 0 tasks — recording planning failure; no fake task will run."
     mkdir -p session_plan
     cat > session_plan/planning_failure.md <<PLANFAIL
 # Planning Failure — Day $DAY ($SESSION_TIME)
 
 The planning agent produced no \`session_plan/task_*.md\` files, so the harness will not fabricate a generic self-improvement task.
+
+Guard result:
+- status: planning_failed
+- planner_exit_code: $PLAN_EXIT
+- planner_timeout_seconds: $PLAN_TIMEOUT
+- required_artifact: session_plan/task_*.md
+- transcript: transcripts/plan.log
 
 Why this matters:
 - Fake fallback tasks make the dashboard look productive while hiding that no concrete DeepSeek harness work was selected.
@@ -1464,6 +1476,45 @@ and commit if needed."
         REVERT_REASON="Modified protected files: $PROTECTED_CHANGES"
     fi
 
+    # Check 1b: The task must actually touch at least one file it planned.
+    # This prevents a task from being counted as complete when the agent
+    # drifted into unrelated files or produced only bookkeeping noise.
+    if [ "$TASK_OK" = true ]; then
+        TASK_SCOPE_JSON=$(python3 scripts/task_verification_gate.py \
+            --repo-root . \
+            --base "$PRE_TASK_SHA" \
+            --task-file "$TASK_FILE" 2>/dev/null || echo '{"ok":false,"reason":"task scope verification failed","planned_files":[],"touched_files":[],"overlapping_files":[]}')
+        TASK_SCOPE_OK=$(TASK_SCOPE_JSON="$TASK_SCOPE_JSON" python3 - <<'PY'
+import json
+import os
+try:
+    payload = json.loads(os.environ.get("TASK_SCOPE_JSON") or "{}")
+except json.JSONDecodeError:
+    payload = {}
+print("true" if payload.get("ok") is True else "false")
+PY
+)
+        if [ "$TASK_SCOPE_OK" != "true" ]; then
+            TASK_SCOPE_REASON=$(TASK_SCOPE_JSON="$TASK_SCOPE_JSON" python3 - <<'PY'
+import json
+import os
+try:
+    payload = json.loads(os.environ.get("TASK_SCOPE_JSON") or "{}")
+except json.JSONDecodeError:
+    payload = {}
+print(payload.get("reason") or "task scope verification failed")
+PY
+)
+            echo "    BLOCKED: Task $TASK_NUM scope mismatch — $TASK_SCOPE_REASON"
+            TASK_OK=false
+            REVERT_REASON="Task scope mismatch: $TASK_SCOPE_REASON"
+            REVERT_DETAILS="Task scope evidence:
+\`\`\`json
+$TASK_SCOPE_JSON
+\`\`\`"
+        fi
+    fi
+
     # Check 2: Build + tests with fix loop (up to 2 fix attempts on failure)
     BUILD_FIX_ATTEMPT=0
     MAX_BUILD_FIX=10
@@ -1637,8 +1688,9 @@ EVALEOF
         if [ -f "session_plan/eval_task_${TASK_NUM}.md" ]; then
             EVAL_VERDICT=$(grep -i '^Verdict:' "session_plan/eval_task_${TASK_NUM}.md" | head -1 || true)
         fi
+        EVAL_VERDICT_TOKEN=$(printf '%s\n' "$EVAL_VERDICT" | sed -E 's/^[Vv]erdict:[[:space:]]*//; s/[[:space:]].*$//' | tr '[:lower:]' '[:upper:]')
 
-        if echo "$EVAL_VERDICT" | grep -qi "FAIL"; then
+        if [ "$EVAL_VERDICT_TOKEN" = "FAIL" ]; then
             EVAL_REASON=$(grep -i '^Reason:' "session_plan/eval_task_${TASK_NUM}.md" | head -1 | sed 's/^Reason:[[:space:]]*//' || true)
             echo "    Evaluator: FAIL — $EVAL_REASON"
             write_task_eval_evidence \
@@ -1736,7 +1788,7 @@ $(echo "$TEST_OUT" | tail -30)
                 REVERT_DETAILS="Evaluator feedback:
 $(cat "session_plan/eval_task_${TASK_NUM}.md" 2>/dev/null || echo 'no eval file available')"
             fi
-        elif echo "$EVAL_VERDICT" | grep -qi "PASS"; then
+        elif [ "$EVAL_VERDICT_TOKEN" = "PASS" ]; then
             echo "    Evaluator: PASS"
             EVAL_REASON=$(grep -i '^Reason:' "session_plan/eval_task_${TASK_NUM}.md" | head -1 | sed 's/^Reason:[[:space:]]*//' || true)
             write_task_eval_evidence \
@@ -1744,32 +1796,39 @@ $(cat "session_plan/eval_task_${TASK_NUM}.md" 2>/dev/null || echo 'no eval file 
                 "transcripts/${EVAL_STAGE_NAME}.log" || true
             break
         elif [ "$EVAL_EXIT" -eq 124 ]; then
-            echo "    Evaluator: timed out — skipping eval (build+test passed)"
+            echo "    Evaluator: timed out — failing task because no verifier verdict exists"
             write_task_eval_evidence \
                 "$TASK_ID" "$EVAL_ATTEMPT" "timeout" "$EVAL_EXIT" "$EVAL_VERDICT" "" \
                 "transcripts/${EVAL_STAGE_NAME}.log" || true
+            TASK_OK=false
+            REVERT_REASON="Evaluator timed out without a verifier verdict"
             break
         elif grep -q '"type":"error"' "$EVAL_LOG" 2>/dev/null; then
-            echo "    Evaluator: API error — skipping eval (build+test passed)"
+            echo "    Evaluator: API error — failing task because no verifier verdict exists"
             write_task_eval_evidence \
                 "$TASK_ID" "$EVAL_ATTEMPT" "api_error" "$EVAL_EXIT" "$EVAL_VERDICT" "" \
                 "transcripts/${EVAL_STAGE_NAME}.log" || true
+            TASK_OK=false
+            REVERT_REASON="Evaluator API error without a verifier verdict"
             break
         elif [ -z "$EVAL_VERDICT" ]; then
-            echo "    Evaluator: no verdict produced — skipping eval (build+test passed)"
+            echo "    Evaluator: no verdict produced — failing task"
             write_task_eval_evidence \
                 "$TASK_ID" "$EVAL_ATTEMPT" "no_verdict" "$EVAL_EXIT" "$EVAL_VERDICT" "" \
                 "transcripts/${EVAL_STAGE_NAME}.log" || true
+            TASK_OK=false
+            REVERT_REASON="Evaluator produced no verifier verdict"
             break
         else
-            echo "    Evaluator: unrecognized verdict '$EVAL_VERDICT' — skipping eval (build+test passed)"
+            echo "    Evaluator: unrecognized verdict '$EVAL_VERDICT' — failing task"
             write_task_eval_evidence \
                 "$TASK_ID" "$EVAL_ATTEMPT" "unrecognized" "$EVAL_EXIT" "$EVAL_VERDICT" "" \
                 "transcripts/${EVAL_STAGE_NAME}.log" || true
+            TASK_OK=false
+            REVERT_REASON="Evaluator produced unrecognized verifier verdict: $EVAL_VERDICT"
             break
         fi
 
-        # Evaluator infra failures don't block — mechanical checks already passed
         rm -f "$EVAL_LOG"
     done
     rm -f "${EVAL_LOG:-}" 2>/dev/null

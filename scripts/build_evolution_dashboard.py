@@ -94,6 +94,18 @@ def source_file(path: str) -> bool:
     return path not in {".skill_evolve_counter", "DAY_COUNT", "ISSUES_TODAY.md"}
 
 
+def path_matches(planned: str, touched: str) -> bool:
+    planned = str(planned).strip().strip("/")
+    touched = str(touched).strip().strip("/")
+    if not planned or not touched:
+        return False
+    return touched == planned or touched.startswith(f"{planned}/")
+
+
+def file_overlap(planned: list[str], touched: list[str]) -> bool:
+    return any(path_matches(planned_file, touched_file) for planned_file in planned for touched_file in touched)
+
+
 def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[str, Any]:
     counts = summary.get("event_counts") if isinstance(summary.get("event_counts"), dict) else {}
     total = int(summary.get("event_count") or 0)
@@ -309,6 +321,91 @@ def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def explicit_pass(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"pass", "passed", "ok", "success"} or text.startswith("pass:")
+
+
+def eval_passed(evals: list[dict[str, Any]], lineage_eval: Any) -> bool:
+    if isinstance(lineage_eval, dict):
+        if explicit_pass(lineage_eval.get("verdict")):
+            return True
+    for eval_data in evals:
+        if not isinstance(eval_data, dict):
+            continue
+        if explicit_pass(eval_data.get("status")) or explicit_pass(eval_data.get("verdict")):
+            return True
+    return False
+
+
+def task_verification_summary(
+    task_manifest: dict[str, Any],
+    task_artifacts: list[dict[str, Any]],
+    task_lineage: list[dict[str, Any]],
+) -> dict[str, Any]:
+    selected = task_manifest.get("tasks") if isinstance(task_manifest.get("tasks"), list) else []
+    artifacts_by_id = {
+        str(row.get("task_id")): row
+        for row in task_artifacts
+        if isinstance(row, dict) and row.get("task_id")
+    }
+    lineage_by_id = {
+        str(row.get("task_id")): row
+        for row in task_lineage
+        if isinstance(row, dict) and row.get("task_id")
+    }
+    rows: list[dict[str, Any]] = []
+    for task in selected:
+        if not isinstance(task, dict):
+            continue
+        task_id = str(task.get("task_id") or "")
+        if not task_id:
+            continue
+        artifact = artifacts_by_id.get(task_id, {})
+        lineage = lineage_by_id.get(task_id, {})
+        planned = [str(path) for path in (task.get("files") or lineage.get("planned_files") or []) if path]
+        touched = [
+            str(path)
+            for path in (lineage.get("source_files") or lineage.get("touched_files") or [])
+            if path
+        ]
+        overlap = file_overlap(planned, touched) if planned and touched else False
+        verified = eval_passed(artifact.get("evals") or [], lineage.get("eval"))
+        outcome_status = str(artifact.get("status") or lineage.get("status") or "")
+        problems: list[str] = []
+        if not planned:
+            problems.append("missing_planned_files")
+        if not touched:
+            problems.append("no_touched_files")
+        if planned and touched and not overlap:
+            problems.append("no_planned_file_overlap")
+        if not verified:
+            problems.append("no_passing_verifier")
+        rows.append(
+            {
+                "task_id": task_id,
+                "title": task.get("title") or lineage.get("task_title"),
+                "planned_files": planned,
+                "touched_files": touched,
+                "overlap": overlap,
+                "verified": verified,
+                "outcome_status": outcome_status or None,
+                "eval_statuses": artifact.get("eval_statuses") or [],
+                "problems": problems,
+                "strict_success": overlap and verified and not problems,
+            }
+        )
+    total = len(rows)
+    verified_count = sum(1 for row in rows if row["strict_success"])
+    return {
+        "task_count": total,
+        "verified_task_count": verified_count,
+        "unverified_task_count": total - verified_count,
+        "all_verified": bool(total == 0 or verified_count == total),
+        "rows": rows,
+    }
+
+
 def task_manifest_summary(session_dir: Path) -> dict[str, Any]:
     manifest = load_json(session_dir / "tasks" / "manifest.json")
     if not manifest:
@@ -421,10 +518,15 @@ def work_summary(
     source_commits = [commit for commit in commits if commit.get("source_files")]
     bookkeeping_commits = [commit for commit in commits if not commit.get("source_files")]
     task_lineage = summary.get("task_lineage") if isinstance(summary.get("task_lineage"), list) else []
+    task_verification = task_verification_summary(task_manifest, task_artifacts, task_lineage)
     source_patch_count = len(source_commits)
     labels: list[str] = []
     if attempted:
-        labels.append(f"{succeeded}/{attempted} tasks completed")
+        verified = int(task_verification.get("verified_task_count") or 0)
+        strict_total = int(task_verification.get("task_count") or attempted)
+        labels.append(f"{verified}/{strict_total} verified tasks")
+        if succeeded != verified:
+            labels.append(f"outcome reported {succeeded}/{attempted} tasks")
     elif task_manifest.get("planning_failed"):
         labels.append("planning produced no task files")
     if source_files:
@@ -446,6 +548,7 @@ def work_summary(
         "transcripts": transcript_data,
         "task_manifest": task_manifest,
         "task_artifacts": task_artifacts,
+        "task_verification": task_verification,
         "causal_chains": causal_chains,
         "evolution_suggestions": suggestions,
         "edited_files": event_data["edited_files"],
@@ -470,6 +573,26 @@ def work_summary(
         "latest_eval_status": latest_eval.get("status"),
         "latest_eval_score": latest_eval.get("score"),
     }
+
+
+def corrected_gnomes(summary: dict[str, Any], work: dict[str, Any]) -> dict[str, Any]:
+    gnomes = dict(summary.get("latest_gnomes") if isinstance(summary.get("latest_gnomes"), dict) else {})
+    manifest = work.get("task_manifest") if isinstance(work.get("task_manifest"), dict) else {}
+    verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
+    task_count = int(verification.get("task_count") or 0)
+    if task_count:
+        verified = int(verification.get("verified_task_count") or 0)
+        unverified = int(verification.get("unverified_task_count") or 0)
+        gnomes["task_success_rate"] = verified / task_count
+        gnomes["session_success_rate"] = 1.0 if verified == task_count else 0.0
+        gnomes["evaluator_unverified_count"] = max(
+            int(gnomes.get("evaluator_unverified_count") or 0),
+            unverified,
+        )
+    if manifest.get("planning_failed"):
+        gnomes["planner_no_task_count"] = max(int(gnomes.get("planner_no_task_count") or 0), 1)
+        gnomes["session_success_rate"] = 0.0
+    return gnomes
 
 
 def session_sort_key(path: Path) -> tuple[int, str, str]:
@@ -539,6 +662,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         commits = session_commits(outcome, repo_root)
         trace = trace_quality(summary, evals)
         work = work_summary(session_dir, outcome, summary, evals, blockers, commits)
+        latest_gnomes = corrected_gnomes(summary, work)
         sessions.append(
             {
                 "id": session_dir.name,
@@ -555,7 +679,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
                 "event_count": summary.get("event_count", 0),
                 "event_counts": summary.get("event_counts", {}),
                 "trace_quality": trace,
-                "latest_gnomes": summary.get("latest_gnomes", {}),
+                "latest_gnomes": latest_gnomes,
                 "gnome_keys": summary.get("gnome_keys", []),
                 "evals": evals,
                 "latest_eval": latest_eval,
@@ -574,8 +698,17 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
 def run_health(session: dict[str, Any]) -> str:
     attempted = session.get("tasks_attempted") or 0
     succeeded = session.get("tasks_succeeded") or 0
+    work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
+    manifest = work.get("task_manifest") if isinstance(work.get("task_manifest"), dict) else {}
+    verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
+    verified_total = int(verification.get("task_count") or 0)
+    verified_count = int(verification.get("verified_task_count") or 0)
     if session.get("reverted"):
         return "reverted"
+    if manifest.get("planning_failed"):
+        return "attention"
+    if verified_total and verified_count < verified_total:
+        return "partial" if verified_count else "attention"
     if session.get("build_ok") is True and session.get("test_ok") is True and attempted == succeeded:
         return "passed"
     if succeeded:
@@ -603,8 +736,15 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         evals += 1 if session.get("latest_eval") else 0
         blockers += len(session.get("blockers") or [])
         events += int(session.get("event_count") or 0)
-        tasks_attempted += int(session.get("tasks_attempted") or 0)
-        tasks_succeeded += int(session.get("tasks_succeeded") or 0)
+        work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
+        verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
+        strict_total = int(verification.get("task_count") or 0)
+        if strict_total:
+            tasks_attempted += strict_total
+            tasks_succeeded += int(verification.get("verified_task_count") or 0)
+        else:
+            tasks_attempted += int(session.get("tasks_attempted") or 0)
+            tasks_succeeded += int(session.get("tasks_succeeded") or 0)
         health[run_health(session)] += 1
         trace = session.get("trace_quality") if isinstance(session.get("trace_quality"), dict) else {}
         trace_event_count += int(trace.get("trace_event_count") or 0)
@@ -661,7 +801,7 @@ def numeric_gnome_values(session: dict[str, Any]) -> dict[str, float]:
     for key, value in (session.get("latest_gnomes") or {}).items():
         if isinstance(value, bool) or value is None:
             continue
-        if isinstance(value, (int, float)) and key not in values:
+        if isinstance(value, (int, float)):
             values[str(key)] = float(value)
     return values
 
@@ -1486,7 +1626,14 @@ HTML = r"""<!doctype html>
     function healthOf(session) {
       const attempted = Number(session.tasks_attempted || 0);
       const succeeded = Number(session.tasks_succeeded || 0);
+      const work = session.work_summary || {};
+      const manifest = work.task_manifest || {};
+      const verification = work.task_verification || {};
+      const strictTotal = Number(verification.task_count || 0);
+      const strictVerified = Number(verification.verified_task_count || 0);
       if (session.reverted) return "reverted";
+      if (manifest.planning_failed) return "attention";
+      if (strictTotal && strictVerified < strictTotal) return strictVerified ? "partial" : "attention";
       if (session.build_ok === true && session.test_ok === true && attempted === succeeded) return "passed";
       if (succeeded > 0) return "partial";
       return "attention";
@@ -1526,8 +1673,15 @@ HTML = r"""<!doctype html>
         const healthKey = healthOf(session);
         health[healthKey] = (health[healthKey] || 0) + 1;
         eventCount += Number(session.event_count || 0);
-        tasksAttempted += Number(session.tasks_attempted || 0);
-        tasksSucceeded += Number(session.tasks_succeeded || 0);
+        const verification = session.work_summary?.task_verification || {};
+        const strictTotal = Number(verification.task_count || 0);
+        if (strictTotal) {
+          tasksAttempted += strictTotal;
+          tasksSucceeded += Number(verification.verified_task_count || 0);
+        } else {
+          tasksAttempted += Number(session.tasks_attempted || 0);
+          tasksSucceeded += Number(session.tasks_succeeded || 0);
+        }
         blockers += (session.blockers || []).length;
         if (session.latest_eval && Object.keys(session.latest_eval).length) evalCount += 1;
         const trace = session.trace_quality || {};
@@ -1611,10 +1765,13 @@ HTML = r"""<!doctype html>
       const health = session ? healthOf(session) : "attention";
       const work = session ? (session.work_summary || {}) : {};
       const trace = session ? (session.trace_quality || {}) : {};
+      const verification = work.task_verification || {};
+      const strictTotal = Number(verification.task_count || 0);
+      const strictVerified = Number(verification.verified_task_count || 0);
       const score = latestMetric(agg, "coding_log_score");
       const stateCapture = latestMetric(agg, "state_capture_coverage");
       const heroTitle = session
-        ? `${text(session.tasks_succeeded || 0)} of ${text(session.tasks_attempted || 0)} tasks completed`
+        ? (strictTotal ? `${text(strictVerified)} of ${text(strictTotal)} tasks verified` : `${text(session.tasks_succeeded || 0)} of ${text(session.tasks_attempted || 0)} tasks completed`)
         : "No audit-backed evolution sessions yet";
       const heroMeta = session
         ? `Day ${text(session.day)} / ${text(session.session_time || session.ts || "latest")} / <code>${text(session.id)}</code>`
@@ -1860,6 +2017,7 @@ HTML = r"""<!doctype html>
 
     function renderTaskArtifacts(session, work) {
       const manifest = work.task_manifest || {};
+      const verification = work.task_verification || {};
       const rows = (work.task_artifacts || []).slice(0, 6);
       const manifestArtifacts = manifest.artifacts || {};
       const manifestLinks = [
@@ -1874,9 +2032,19 @@ HTML = r"""<!doctype html>
         const link = task.artifact_path ? auditLink(session, task.artifact_path, task.task_id || task.title) : text(task.task_id || task.title || "");
         return `${link} <span class="muted">${text(task.title || "")} / ${text(files)} / quality ${text(quality)}</span>`;
       }).join("</li><li>");
+      const planningFailure = manifest.planning_failed ? `<p class="bad"><strong>Planning guard failed.</strong> No task files were produced, so implementation was skipped. ${manifestArtifacts.planning_failure ? auditLink(session, manifestArtifacts.planning_failure, "Open planning_failure.md") : ""}</p>` : "";
+      const verificationBlock = verification.task_count !== undefined ? `<p class="${verification.unverified_task_count ? "warn" : "muted"}">${text(verification.verified_task_count || 0)}/${text(verification.task_count || 0)} strict task(s) verified. ${text(verification.unverified_task_count || 0)} unverified.</p>` : "";
+      const verificationRows = (verification.rows || []).slice(0, 4).map(row => {
+        const problems = (row.problems || []).join(", ") || "verified";
+        const klass = row.strict_success ? "good" : "warn";
+        return `<li><span class="${klass}">${text(row.task_id || "")}</span> ${text(row.title || "")}<br><span class="muted">planned ${(row.planned_files || []).slice(0, 2).join(", ") || "none"} → touched ${(row.touched_files || []).slice(0, 2).join(", ") || "none"} → ${text(problems)}</span></li>`;
+      }).join("");
       const manifestBlock = manifest.task_count !== undefined ? `<div class="task-evidence">
           <strong>Plan decision ${manifest.planning_failed ? "(planning failed)" : ""}</strong>
+          ${planningFailure}
           <p class="muted">${text(manifest.selected_task_count || 0)} selected of ${text(manifest.task_count || 0)} task file(s). ${text((manifest.warnings || []).join(", ") || "No manifest warnings.")}</p>
+          ${verificationBlock}
+          ${verificationRows ? `<ul class="mini-list">${verificationRows}</ul>` : ""}
           ${manifestLinks ? `<p class="muted">${manifestLinks}</p>` : ""}
           ${manifestTasks ? `<ul class="mini-list"><li>${manifestTasks}</li></ul>` : ""}
         </div>` : "";
@@ -1930,6 +2098,7 @@ HTML = r"""<!doctype html>
         const work = session.work_summary || {};
         const trace = session.trace_quality || {};
         const transcripts = work.transcripts || {};
+        const verification = work.task_verification || {};
         const sourceFiles = (work.source_changed_files || []).length ? work.source_changed_files : work.edited_files;
         const phaseText = Object.entries(transcripts.phase_counts || {}).map(([phase, count]) => `${phase} ${count}`).join(", ");
         return `<article class="item work-row">
@@ -1942,6 +2111,7 @@ HTML = r"""<!doctype html>
           <div>
             <div class="work-facts">
               <div class="fact"><strong>${text(session.tasks_succeeded || 0)}/${text(session.tasks_attempted || 0)}</strong>tasks</div>
+              <div class="fact"><strong>${text(verification.verified_task_count || 0)}/${text(verification.task_count || 0)}</strong>verified</div>
               <div class="fact"><strong>${text(sourceFiles.length || 0)}</strong>source files</div>
               <div class="fact"><strong>${text(work.eval_count || 0)}</strong>evals</div>
               <div class="fact"><strong>${text(work.source_commit_count || 0)}</strong>source commits</div>
@@ -2052,9 +2222,11 @@ HTML = r"""<!doctype html>
         const events = session.event_count || 0;
         const work = session.work_summary || {};
         const trace = session.trace_quality || {};
+        const verification = work.task_verification || {};
+        const verifiedText = verification.task_count ? `<br>verified ${text(verification.verified_task_count || 0)}/${text(verification.task_count || 0)}` : "";
         return `<tr>
           <td><strong>${text(session.id)}</strong><div class="muted">Day ${text(session.day)} at ${text(session.session_time)}<br>${text(session.ts)}${session.github_run_id ? `<br>run ${text(session.github_run_id)} attempt ${text(session.github_run_attempt || "-")}` : ""}</div></td>
-          <td><span class="pill ${healthClass(health)}">${text(health)}</span><div class="muted">build ${text(session.build_ok)} / test ${text(session.test_ok)}<br>tasks ${text(session.tasks_succeeded)}/${text(session.tasks_attempted)}<br>${text(work.headline)}</div></td>
+          <td><span class="pill ${healthClass(health)}">${text(health)}</span><div class="muted">build ${text(session.build_ok)} / test ${text(session.test_ok)}<br>tasks ${text(session.tasks_succeeded)}/${text(session.tasks_attempted)}${verifiedText}<br>${text(work.headline)}</div></td>
           <td><span class="${decisionClass(decision)}">${text(decision.criterion || decision.decision || decision.decision_type)}</span><div class="muted">${text(decision.reason)}</div></td>
           <td><span class="pill soft">${text(trace.label || "unknown trace")}</span><div class="muted">${text(trace.trace_event_count || 0)} trace events / ${text(events)} total<br>eval ${text(evalData.status)} ${evalData.score === undefined ? "" : `score ${text(evalData.score)}`}</div></td>
           <td><a href="${text(session.audit_url)}">audit files</a><div class="muted">${text((session.blockers || []).length)} blockers / ${text((session.evals || []).length)} evals / ${text(work.source_commit_count || 0)} source commits / ${text(work.bookkeeping_commit_count || 0)} bookkeeping commits / ${text((session.patches || []).length)} state patches</div></td>

@@ -41,6 +41,18 @@ def compact(values: list[str], limit: int = 80) -> list[str]:
     return out
 
 
+def path_matches(planned: str, touched: str) -> bool:
+    planned = str(planned).strip().strip("/")
+    touched = str(touched).strip().strip("/")
+    if not planned or not touched:
+        return False
+    return touched == planned or touched.startswith(f"{planned}/")
+
+
+def file_overlap(planned: list[str], touched: list[str]) -> bool:
+    return any(path_matches(planned_file, touched_file) for planned_file in planned for touched_file in touched)
+
+
 def git(repo: Path, args: list[str]) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -199,13 +211,14 @@ def task_rows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "task_number": data.get("task_number"),
                 "task_title": data.get("task_title"),
                 "source_files": [],
+                "planned_files": [],
                 "commit_shas": [],
             },
         )
         for key in ("task_title", "status", "head_commit"):
             if data.get(key) is not None:
                 row[key] = data.get(key)
-        for key in ("source_files", "touched_files", "commit_shas"):
+        for key in ("planned_files", "source_files", "touched_files", "commit_shas"):
             values = data.get(key)
             if isinstance(values, list):
                 row[key] = compact([str(value) for value in values])
@@ -230,11 +243,13 @@ def build_link_payload(args: argparse.Namespace) -> dict[str, Any]:
     linked_tasks: list[dict[str, Any]] = []
     assigned: set[str] = set()
     for task in tasks:
-        task_sources = set(task.get("source_files") or [])
+        task_planned = [str(path) for path in (task.get("planned_files") or []) if path]
+        task_sources = [str(path) for path in (task.get("source_files") or []) if path]
+        match_files = task_planned or task_sources
         linked = [
             commit
             for commit in commits
-            if commit["sha"] not in known and task_sources.intersection(commit.get("source_files") or [])
+            if commit["sha"] not in known and file_overlap(match_files, commit.get("source_files") or [])
         ]
         if not linked:
             continue
@@ -244,25 +259,9 @@ def build_link_payload(args: argparse.Namespace) -> dict[str, Any]:
                 "task_id": task.get("task_id"),
                 "task_number": task.get("task_number"),
                 "task_title": task.get("task_title"),
-                "linked_by": "source_file_overlap",
+                "linked_by": "planned_file_overlap" if task_planned else "source_file_overlap",
                 "linked_commit_shas": [commit["sha"] for commit in linked],
                 "linked_commits": linked,
-            }
-        )
-    unassigned = [
-        commit for commit in commits if commit["sha"] not in known and commit["sha"] not in assigned
-    ]
-    if len(tasks) == 1 and unassigned:
-        task = tasks[0]
-        assigned.update(str(commit["sha"]) for commit in unassigned)
-        linked_tasks.append(
-            {
-                "task_id": task.get("task_id"),
-                "task_number": task.get("task_number"),
-                "task_title": task.get("task_title"),
-                "linked_by": "single_task_unassigned_source_commit",
-                "linked_commit_shas": [commit["sha"] for commit in unassigned],
-                "linked_commits": unassigned,
             }
         )
     return {

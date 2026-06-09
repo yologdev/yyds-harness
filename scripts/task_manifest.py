@@ -120,7 +120,7 @@ def decision_payload(manifest: dict[str, Any]) -> dict[str, Any]:
     return {
         "phase": "plan",
         "decision_type": "session_plan",
-        "decision": "tasks_selected",
+        "decision": "planning_failed" if planner.get("planning_failed") else "tasks_selected",
         "task_count": int(planner.get("task_count") or 0),
         "selected_task_count": int(planner.get("selected_task_count") or 0),
         "assessment_present": bool(planner.get("assessment_present")),

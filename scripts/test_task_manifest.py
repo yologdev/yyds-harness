@@ -96,6 +96,7 @@ Expected Evidence:
             self.assertIn("planner_produced_no_task_files", manifest["warnings"])
             self.assertEqual(payload["selected_task_count"], 0)
             self.assertTrue(payload["planning_failed"])
+            self.assertEqual(payload["decision"], "planning_failed")
 
     def test_write_task_decisions_creates_per_task_json(self):
         with tempfile.TemporaryDirectory() as tmp:

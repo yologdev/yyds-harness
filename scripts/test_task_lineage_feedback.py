@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log_feedback  # noqa: E402
 import summarize_state_gnomes  # noqa: E402
 import task_lineage  # noqa: E402
+import task_verification_gate  # noqa: E402
 
 
 def write_json(path: Path, value: object) -> None:
@@ -59,7 +60,11 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('write_task_outcome_evidence()', evolve)
         self.assertIn('scripts/task_manifest.py', evolve)
         self.assertIn('planning_failure.md', evolve)
-        self.assertIn('Planning agent produced 0 tasks — recording planning failure', evolve)
+        self.assertIn('Planning guard failed: planning agent produced 0 tasks', evolve)
+        self.assertIn('Evaluator: timed out — failing task because no verifier verdict exists', evolve)
+        self.assertIn('EVAL_VERDICT_TOKEN', evolve)
+        self.assertIn('[ "$EVAL_VERDICT_TOKEN" = "PASS" ]', evolve)
+        self.assertIn('scripts/task_verification_gate.py', evolve)
         self.assertNotIn('Title: Self-improvement', evolve)
         self.assertNotIn('identify the most impactful improvement', evolve)
         self.assertIn('manifest.json', evolve)
@@ -114,7 +119,7 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(len(payload["commit_shas"]), 1)
             self.assertEqual(payload["eval"], {"verdict": "PASS", "reason": "works"})
 
-    def test_single_task_linkage_claims_unassigned_source_commits(self):
+    def test_single_task_linkage_leaves_unplanned_source_commits_unassigned(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.DEVNULL)
@@ -137,6 +142,7 @@ class TaskLineageFeedback(unittest.TestCase):
                             "task_number": 1,
                             "task_title": "Finish wrap-up source",
                             "status": "completed",
+                            "planned_files": ["src/context.rs"],
                             "source_files": [],
                             "commit_shas": [],
                         },
@@ -165,10 +171,36 @@ class TaskLineageFeedback(unittest.TestCase):
             )()
             payload = task_lineage.build_link_payload(args)
 
-            self.assertEqual(payload["unassigned_source_commits"], [])
-            self.assertEqual(payload["tasks"][0]["task_id"], "task_01")
-            self.assertEqual(payload["tasks"][0]["linked_by"], "single_task_unassigned_source_commit")
-            self.assertEqual(len(payload["tasks"][0]["linked_commit_shas"]), 1)
+            self.assertEqual(payload["tasks"], [])
+            self.assertEqual(len(payload["unassigned_source_commits"]), 1)
+            self.assertEqual(payload["unassigned_source_commits"][0]["source_files"], ["src/lib.rs"])
+
+    def test_task_verification_gate_requires_planned_file_overlap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            (repo / "src").mkdir()
+            (repo / "docs").mkdir()
+            (repo / "session_plan").mkdir()
+            (repo / "src/lib.rs").write_text("pub fn before() {}\n", encoding="utf-8")
+            (repo / "docs/readme.md").write_text("before\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+            base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+            task = repo / "session_plan/task_01.md"
+            task.write_text("Title: Docs\nFiles: docs/readme.md\nIssue: none\n", encoding="utf-8")
+            (repo / "docs/readme.md").write_text("after\n", encoding="utf-8")
+            ok = task_verification_gate.verify(repo, base, task)
+            self.assertTrue(ok["ok"])
+            self.assertEqual(ok["overlapping_files"], ["docs/readme.md"])
+
+            task.write_text("Title: Wrong\nFiles: src/lib.rs\nIssue: none\n", encoding="utf-8")
+            bad = task_verification_gate.verify(repo, base, task)
+            self.assertFalse(bad["ok"])
+            self.assertEqual(bad["reason"], "task changes do not overlap planned Files entries")
 
     def test_log_feedback_links_gnome_deltas_to_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
