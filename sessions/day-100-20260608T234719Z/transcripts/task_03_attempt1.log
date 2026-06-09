@@ -1,0 +1,1017 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. I need to:
+
+1. Find the `state tail` and `state why` handlers in `src/commands_state.rs`
+2. Add a `--limit` flag with reasonable defaults (50 for tail, 5 for why)
+3. Ensure they complete quickly even with large event histories
+4. Keep changes focused and surgical
+
+Let me start by searching for the relevant functions in the file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'fn handle_state_tail' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs  ▶ search 'fn handle_state_why' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs ✓ (16ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The function names might be different. Let me search more broadly for "state tail" and "state why" in the file.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state tail|state why|"tail"|"why"' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the main dispatch function to understand how state subcommands are routed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_state' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the handling function to understand how state subcommands are dispatched.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:27..177 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the `state tail` handler at line 31-40 and the `state why` handler at line 77-88. Let me understand the current implementation:
+
+**state tail** (lines 31-40):
+- Already has a `--limit` flag with a default of 20
+- Has a `--json` flag
+- Calls `handle_tail(limit, json)`
+
+**state why** (lines 77-88):
+- Takes an event ID or identifier
+- Has a `--summary` flag
+- Calls `handle_why(id, summary)`
+- No `--limit` flag
+
+I need to find the `handle_tail` and `handle_why` functions to understand what they do.
+
+Let me also check the `handle_state_summary` function.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me find the `handle_tail` and `handle_why` functions:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^fn handle_tail' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs  ▶ search '^fn handle_why' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs ✓ (15ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read both functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:404..524  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:1003..1123 ✓ (20ms)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current state of things:
+
+1. **`handle_tail` (line 404-419)**: Already has a `limit` parameter with a default of 20. It uses `read_tail` which reads the file and keeps only the last N lines. This is already bounded and should be fast because `read_tail` works with a `VecDeque` and reads the entire file. But reading the entire file could still be slow if the events file is huge.
+
+2. **`handle_why` (line 1003-1017)**: Takes an `id` and reads ALL events via `read_events` then calls `build_why_report` which presumably searches through all events for a match. This could be slow. No `--limit` flag.
+
+3. **`handle_state_summary` (line 1019-1039)**: Reads ALL events via `read_events` and calls `build_state_summary`. No `--limit` flag for the tail portion (it hardcodes `.take(5)`).
+
+Now, the task says:
+- Add `--limit N` flag to `state tail` - DONE, already exists with default 20
+- Add `--limit N` flag to `state why` - NOT DONE, `why` doesn't have one
+- Default to reasonable caps (50 for tail, 5 for why)
+- But wait, "state why" searches by ID, not listing. The limit might not make sense there.
+
+Let me re-read the task more carefully:
+
+"Add time and output bounds to the most commonly used state inspection commands (state tail, state why)"
+
+"state tail and/or state why commands accept an optional --limit N flag"
+
+"Default behavior caps output to a reasonable size (e.g., last 50 events or last 5 sessions)"
+
+So the limit for `state why` might be about limiting the search to the last N events/sessions to find the target ID. But that's potentially problematic — if someone asks for `state why <event-id>`, and the event is older than the limit, they won't find it.
+
+Actually, wait — let me re-read: "Commands complete in under 5 seconds even with large event histories"
+
+The issue is that `read_events` reads ALL events into memory and then `build_why_report` searches through them. If the event file is large, this takes time.
+
+For `state why`, the limit should be: only search the last N events (or N sessions worth of events) to find the matching ID. If the ID isn't found within the limit, print a message like "(not found in last N, use --limit 0 for full scan)".
+
+Actually, looking more carefully at the task: "Default behavior caps output to a reasonable size (e.g., last 50 events or last 5 sessions)"
+
+For `state tail`: change default from 20 to 50.
+For `state why`: add a `--limit N` that limits how many events to scan from the tail. Default to some reasonable number like 5 sessions worth or some event count.
+
+Wait, but the "5 sessions" isn't a direct event count. Let me think about this differently.
+
+For `state tail`, the current approach reads the entire file to get the last N lines. This is inefficient for large files. We should use `seek` to read from the end of the file — but this is a JSONL file and the events might differ in size, so seeking to exact lines is tricky.
+
+Actually, let me not overcomplicate this. The task says "Keep the change focused — don't refactor the entire 23K-line file." Let me:
+
+1. For `state tail`: Change default limit from 20 to 50. Add a truncation note. Maybe also add a `--tail` approach that reads from end of file efficiently — but reading the whole file is already O(n) and should be fast enough unless the file is many hundreds of MB. Let me not change the reading approach.
+
+2. For `state why`: Add a `--limit N` flag. When set, only read the last N events from the tail (reusing `read_tail` logic, or passing the limit into `read_events` to truncate). Default to some reasonable value.
+
+Wait, but `state why` takes an `id` argument. The id could be an event-id for an old event. Limiting the scan window might make it fail to find events. Let me think about what makes sense...
+
+The task says: "Commands complete in under 5 seconds even with large event histories"
+
+For `state why`, the performance issue is:
+1. Reading all events from file
+2. Searching through all events
+
+The solution could be: instead of reading all events, read only the last N events (by default). If the event isn't found, print a message suggesting `--limit 0` for full scan.
+
+Let me implement this:
+
+### state tail
+- Change default from 20 to 50
+- Add truncation message when limit is hit and there might be more
+
+### state why
+- Add `--limit N` flag with default of 50 (last 50 events)  
+- Read only last N events from tail
+- If event not found and limit was applied, print message: "(not found in last N events, use --limit 0 for full scan)"
+
+Actually wait, let me re-read the task again more carefully:
+
+"Add a --limit flag that defaults to a reasonable cap (50 for tail, 5 sessions for why)."
+
+"5 sessions for why" - how do we know what "5 sessions" means? Sessions are marked by "SessionStarted" events. We'd need to scan to find session boundaries. That's more complex.
+
+Hmm, let me look at what `build_why_report` does and what kinds of IDs `state why` accepts.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 18.2s (2 ✓)
+
+Let me understand `build_why_report` to see how the search works:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^fn build_why_report' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `build_why_report` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:2482..2682 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `find_target_event` to understand the search pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^fn find_target_event' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:13872..13922 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the situation well:
+
+1. **`state tail`**: Already has `--limit` with default 20. Just need to change default to 50 and add truncation message.
+
+2. **`state why`**: Reads ALL events, searches for an ID. The performance issue is `read_events` reading everything.
+
+For `state why`, the approach should be:
+- Accept `--limit N` flag
+- Instead of reading ALL events, read only the last N events
+- If the target event is not found in the last N, print a message saying it wasn't found and suggest `--limit 0` for full scan (or a larger limit)
+- Since `state why` also shows `build_state_summary` (when using `--summary`), that also needs events — but that's a separate call
+
+Wait, let me re-read the task requirements:
+
+"Add a --limit flag that defaults to a reasonable cap (50 for tail, 5 sessions for why). The implementation should:
+1. Parse --limit N from command args
+2. Truncate event iteration after N items
+3. Print a note like '(showing last N, use --limit 0 for all)' when truncation occurs"
+
+For `state why`, "5 sessions" doesn't directly translate to event count. But the task says "5 sessions for why" - this could mean scanning the last 5 sessions worth of events. However, sessions are not a simple concept to track in the event log without scanning all events.
+
+A simpler approach for `state why`: default limit to, say, 200 events (which should cover ~5 sessions at ~40 events per session). This is a reasonable heuristic. Or we could scan backwards to find session boundaries — but that requires scanning.
+
+Actually, the most pragmatic approach is:
+1. For `state tail`: change default from 20 to 50, add truncation note when there are more events than the limit
+2. For `state why`: add `--limit N` with a default of, say, 200 events. When the target isn't found in the last N, include a message suggesting to use `--limit 0` for full scan.
+
+Let me now also look at `read_tail` to see if we can make it more efficient:
+
+```rust
+fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    let mut lines = VecDeque::new();
+    for line in raw.lines() {
+        lines.push_back(line.to_string());
+        if lines.len() > limit {
+            lines.pop_front();
+        }
+    }
+    Ok(lines.into_iter().collect())
+}
+```
+
+This reads the entire file into memory. For large files, this is O(file_size). We could improve this by reading from the end of the file — but that's tricky with variable-length lines. The current approach is O(n) and should be reasonably fast for files up to a few hundred MB. I'll keep it simple.
+
+Actually wait, `state why` doesn't use `read_tail` — it uses `read_events` which also reads the entire file. Let me create a `read_tail_events` function that reads only the last N events.
+
+OK let me plan the implementation:
+
+### Plan:
+
+1. **`read_tail` already exists** — it reads last N lines from file. No change needed.
+
+2. **Create `read_tail_events`** — reads the last N JSON events from the file, similar to `read_tail` but parsing to `Value`. This avoids reading all events for `state why`.
+
+   Actually, a simpler approach: use `read_tail` to get raw lines, then parse each to `Value`. This way we don't read the entire file.
+
+3. **`state tail`** — change default from 20 to 50
+   - Add a truncation message when `read_tail` might have truncated (we don't know total count without reading the whole file, but we can estimate based on file size or just always note the limit used)
+
+4. **`state why`** — add `--limit N` flag
+   - Default limit: 200 (heuristic for ~5 sessions)
+   - Use `read_tail_events` instead of `read_events`
+   - If event not found and limit was applied, add message
+   - `--limit 0` = read all events (full scan)
+
+Wait, the task says "5 sessions for why". Let me think about how to handle "sessions". Looking at `build_state_summary`, it probably counts sessions by looking for "SessionStarted" events. To count session boundaries in the last N events, I'd need to scan backwards. But that's complex.
+
+Let me simplify: just use an event count limit. Default 200 for `state why`. The task mentioned "5 sessions" as a guideline, but the actual implementation should use event counts. I'll note this in the truncation message.
+
+Let me finalize:
+
+### Changes to make:
+
+1. In `handle_state_subcommand`, line 31-40 (`state tail`):
+   - Change default from 20 to 50
+   - Add a message like "(last N events)" at the end
+
+2. In `handle_tail`, line 404-419:
+   - Add truncation message after printing events
+   - Need to know if there were more events — we can check the raw file line count, but that's expensive. Instead, just always print a header.
+
+   Actually simpler approach: modify `read_tail` to also return whether truncation occurred. But that changes the function signature... Let me keep it simple.
+
+   Instead of modifying `read_tail`, I'll just modify `handle_tail` to always print a note about the limit being applied.
+
+3. In `handle_state_subcommand`, line 77-88 (`state why`):
+   - Add `--limit N` parsing with default 200
+   - Pass limit to `handle_why`
+
+4. In `handle_why`, line 1003-1017:
+   - Accept `limit` parameter
+   - If limit > 0, use `read_tail_events` to get only last N events
+   - If limit == 0, use `read_events` (full scan)
+   - If event not found in limited scan, note in error message
+
+5. Create a `read_tail_events` function that reads last N lines and parses to `Value`.
+
+Let me also look at `read_events` to understand its format:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at `read_events` format and how `build_state_summary` works:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:1065..1095  ▶ search '^fn build_state_summary' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs ✓ (16ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `build_state_summary` and then also look at `read_compatibility_events` in state.rs to understand the format.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:2420..2485 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a thorough understanding. Let me plan the implementation:
+
+### Implementation Plan:
+
+1. **Modify `handle_state_subcommand`** (line 31-40, `state tail`):
+   - Change default from 20 to 50
+   - That's it - simple change
+
+2. **Modify `handle_tail`** (line 404-419):
+   - Add a header note like "(last {limit} events, use --limit 0 for all)"
+
+3. **Modify `handle_state_subcommand`** (line 77-88, `state why`):
+   - Add `--limit N` parsing with default 200
+   - Pass it to `handle_why`
+
+4. **Modify `handle_why`** (line 1003-1017):
+   - Accept `limit: usize` parameter
+   - If limit > 0, read only last `limit` events from tail
+   - If limit == 0, read all events (full scan)
+   - If target not found and limit was used, add note to error
+
+5. **Add `read_tail_events` function** near `read_tail`:
+   - Read last N lines, parse to Vec<Value>
+
+Let me now also check the print_usage function to see if I need to update help text.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the usage/help function and see what test infrastructure exists:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn print_usage' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:14084..14134 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the tests to understand the test patterns:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:14116..14216 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture. Let me implement the changes:
+
+1. **`state tail`**: Change default from 20 to 50; add truncation note
+2. **`state why`**: Add `--limit N` flag with default 200; read only last N events; add truncation note
+
+Let me also check: when `state why` is called with `--summary`, it passes ALL events to `build_state_summary`. With the limit, we'd pass only the limited events, so the summary would be about the tail, not the whole log. That's actually fine behavior - the summary describes what was scanned.
+
+Let me code this up.
+
+### Edit 1: `state tail` — change default from 20 to 50
+
+In `handle_state_subcommand`, line 37: `unwrap_or(20)` → `unwrap_or(50)`
+
+### Edit 2: `handle_tail` — add truncation note
+
+After printing all lines (or before), add a note about the limit.
+
+### Edit 3: `state why` — add `--limit` parsing
+
+In `handle_state_subcommand`, lines 77-88: parse `--limit N` with default 200.
+
+### Edit 4: `handle_why` — accept limit, use tail reading
+
+Modify `handle_why` to accept `limit: usize`, use `read_tail_events` when limit > 0.
+
+### Edit 5: Add `read_tail_events` function
+
+Parse last N lines as JSON events.
+
+### Edit 6: Update `print_usage` help text
+
+Let me now start implementing.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a thorough understanding. Let me implement the changes.
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (12ms)
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with the edits.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 2.3s (6 ✓)
+
+**Step 1:** Change `state tail` default from 20 to 50.
+                    .position(|a| a == "--limit")
+                    .and_then(|i| args.get(i + 1))
+                    .and_then(|s| s.parse::<usize>().ok())
+  -                 .unwrap_or(20);
+  +                 .unwrap_or(50);
+  ✓ Auto-approved: edit: /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (7 → 7 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (7 → 7 lines)
+                    .position(|a| a == "--limit")
+                    .and_then(|i| args.get(i + 1))
+                    .and_then(|s| s.parse::<usize>().ok())
+  -                 .unwrap_or(20);
+  +                 .unwrap_or(50);
+ ✓ (2m 17s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, step 1 done.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2m 18s (2 ✓)
+
+**Step 2:** Add truncation note to `handle_tail`.
+                println!("{line}");
+            }
+        } else {
+  -         for line in lines {
+  -             print_event_line(&line);
+  +         for line in &lines {
+  +             print_event_line(line);
+            }
+  +     }
+  +     if limit > 0 && lines.len() >= limit {
+  +         println!();
+  +         println!("{DIM}(showing last {limit}, use --limit 0 for all){RESET}");
+        }
+    }
+  ✓ Auto-approved: edit: /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (16 → 20 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (4ms)
+  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (16 → 20 lines)
+                println!("{line}");
+            }
+        } else {
+  -         for line in lines {
+  -             print_event_line(&line);
+  +         for line in &lines {
+  +             print_event_line(line);
+            }
+  +     }
+  +     if limit > 0 && lines.len() >= limit {
+  +         println!();
+  +         println!("{DIM}(showing last {limit}, use --limit 0 for all){RESET}");
+        }
+    }
+ ✓ (12.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The auto-check caught the borrow issue. In the `for line in lines` case, `lines` is moved into the iterator. I need to borrow it instead: `for line in &lines`. But wait, `print_event_line` takes `&str`? Let me check... Actually looking at the original code, `print_event_line(&line)` takes a `&String`. So if I iterate over `&lines`, `line` would be `&String`, and `print_event_line(&line)` would be `&&String` which doesn't work.
+
+Let me fix this properly. I'll add `.iter()` or use the borrowed form and adjust:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 16.2s (3 ✓)
+
+Fix the borrow issue — iterate by reference:
+        } else {
+  -         for line in &lines {
+  +         for line in lines.iter() {
+                print_event_line(line);
+            }
+  ✓ Auto-approved: edit: /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (4 → 4 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (4 → 4 lines)
+        } else {
+  -         for line in &lines {
+  +         for line in lines.iter() {
+                print_event_line(line);
+            }
+ ✓ (12.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The problem is in line 411 where `for line in lines` in the JSON branch still moves `lines`. The JSON branch also has `for line in lines`. Let me fix both branches.
+────────────────────────────────────────────────────────────────────────────────
+
+The JSON branch also moves `lines`. Let me fix both:
+            return;
+        };
+        if json {
+  -         for line in lines {
+  +         for line in &lines {
+                println!("{line}");
+            }
+        } else {
+  ✓ Auto-approved: edit: /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (20 → 20 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (20 → 20 lines)
+            return;
+        };
+        if json {
+  -         for line in lines {
+  +         for line in &lines {
+                println!("{line}");
+            }
+        } else {
+ ✓ (2m 17s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if the build passes now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (5.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now step 3: create `read_tail_events`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me create the `read_tail_events` function. I'll place it right after `read_tail`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+**Step 3:** Create `read_tail_events` function. I'll add it right after `read_tail`:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:1053..1063 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The offset is off because the file grew by 4 lines. Let me read around line 1057.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:1065..1085 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. I'll add `read_tail_events` between `read_events` (line 1071) and the struct definitions (line 1073).
+────────────────────────────────────────────────────────────────────────────────
+
+
+    pub(crate) fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+        crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
+  + }
+  + 
+  + /// Read only the last `limit` events from the state log.
+  + /// Returns fewer than `limit` events if the log is smaller.
+  + fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+  +     if limit == 0 {
+  +         return read_events(path);
+  +     }
+  +     let raw_lines = read_tail(path, limit)?;
+  +     let mut events = Vec::with_capacity(raw_lines.len());
+  +     for line in &raw_lines {
+  +         if let Ok(value) = serde_json::from_str::<Value>(line) {
+  +             events.push(value);
+  +         }
+  +     }
+  +     Ok(events)
+    }
+    
+  ... (1 more lines)
+  ✓ Auto-approved: edit: /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (5 → 21 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (5 → 21 lines)
+    pub(crate) fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+        crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
+  + }
+  + 
+  + /// Read only the last `limit` events from the state log.
+  + /// Returns fewer than `limit` events if the log is smaller.
+  + fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+  +     if limit == 0 {
+  +         return read_events(path);
+  +     }
+  +     let raw_lines = read_tail(path, limit)?;
+  +     let mut events = Vec::with_capacity(raw_lines.len());
+  +     for line in &raw_lines {
+  +         if let Ok(value) = serde_json::from_str::<Value>(line) {
+  +             events.push(value);
+  +         }
+  +     }
+  +     Ok(events)
+    }
+    
+  ... (1 more lines)
+ ✓ (19.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Expected — the function isn't called yet. I'll add it to `handle_why` next. Let me continue with step 4 to connect it.
+────────────────────────────────────────────────────────────────────────────────
+
+Expected — not used yet. **Step 4:** Add `--limit` to `state why` and wire it to `read_tail_events`.
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now modify the `state why` handler to parse `--limit` and pass it to `handle_why`. The current code at the `why` match arm is:
+
+```rust
+        "why" => {
+            let summary = args.iter().any(|a| a == "--summary");
+            if summary && args.len() <= 4 {
+                handle_state_summary(args);
+                return;
+            }
+            let Some(id) = args.get(3).filter(|a| a.as_str() != "--summary") else {
+                eprintln!("{YELLOW}  Usage: yoyo state why <event-id|last-failure|patch-id|commit|run-id> [--summary]{RESET}");
+                return;
+            };
+            handle_why(id, summary);
+        }
+```
+
+I need to:
+1. Parse `--limit N` from args
+2. Pass it to `handle_why`
+
+And modify `handle_why` to accept `limit: usize` and use `read_tail_events` when limit > 0.
+
+Let me also handle the case where `state why --summary` is called — in that case `handle_state_summary` is called. Should `handle_state_summary` also get a limit? The task says "state tail and/or state why commands", and describes "5 sessions for why". `--summary` is a sub-option of `why`, so it should respect the limit too.
+
+But `handle_state_summary` is also called directly. Let me keep the change focused and only modify `handle_why`. If `--summary` is used with `--limit`, the limit should be passed through.
+
+Wait, actually looking more carefully: when `summary && args.len() <= 4`, it calls `handle_state_summary(args)`. `handle_state_summary` reads all events. This path doesn't go through `handle_why`. So the `--limit` wouldn't apply to `state why --summary`.
+
+Let me modify the logic so that when `--limit` is specified, it always goes through `handle_why` with the limit parameter, even for `--summary`.
+
+Actually, let me keep it simple:
+- Parse `--limit` always
+- If `--summary` and `args.len() <= 4` (just `state why --summary`), pass limit through somehow
+- If there's an ID, pass limit to `handle_why`
+
+Let me simplify: `handle_why` already handles `--summary` (via the `show_summary` parameter). If `--summary` is provided without an ID, we can handle it by treating it as just the summary path, but also passing limit.
+
+Actually, looking at `handle_state_summary` — it currently reads all events. I should modify it to also respect a limit. But the task says to keep changes focused. Let me just handle it in the dispatch and `handle_why`:
+
+For `handle_state_summary` call: pass the limit by modifying `handle_state_summary` to accept it. Or better, just skip `handle_state_summary` and go directly to `handle_why` with the limit, treating `--summary` without ID as just reading tail events with summary.
+
+Actually, the simplest approach: modify `handle_state_summary` to accept a `limit` parameter for its tail display. And modify it to use `read_tail_events` when limit > 0. But that's a bigger change.
+
+Let me go with the simplest approach that meets the task requirements:
+1. Parse `--limit N` in the `why` dispatch
+2. Pass `limit` to `handle_why`
+3. `handle_why` uses `read_tail_events` when limit > 0, and passes the limited events to both `build_state_summary` (if summary) and `build_why_report`
+4. For the `state why --summary` (no ID) case, still go through `handle_state_summary` but also pass limit — I'll need to modify `handle_state_summary` slightly
+
+Actually, let me look at this again more carefully. The dispatch code:
+
+```rust
+"why" => {
+    let summary = args.iter().any(|a| a == "--summary");
+    if summary && args.len() <= 4 {
+        handle_state_summary(args);
+        return;
+    }
+    let Some(id) = args.get(3).filter(|a| a.as_str() != "--summary") else {
+        ...
+    };
+    handle_why(id, summary);
+}
+```
+
+`args.len() <= 4` means: `["yoyo", "state", "why", "--summary"]` = 4 args. But if `--limit 200` is added: `["yoyo", "state", "why", "--summary", "--limit", "200"]` = 6 args, so the condition fails and it goes to the ID path, where `args.get(3)` is `"--summary"` which is filtered out, so it shows usage error.
+
+The existing logic is fragile. Let me restructure it:
+1. Parse `--summary` and `--limit` flags
+2. Find the ID (first positional arg that's not a flag)
+3. If `--summary` is present and no ID, show summary with limit
+4. If ID is present, call `handle_why` with limit
+
+Let me rewrite the `"why"` match arm.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 16.1s (2 ✓)
+
+Now modify the `why` dispatch and `handle_why`:
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:77..92 ✓ (4ms)
+
+  ✗ Watch failed: `cargo clippy --all-targets -- -D warnings && cargo test`
+[1m[92m    Checking[0m yoyo-ds-harness v0.1.14 (/home/runner/work/yyds-harness/yyds-harness)
+[1m[91merror[0m[1m: function `read_tail_events` is never used[0m
+    [1m[94m--> [0msrc/commands_state.rs:1075:4
+     [1m[94m|[0m
+[1m[94m1075[0m [1m[94m|[0m fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+     [1m[94m|[0m    [1m[91m^^^^^^^^^^^^^^^^[0m
+     [1m[94m|[0m
+     [1m[94m= [0m[1mnote[0m: `-D dead-code` implied by `-D warnings`
+     [1m[94m= [0m[1mhelp[0m: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+[1m[91merror[0m: could not compile `yoyo-ds-harness` (lib) due to 1 previous error
+[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
+[1m[91merror[0m: could not compile `yoyo-ds-harness` (lib test) due to 1 previous error
+  → Auto-fixing (attempt 1/3)...
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to complete the implementation. I left off at adding --limit to state why. Let me resume:
+
+1. Modify the `why` dispatch to parse `--limit N` 
+2. Modify `handle_why` to accept a limit parameter
+3. Use `read_tail_events` when limit is set, fall back to full `read_events` when limit=0
+4. Add truncation note
+5. Update print_usage
+
+Let me continue.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:77..97  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:1003..1028  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:1069..1094 ✓ (29ms)
+ ✓ (19ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to:
+
+1. Modify the `why` dispatch to parse `--limit N` with a default of 200
+2. Modify `handle_why` to accept a limit and use `read_tail_events`
+3. Update `print_usage` 
+4. Also update the help text in the usage error message
+
+Let me also check the `handle_state_summary` path - the `summary` path also reads ALL events. I should add a limit there too since `state why --summary` would scan everything.
+
+Actually, looking at it more carefully:
+- `state why --summary` without an ID goes to `handle_state_summary` which already scans all events
+- `state why <id> --summary` goes to `handle_why` which scans all events
+
+Both scan all events. The task says add `--limit` to `state why`. Let me:
+
+1. Parse `--limit` in the `why` dispatch
+2. Pass it to `handle_why` / `handle_state_summary`
+3. Use `read_tail_events` when limit is non-zero, `read_events` when limit is 0
+4. Default: 200 (this covers several sessions of events)
+
+For `state why` specifically, the default should be 200 because it needs enough context to find related events, parents, evidence etc. A reasonable cap.
+
+Now let me implement all of this atomically.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.0s (3 ✓)
+
+Now I'll modify the `why` dispatch to parse `--limit`, update `handle_why` and `handle_state_summary` to accept a limit, and update the usage text — all in one go to resolve the dead-code warning.
+            "why" => {
+                let summary = args.iter().any(|a| a == "--summary");
+  +             let limit = args
+  +                 .iter()
+  +                 .position(|a| a == "--limit")
+  +                 .and_then(|i| args.get(i + 1))
+  +                 .and_then(|s| s.parse::<usize>().ok())
+  +                 .unwrap_or(200);
+                if summary && args.len() <= 4 {
+  -                 handle_state_summary(args);
+  +                 handle_state_summary(args, limit);
+                    return;
+                }
+  -             let Some(id) = args.get(3).filter(|a| a.as_str() != "--summary") else {
+  -                 eprintln!("{YELLOW}  Usage: yoyo state why <event-id|last-failure|patch-id|commit|run-id> [--summary]{RESET}");
+  +             let Some(id) = args.get(3).filter(|a| a.as_str() != "--summary" && a.as_str() != "--limit" && !a.chars().all(|c| c.is_ascii_digit())) else {
+  +                 eprintln!("{YELLOW}  Usage: yoyo state why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]{RESET}");
+                    return;
+                };
+  -             handle_why(id, summary);
+  ... (2 more lines)
+  ✓ Auto-approved: edit: /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (12 → 18 lines)
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (12 → 18 lines)
+            "why" => {
+                let summary = args.iter().any(|a| a == "--summary");
+  +             let limit = args
+  +                 .iter()
+  +                 .position(|a| a == "--limit")
+  +                 .and_then(|i| args.get(i + 1))
+  +                 .and_then(|s| s.parse::<usize>().ok())
+  +                 .unwrap_or(200);
+                if summary && args.len() <= 4 {
+  -                 handle_state_summary(args);
+  +                 handle_state_summary(args, limit);
+                    return;
+                }
+  -             let Some(id) = args.get(3).filter(|a| a.as_str() != "--summary") else {
+  -                 eprintln!("{YELLOW}  Usage: yoyo state why <event-id|last-failure|patch-id|commit|run-id> [--summary]{RESET}");
+  +             let Some(id) = args.get(3).filter(|a| a.as_str() != "--summary" && a.as_str() != "--limit" && !a.chars().all(|c| c.is_ascii_digit())) else {
+  +                 eprintln!("{YELLOW}  Usage: yoyo state why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]{RESET}");
+                    return;
+                };
+  -             handle_why(id, summary);
+  ... (2 more lines)
+ ✓ (12.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Expected — need to update the function signatures. Let me update handle_why and handle_state_summary.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the function signatures to accept the limit:
+  - fn handle_why(id: &str, show_summary: bool) {
+  + fn handle_why(id: &str, show_summary: bool, limit: usize) {
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  +     let Ok(events) = read_tail_events(&path, limit) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        };
+  ···
+        match build_why_report(&events, id) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  +     }
+  +     if limit > 0 {
+  +         let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
+  +         if events.len() >= limit {
+  +             println!();
+  +             println!("{DIM}(searched last {limit} events of {all_count} total, use --limit 0 for full scan){RESET}");
+  +         } else if events.len() < all_count {
+  +             println!();
+  ... (4 more lines)
+  ✓ Auto-approved: edit: /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (15 → 25 lines)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (15 → 25 lines)
+  - fn handle_why(id: &str, show_summary: bool) {
+  + fn handle_why(id: &str, show_summary: bool, limit: usize) {
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  +     let Ok(events) = read_tail_events(&path, limit) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        };
+  ···
+        match build_why_report(&events, id) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  +     }
+  +     if limit > 0 {
+  +         let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
+  +         if events.len() >= limit {
+  +             println!();
+  +             println!("{DIM}(searched last {limit} events of {all_count} total, use --limit 0 for full scan){RESET}");
+  +         } else if events.len() < all_count {
+  +             println!();
+  ... (4 more lines)
+ ✓ (12.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now fix `handle_state_summary` to accept the limit parameter too.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:1037..1062 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - fn handle_state_summary(args: &[String]) {
+  + fn handle_state_summary(args: &[String], limit: usize) {
+        let path = default_events_path();
+        let show_tail = args.iter().any(|a| a == "--tail");
+  -     let Ok(events) = read_events(&path) else {
+  +     let Ok(events) = read_tail_events(&path, limit) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        };
+        println!("{}", build_state_summary(&events));
+  +     if limit > 0 {
+  +         let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
+  +         if events.len() >= limit {
+  +             println!();
+  +             println!("{DIM}(summary from last {limit} events of {all_count} total, use --limit 0 for full scan){RESET}");
+  +         }
+  +     }
+        if show_tail && !events.is_empty() {
+            println!();
+            println!("Most recent events:");
+  ✓ Auto-approved: edit: /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (21 → 28 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (21 → 28 lines)
+  - fn handle_state_summary(args: &[String]) {
+  + fn handle_state_summary(args: &[String], limit: usize) {
+        let path = default_events_path();
+        let show_tail = args.iter().any(|a| a == "--tail");
+  -     let Ok(events) = read_events(&path) else {
+  +     let Ok(events) = read_tail_events(&path, limit) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        };
+        println!("{}", build_state_summary(&events));
+  +     if limit > 0 {
+  +         let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
+  +         if events.len() >= limit {
+  +             println!();
+  +             println!("{DIM}(summary from last {limit} events of {all_count} total, use --limit 0 for full scan){RESET}");
+  +         }
+  +     }
+        if show_tail && !events.is_empty() {
+            println!();
+            println!("Most recent events:");
+ ✓ (2m 16s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now update the print_usage to mention --limit for why, and also update the why usage error message to include --limit. Then let me run the checks.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the usage text and error message:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'why <event-id' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the print_usage to include --limit for why:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -   why <event-id|last-failure|patch-id|commit|run-id>
+  +   why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]
+  ✓ Auto-approved: edit: /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (1 → 1 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (1 → 1 lines)
+  -   why <event-id|last-failure|patch-id|commit|run-id>
+  +   why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]
+ ✓ (2m 16s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to handle a tricky issue with the `why` dispatch: the id parsing. When someone runs `state why --limit 200`, args would be `["state", "why", "--limit", "200"]`. The id parsing logic needs to properly skip `--limit` values. Let me look at the current code:
+
+```rust
+let Some(id) = args.get(3).filter(|a| a.as_str() != "--summary" && a.as_str() != "--limit" && !a.chars().all(|c| c.is_ascii_digit())) else {
+```
+
+Wait, this has a problem. If args is `["state", "why", "some-id", "--limit", "200"]`, then `args.get(3)` is `"some-id"` which is not `--summary`, not `--limit`, and not all digits. That's correct.
+
+If args is `["state", "why", "--limit", "200"]`, then `args.get(3)` is `"--limit"` which passes the filter (it IS `--limit`), so the `filter` returns `None`, and we fall to the else branch which prints usage. But wait — someone might legitimately run `state why --limit 200` without an id to get a summary. But in the dispatch logic, the summary path is checked first: `if summary && args.len() <= 4`. But `args.len()` would be 4 (`state why --summary --limit 200`? No, 4 would be `state why --summary`, only 3 entries). Actually, `args` include the full path: `["yoyo", "state", "why", "--summary", "--limit", "200"]` is 6 entries. So `args.len() <= 4` means `["yoyo", "state", "why", "--summary"]` — exactly 4 args with just `--summary` and no extra flags. With `--limit 200`, it would be 6, so `args.len() <= 4` is false, and we'd fall through to the id lookup.
+
+Hmm, I think the current logic is a bit fragile. Let me look at this more carefully:
+
+The `why` subcommand has these cases:
+1. `state why --summary` → handle_state_summary (shows full summary)
+2. `state why --summary --limit 200` → This should also go to handle_state_summary but with limit
+3. `state why some-id` → handle_why
+4. `state why some-id --summary` → handle_why with summary
+5. `state why some-id --limit 200` → handle_why with limit
+6. `state why some-id --summary --limit 200` → handle_why with both
+
+Currently for cases 1 and 2, the check is `summary && args.len() <= 4`. With `--limit 200`, args.len() becomes 6, so case 2 would fall through to the id lookup, and `args.get(3)` would be `"--limit"`, which would cause the usage error.
+
+I need to fix this. The summary-only case should check if the next arg after "why" is not an id. Let me think of a cleaner approach:
+
+Actually, looking at the task requirements more carefully — the `--summary` flag without an ID is a separate feature. Let me handle the case where `--summary` is the only non-flag arg (no id). I should check if args[3] starts with `--`, meaning there's no id:
+
+Let me rewrite this more robustly.
+────────────────────────────────────────────────────────────────────────────────
+
+There's an edge case I need to fix: `state why --summary --limit 200` would fail because args.len() > 4 but there's no id. Let me fix the dispatch logic:
+                    .and_then(|i| args.get(i + 1))
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(200);
+  -             if summary && args.len() <= 4 {
+  +             // No explicit id? Show summary only (--summary without id path)
+  +             let id_candidate = args.get(3).filter(|a| !a.starts_with("--") && !a.chars().all(|c| c.is_ascii_digit()));
+  +             if id_candidate.is_none() {
+                    handle_state_summary(args, limit);
+                    return;
+                }
+  -             let Some(id) = args.get(3).filter(|a| a.as_str() != "--summary" && a.as_str() != "--limit" && !a.chars().all(|c| c.is_ascii_digit())) else {
+  -                 eprintln!("{YELLOW}  Usage: yoyo state why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]{RESET}");
+  -                 return;
+  -             };
+  +             let id = id_candidate.unwrap();
+                handle_why(id, summary, limit);
+            }
+  ✓ Auto-approved: edit: /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (18 → 17 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (18 → 17 lines)
+                    .and_then(|i| args.get(i + 1))
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(200);
+  -             if summary && args.len() <= 4 {
+  +             // No explicit id? Show summary only (--summary without id path)
+  +             let id_candidate = args.get(3).filter(|a| !a.starts_with("--") && !a.chars().all(|c| c.is_ascii_digit()));
+  +             if id_candidate.is_none() {
+                    handle_state_summary(args, limit);
+                    return;
+                }
+  -             let Some(id) = args.get(3).filter(|a| a.as_str() != "--summary" && a.as_str() != "--limit" && !a.chars().all(|c| c.is_ascii_digit())) else {
+  -                 eprintln!("{YELLOW}  Usage: yoyo state why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]{RESET}");
+  -                 return;
+  -             };
+  +             let id = id_candidate.unwrap();
+                handle_why(id, summary, limit);
+            }
+ ✓ (2m 17s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now run the full check suite.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the full CI suite:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (6ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt && cargo clippy --al… ✓ (20.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clippy passed. Now build and test.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 23.2s (4 ✓)
+
+Clippy clean. Now build and test:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (12.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now tests:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1…

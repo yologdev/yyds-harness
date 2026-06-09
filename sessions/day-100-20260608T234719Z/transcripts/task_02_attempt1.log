@@ -1,0 +1,693 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task:
+
+1. Wire crash diagnostics into DeepSeek provider init failure path
+2. Currently only state init failure in `src/lib.rs` stashes diagnostic context
+3. Need to find at least one additional failure path in `src/deepseek.rs` or `src/lib.rs`
+4. Remove `#[allow(dead_code)]` from `stash_diagnostic_error` in `src/state.rs`
+
+Let me start by examining the relevant files to understand the current state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant parts of state.rs, deepseek.rs, and lib.rs to understand the current infrastructure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:1..101  ▶ search 'stash_diagnostic_error|take_diagnostic_error|mark_run_comple…' in /home/runner/work/yyds-harness/yyds-harness/src ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, no results for `stash_diagnostic_error` or `take_diagnostic_error`? But I just read it in state.rs. Let me search in the full state.rs file to find these, and also search across the whole project to find usage.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'stash_diagnostic_error|take_diagnostic_error|mark_run_comple…'  ▶ search 'store_run_error|exit_with_state' ✗ (4.8s)
+    │ Search error: grep: ./.yoyo/state/state.sqlite: binary file matches
+ ✗ (4.8s)
+    │ Search error: grep: ./.yoyo/state/state.sqlite: binary file matches
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to use bash to search and exclude binary files.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.4s (0 ✓, 2 ✗)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn "stash_diagnostic_error\|take_diagnostic_error\|mark_run_completed_with… ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me understand the current usage:
+
+1. `src/lib.rs:974` - calls `mark_run_completed_with_error` with exit code
+2. `src/lib.rs:1032` - stashes diagnostic for state init failure
+3. `src/state.rs:71` - the function itself with `#[allow(dead_code)]`
+4. `src/state.rs:78` - `take_diagnostic_error`
+5. `src/state.rs:367` - `mark_run_completed_with_error` uses `take_diagnostic_error`
+
+Let me read the relevant sections of lib.rs and deepseek.rs to understand the failure paths.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:955..1035  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:350..400 ✓ (16ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current state:
+
+1. `stash_diagnostic_error` exists in `src/state.rs` with `#[allow(dead_code)]` because it's only called from one place (`src/lib.rs:1032`).
+2. When `state::init_global` fails, it stashes the diagnostic and then calls `exit_with_state(1)`, which calls `mark_run_completed_with_error`, which uses `take_diagnostic_error()`.
+3. But there are other failure paths that cause early exit without stashing diagnostics.
+
+Now let me look at `src/deepseek.rs` to find the DeepSeek provider initialization and transport failure paths. Let me search for key failure points.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.0s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn route_for_task|fn active_harness_genome|fn build_agent|fn…' in /home/runner/work/yyds-harness/yyds-harness/src ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly in deepseek.rs for the failure paths and the main entry point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "fn route_for_task\|fn active_harness_genome\|fn build_agent\|fn create_… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the key failure paths in lib.rs where `exit_with_state` is called. These are presumably the places where early crashes happen. Let me look at the key early-exit points in `run_cli()`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:440..540  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:1030..1230 ✓ (16ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the key failure paths. Let me look at the early exit points more carefully. The key insight from the task description is:
+
+1. DeepSeek API client creation failure (wrong API key, network unreachable)
+2. Model routing or config validation failure
+3. Transport-level errors before the first prompt
+
+Let me look at `build_agent` in agent_builder.rs and the `connect_external_servers` function.
+
+Let me also find where exit_with_state is called in the early part of run_cli, before the agent starts making tool calls.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.9s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:638..738  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:680..880 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the structure. Let me look at the `build_agent` and `connect_external_servers` to find early failure paths. The task mentions:
+
+1. DeepSeek API client creation failure (wrong API key, network unreachable)
+2. Model routing or config validation failure
+3. Transport-level errors before the first prompt
+
+Let me look at `agent_builder.rs` for the `build_agent` function and the deepseek route_for_task function to find potential failure points.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.0s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/agent_builder.rs:540..600  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:774..854 ✓ (16ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the early failure paths. The key paths where crashes happen BEFORE the first tool call:
+
+1. `state::init_global` failure (already handled at line 1032)
+2. Provider initialization / API client creation 
+3. DeepSeek model routing / config validation
+4. Transport errors before first prompt
+
+The `build_agent()` method in agent_builder.rs doesn't error — it creates agents synchronously. The actual API client creation happens later when the first prompt is run. So the failure would happen during `run_prompt` etc.
+
+But looking more closely, there are also early exit paths in `run_cli` that might not be stashing diagnostics:
+- `run_setup_wizard_if_needed` returns false (line 1088) — returns, not exit_with_state
+- `connect_external_servers` might fail
+
+Let me look at `connect_external_servers` and the `run_setup_wizard_if_needed` to see if they have early exit paths.
+
+Actually, let me re-think. The task says:
+> Day 100 had eight sessions crash before firing a single tool. The state log captured "started → completed → error" but nothing about *why*.
+
+So the sessions are starting, then crashing. The `RunCompleted` event fires (via `exit_with_state`, which calls `mark_run_completed_with_error`), but there's no diagnostic detail because nothing calls `stash_diagnostic_error`.
+
+Looking at the code flow:
+1. `state::init_global` — already handles stashing diagnostic
+2. `record_session_started` — fires at line 1120
+3. Then various operations happen...
+
+The issue is that the agent might crash with an API error during `run_prompt` or similar, and that calls `exit_with_state(1)` at lines like 478, 753, 857, etc. But those don't stash a diagnostic.
+
+Actually, let me look at the flow more carefully. The `build_agent()` and `connect_external_servers()` calls don't actually make API calls to DeepSeek — they just construct agent objects and connect to MCP servers. The first API call happens inside `run_prompt`.
+
+But wait, the task says "DeepSeek API client creation failure (wrong API key, network unreachable)". Let me look at what happens when the agent is created with a bad API key. In yoagent's AnthropicProvider/OpenAiCompatProvider constructors, does the client creation happen lazily (on first API call)?
+
+Given the yoagent architecture, the actual HTTP client and API key validation typically happens on the first API call, not during agent construction. So a bad API key would fail on the first `run_prompt` call.
+
+Let me look at `maybe_record_deepseek_api_failure` and the error path where the first prompt fails:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.7s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "maybe_record_deepseek_api_failure" --include="*.rs" src/lib.rs  ▶ $ grep -n "last_api_error" --include="*.rs" src/lib.rs | head -20 ✓ (10ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `maybe_record_deepseek_api_failure` to understand what it does:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:280..330 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture. `maybe_record_deepseek_api_failure` already records transport failures from `response.last_api_error`. But the key insight from the task is that this fires AFTER a tool call, while the crash happens BEFORE. Let me look at the `record_deepseek_transport_failure` function.
+
+Let me re-read the task description carefully:
+
+> Day 100 had eight sessions crash before firing a single tool. The state log captured "started → completed → error" but nothing about *why*.
+
+> The trajectory already shows this gap: "no provider errors detected" in 10 sessions — but that's because provider failures before the first tool call don't produce error events with detail, they just exit with a red light.
+
+So the existing path records errors from `response.last_api_error`, but there are crashes that happen before the agent can even make a tool call. The question is: what are those crashes?
+
+Looking at `run_cli`:
+1. `parse_args` - could fail, but exits early via return
+2. `state::init_global` - already handled
+3. `build_agent` - sync, doesn't fail
+4. `connect_external_servers` - could this fail? Let me check
+5. `record_session_started` - records the session
+6. `run_setup_wizard_if_needed` - returns false to exit
+7. Various early return paths before any tool call
+
+Wait, but the `record_session_started` fires at line 1120, and `exit_with_state` fires `mark_run_completed_with_error`. So if a session crashes between `record_session_started` and `exit_with_state`, we'd see "started → completed → error" — but without diagnostic context because `stash_diagnostic_error` was never called.
+
+Now the task says to wire crash diagnostics into:
+1. DeepSeek API client creation failure
+2. Model routing or config validation failure
+3. Transport-level errors before the first prompt
+
+Let me look at `run_setup_wizard_if_needed` and `connect_external_servers` to see if they have failure paths.
+
+Actually, I think the most impactful place to add `stash_diagnostic_error` is:
+1. The `exit_with_state` call at line 458 (image read error)
+2. The `exit_with_state` call at line 478/643/753/857 (API errors after prompt runs)
+
+But wait, those ARE after tool calls potentially. The key issue is crashes that happen before the agent can make any call at all.
+
+Let me look more carefully at what happens between `record_session_started` and the first prompt run. Also let me look at `run_setup_wizard_if_needed`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "fn run_setup_wizard_if_needed\|fn connect_external_servers" --include="… ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `connect_external_servers` to see if it has failure paths:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/agent_builder.rs:100..220 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `connect_external_servers` doesn't really have fatal failure paths - it just logs warnings and continues.
+
+Let me look at the deepseek-specific code to find places where provider initialization happens. Let me look at the `route_for_task` and the `deepseek_request_meta` or any API client creation:
+
+Actually, wait. Looking at the `agent_builder.rs` code more carefully, I see that when the provider isn't "anthropic", "google", or "bedrock", it uses `OpenAiCompatProvider`. The provider initialization with DeepSeek would be via the OpenAI-compatible path. The actual API key validation happens at first request time, not at build time.
+
+So the crashes happen:
+1. During `run_prompt` -> the API call returns an error
+2. The response has `last_api_error` set
+3. `maybe_record_deepseek_api_failure` records it 
+4. `exit_with_state(1)` is called
+5. `mark_run_completed_with_error` fires but WITHOUT `stash_diagnostic_error` being called first
+
+So the fix is: before calling `exit_with_state(1)` in the API error paths, call `stash_diagnostic_error` with the actual error detail.
+
+But the task says "Wire crash diagnostics into DeepSeek provider init failure path". Let me look more broadly at where deepseek-specific initialization happens.
+
+Let me search for where deepseek_native is used and where the provider is "deepseek":
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "provider.*deepseek\|deepseek.*provider\|DEEPSEEK_API_KEY\|deepseek.*ini…  ▶ $ grep -n "fn classify_deepseek_transport_failure\|fn extract_deepseek_transport_s… ✓ (22ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `record_deepseek_transport_failure` function and the area around it:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs:940..1020 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a better picture. Let me also check what the `record_session_started` function looks like:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "fn record_session_started\|fn record_deepseek_transport_failure" --incl… ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `record_session_started` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:409..469 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me analyze the situation:
+
+**Current state:**
+1. `stash_diagnostic_error` exists in `state.rs` with `#[allow(dead_code)]` because it's only called once (in `lib.rs:1032` for state init failure)
+2. When API errors happen (e.g., `run_prompt` returns with `last_api_error`), `maybe_record_deepseek_api_failure` records a `FailureObserved` event but does NOT stash a diagnostic for the `RunCompleted` event
+3. Then `exit_with_state(1)` calls `mark_run_completed_with_error` which only includes `error_detail` if `stash_diagnostic_error` was called previously
+
+**The fix:**
+I need to call `stash_diagnostic_error` before `exit_with_state` in the API error paths. The most impactful path would be:
+
+1. In `run_single_prompt` at line 478: `exit_with_state(1)` after API error
+2. In `run_piped_mode` at line 753: `exit_with_state(1)` after API error  
+3. In `run_piped_mode` at line 857: `exit_with_state(1)` after should_exit_error
+
+But wait, the task says "Wire crash diagnostics into DeepSeek provider init failure path." Let me think about what "provider init" means more carefully.
+
+The `build_agent` call at line 1094 creates the agent but doesn't make any API calls. The first actual API call happens in `run_single_prompt` -> `run_prompt_stream_json` or `run_prompt`.
+
+Actually, looking at the existing error recording pattern more carefully:
+
+Looking at lines 460-478 in `run_single_prompt`:
+```rust
+if response.last_api_error.is_some() {
+    maybe_record_deepseek_api_failure(
+        deepseek_native,
+        &agent_config.provider,
+        &agent_config.model,
+        &response,
+        "single_prompt_stream_json_api_failure",
+    );
+    exit_with_state(1);
+}
+```
+
+This records a `FailureObserved` event, but the `RunCompleted` error payload won't include the diagnostic because `stash_diagnostic_error` wasn't called.
+
+The fix should be: before `exit_with_state(1)`, call `stash_diagnostic_error` with the actual error. The `response.last_api_error` is available.
+
+Let me also think about the "DeepSeek provider init" angle. There's a function `active_harness_genome()` called during state init. If that fails, would we see a crash? Let me check...
+
+Looking at `active_harness_genome` (line 774-777):
+```rust
+pub fn active_harness_genome() -> DeepSeekHarnessGenome {
+    let (config, _) = crate::config::load_deepseek_config_file();
+    DeepSeekHarnessGenome::from_config(&config)
+}
+```
+
+This is fallible via `DeepSeekHarnessGenome::from_config` but it handles things gracefully (it doesn't return a Result but constructs a default).
+
+OK, I think the most impactful change that addresses the task's goals is:
+
+1. Add `stash_diagnostic_error` calls before `exit_with_state(1)` in the API failure paths
+2. Specifically, I should add it in the places where `maybe_record_deepseek_api_failure` is called and then `exit_with_state` is called
+
+But wait, looking at `run_single_prompt` more carefully - the `exit_with_state` at line 642 is for `should_exit_error`, and line 478 is for stream-json API failures. Both of these have `last_api_error` available.
+
+Let me look at line 606 where `maybe_record_deepseek_api_failure` is called next:
+```rust
+maybe_record_deepseek_api_failure(
+    deepseek_native,
+    &agent_config.provider,
+    &agent_config.model,
+    &response,
+    "single_prompt_api_failure",
+);
+```
+
+And then later:
+```rust
+if should_exit_error {
+    exit_with_state(1);
+}
+```
+
+OK so there are multiple points. Let me look at the full flow in `run_single_prompt` more carefully.
+
+Let me approach this differently. The task says:
+> Wire crash diagnostics into DeepSeek provider init failure path
+
+The meaning of "provider init failure path" could be:
+1. When the DeepSeek provider can't initialize (bad API key, network issues)
+2. When the model config is invalid
+
+In the current architecture, "provider init" happens lazily - the first API call fails. So wiring diagnostics means ensuring that when the first API call fails, the diagnostic is stashed before calling `exit_with_state`.
+
+The most strategic place to do this would be in `maybe_record_deepseek_api_failure` itself, but that's only called when `deepseek_native && provider == "deepseek"`. We need a broader solution.
+
+Let me think about what approach would give the most coverage:
+
+Option A: Modify `exit_with_state` itself to call `stash_diagnostic_error` when no diagnostic has been stashed yet - but this would require knowing the error context.
+
+Option B: Add `stash_diagnostic_error` in each API error path before `exit_with_state`.
+
+Option C: Modify `maybe_record_deepseek_api_failure` to also stash the diagnostic.
+
+I think Option B is the most targeted and clear approach. Let me identify the key paths:
+
+1. `run_single_prompt` line 478: stream-json API failure → `exit_with_state(1)` 
+2. `run_single_prompt` line 642: `should_exit_error` → `exit_with_state(1)`
+3. `run_piped_mode` line 753: stream-json API failure → `exit_with_state(1)`
+4. `run_piped_mode` line 857: `should_exit_error` → `exit_with_state(1)`
+
+For paths 2 and 4, the `should_exit_error` happens after `try_fallback_prompt`, which already has the `response.last_api_error` context.
+
+Actually, let me re-read the code around line 600-650 to understand the fallback retry flow:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:580..680 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me plan the changes:
+
+1. **Remove `#[allow(dead_code)]` from `stash_diagnostic_error`** in `src/state.rs` - this is straightforward.
+
+2. **Add `stash_diagnostic_error` calls before `exit_with_state(1)` in API error paths**. The key paths are:
+
+   a. `run_single_prompt` line 478: stream-json API failure - `response.last_api_error` is available
+   b. `run_single_prompt` line 588: should_exit_error from text+image path - `final_response.last_api_error` may be available
+   c. `run_single_prompt` line 594: image read error
+   d. `run_single_prompt` line 642: should_exit_error from text path - `final_response.last_api_error` may be available
+   e. `run_piped_mode` line 753: stream-json API failure - `response.last_api_error` is available
+   f. `run_piped_mode` line 857: should_exit_error - same
+
+The most impactful ones are a, d, e, f since those are the API error paths.
+
+But wait, I need to think more carefully. In paths d and f, `should_exit_error` means the fallback also failed. At that point `final_response` comes from `try_fallback_prompt`. Let me check what `try_fallback_prompt` returns.
+
+Actually let me check if there's a simpler, more central place. The function `maybe_record_deepseek_api_failure` already has access to the error. But it's gated on `deepseek_native && provider == "deepseek"`.
+
+What if I modify `maybe_record_deepseek_api_failure` to also stash the diagnostic? Let me check - the function is called, and THEN `exit_with_state` is called later. But the function currently `returns` early if not deepseek native or not deepseek provider. So the stash would only happen for deepseek providers.
+
+The task says "Wire crash diagnostics into DeepSeek provider init failure path" - this is about DeepSeek specifically. So modifying `maybe_record_deepseek_api_failure` to also stash would make sense.
+
+But wait, the `maybe_record_deepseek_api_failure` function is called for ALL API failures, not just init failures. Is it OK to stash in all those cases? Yes, because:
+1. `stash_diagnostic_error` simply sets a thread-local variable
+2. `take_diagnostic_error` reads and clears it
+3. `mark_run_completed_with_error` calls `take_diagnostic_error` and includes it in the payload if present
+4. If `stash_diagnostic_error` is called multiple times, the last one wins
+5. If the session doesn't crash, `exit_with_state(0)` is called and the stashed value is never used (though it's still in the thread-local)
+
+Actually, let me check: if the session succeeds and calls `exit_with_state(0)`, `mark_run_completed` is called instead of `mark_run_completed_with_error`, so `take_diagnostic_error` is NOT called. The stashed value would linger but the process exits, so it's fine.
+
+So modifying `maybe_record_deepseek_api_failure` to stash is safe because:
+- On success: `mark_run_completed` is called which doesn't use the stashed value → no harm
+- On failure: `mark_run_completed_with_error` is called → includes the stashed value → diagnostic is captured
+
+Let me implement this. The approach:
+
+1. In `src/lib.rs`, modify `maybe_record_deepseek_api_failure` to also call `state::stash_diagnostic_error`
+2. Remove `#[allow(dead_code)]` from `stash_diagnostic_error` in `src/state.rs`
+
+But wait, I want to be more targeted. The function `maybe_record_deepseek_api_failure` already records a `FailureObserved` event. Adding a stash call there means every API failure (not just init) would stash a diagnostic. That's actually fine and desirable.
+
+However, looking more carefully, there are also `exit_with_state` calls that aren't preceded by `maybe_record_deepseek_api_failure`:
+- Line 458: image read error
+- Line 594: image file read error  
+- Line 642: should_exit_error (but this follows the try_fallback and maybe_record was already called)
+- Line 720: stdin read error
+- Line 725: empty stdin
+
+For those, there's no `last_api_error` available. But those are operational errors, not provider init errors.
+
+For the image read error at line 458, the error is available as `e`.
+
+Actually, wait - let me re-read the task requirements more carefully:
+
+> Objective: Expand the crash diagnostic reporter (stash_diagnostic_error / take_diagnostic_error) to cover DeepSeek provider initialization and transport failures.
+
+> Wire `state::stash_diagnostic_error(&format!("provider init: {e}"))` (or similar) into the failure path
+
+So the task specifically wants provider init / transport failures wired in. The most impactful single change would be:
+
+**Modify `maybe_record_deepseek_api_failure` to also call `stash_diagnostic_error`**, since this is the central function for recording API failures. This way, all API errors get both the `FailureObserved` event AND the stashed diagnostic for `RunCompleted`.
+
+But actually, I should also look at the `exit_with_state` calls that don't go through `maybe_record_deepseek_api_failure`. Let me see if there's a more systematic approach.
+
+Actually, looking at `run_single_prompt` line 606:
+```rust
+maybe_record_deepseek_api_failure(
+    deepseek_native,
+    &agent_config.provider,
+    &agent_config.model,
+    &initial,
+    "single_prompt_api_failure",
+);
+```
+
+And then lines 614-643 for fallback retry → `exit_with_state(1)` at 642.
+
+In this path, `maybe_record_deepseek_api_failure` is called with the `initial` response, but then `try_fallback_prompt` is called, and if that also fails, `exit_with_state(1)` is called. The stashed diagnostic would come from the `initial` error, not the fallback error. But the initial error is still useful.
+
+Similarly, in `run_piped_mode` line 794:
+```rust
+maybe_record_deepseek_api_failure(
+    deepseek_native,
+    &agent_config.provider,
+    &agent_config.model,
+    &initial,
+    "piped_api_failure",
+);
+```
+
+And then line 856-857:
+```rust
+if should_exit_error {
+    exit_with_state(1);
+}
+```
+
+OK, let me go with the approach of modifying `maybe_record_deepseek_api_failure` to stash the diagnostic. This directly addresses the "provider init" failure path because the first API failure is typically a provider init failure, and `maybe_record_deepseek_api_failure` is called on it.
+
+But wait, `maybe_record_deepseek_api_failure` is called on ALL API failures, even those that happen after successful tool calls (e.g., watch mode after prompt). That's actually fine - if the process crashes after, the stashed diagnostic helps. If it doesn't crash, `exit_with_state(0)` handles it.
+
+Now let me also check: are there any `exit_with_state` calls that happen BEFORE `maybe_record_deepseek_api_failure` is called?
+
+Looking at the flow in `run_single_prompt`:
+- Line 428-469: stream-json prompt → if error, `exit_with_state(1)` at 478
+  - But `maybe_record_deepseek_api_failure` IS called at line 471 BEFORE `exit_with_state`
+- Line 501-509: FIM route → returns, not exits
+- Line 526-595: image prompt path → various exit paths
+  - Line 546: `maybe_record_deepseek_api_failure` → then fallback → `exit_with_state(1)` at 588 or 594
+  - Wait, line 588 is inside the `should_exit_error` block. Let me re-read...
+
+Actually looking at lines 538-595 more carefully:
+
+```
+let initial = run_prompt_with_content(...);  // line 559
+// line 546: maybe_record_deepseek_api_failure with 'initial'
+// line 556: try_fallback_prompt with 'initial'
+// if should_exit_error: exit_with_state(1) at 588
+```
+
+So yes, `maybe_record_deepseek_api_failure` IS called before `exit_with_state` in all the key paths.
+
+Now, let me also think about whether I should add `stash_diagnostic_error` at the `exit_with_state` calls for non-API errors (image read, stdin errors). The task focuses on provider/API failures, so I'll focus there.
+
+Let me also check: does `maybe_record_deepseek_api_failure` have access to the full error text? Yes:
+```rust
+fn maybe_record_deepseek_api_failure(
+    deepseek_native: bool,
+    provider: &str,
+    model: &str,
+    response: &PromptOutcome,
+    source: &str,
+) {
+    if !deepseek_native || provider != "deepseek" {
+        return;
+    }
+    let Some(error) = response.last_api_error.as_deref() else {
+        return;
+    };
+    crate::deepseek::record_deepseek_transport_failure(source, model, error);
+}
+```
+
+So I can call `state::stash_diagnostic_error(&format!("deepseek api: {error} (source={source})"))` there.
+
+But wait - the function currently only records when `deepseek_native && provider == "deepseek"`. The task says "DeepSeek provider init failure path", so this is correct. But what about non-DeepSeek providers? The task specifically says "DeepSeek", so focusing on DeepSeek is appropriate.
+
+However, there's a subtlety: `maybe_record_deepseek_api_failure` is called with the `initial` response, but the actual crash exit may happen after `try_fallback_prompt` retries. The stashed diagnostic would reflect the initial error, not the fallback error. For crash diagnostics, this is still valuable - it tells us the initial API call failed, even if retries were attempted.
+
+Let me plan my edits:
+
+1. **`src/state.rs`**: Remove `#[allow(dead_code)]` from `stash_diagnostic_error`
+2. **`src/lib.rs`**: In `maybe_record_deepseek_api_failure`, add `state::stash_diagnostic_error(...)` before the return
+
+Wait, but `maybe_record_deepseek_api_failure` currently:
+```rust
+fn maybe_record_deepseek_api_failure(...) {
+    if !deepseek_native || provider != "deepseek" {
+        return;
+    }
+    let Some(error) = response.last_api_error.as_deref() else {
+        return;
+    };
+    crate::deepseek::record_deepseek_transport_failure(source, model, error);
+}
+```
+
+I should add the stash call. But the task mentions `state::stash_diagnostic_error` not `crate::state::stash_diagnostic_error`. Let me check what's used in the file... At line 1032, `state::stash_diagnostic_error(...)` is the pattern. The import likely brings `state` into scope.
+
+Let me check the imports at the top of lib.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs (30 lines) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the imports to confirm `state` is in scope:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "^use\|^mod" src/lib.rs | head -30 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "^use\|^mod" src/lib.rs | head -50 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `state` module is declared at some point. Let me find it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "^mod state" src/lib.rs ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I understand the code structure. Let me finalize my plan:
+
+1. **`src/state.rs`**: Remove `#[allow(dead_code)]` from line 70 before `stash_diagnostic_error`
+2. **`src/lib.rs`**: In `maybe_record_deepseek_api_failure` (line 284-298), add a call to `state::stash_diagnostic_error` when an error is detected
+
+Let me re-read the `maybe_record_deepseek_api_failure` function one more time to make sure my edit is correct:
+
+```rust
+fn maybe_record_deepseek_api_failure(
+    deepseek_native: bool,
+    provider: &str,
+    model: &str,
+    response: &PromptOutcome,
+    source: &str,
+) {
+    if !deepseek_native || provider != "deepseek" {
+        return;
+    }
+    let Some(error) = response.last_api_error.as_deref() else {
+        return;
+    };
+    crate::deepseek::record_deepseek_transport_failure(source, model, error);
+}
+```
+
+I need to add `state::stash_diagnostic_error(&format!("provider api: {error} (source={source})"));` after the error is extracted.
+
+But wait, I also need to think about whether this function can be called from contexts where the state isn't initialized yet. At this point in the code (after `run_prompt` returns), `state::init_global` has already been called successfully (line 1034 would have tried to exit if it failed), so `stash_diagnostic_error` is safe to call - it just sets a thread-local variable.
+
+Also, I should consider whether there's an additional place to wire into. Let me look at the `run_single_prompt` early return at line 478:
+
+```rust
+if response.last_api_error.is_some() {
+    maybe_record_deepseek_api_failure(
+        deepseek_native,
+        &agent_config.provider,
+        &agent_config.model,
+        &response,
+        "single_prompt_stream_json_api_failure",
+    );
+    exit_with_state(1);
+}
+```
+
+In this case, `maybe_record_deepseek_api_failure` is called before `exit_with_state`. If I add `stash_diagnostic_error` inside `maybe_record_deepseek_api_failure`, the diagnostic will be stashed before `exit_with_state` calls `mark_run_completed_with_error`. 
+
+Now, there's one more concern. In the fallback retry paths, `maybe_record_deepseek_api_failure` is called with the `initial` response, but then `try_fallback_prompt` is attempted. If the fallback succeeds, `should_exit_error` is false and `exit_with_state(0)` is eventually called. In that case, the stashed diagnostic is never consumed, but that's OK because the process exits.
+
+Actually wait - does `run_single_prompt` always end with `exit_with_state`? Let me check the end of that function...
+
+Looking at lines 669-692:
+```
+format::maybe_ring_bell(prompt_start.elapsed());
+if print_mode { ... }
+else if wants_json_output { ... }
+else { write_output_file(...); }
+if CHECKPOINT_TRIGGERED.load(Ordering::SeqCst) {
+    exit_with_state(2);
+}
+```
+
+It returns normally (falls through) if CHECKPOINT_TRIGGERED is false. So the function returns to `run_cli` line 1147:
+```
+run_single_prompt(...).await;
+return;
+```
+
+Then `run_cli` returns. But `run_cli`'s caller presumably handles the process exit. Let me check how `run_cli` is called:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "run_cli" src/main.rs src/lib.rs | head -10 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the main function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn "fn main\|run_cli" src/ | head -10 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the actual main entry point:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn "async fn main\|#\[tokio::main\]" src/ | head -5 ✓ (9ms)
+
+  ✓ Watch passed: `cargo clippy --all-targets -- -D warnings && cargo test`
+
