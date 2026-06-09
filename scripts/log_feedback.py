@@ -600,6 +600,48 @@ def task_turn_metrics(session_dir: Path) -> dict[str, Any]:
     }
 
 
+def payload_int(payload: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return parse_count(value)
+            except ValueError:
+                continue
+    return None
+
+
+def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
+    hit_tokens = 0
+    miss_tokens = 0
+    event_count = 0
+    for event in load_events(session_dir / "state" / "events.jsonl"):
+        if event_kind(event) != "CacheMetricsRecorded":
+            continue
+        payload = event_payload(event)
+        hit = payload_int(payload, "prompt_cache_hit_tokens", "cache_hit_tokens")
+        miss = payload_int(payload, "prompt_cache_miss_tokens", "cache_miss_tokens")
+        if hit is None and miss is None:
+            continue
+        hit_tokens += hit or 0
+        miss_tokens += miss or 0
+        event_count += 1
+    if event_count == 0:
+        return {}
+    total = hit_tokens + miss_tokens
+    return {
+        "deepseek_cache_hit_ratio": round(hit_tokens / total, 6) if total > 0 else None,
+        "deepseek_cache_hit_tokens": hit_tokens,
+        "deepseek_cache_miss_tokens": miss_tokens,
+        "deepseek_cache_metric_source": "state",
+        "deepseek_cache_metric_event_count": event_count,
+    }
+
+
 def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     manifest = load_json(session_dir / "tasks" / "manifest.json")
     planner = manifest.get("planner") if isinstance(manifest.get("planner"), dict) else {}
@@ -827,6 +869,7 @@ def build_assessment(
     audit_exists = (session_dir / "audit.jsonl").is_file()
     parsed = parse_log(log_text) if log_available else parse_log("")
     turn_metrics = task_turn_metrics(session_dir)
+    cache_metrics = state_cache_metrics(session_dir)
     previous = previous_feedback(session_dir)
     recurrences = recurrence_metrics(parsed["failure_fingerprints"], previous)
 
@@ -891,6 +934,7 @@ def build_assessment(
         **parsed,
         **artifact_metrics,
         **turn_metrics,
+        **cache_metrics,
         **recurrences,
     }
     metrics["coding_log_score"] = score_assessment(metrics)

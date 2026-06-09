@@ -411,6 +411,58 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["evaluator_unverified_count"], 1)
             self.assertEqual(metrics["task_unlanded_source_count"], 1)
 
+    def test_log_feedback_uses_state_cache_metric_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            append_event(
+                session / "state/events.jsonl",
+                "CacheMetricsRecorded",
+                {
+                    "model": "deepseek-v4-pro",
+                    "prompt_cache_hit_tokens": 80,
+                    "prompt_cache_miss_tokens": 20,
+                    "cache_hit_ratio": 0.8,
+                },
+            )
+            append_event(
+                session / "state/events.jsonl",
+                "CacheMetricsRecorded",
+                {
+                    "model": "deepseek-v4-pro",
+                    "prompt_cache_hit_tokens": 20,
+                    "prompt_cache_miss_tokens": 0,
+                    "cache_hit_ratio": 1.0,
+                },
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["deepseek_cache_hit_tokens"], 100)
+            self.assertEqual(metrics["deepseek_cache_miss_tokens"], 20)
+            self.assertAlmostEqual(metrics["deepseek_cache_hit_ratio"], 100 / 120, places=6)
+            self.assertEqual(metrics["deepseek_cache_metric_source"], "state")
+            self.assertEqual(metrics["deepseek_cache_metric_event_count"], 2)
+
     def test_summary_merges_post_wrapup_commit_links(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
