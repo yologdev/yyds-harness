@@ -313,6 +313,97 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(session_data["latest_gnomes"]["task_unlanded_source_count"], 1)
             self.assertEqual(session_data["health"], "attention")
 
+    def test_manifest_files_backfilled_from_task_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 5,
+                    "event_counts": {"RunStarted": 1, "RunCompleted": 1},
+                    "latest_gnomes": {"coding_log_score": 0.8},
+                    "gnome_keys": ["coding_log_score"],
+                    "evals": [{"suite": "log-feedback", "status": "passed", "score": 0.8}],
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Wire panic hook",
+                            "files": [],
+                            "artifact_path": "tasks/task_01/task.md",
+                            "quality": {"score": 1.0},
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            (session / "tasks/task_01/task.md").write_text(
+                "\n".join(
+                    [
+                        "Title: Wire panic hook",
+                        "",
+                        "Files: src/state.rs",
+                        "",
+                        "Issue: none",
+                        "",
+                        "Origin: planner",
+                        "",
+                        "Objective: Make panic evidence visible.",
+                        "",
+                        "Success Criteria:",
+                        "- Panic diagnostic is stashed.",
+                        "",
+                        "Verification:",
+                        "- cargo test",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": ["abc123"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "Verdict: PASS"},
+            )
+
+            data = build(root / "sessions", root / "out")
+            work = data["sessions"][0]["work_summary"]
+
+            self.assertEqual(work["task_manifest"]["tasks"][0]["files"], ["src/state.rs"])
+            self.assertEqual(
+                work["task_verification"]["rows"][0]["planned_files"],
+                ["src/state.rs"],
+            )
+            self.assertEqual(work["task_verification"]["verified_task_count"], 1)
+
     def test_derives_source_changes_from_matching_session_commits(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

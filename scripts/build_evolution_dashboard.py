@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from state_graph_tools import build_causal_chains, evolution_suggestions
+from task_manifest import parse_task as parse_task_file
 
 
 REPO_URL = "https://github.com/yologdev/yyds-harness"
@@ -491,18 +492,28 @@ def task_manifest_summary(session_dir: Path) -> dict[str, Any]:
     for task in selected[:8]:
         if not isinstance(task, dict):
             continue
+        try:
+            task_number = int(task.get("task_number") or len(tasks) + 1)
+        except (TypeError, ValueError):
+            task_number = len(tasks) + 1
+        artifact_path = str(task.get("artifact_path") or f"tasks/task_{task_number:02d}/task.md")
+        parsed_task = parse_task_file(session_dir / artifact_path, task_number)
         quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
+        parsed_quality = parsed_task.get("quality") if isinstance(parsed_task.get("quality"), dict) else {}
         tasks.append(
             {
                 "task_id": task.get("task_id"),
                 "task_number": task.get("task_number"),
-                "title": task.get("title"),
-                "files": task.get("files") or [],
-                "issue": task.get("issue"),
-                "origin": task.get("origin"),
-                "artifact_path": task.get("artifact_path"),
-                "quality_score": quality.get("score"),
-                "generic_self_improvement": quality.get("generic_self_improvement"),
+                "title": task.get("title") or parsed_task.get("title"),
+                "files": task.get("files") or parsed_task.get("files") or [],
+                "issue": task.get("issue") or parsed_task.get("issue"),
+                "origin": task.get("origin") or parsed_task.get("origin"),
+                "artifact_path": artifact_path,
+                "quality_score": quality.get("score", parsed_quality.get("score")),
+                "generic_self_improvement": quality.get(
+                    "generic_self_improvement",
+                    parsed_quality.get("generic_self_improvement"),
+                ),
             }
         )
     return {
