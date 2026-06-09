@@ -204,6 +204,7 @@ def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[
             "FileEdited",
             "ModelCallStarted",
             "ModelCallCompleted",
+            "CacheMetricsRecorded",
             "FailureObserved",
             "TestStarted",
             "TestCompleted",
@@ -362,6 +363,35 @@ def transcript_summary(session_dir: Path) -> dict[str, Any]:
         "count": len(files),
         "phase_counts": {key: value for key, value in phase_counts.items() if value},
         "files": transcript_rows[:16],
+    }
+
+
+def state_pipeline_summary(session_dir: Path) -> dict[str, Any]:
+    replay = load_json(session_dir / "state_replay.json")
+    merge = load_json(session_dir / "state" / "merge_state_delta.json")
+    append_log = session_dir / "state" / "append_state_event.log"
+    append_lines = 0
+    append_problem_lines = 0
+    if append_log.is_file():
+        for line in append_log.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            append_lines += 1
+            lower = line.lower()
+            if "failed" in lower or "warning" in lower:
+                append_problem_lines += 1
+    return {
+        "replay_files_read": replay.get("files_read") if isinstance(replay, dict) else None,
+        "replay_events_written": replay.get("events_written") if isinstance(replay, dict) else None,
+        "replay_duplicates_skipped": replay.get("duplicates_skipped") if isinstance(replay, dict) else None,
+        "merge_live_events": merge.get("live_events") if isinstance(merge, dict) else None,
+        "merge_base_lines": merge.get("base_lines") if isinstance(merge, dict) else None,
+        "merge_delta_events": merge.get("delta_events") if isinstance(merge, dict) else None,
+        "merge_added_events": merge.get("added") if isinstance(merge, dict) else None,
+        "merge_duplicates_skipped": merge.get("skipped_duplicate") if isinstance(merge, dict) else None,
+        "session_events_after_merge": merge.get("session_events_after") if isinstance(merge, dict) else None,
+        "append_log_lines": append_lines,
+        "append_problem_lines": append_problem_lines,
     }
 
 
@@ -820,6 +850,7 @@ def work_summary(
     commits: list[dict[str, Any]],
 ) -> dict[str, Any]:
     transcript_data = transcript_summary(session_dir)
+    state_pipeline = state_pipeline_summary(session_dir)
     task_manifest = task_manifest_summary(session_dir)
     task_artifacts = task_artifact_summary(session_dir)
     causal_chains = build_causal_chains(session_dir)
@@ -882,6 +913,7 @@ def work_summary(
         "headline": "; ".join(labels[:4]),
         "labels": labels,
         "transcripts": transcript_data,
+        "state_pipeline": state_pipeline,
         "task_manifest": task_manifest,
         "task_artifacts": task_artifacts,
         "task_verification": task_verification,
@@ -2472,6 +2504,26 @@ HTML = r"""<!doctype html>
       }).join("")}</ul>`;
     }
 
+    function renderStatePipeline(work) {
+      const pipe = work.state_pipeline || {};
+      const hasReplay = pipe.replay_events_written !== undefined && pipe.replay_events_written !== null;
+      const hasMerge = pipe.merge_added_events !== undefined && pipe.merge_added_events !== null;
+      if (!hasReplay && !hasMerge && !(pipe.append_log_lines || pipe.append_problem_lines)) {
+        return `<p class="muted">No state pipeline diagnostics recorded.</p>`;
+      }
+      const rows = [];
+      if (hasReplay) {
+        rows.push(`replay ${text(pipe.replay_events_written || 0)} event(s) from ${text(pipe.replay_files_read || 0)} file(s); ${text(pipe.replay_duplicates_skipped || 0)} duplicate(s) skipped`);
+      }
+      if (hasMerge) {
+        rows.push(`live delta ${text(pipe.merge_added_events || 0)} added / ${text(pipe.merge_delta_events || 0)} seen; ${text(pipe.session_events_after_merge || 0)} session event(s) after merge`);
+      }
+      if (pipe.append_log_lines || pipe.append_problem_lines) {
+        rows.push(`append log ${text(pipe.append_log_lines || 0)} line(s); ${text(pipe.append_problem_lines || 0)} problem line(s)`);
+      }
+      return `<ul class="mini-list">${rows.map(row => `<li>${row}</li>`).join("")}</ul>`;
+    }
+
     function renderTaskArtifacts(session, work) {
       const manifest = work.task_manifest || {};
       const verification = work.task_verification || {};
@@ -2590,6 +2642,7 @@ HTML = r"""<!doctype html>
                 <div><strong>Next-task suggestions</strong>${renderEvolutionSuggestions(work)}</div>
                 <div><strong>Task decision evidence</strong>${renderTaskArtifacts(session, work)}</div>
                 <div><strong>Agent transcripts</strong>${renderTranscriptList(session, work)}</div>
+                <div><strong>State pipeline</strong>${renderStatePipeline(work)}</div>
                 <div><strong>Validated</strong>${listItems(work.commands, "No command events recorded.")}</div>
                 <div><strong>Read</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
                 <div><strong>State edits</strong>${listItems(work.edited_files, "No FileEdited events recorded.")}</div>

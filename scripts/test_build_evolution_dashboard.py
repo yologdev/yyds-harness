@@ -236,6 +236,49 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["sessions"][0]["trace_quality"]["status"], "full")
             self.assertEqual(data["sessions"][0]["health"], "passed")
 
+    def test_state_pipeline_diagnostics_are_visible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"day": 1})
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 2,
+                    "event_counts": {"RunStarted": 1, "CacheMetricsRecorded": 1},
+                },
+            )
+            write_json(
+                session / "state_replay.json",
+                {"files_read": 3, "events_written": 20, "duplicates_skipped": 2},
+            )
+            write_json(
+                session / "state/merge_state_delta.json",
+                {
+                    "live_events": 25,
+                    "base_lines": 20,
+                    "delta_events": 5,
+                    "added": 4,
+                    "skipped_duplicate": 1,
+                    "session_events_after": 6,
+                },
+            )
+            (session / "state/append_state_event.log").write_text(
+                "append_state_event.py failed once\n",
+                encoding="utf-8",
+            )
+
+            data = build(root / "sessions", root / "out")
+            current = data["sessions"][0]
+            pipeline = current["work_summary"]["state_pipeline"]
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+
+            self.assertEqual(current["trace_quality"]["operational_event_count"], 1)
+            self.assertEqual(pipeline["replay_events_written"], 20)
+            self.assertEqual(pipeline["merge_added_events"], 4)
+            self.assertEqual(pipeline["append_problem_lines"], 1)
+            self.assertIn("State pipeline", html)
+
     def test_strict_verification_requires_landed_source_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
