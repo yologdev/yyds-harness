@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import log_feedback  # noqa: E402
 import summarize_state_gnomes  # noqa: E402
+import task_completion_gate  # noqa: E402
 import task_lineage  # noqa: E402
 import task_verification_gate  # noqa: E402
 
@@ -66,6 +67,9 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('[[:punct:]]*', evolve)
         self.assertIn('[ "$EVAL_VERDICT_TOKEN" = "PASS" ]', evolve)
         self.assertIn('scripts/task_verification_gate.py', evolve)
+        self.assertIn('scripts/task_completion_gate.py', evolve)
+        self.assertIn('auto-committed verified source changes', evolve)
+        self.assertIn('Task completion missing landed source commit', evolve)
         self.assertNotIn('Title: Self-improvement', evolve)
         self.assertNotIn('identify the most impactful improvement', evolve)
         self.assertIn('manifest.json', evolve)
@@ -202,6 +206,39 @@ class TaskLineageFeedback(unittest.TestCase):
             bad = task_verification_gate.verify(repo, base, task)
             self.assertFalse(bad["ok"])
             self.assertEqual(bad["reason"], "task changes do not overlap planned Files entries")
+
+    def test_task_completion_gate_auto_commits_verified_source_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            (repo / "src").mkdir()
+            (repo / "session_plan").mkdir()
+            (repo / "src/lib.rs").write_text("pub fn before() {}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+            base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+            (repo / "src/lib.rs").write_text("pub fn after() {}\n", encoding="utf-8")
+            unlanded = task_completion_gate.verify(repo, base, "Task commit", auto=False)
+            self.assertFalse(unlanded["ok"])
+            self.assertEqual(unlanded["uncommitted_source_files"], ["src/lib.rs"])
+
+            landed = task_completion_gate.verify(repo, base, "Task commit", auto=True)
+            self.assertTrue(landed["ok"])
+            self.assertTrue(landed["source_commit_shas"])
+            self.assertTrue(landed["auto_commit"]["attempted"])
+
+            (repo / "session_plan/eval.md").write_text("Verdict: PASS\n", encoding="utf-8")
+            bookkeeping = task_completion_gate.verify(
+                repo,
+                subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip(),
+                "Noop",
+                auto=True,
+            )
+            self.assertTrue(bookkeeping["ok"])
+            self.assertFalse(bookkeeping["auto_commit"]["attempted"])
 
     def test_log_feedback_links_gnome_deltas_to_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:

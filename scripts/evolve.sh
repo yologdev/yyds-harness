@@ -1836,6 +1836,62 @@ $(cat "session_plan/eval_task_${TASK_NUM}.md" 2>/dev/null || echo 'no eval file 
     done
     rm -f "${EVAL_LOG:-}" 2>/dev/null
 
+    # Check 3: A source-changing task must land a source commit before it can count.
+    # Agents sometimes time out after producing a good diff and PASS eval but before
+    # committing. Auto-commit verified source diffs; fail closed if commit evidence is
+    # still missing so the dashboard never reports fake completion.
+    if [ "$TASK_OK" = true ]; then
+        TASK_COMMIT_MESSAGE="Day $DAY ($SESSION_TIME): $task_title (Task $TASK_NUM)"
+        TASK_LANDING_JSON=$(python3 scripts/task_completion_gate.py \
+            --repo-root . \
+            --base "$PRE_TASK_SHA" \
+            --message "$TASK_COMMIT_MESSAGE" \
+            --auto-commit 2>/dev/null || echo '{"ok":false,"reason":"task completion landing gate failed","source_files":[],"uncommitted_source_files":[],"source_commit_shas":[]}')
+        TASK_LANDING_OK=$(TASK_LANDING_JSON="$TASK_LANDING_JSON" python3 - <<'PY'
+import json
+import os
+try:
+    payload = json.loads(os.environ.get("TASK_LANDING_JSON") or "{}")
+except json.JSONDecodeError:
+    payload = {}
+print("true" if payload.get("ok") is True else "false")
+PY
+)
+        TASK_AUTO_COMMITTED=$(TASK_LANDING_JSON="$TASK_LANDING_JSON" python3 - <<'PY'
+import json
+import os
+try:
+    payload = json.loads(os.environ.get("TASK_LANDING_JSON") or "{}")
+except json.JSONDecodeError:
+    payload = {}
+auto = payload.get("auto_commit") if isinstance(payload.get("auto_commit"), dict) else {}
+print("true" if auto.get("attempted") and auto.get("ok") else "false")
+PY
+)
+        if [ "$TASK_AUTO_COMMITTED" = "true" ]; then
+            echo "    Task $TASK_NUM: auto-committed verified source changes"
+        fi
+        if [ "$TASK_LANDING_OK" != "true" ]; then
+            TASK_LANDING_REASON=$(TASK_LANDING_JSON="$TASK_LANDING_JSON" python3 - <<'PY'
+import json
+import os
+try:
+    payload = json.loads(os.environ.get("TASK_LANDING_JSON") or "{}")
+except json.JSONDecodeError:
+    payload = {}
+print(payload.get("reason") or "task completion landing gate failed")
+PY
+)
+            echo "    BLOCKED: Task $TASK_NUM completion has no landed source commit — $TASK_LANDING_REASON"
+            TASK_OK=false
+            REVERT_REASON="Task completion missing landed source commit: $TASK_LANDING_REASON"
+            REVERT_DETAILS="Task landing evidence:
+\`\`\`json
+$TASK_LANDING_JSON
+\`\`\`"
+        fi
+    fi
+
     # Revert task if verification or evaluation failed
     if [ "$TASK_OK" = false ]; then
         TASK_LINEAGE_PAYLOAD=$(task_lineage_payload "reverted" "$PRE_TASK_SHA" "$REVERT_REASON")
