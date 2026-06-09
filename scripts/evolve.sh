@@ -2417,12 +2417,20 @@ if [ -d "$SESSION_STAGING" ]; then
 
     # Persist this session's state delta as compact evidence. The live
     # `.yoyo/state/events.jsonl` is rebuilt from prior audit-log deltas at
-    # startup and may be rewritten by projection commands, so harness-emitted
-    # session events are written directly to SESSION_STATE_EVENTS as they occur.
-    # SQLite is a generated projection and is intentionally not committed to
-    # audit-log.
+    # startup and also receives yyds prompt/tool events during the run. Merge
+    # only the post-replay live delta into SESSION_STATE_EVENTS so the audit
+    # artifact contains both harness decisions and model tool activity without
+    # carrying prior sessions forward. SQLite is a generated projection and is
+    # intentionally not committed to audit-log.
     if [ -f "$SESSION_STATE_EVENTS" ]; then
         mkdir -p "$SESSION_STAGING/state"
+        if ! python3 scripts/merge_state_delta.py \
+            --live "$STATE_EVENTS" \
+            --session "$SESSION_STATE_EVENTS" \
+            --base-lines "$STATE_BASE_LINES" \
+            >"$SESSION_STAGING/state/merge_state_delta.json"; then
+            echo "  WARNING: live state delta merge failed — session state may miss yyds tool events" >&2
+        fi
         if ! python3 scripts/summarize_state_gnomes.py \
             --events "$SESSION_STATE_EVENTS" \
             --output "$SESSION_STAGING/state/summary.json"; then
