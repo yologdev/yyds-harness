@@ -34,7 +34,7 @@ pub fn handle_state_subcommand(args: &[String]) {
                 .position(|a| a == "--limit")
                 .and_then(|i| args.get(i + 1))
                 .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(20);
+                .unwrap_or(50);
             let json = args.iter().any(|a| a == "--json");
             handle_tail(limit, json);
         }
@@ -76,15 +76,22 @@ pub fn handle_state_subcommand(args: &[String]) {
         "patches" => handle_patches(&args[3..]),
         "why" => {
             let summary = args.iter().any(|a| a == "--summary");
-            if summary && args.len() <= 4 {
-                handle_state_summary(args);
+            let limit = args
+                .iter()
+                .position(|a| a == "--limit")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(200);
+            // No explicit id? Show summary only (--summary without id path)
+            let id_candidate = args
+                .get(3)
+                .filter(|a| !a.starts_with("--") && !a.chars().all(|c| c.is_ascii_digit()));
+            if id_candidate.is_none() {
+                handle_state_summary(args, limit);
                 return;
             }
-            let Some(id) = args.get(3).filter(|a| a.as_str() != "--summary") else {
-                eprintln!("{YELLOW}  Usage: yoyo state why <event-id|last-failure|patch-id|commit|run-id> [--summary]{RESET}");
-                return;
-            };
-            handle_why(id, summary);
+            let id = id_candidate.unwrap();
+            handle_why(id, summary, limit);
         }
         "lineage" => {
             let Some(id) = args.get(3) else {
@@ -408,13 +415,17 @@ fn handle_tail(limit: usize, json: bool) {
         return;
     };
     if json {
-        for line in lines {
+        for line in &lines {
             println!("{line}");
         }
     } else {
-        for line in lines {
-            print_event_line(&line);
+        for line in lines.iter() {
+            print_event_line(line);
         }
+    }
+    if limit > 0 && lines.len() >= limit {
+        println!();
+        println!("{DIM}(showing last {limit}, use --limit 0 for all){RESET}");
     }
 }
 
@@ -1000,9 +1011,9 @@ fn handle_patches(args: &[String]) {
     }
 }
 
-fn handle_why(id: &str, show_summary: bool) {
+fn handle_why(id: &str, show_summary: bool, limit: usize) {
     let path = default_events_path();
-    let Ok(events) = read_events(&path) else {
+    let Ok(events) = read_tail_events(&path, limit) else {
         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
         return;
     };
@@ -1014,16 +1025,33 @@ fn handle_why(id: &str, show_summary: bool) {
         Ok(report) => println!("{report}"),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
     }
+    if limit > 0 {
+        let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
+        if events.len() >= limit {
+            println!();
+            println!("{DIM}(searched last {limit} events of {all_count} total, use --limit 0 for full scan){RESET}");
+        } else if events.len() < all_count {
+            println!();
+            println!("{DIM}(searched {all_count} events){RESET}");
+        }
+    }
 }
 
-fn handle_state_summary(args: &[String]) {
+fn handle_state_summary(args: &[String], limit: usize) {
     let path = default_events_path();
     let show_tail = args.iter().any(|a| a == "--tail");
-    let Ok(events) = read_events(&path) else {
+    let Ok(events) = read_tail_events(&path, limit) else {
         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
         return;
     };
     println!("{}", build_state_summary(&events));
+    if limit > 0 {
+        let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
+        if events.len() >= limit {
+            println!();
+            println!("{DIM}(summary from last {limit} events of {all_count} total, use --limit 0 for full scan){RESET}");
+        }
+    }
     if show_tail && !events.is_empty() {
         println!();
         println!("Most recent events:");
@@ -1064,6 +1092,22 @@ fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
 
 pub(crate) fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
     crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
+}
+
+/// Read only the last `limit` events from the state log.
+/// Returns fewer than `limit` events if the log is smaller.
+fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+    if limit == 0 {
+        return read_events(path);
+    }
+    let raw_lines = read_tail(path, limit)?;
+    let mut events = Vec::with_capacity(raw_lines.len());
+    for line in &raw_lines {
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            events.push(value);
+        }
+    }
+    Ok(events)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14083,7 +14127,7 @@ fn extract_patch_id(payload: &Value) -> Option<&str> {
 
 fn print_usage() {
     println!(
-        "Usage: yoyo state <command>\n\n  init\n  tail [--limit N]\n  trace <run-id|trace-id>\n  project --rebuild\n  migrate\n  recover [--output PATH] [--replace]\n  retention [--days N] [--archive PATH] [--prune]\n  memory synthesize [--output PATH] [--record]\n  memory list [--status proposed|promoted|rejected]\n  memory promote <candidate-id> [--reason TEXT]\n  memory reject <candidate-id> [--reason TEXT]\n  journal generate [--output PATH]\n  export <path>\n  import <path> [--replace]\n  graph <event-id|patch-id|eval-id|commit> [--depth N] [--to TARGET]\n  graph summary <event-id|patch-id|eval-id|commit> [--depth N]\n  graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph hotspots [--limit N] [--json]\n  policies --recent [--limit N]\n  fixes --recent [--class CLASS] [--limit N]\n  rollbacks --recent [--limit N] [--json]\n  evals [--harness-version VERSION] [--patch-id PATCH]\n  patches [--status STATUS]\n  patches show <patch-id>\n  why <event-id|last-failure|patch-id|commit|run-id>\n  lineage <event-id|patch-id|commit>\n  failures --recent\n  crashes [--limit N] [--json]\n  cache --recent"
+        "Usage: yoyo state <command>\n\n  init\n  tail [--limit N]\n  trace <run-id|trace-id>\n  project --rebuild\n  migrate\n  recover [--output PATH] [--replace]\n  retention [--days N] [--archive PATH] [--prune]\n  memory synthesize [--output PATH] [--record]\n  memory list [--status proposed|promoted|rejected]\n  memory promote <candidate-id> [--reason TEXT]\n  memory reject <candidate-id> [--reason TEXT]\n  journal generate [--output PATH]\n  export <path>\n  import <path> [--replace]\n  graph <event-id|patch-id|eval-id|commit> [--depth N] [--to TARGET]\n  graph summary <event-id|patch-id|eval-id|commit> [--depth N]\n  graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph hotspots [--limit N] [--json]\n  policies --recent [--limit N]\n  fixes --recent [--class CLASS] [--limit N]\n  rollbacks --recent [--limit N] [--json]\n  evals [--harness-version VERSION] [--patch-id PATCH]\n  patches [--status STATUS]\n  patches show <patch-id>\n  why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]\n  lineage <event-id|patch-id|commit>\n  failures --recent\n  crashes [--limit N] [--json]\n  cache --recent"
     );
     println!("  graph summary accepts --json for machine-readable output");
     println!("  graph clusters accepts --json for machine-readable output");
