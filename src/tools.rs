@@ -1751,7 +1751,10 @@ mod tests {
             yoagent::types::Content::Text { text } => text,
             _ => panic!("expected text result"),
         };
-        assert!(text.contains("src/state.rs"), "source match should remain: {text}");
+        assert!(
+            text.contains("src/state.rs"),
+            "source match should remain: {text}"
+        );
         assert!(
             !text.contains(".yoyo") && !text.contains("state.sqlite"),
             ".yoyo generated state should not appear in search results: {text}"
