@@ -193,6 +193,22 @@ def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[
     total = int(summary.get("event_count") or 0)
     patch_evaluated = int(counts.get("PatchEvaluated") or 0)
     trace_events = max(0, total - patch_evaluated)
+    operational_events = sum(
+        int(counts.get(kind) or 0)
+        for kind in (
+            "ToolCallStarted",
+            "ToolCallCompleted",
+            "CommandStarted",
+            "CommandCompleted",
+            "FileRead",
+            "FileEdited",
+            "ModelCallStarted",
+            "ModelCallCompleted",
+            "FailureObserved",
+            "TestStarted",
+            "TestCompleted",
+        )
+    )
     feedback_evals = sum(
         1
         for eval_data in evals
@@ -204,6 +220,9 @@ def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[
     elif trace_events <= 0 and (patch_evaluated or feedback_evals):
         status = "feedback_only"
         label = "feedback-only trace"
+    elif operational_events <= 0:
+        status = "lifecycle"
+        label = "lifecycle-only trace"
     elif trace_events < 5:
         status = "thin"
         label = "thin state trace"
@@ -215,9 +234,11 @@ def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[
         "label": label,
         "event_count": total,
         "trace_event_count": trace_events,
+        "operational_event_count": operational_events,
         "patch_evaluated_count": patch_evaluated,
         "feedback_eval_count": feedback_evals,
         "state_capture_coverage": 1.0 if trace_events > 0 else 0.0,
+        "operational_capture_coverage": 1.0 if operational_events > 0 else 0.0,
     }
 
 
@@ -722,7 +743,7 @@ def work_summary(
         16,
     )
     edited_files = compact_list(event_data["edited_files"] + transcript_actions["edited_files"], 12)
-    touched_source_files = compact_list([path for path in edited_files if source_file(path)], 12)
+    touched_source_files = compact_list([path for path in edited_files if source_file(path)] + source_files, 12)
     read_files = compact_list(event_data["read_files"] + transcript_actions["read_files"], 12)
     commands = compact_list(event_data["commands"] + transcript_actions["commands"], 12)
     failed_commands = compact_list(event_data["failed_commands"] + transcript_actions["failed_commands"], 8)
@@ -1055,6 +1076,7 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     event_counts: dict[str, int] = {}
     trace_event_count = 0
     full_trace_sessions = 0
+    lifecycle_trace_sessions = 0
     feedback_only_sessions = 0
 
     for session in sessions:
@@ -1075,6 +1097,8 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         trace_event_count += int(trace.get("trace_event_count") or 0)
         if trace.get("status") == "full":
             full_trace_sessions += 1
+        if trace.get("status") == "lifecycle":
+            lifecycle_trace_sessions += 1
         if trace.get("status") == "feedback_only":
             feedback_only_sessions += 1
         latest_gnomes.update(session.get("latest_gnomes") or {})
@@ -1103,6 +1127,7 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         "event_count": events,
         "trace_event_count": trace_event_count,
         "full_trace_sessions": full_trace_sessions,
+        "lifecycle_trace_sessions": lifecycle_trace_sessions,
         "feedback_only_sessions": feedback_only_sessions,
         "tasks_attempted": tasks_attempted,
         "tasks_succeeded": tasks_succeeded,
@@ -2001,6 +2026,7 @@ HTML = r"""<!doctype html>
       let rejected = 0;
       let traceEventCount = 0;
       let fullTraceSessions = 0;
+      let lifecycleTraceSessions = 0;
       let feedbackOnlySessions = 0;
 
       sessions.forEach(session => {
@@ -2021,6 +2047,7 @@ HTML = r"""<!doctype html>
         const trace = session.trace_quality || {};
         traceEventCount += Number(trace.trace_event_count || 0);
         if (trace.status === "full") fullTraceSessions += 1;
+        if (trace.status === "lifecycle") lifecycleTraceSessions += 1;
         if (trace.status === "feedback_only") feedbackOnlySessions += 1;
         Object.entries(session.event_counts || {}).forEach(([kind, count]) => {
           eventCounts[kind] = (eventCounts[kind] || 0) + Number(count || 0);
@@ -2042,6 +2069,7 @@ HTML = r"""<!doctype html>
         event_count: eventCount,
         trace_event_count: traceEventCount,
         full_trace_sessions: fullTraceSessions,
+        lifecycle_trace_sessions: lifecycleTraceSessions,
         feedback_only_sessions: feedbackOnlySessions,
         event_counts: eventCounts,
         tasks_attempted: tasksAttempted,
@@ -2145,7 +2173,7 @@ HTML = r"""<!doctype html>
       const cards = [
         ["Sessions", agg.session_count || 0, "audit-backed runs"],
         ["Task success", rate === null || rate === undefined ? "-" : percent(rate), `${text(agg.tasks_succeeded || 0)}/${text(agg.tasks_attempted || 0)} tasks`],
-        ["Full traces", agg.full_trace_sessions || 0, `${text(agg.feedback_only_sessions || 0)} feedback-only`],
+        ["Operational traces", agg.full_trace_sessions || 0, `${text(agg.lifecycle_trace_sessions || 0)} lifecycle-only / ${text(agg.feedback_only_sessions || 0)} feedback-only`],
         ["Blockers", agg.blocker_count || 0, "real blocking signals"],
       ];
       document.getElementById("summary").innerHTML = cards.map(([label, value, hint]) => `

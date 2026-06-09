@@ -702,6 +702,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
 
             work = data["sessions"][0]["work_summary"]
             self.assertEqual(work["source_changed_files"], ["src/lib.rs"])
+            self.assertEqual(work["touched_source_files"], ["src/lib.rs"])
             self.assertEqual(work["edited_files"], ["journals/JOURNAL.md"])
             self.assertIn("1 source file(s) changed", work["headline"])
             self.assertEqual(work["source_patch_count"], 1)
@@ -753,6 +754,37 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(current["trace_quality"]["trace_event_count"], 0)
             self.assertEqual(data["aggregate"]["feedback_only_sessions"], 1)
             self.assertEqual(data["aggregate"]["full_trace_sessions"], 0)
+
+    def test_lifecycle_only_trace_is_not_counted_as_full(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"day": 1})
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 7,
+                    "event_counts": {
+                        "RunStarted": 2,
+                        "RunCompleted": 2,
+                        "DecisionRecorded": 1,
+                        "TaskLineageLinked": 1,
+                        "PatchEvaluated": 1,
+                    },
+                    "evals": [{"suite": "log-feedback", "eval_id": "log-feedback-123-1"}],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            current = data["sessions"][0]
+
+            self.assertEqual(current["trace_quality"]["status"], "lifecycle")
+            self.assertEqual(current["trace_quality"]["label"], "lifecycle-only trace")
+            self.assertEqual(current["trace_quality"]["operational_event_count"], 0)
+            self.assertEqual(current["trace_quality"]["operational_capture_coverage"], 0.0)
+            self.assertEqual(data["aggregate"]["full_trace_sessions"], 0)
+            self.assertEqual(data["aggregate"]["lifecycle_trace_sessions"], 1)
+            self.assertIn("Operational traces", (root / "out/index.html").read_text(encoding="utf-8"))
 
     def test_transcript_actions_fill_work_evidence_when_state_events_are_sparse(self):
         with tempfile.TemporaryDirectory() as tmp:
