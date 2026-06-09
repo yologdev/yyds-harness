@@ -502,6 +502,43 @@ class BuildEvolutionDashboard(unittest.TestCase):
             html = (root / "out/index.html").read_text(encoding="utf-8")
             self.assertIn("corrected gnome(s)", html)
 
+    def test_cache_ratio_without_token_evidence_is_marked_unverified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "deepseek_cache_hit_ratio": 0.91,
+                        "deepseek_cache_hit_tokens": None,
+                        "deepseek_cache_miss_tokens": None,
+                    },
+                    "gnome_keys": [
+                        "deepseek_cache_hit_ratio",
+                        "deepseek_cache_hit_tokens",
+                        "deepseek_cache_miss_tokens",
+                    ],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            latest = data["sessions"][0]["latest_gnomes"]
+
+            self.assertIsNone(latest["deepseek_cache_hit_ratio"])
+            self.assertEqual(latest["deepseek_cache_ratio_unverified_count"], 1)
+            self.assertIn("deepseek_cache_ratio_unverified_count", data["aggregate"]["gnome_keys"])
+            self.assertIn("deepseek_cache_ratio_unverified_count", data["gnome_numeric_keys"])
+
     def test_manifest_files_backfilled_from_task_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

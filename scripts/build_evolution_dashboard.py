@@ -799,6 +799,19 @@ def work_summary(
 
 def corrected_gnomes(summary: dict[str, Any], work: dict[str, Any]) -> dict[str, Any]:
     gnomes = dict(summary.get("latest_gnomes") if isinstance(summary.get("latest_gnomes"), dict) else {})
+    cache_hit_tokens = gnomes.get("deepseek_cache_hit_tokens")
+    cache_miss_tokens = gnomes.get("deepseek_cache_miss_tokens")
+    if gnomes.get("deepseek_cache_hit_ratio") is not None and not (
+        isinstance(cache_hit_tokens, (int, float))
+        and not isinstance(cache_hit_tokens, bool)
+        and isinstance(cache_miss_tokens, (int, float))
+        and not isinstance(cache_miss_tokens, bool)
+    ):
+        gnomes["deepseek_cache_hit_ratio"] = None
+        gnomes["deepseek_cache_ratio_unverified_count"] = max(
+            int(gnomes.get("deepseek_cache_ratio_unverified_count") or 0),
+            1,
+        )
     manifest = work.get("task_manifest") if isinstance(work.get("task_manifest"), dict) else {}
     verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
     task_count = int(verification.get("task_count") or 0)
@@ -1855,7 +1868,8 @@ HTML = r"""<!doctype html>
       total_task_turn_count: "Total task turns",
       deepseek_cache_hit_ratio: "DeepSeek cache hit ratio",
       deepseek_cache_hit_tokens: "DeepSeek cache hit tokens",
-      deepseek_cache_miss_tokens: "DeepSeek cache miss tokens"
+      deepseek_cache_miss_tokens: "DeepSeek cache miss tokens",
+      deepseek_cache_ratio_unverified_count: "Unverified cache ratio reports"
     };
     const priorityGnomes = [
       "coding_log_score",

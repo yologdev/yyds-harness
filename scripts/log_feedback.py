@@ -62,6 +62,8 @@ YOYO_USAGE_CACHE_RE = re.compile(
     r"tokens:\s*([\d,]+)\s+in\s*/\s*([\d,]+)\s+out\s*\[cache:\s*([\d,]+)\s+read,\s*([\d,]+)\s+write\]",
     re.IGNORECASE,
 )
+PROMPT_CACHE_HIT_RE = re.compile(r"\bprompt_cache_hit_tokens\b['\"]?\s*[:=]\s*([\d,]+)", re.IGNORECASE)
+PROMPT_CACHE_MISS_RE = re.compile(r"\bprompt_cache_miss_tokens\b['\"]?\s*[:=]\s*([\d,]+)", re.IGNORECASE)
 TASK_TRANSCRIPT_RE = re.compile(r"task_(\d+)_attempt(\d+)\.log$")
 TURN_MARKER_RE = re.compile(r"\bTurn\s+(\d+)\b")
 ACTION_LINE_RE = re.compile(r"^\s*▶\s+", re.MULTILINE)
@@ -328,6 +330,7 @@ def parse_log(log_text: str) -> dict[str, Any]:
     cache_ratio: float | None = None
     cache_hit_tokens: int | None = None
     cache_miss_tokens: int | None = None
+    cache_prose_mentions = 0
     evidence: list[str] = []
 
     for raw_line in log_text.splitlines():
@@ -358,17 +361,22 @@ def parse_log(log_text: str) -> dict[str, Any]:
                 task_evaluator_verified += 1
         if TASK_REVERT_RE.search(message):
             task_reverts += 1
-        cache_match = CACHE_PERCENT_RE.search(message)
-        if cache_match:
-            try:
-                cache_ratio = round(float(cache_match.group(1)) / 100.0, 6)
-            except (TypeError, ValueError):
-                pass
         token_match = CACHE_TOKENS_RE.search(message)
         if token_match:
             try:
                 cache_hit_tokens = parse_count(token_match.group(1))
                 cache_miss_tokens = parse_count(token_match.group(2))
+                total = cache_hit_tokens + cache_miss_tokens
+                if total > 0:
+                    cache_ratio = round(cache_hit_tokens / total, 6)
+            except (TypeError, ValueError):
+                pass
+        prompt_hit_match = PROMPT_CACHE_HIT_RE.search(message)
+        prompt_miss_match = PROMPT_CACHE_MISS_RE.search(message)
+        if prompt_hit_match and prompt_miss_match:
+            try:
+                cache_hit_tokens = parse_count(prompt_hit_match.group(1))
+                cache_miss_tokens = parse_count(prompt_miss_match.group(1))
                 total = cache_hit_tokens + cache_miss_tokens
                 if total > 0:
                     cache_ratio = round(cache_hit_tokens / total, 6)
@@ -386,6 +394,9 @@ def parse_log(log_text: str) -> dict[str, Any]:
                     cache_ratio = round(cache_hit_tokens / total, 6)
             except (TypeError, ValueError):
                 pass
+        cache_match = CACHE_PERCENT_RE.search(message)
+        if cache_match and not (token_match or yoyo_usage_match or (prompt_hit_match and prompt_miss_match)):
+            cache_prose_mentions += 1
         if "retry after" in lower or "waiting 15 minutes before retry" in lower:
             retry_markers += 1
         if "repair loop" in lower or "retrying after failure" in lower:
@@ -446,6 +457,7 @@ def parse_log(log_text: str) -> dict[str, Any]:
         "deepseek_cache_hit_ratio": cache_ratio,
         "deepseek_cache_hit_tokens": cache_hit_tokens,
         "deepseek_cache_miss_tokens": cache_miss_tokens,
+        "deepseek_cache_prose_mention_count": cache_prose_mentions,
         "evolution_friction_count": evolution_friction_count,
         "evidence": evidence,
     }
@@ -1231,6 +1243,22 @@ def run_self_tests() -> int:
         abs(float(yyds_usage["deepseek_cache_hit_ratio"]) - 0.843842) < 0.00001,
         yyds_usage,
     )
+    deepseek_usage = parse_log(
+        "usage={\"prompt_cache_hit_tokens\": 572800, \"prompt_cache_miss_tokens\": 106004}"
+    )
+    check(
+        "deepseek prompt cache hit tokens parsed",
+        deepseek_usage["deepseek_cache_hit_tokens"] == 572800,
+        deepseek_usage,
+    )
+    check(
+        "deepseek prompt cache miss tokens parsed",
+        deepseek_usage["deepseek_cache_miss_tokens"] == 106004,
+        deepseek_usage,
+    )
+    cache_prose = parse_log("DeepSeek cache: 91% hit ratio - very healthy")
+    check("cache prose ratio is not treated as KPI", cache_prose["deepseek_cache_hit_ratio"] is None, cache_prose)
+    check("cache prose mention counted", cache_prose["deepseek_cache_prose_mention_count"] == 1, cache_prose)
     lesson_kinds = [
         lesson["kind"]
         for lesson in top_lessons({**operational, "coding_log_available": True})
