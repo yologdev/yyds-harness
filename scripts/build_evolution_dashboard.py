@@ -905,6 +905,9 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         for key in session.get("gnome_keys") or []:
             if isinstance(key, str) and key not in gnome_keys:
                 gnome_keys.append(key)
+        for key in (session.get("latest_gnomes") or {}).keys():
+            if isinstance(key, str) and key not in gnome_keys:
+                gnome_keys.append(key)
         for kind, count in (session.get("event_counts") or {}).items():
             if isinstance(count, int):
                 event_counts[str(kind)] = event_counts.get(str(kind), 0) + count

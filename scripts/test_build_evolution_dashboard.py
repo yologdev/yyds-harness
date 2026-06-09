@@ -623,6 +623,71 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 ],
             )
 
+    def test_aggregate_gnome_keys_include_corrected_latest_gnomes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {"coding_log_score": 0.8},
+                    "gnome_keys": ["coding_log_score"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Unlanded task",
+                    "status": "completed",
+                    "planned_files": ["src/state.rs"],
+                    "touched_files": ["src/state.rs"],
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": [],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {
+                    "task_id": "task_01",
+                    "status": "pass",
+                    "exit_code": 0,
+                    "verdict": "Verdict: PASS",
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Unlanded task",
+                            "files": ["src/state.rs"],
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+
+            self.assertIn("coding_log_score", data["aggregate"]["gnome_keys"])
+            self.assertIn("task_unlanded_source_count", data["aggregate"]["gnome_keys"])
+            self.assertEqual(data["aggregate"]["latest_gnomes"]["task_unlanded_source_count"], 1)
+
     def test_missing_optional_artifacts_do_not_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
