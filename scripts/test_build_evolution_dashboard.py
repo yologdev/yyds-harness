@@ -786,6 +786,79 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["aggregate"]["lifecycle_trace_sessions"], 1)
             self.assertIn("Operational traces", (root / "out/index.html").read_text(encoding="utf-8"))
 
+    def test_task_lineage_eval_is_enriched_from_task_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {"day": 1, "tasks_attempted": 1, "tasks_succeeded": 1, "build_ok": True, "test_ok": True},
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 3,
+                    "event_counts": {"RunStarted": 1, "RunCompleted": 1, "PatchEvaluated": 1},
+                    "task_lineage": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "task_title": "Timeout eval should be visible",
+                            "status": "completed",
+                            "planned_files": ["src/state.rs"],
+                            "source_files": ["src/state.rs"],
+                        }
+                    ],
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Timeout eval should be visible",
+                            "files": ["src/state.rs"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            (session / "tasks/task_01/task.md").write_text("Title: Timeout eval should be visible\n", encoding="utf-8")
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Timeout eval should be visible",
+                    "status": "completed",
+                    "source_files": ["src/state.rs"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {
+                    "task_id": "task_01",
+                    "attempt": 1,
+                    "status": "timeout",
+                    "exit_code": 124,
+                    "transcript_path": "transcripts/eval_task1_attempt1.log",
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            lineage = data["sessions"][0]["work_summary"]["task_lineage"][0]
+            verification = data["sessions"][0]["work_summary"]["task_verification"]
+
+            self.assertEqual(lineage["eval"]["verdict"], "TIMEOUT")
+            self.assertEqual(lineage["eval"]["status"], "timeout")
+            self.assertIn("timed out", lineage["eval"]["reason"])
+            self.assertEqual(lineage["eval"]["transcript_path"], "transcripts/eval_task1_attempt1.log")
+            self.assertEqual(verification["verified_task_count"], 0)
+            self.assertIn("no_passing_verifier", verification["rows"][0]["problems"])
+
     def test_transcript_actions_fill_work_evidence_when_state_events_are_sparse(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

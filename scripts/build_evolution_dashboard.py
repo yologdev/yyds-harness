@@ -466,6 +466,67 @@ def eval_passed(evals: list[dict[str, Any]], lineage_eval: Any) -> bool:
     return False
 
 
+def eval_summary_from_artifacts(evals: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not evals:
+        return None
+    latest = next((row for row in reversed(evals) if isinstance(row, dict)), None)
+    if not latest:
+        return None
+    status = str(latest.get("status") or "").strip()
+    verdict = str(latest.get("verdict") or "").strip()
+    reason = str(latest.get("reason") or "").strip()
+    exit_code = latest.get("exit_code")
+    normalized = verdict.removeprefix("Verdict:").strip() if verdict else ""
+    if not normalized:
+        if explicit_pass(status):
+            normalized = "PASS"
+        elif explicit_fail(status):
+            normalized = "FAIL"
+        elif status:
+            normalized = status.upper()
+        elif exit_code is not None:
+            normalized = f"EXIT_{exit_code}"
+    if not reason:
+        if status == "timeout":
+            reason = "Evaluator timed out before producing a passing verifier verdict."
+        elif status in {"no_verdict", "api_error", "unrecognized"}:
+            reason = "Evaluator did not produce a trusted passing verifier verdict."
+    summary: dict[str, Any] = {
+        "verdict": normalized or None,
+        "status": status or None,
+        "reason": reason or None,
+        "transcript_path": latest.get("transcript_path"),
+    }
+    return {key: value for key, value in summary.items() if value is not None}
+
+
+def enrich_task_lineage_with_artifacts(
+    task_lineage: list[dict[str, Any]],
+    task_artifacts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    artifacts_by_id = {
+        str(row.get("task_id")): row
+        for row in task_artifacts
+        if isinstance(row, dict) and row.get("task_id")
+    }
+    enriched: list[dict[str, Any]] = []
+    for row in task_lineage:
+        if not isinstance(row, dict):
+            continue
+        next_row = dict(row)
+        artifact = artifacts_by_id.get(str(next_row.get("task_id") or ""))
+        if artifact:
+            if not next_row.get("eval"):
+                eval_summary = eval_summary_from_artifacts(artifact.get("evals") or [])
+                if eval_summary:
+                    next_row["eval"] = eval_summary
+            for field in ("status", "source_files", "touched_files", "commit_shas"):
+                if not next_row.get(field) and artifact.get(field):
+                    next_row[field] = artifact.get(field)
+        enriched.append(next_row)
+    return enriched
+
+
 def task_verification_summary(
     task_manifest: dict[str, Any],
     task_artifacts: list[dict[str, Any]],
@@ -755,6 +816,7 @@ def work_summary(
     source_commits = [commit for commit in commits if commit.get("source_files")]
     bookkeeping_commits = [commit for commit in commits if not commit.get("source_files")]
     task_lineage = summary.get("task_lineage") if isinstance(summary.get("task_lineage"), list) else []
+    task_lineage = enrich_task_lineage_with_artifacts(task_lineage, task_artifacts)
     task_verification = task_verification_summary(task_manifest, task_artifacts, task_lineage)
     suggestions = augment_evolution_suggestions(suggestions, task_verification)
     source_patch_count = len(source_commits)
