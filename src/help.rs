@@ -133,6 +133,10 @@ pub fn cli_help_text() -> String {
     );
     let _ = writeln!(
         s,
+        "  --no-auto-watch  Disable config auto-watch for this invocation"
+    );
+    let _ = writeln!(
+        s,
         "  --json            Output JSON instead of plain text (for -p and piped modes)"
     );
     let _ = writeln!(

@@ -201,6 +201,7 @@ const KNOWN_FLAGS: &[&str] = &[
     "--no-notify",
     "--no-rtk",
     "--no-update-check",
+    "--no-auto-watch",
     "--json",
     "--output-format",
     "--verbose",
@@ -1165,7 +1166,8 @@ pub fn parse_args(args: &[String]) -> Option<Config> {
         audit: of.audit,
         print_system_prompt: of.print_system_prompt,
         print_mode: of.print_mode,
-        auto_watch: crate::config::parse_auto_watch_from_config(&file_config),
+        auto_watch: crate::config::parse_auto_watch_from_config(&file_config)
+            && !args.iter().any(|a| a == "--no-auto-watch"),
         allowed_tools: collect_repeatable_flag(args, "--allowed-tools")
             .iter()
             .flat_map(|v| v.split(','))
@@ -1258,6 +1260,24 @@ mod tests {
     struct EnvGuard {
         key: &'static str,
         value: Option<String>,
+    }
+
+    struct CwdGuard {
+        previous: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn push(path: &std::path::Path) -> Self {
+            let previous = std::env::current_dir().expect("current dir");
+            std::env::set_current_dir(path).expect("set current dir");
+            Self { previous }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous);
+        }
     }
 
     impl EnvGuard {
@@ -2610,6 +2630,37 @@ system_prompt = "You are a Go expert"
     #[test]
     fn test_no_update_check_flag_recognized() {
         assert!(KNOWN_FLAGS.contains(&"--no-update-check"));
+    }
+
+    #[test]
+    fn test_no_auto_watch_flag_recognized() {
+        assert!(KNOWN_FLAGS.contains(&"--no-auto-watch"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_no_auto_watch_overrides_project_config() {
+        let _api_key = EnvGuard::set("ANTHROPIC_API_KEY", "test-key");
+        let tmp = tempfile::Builder::new()
+            .prefix("yoyo_test_no_auto_watch")
+            .tempdir()
+            .unwrap();
+        std::fs::write(
+            tmp.path().join(".yoyo.toml"),
+            "provider = \"anthropic\"\nmodel = \"claude-opus-4-6\"\nauto_watch = true\n",
+        )
+        .unwrap();
+        let _cwd = CwdGuard::push(tmp.path());
+        let args = [
+            "yoyo".to_string(),
+            "--no-auto-watch".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+        ];
+
+        let config = parse_args(&args).expect("should parse");
+
+        assert!(!config.auto_watch);
     }
 
     #[test]

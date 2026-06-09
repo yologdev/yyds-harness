@@ -1683,7 +1683,7 @@ EVALEOF
         EVAL_EXIT=0
         EVAL_STAGE_NAME="eval_task${TASK_NUM}_attempt${EVAL_ATTEMPT}"
         STAGE_NAME="$EVAL_STAGE_NAME" \
-            run_agent_with_fallback "$EVAL_TIMEOUT" "$EVAL_PROMPT" "$EVAL_LOG" || EVAL_EXIT=$?
+            run_agent_with_fallback "$EVAL_TIMEOUT" "$EVAL_PROMPT" "$EVAL_LOG" "--no-auto-watch" || EVAL_EXIT=$?
         rm -f "$EVAL_PROMPT"
 
         # Check evaluator verdict
