@@ -310,6 +310,7 @@ fn build_project_rg_args(
     for glob in [
         "!**/target/**",
         "!**/.git/**",
+        "!**/.yoyo/**",
         "!**/node_modules/**",
         "!**/.venv/**",
         "!**/__pycache__/**",
@@ -350,7 +351,14 @@ fn build_project_grep_args(
     if let Some(glob) = include {
         args.push(format!("--include={glob}"));
     }
-    for dir in ["target", ".git", "node_modules", "__pycache__", ".venv"] {
+    for dir in [
+        "target",
+        ".git",
+        ".yoyo",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+    ] {
         args.push(format!("--exclude-dir={dir}"));
     }
     args.push(pattern.to_string());
@@ -1713,6 +1721,40 @@ mod tests {
         assert!(
             !text.contains("artifact.rmeta") && !text.contains("target/debug"),
             "target artifacts should not appear in search results: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_project_search_skips_yoyo_state_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let state = dir.path().join(".yoyo/state");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(src.join("state.rs"), "pub fn diagnostic_match() {}\n").unwrap();
+        std::fs::write(
+            state.join("state.sqlite"),
+            "diagnostic_match from generated sqlite projection\n",
+        )
+        .unwrap();
+
+        let tool = ProjectSearchTool::default();
+        let params = serde_json::json!({
+            "pattern": "diagnostic_match",
+            "path": dir.path().to_string_lossy(),
+        });
+        let result = tool
+            .execute(params, test_tool_context(None))
+            .await
+            .expect(".yoyo state artifacts should be skipped, not reported as search errors");
+        let text = match &result.content[0] {
+            yoagent::types::Content::Text { text } => text,
+            _ => panic!("expected text result"),
+        };
+        assert!(text.contains("src/state.rs"), "source match should remain: {text}");
+        assert!(
+            !text.contains(".yoyo") && !text.contains("state.sqlite"),
+            ".yoyo generated state should not appear in search results: {text}"
         );
     }
 
