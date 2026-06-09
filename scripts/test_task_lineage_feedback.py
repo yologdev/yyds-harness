@@ -61,6 +61,8 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('cp "$TASK_FILE" "$TASK_EVIDENCE_DIR/task.md"', evolve)
         self.assertIn('append_task_attempt_evidence()', evolve)
         self.assertIn('write_task_eval_evidence()', evolve)
+        self.assertIn('run_agent_with_completion_watch()', evolve)
+        self.assertIn('^Verdict:\\s*(PASS|FAIL)\\b', evolve)
         self.assertIn('write_task_outcome_evidence()', evolve)
         self.assertIn('scripts/task_manifest.py', evolve)
         self.assertIn('planning_failure.md', evolve)

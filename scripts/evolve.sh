@@ -591,6 +591,140 @@ run_agent_with_fallback() {
     return "$exit_code"
 }
 
+# Run an agent and stop early once a completion file contains a matching line.
+# Used for evaluator agents: once they write Verdict: PASS/FAIL, continuing the
+# model turn only burns time and can turn good evidence into a timeout artifact.
+run_agent_with_completion_watch() {
+    local timeout_val="$1"
+    local prompt_file="$2"
+    local log_file="$3"
+    local completion_file="$4"
+    local completion_pattern="$5"
+    local extra_flags="${6:-}"
+
+    local fallback_args=()
+    if [ -n "$FALLBACK_PROVIDER" ]; then
+        fallback_args=(--fallback "$FALLBACK_PROVIDER")
+    fi
+    local extra_args=()
+    if [ -n "$extra_flags" ]; then
+        # shellcheck disable=SC2206
+        extra_args=($extra_flags)
+    fi
+
+    local stage_path=""
+    if [ -n "${STAGE_NAME:-}" ] && [ -d "${SESSION_STAGING:-}/transcripts" ]; then
+        stage_path="${SESSION_STAGING}/transcripts/${STAGE_NAME}.log"
+    fi
+
+    python3 - "$timeout_val" "$prompt_file" "$log_file" "$stage_path" \
+        "$completion_file" "$completion_pattern" -- \
+        "$YOYO_BIN" --model "$MODEL" "${YOYO_SKILL_FLAGS[@]}" \
+        "${fallback_args[@]}" "${extra_args[@]}" <<'PY'
+import os
+import re
+import selectors
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+timeout_val = float(sys.argv[1])
+prompt_file = Path(sys.argv[2])
+log_file = Path(sys.argv[3])
+stage_path = Path(sys.argv[4]) if sys.argv[4] else None
+completion_file = Path(sys.argv[5])
+completion_re = re.compile(sys.argv[6], re.IGNORECASE)
+sep = sys.argv.index("--")
+cmd = sys.argv[sep + 1:]
+
+deadline = time.monotonic() + timeout_val
+completion_seen = False
+last_completion_check = 0.0
+
+def completion_matches() -> bool:
+    try:
+        return bool(completion_re.search(completion_file.read_text(encoding="utf-8", errors="replace")))
+    except OSError:
+        return False
+
+def kill_process_group(proc, sig: signal.Signals) -> None:
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass
+
+with prompt_file.open("rb") as stdin, log_file.open("wb") as log_handle:
+    stage_handle = stage_path.open("wb") if stage_path else None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        selector = selectors.DefaultSelector()
+        if proc.stdout is not None:
+            selector.register(proc.stdout, selectors.EVENT_READ)
+        while True:
+            now = time.monotonic()
+            if now - last_completion_check >= 0.5:
+                last_completion_check = now
+                if completion_matches():
+                    completion_seen = True
+                    kill_process_group(proc, signal.SIGTERM)
+                    break
+            if now >= deadline:
+                kill_process_group(proc, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    kill_process_group(proc, signal.SIGKILL)
+                    proc.wait()
+                sys.exit(124)
+            if proc.poll() is not None:
+                break
+            for key, _ in selector.select(timeout=0.2):
+                chunk = os.read(key.fileobj.fileno(), 8192)
+                if not chunk:
+                    continue
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+                log_handle.write(chunk)
+                log_handle.flush()
+                if stage_handle:
+                    stage_handle.write(chunk)
+                    stage_handle.flush()
+
+        # Drain remaining buffered output after process exit or early stop.
+        if proc.stdout is not None:
+            while True:
+                chunk = proc.stdout.read(8192)
+                if not chunk:
+                    break
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+                log_handle.write(chunk)
+                log_handle.flush()
+                if stage_handle:
+                    stage_handle.write(chunk)
+                    stage_handle.flush()
+        if completion_seen:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                kill_process_group(proc, signal.SIGKILL)
+                proc.wait()
+            sys.exit(0)
+        sys.exit(proc.wait())
+    finally:
+        if stage_handle:
+            stage_handle.close()
+PY
+}
+
 # ── Ensure fresh token (retries start with a stale token from job start) ──
 refresh_gh_token
 
@@ -1683,7 +1817,10 @@ EVALEOF
         EVAL_EXIT=0
         EVAL_STAGE_NAME="eval_task${TASK_NUM}_attempt${EVAL_ATTEMPT}"
         STAGE_NAME="$EVAL_STAGE_NAME" \
-            run_agent_with_fallback "$EVAL_TIMEOUT" "$EVAL_PROMPT" "$EVAL_LOG" "--no-auto-watch" || EVAL_EXIT=$?
+            run_agent_with_completion_watch \
+                "$EVAL_TIMEOUT" "$EVAL_PROMPT" "$EVAL_LOG" \
+                "session_plan/eval_task_${TASK_NUM}.md" '^Verdict:\s*(PASS|FAIL)\b' \
+                "--no-auto-watch" || EVAL_EXIT=$?
         rm -f "$EVAL_PROMPT"
 
         # Check evaluator verdict
