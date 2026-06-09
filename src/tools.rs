@@ -38,7 +38,6 @@ use yoagent::tools::bash::ConfirmFn;
 use yoagent::tools::edit::EditFileTool;
 use yoagent::tools::file::{ReadFileTool, WriteFileTool};
 use yoagent::tools::list::ListFilesTool;
-use yoagent::tools::search::SearchTool;
 use yoagent::types::AgentTool;
 use yoagent::SharedState;
 
@@ -110,6 +109,253 @@ impl StreamingBashTool {
         self.confirm_fn = Some(Box::new(f));
         self
     }
+}
+
+/// Safer local file search for coding agents.
+///
+/// The upstream yoagent search tool falls back to broad recursive grep. In CI
+/// that can scan `target/` binary artifacts and treats every pattern as regex,
+/// producing avoidable tool failures for ordinary code-inspection turns.
+pub(crate) struct ProjectSearchTool {
+    pub root: Option<String>,
+    pub max_results: usize,
+    pub timeout: Duration,
+}
+
+impl Default for ProjectSearchTool {
+    fn default() -> Self {
+        Self {
+            root: None,
+            max_results: 50,
+            timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentTool for ProjectSearchTool {
+    fn name(&self) -> &str {
+        "search"
+    }
+
+    fn label(&self) -> &str {
+        "Search Files"
+    }
+
+    fn description(&self) -> &str {
+        "Search project text files for a pattern. Literal search is the default so symbols and parentheses do not need escaping. Set regex=true only when regex semantics are required. Build artifacts and dependency caches are skipped."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Search text. Interpreted literally unless regex=true."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory or file to search in (optional, defaults to working directory)"
+                },
+                "include": {
+                    "type": "string",
+                    "description": "File glob pattern to include, e.g. '*.rs' (optional)"
+                },
+                "case_sensitive": {
+                    "type": "boolean",
+                    "description": "Case sensitive search (default: false)"
+                },
+                "regex": {
+                    "type": "boolean",
+                    "description": "Treat pattern as a regular expression (default: false)"
+                }
+            },
+            "required": ["pattern"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: yoagent::types::ToolContext,
+    ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+        use yoagent::types::{Content, ToolError, ToolResult as TR};
+
+        let cancel = ctx.cancel;
+        let pattern = params["pattern"]
+            .as_str()
+            .ok_or_else(|| ToolError::InvalidArgs("missing 'pattern' parameter".into()))?;
+        let search_path = params["path"]
+            .as_str()
+            .map(|s| s.to_string())
+            .or_else(|| self.root.clone())
+            .unwrap_or_else(|| ".".to_string());
+        let include = params["include"].as_str();
+        let case_sensitive = params["case_sensitive"].as_bool().unwrap_or(false);
+        let regex = params["regex"].as_bool().unwrap_or(false);
+
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+
+        let (cmd_name, args) = if command_exists("rg") {
+            build_project_rg_args(
+                pattern,
+                &search_path,
+                include,
+                case_sensitive,
+                regex,
+                self.max_results,
+            )
+        } else {
+            build_project_grep_args(
+                pattern,
+                &search_path,
+                include,
+                case_sensitive,
+                regex,
+                self.max_results,
+            )
+        };
+
+        let mut cmd = tokio::process::Command::new(&cmd_name);
+        cmd.args(&args);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let result = tokio::select! {
+            _ = cancel.cancelled() => {
+                return Err(ToolError::Cancelled);
+            }
+            _ = tokio::time::sleep(self.timeout) => {
+                return Err(ToolError::Failed("Search timed out".into()));
+            }
+            result = cmd.output() => {
+                result.map_err(|e| ToolError::Failed(format!("Search failed: {e}")))?
+            }
+        };
+
+        let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+        let code = result.status.code();
+
+        if code != Some(0) && code != Some(1) {
+            return Err(ToolError::Failed(format!(
+                "Search error: {}",
+                stderr.trim()
+            )));
+        }
+
+        if stdout.trim().is_empty() {
+            return Ok(TR {
+                content: vec![Content::Text {
+                    text: format!("No matches found for '{pattern}'"),
+                }],
+                details: serde_json::json!({ "matches": 0 }),
+            });
+        }
+
+        let lines: Vec<&str> = stdout.lines().collect();
+        let shown = lines
+            .iter()
+            .take(self.max_results)
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = if lines.len() > self.max_results {
+            format!("{shown}\n... (showing first {} matches)", self.max_results)
+        } else {
+            format!("{shown}\n({} matches)", lines.len())
+        };
+
+        Ok(TR {
+            content: vec![Content::Text { text }],
+            details: serde_json::json!({
+                "matches": lines.len(),
+                "literal": !regex,
+            }),
+        })
+    }
+}
+
+fn command_exists(name: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(name)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn build_project_rg_args(
+    pattern: &str,
+    path: &str,
+    include: Option<&str>,
+    case_sensitive: bool,
+    regex: bool,
+    max_results: usize,
+) -> (String, Vec<String>) {
+    let mut args = vec![
+        "--line-number".to_string(),
+        "--no-heading".to_string(),
+        "--color=never".to_string(),
+        format!("--max-count={max_results}"),
+    ];
+    if !case_sensitive {
+        args.push("--ignore-case".to_string());
+    }
+    if !regex {
+        args.push("--fixed-strings".to_string());
+    }
+    for glob in [
+        "!**/target/**",
+        "!**/.git/**",
+        "!**/node_modules/**",
+        "!**/.venv/**",
+        "!**/__pycache__/**",
+    ] {
+        args.push("--glob".to_string());
+        args.push(glob.to_string());
+    }
+    if let Some(glob) = include {
+        args.push("--glob".to_string());
+        args.push(glob.to_string());
+    }
+    args.push(pattern.to_string());
+    args.push(path.to_string());
+    ("rg".to_string(), args)
+}
+
+fn build_project_grep_args(
+    pattern: &str,
+    path: &str,
+    include: Option<&str>,
+    case_sensitive: bool,
+    regex: bool,
+    max_results: usize,
+) -> (String, Vec<String>) {
+    let mut args = vec![
+        "-r".to_string(),
+        "-n".to_string(),
+        "-I".to_string(),
+        "--color=never".to_string(),
+        format!("-m{max_results}"),
+    ];
+    if !case_sensitive {
+        args.push("-i".to_string());
+    }
+    if !regex {
+        args.push("-F".to_string());
+    }
+    if let Some(glob) = include {
+        args.push(format!("--include={glob}"));
+    }
+    for dir in ["target", ".git", "node_modules", "__pycache__", ".venv"] {
+        args.push(format!("--exclude-dir={dir}"));
+    }
+    args.push(pattern.to_string());
+    args.push(path.to_string());
+    ("grep".to_string(), args)
 }
 
 /// Emit a streaming update with the accumulated output so far.
@@ -1070,7 +1316,7 @@ pub fn build_tools(
         maybe_hook(
             with_recovery_hints(
                 with_truncation(
-                    maybe_guard(Box::new(SearchTool::default()), dir_restrictions),
+                    maybe_guard(Box::new(ProjectSearchTool::default()), dir_restrictions),
                     max_tool_output,
                 ),
                 &failure_tracker,
@@ -1135,7 +1381,7 @@ pub(crate) fn build_sub_agent_tool(config: &AgentConfig) -> (SubAgentTool, Share
         maybe_guard_arc(Arc::new(WriteFileTool::new()), restrictions),
         maybe_guard_arc(Arc::new(EditFileTool::new()), restrictions),
         maybe_guard_arc(Arc::new(ListFilesTool::default()), restrictions),
-        maybe_guard_arc(Arc::new(SearchTool::default()), restrictions),
+        maybe_guard_arc(Arc::new(ProjectSearchTool::default()), restrictions),
         Arc::new(WebSearchTool),
     ];
 
@@ -1405,6 +1651,69 @@ mod tests {
             on_update,
             on_progress,
         }
+    }
+
+    #[tokio::test]
+    async fn test_project_search_defaults_to_literal_patterns() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("state.rs"), "fn take_diagnostic_error() {}\n").unwrap();
+
+        let tool = ProjectSearchTool::default();
+        let params = serde_json::json!({
+            "pattern": "take_diagnostic_error()",
+            "path": dir.path().to_string_lossy(),
+        });
+        let result = tool
+            .execute(params, test_tool_context(None))
+            .await
+            .expect("literal parentheses should not be treated as invalid regex");
+        let text = match &result.content[0] {
+            yoagent::types::Content::Text { text } => text,
+            _ => panic!("expected text result"),
+        };
+        assert!(
+            text.contains("take_diagnostic_error()"),
+            "search should find the literal pattern: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_project_search_skips_target_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let target = dir.path().join("target/debug/deps");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(src.join("lib.rs"), "pub fn real_match() {}\n").unwrap();
+        std::fs::write(
+            target.join("artifact.rmeta"),
+            "real_match from build artifact\n",
+        )
+        .unwrap();
+
+        let tool = ProjectSearchTool::default();
+        let params = serde_json::json!({
+            "pattern": "real_match",
+            "path": dir.path().to_string_lossy(),
+        });
+        let result = tool
+            .execute(params, test_tool_context(None))
+            .await
+            .expect("target artifacts should be skipped, not reported as search errors");
+        let text = match &result.content[0] {
+            yoagent::types::Content::Text { text } => text,
+            _ => panic!("expected text result"),
+        };
+        assert!(
+            text.contains("src/lib.rs"),
+            "source match should remain: {text}"
+        );
+        assert!(
+            !text.contains("artifact.rmeta") && !text.contains("target/debug"),
+            "target artifacts should not appear in search results: {text}"
+        );
     }
 
     #[tokio::test]
