@@ -58,6 +58,10 @@ CACHE_PERCENT_RE = re.compile(
     re.IGNORECASE,
 )
 CACHE_TOKENS_RE = re.compile(r"([\d,]+)\s+hit tokens,\s*([\d,]+)\s+miss tokens", re.IGNORECASE)
+YOYO_USAGE_CACHE_RE = re.compile(
+    r"tokens:\s*([\d,]+)\s+in\s*/\s*([\d,]+)\s+out\s*\[cache:\s*([\d,]+)\s+read,\s*([\d,]+)\s+write\]",
+    re.IGNORECASE,
+)
 TASK_TRANSCRIPT_RE = re.compile(r"task_(\d+)_attempt(\d+)\.log$")
 TURN_MARKER_RE = re.compile(r"\bTurn\s+(\d+)\b")
 ACTION_LINE_RE = re.compile(r"^\s*▶\s+", re.MULTILINE)
@@ -127,6 +131,10 @@ def eval_timed_out_after_verdict(row: dict[str, Any]) -> bool:
         or explicit_fail(row.get("verdict"))
         or bool(row.get("verdict_file"))
     )
+
+
+def parse_count(text: str) -> int:
+    return int(str(text).replace(",", ""))
 
 
 def clean_eval_pass(row: dict[str, Any]) -> bool:
@@ -359,8 +367,20 @@ def parse_log(log_text: str) -> dict[str, Any]:
         token_match = CACHE_TOKENS_RE.search(message)
         if token_match:
             try:
-                cache_hit_tokens = int(token_match.group(1).replace(",", ""))
-                cache_miss_tokens = int(token_match.group(2).replace(",", ""))
+                cache_hit_tokens = parse_count(token_match.group(1))
+                cache_miss_tokens = parse_count(token_match.group(2))
+                total = cache_hit_tokens + cache_miss_tokens
+                if total > 0:
+                    cache_ratio = round(cache_hit_tokens / total, 6)
+            except (TypeError, ValueError):
+                pass
+        yoyo_usage_match = YOYO_USAGE_CACHE_RE.search(message)
+        if yoyo_usage_match:
+            try:
+                # yoagent maps DeepSeek prompt_cache_miss_tokens into Usage.input
+                # and prompt_cache_hit_tokens into Usage.cache_read.
+                cache_miss_tokens = parse_count(yoyo_usage_match.group(1))
+                cache_hit_tokens = parse_count(yoyo_usage_match.group(3))
                 total = cache_hit_tokens + cache_miss_tokens
                 if total > 0:
                     cache_ratio = round(cache_hit_tokens / total, 6)
@@ -1190,6 +1210,26 @@ def run_self_tests() -> int:
         "cache hit ratio parsed from tokens",
         abs(float(operational["deepseek_cache_hit_ratio"]) - 0.843842) < 0.00001,
         operational,
+    )
+    yyds_usage = parse_log(
+        "evolve\tRun evolution session\t2026-06-09T12:00:00Z "
+        "tokens: 106004 in / 2000 out  [cache: 572800 read, 0 write]  "
+        "(session: 106004 in / 2000 out)"
+    )
+    check(
+        "yyds usage cache hit tokens parsed",
+        yyds_usage["deepseek_cache_hit_tokens"] == 572800,
+        yyds_usage,
+    )
+    check(
+        "yyds usage cache miss tokens parsed",
+        yyds_usage["deepseek_cache_miss_tokens"] == 106004,
+        yyds_usage,
+    )
+    check(
+        "yyds usage cache hit ratio parsed",
+        abs(float(yyds_usage["deepseek_cache_hit_ratio"]) - 0.843842) < 0.00001,
+        yyds_usage,
     )
     lesson_kinds = [
         lesson["kind"]
