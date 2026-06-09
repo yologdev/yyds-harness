@@ -404,6 +404,104 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(session_data["latest_gnomes"]["evaluator_timeout_with_verdict_count"], 1)
             self.assertEqual(session_data["health"], "attention")
 
+    def test_task_lineage_gnome_snapshots_use_corrected_strict_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "reverted": False,
+                },
+            )
+            stale_gnomes = {
+                "coding_log_score": 0.8,
+                "session_success_rate": 1.0,
+                "task_success_rate": 0.5,
+            }
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 4,
+                    "event_counts": {"RunStarted": 1, "RunCompleted": 1},
+                    "latest_gnomes": stale_gnomes,
+                    "gnome_keys": list(stale_gnomes),
+                    "evals": [{"suite": "log-feedback", "status": "passed", "score": 0.8}],
+                    "task_lineage": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "task_title": "Stale strict metric",
+                            "status": "completed",
+                            "planned_files": ["src/state.rs"],
+                            "source_files": ["src/state.rs"],
+                            "commit_shas": [],
+                            "eval": {"verdict": "PASS"},
+                            "gnome_metrics": stale_gnomes,
+                            "gnome_deltas": {
+                                "session_success_rate": 1.0,
+                                "task_success_rate": -0.5,
+                            },
+                        }
+                    ],
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Stale strict metric",
+                            "files": ["src/state.rs"],
+                            "artifact_path": "tasks/task_01/task.md",
+                            "quality": {"score": 1.0},
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": [],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "Verdict: PASS"},
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+            lineage = session_data["work_summary"]["task_lineage"][0]
+
+            self.assertEqual(session_data["latest_gnomes"]["task_success_rate"], 0.0)
+            self.assertEqual(session_data["latest_gnomes"]["session_success_rate"], 0.0)
+            self.assertEqual(lineage["gnome_metrics"]["task_success_rate"], 0.0)
+            self.assertEqual(lineage["gnome_metrics"]["session_success_rate"], 0.0)
+            self.assertEqual(lineage["gnome_metrics"]["task_unlanded_source_count"], 1)
+            self.assertEqual(lineage["gnome_deltas"]["task_success_rate"], -1.0)
+            self.assertEqual(lineage["gnome_deltas"]["session_success_rate"], 0.0)
+            self.assertEqual(
+                lineage["gnome_corrections"]["task_success_rate"],
+                {"from": 0.5, "to": 0.0},
+            )
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            self.assertIn("corrected gnome(s)", html)
+
     def test_manifest_files_backfilled_from_task_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

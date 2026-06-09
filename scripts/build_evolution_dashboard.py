@@ -744,6 +744,45 @@ def corrected_gnomes(summary: dict[str, Any], work: dict[str, Any]) -> dict[str,
     return gnomes
 
 
+def numeric_value(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def normalize_task_gnome_snapshot(row: dict[str, Any], corrected: dict[str, Any]) -> None:
+    if not corrected:
+        return
+    metrics = row.get("gnome_metrics") if isinstance(row.get("gnome_metrics"), dict) else {}
+    deltas = dict(row.get("gnome_deltas") if isinstance(row.get("gnome_deltas"), dict) else {})
+    corrections: dict[str, dict[str, Any]] = {}
+    for key, corrected_value in corrected.items():
+        current_value = metrics.get(key)
+        if current_value == corrected_value:
+            continue
+        corrections[str(key)] = {"from": current_value, "to": corrected_value}
+        if numeric_value(current_value) and numeric_value(corrected_value):
+            adjustment = float(corrected_value) - float(current_value)
+            current_delta = deltas.get(key)
+            if numeric_value(current_delta):
+                deltas[key] = round(float(current_delta) + adjustment, 6)
+            elif current_value is not None:
+                deltas[key] = round(adjustment, 6)
+    row["gnome_metrics"] = dict(corrected)
+    if deltas:
+        row["gnome_deltas"] = deltas
+    if corrections:
+        row["gnome_corrections"] = corrections
+
+
+def normalize_work_gnome_snapshots(work: dict[str, Any], corrected: dict[str, Any]) -> None:
+    for key in ("task_lineage", "causal_chains"):
+        rows = work.get(key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict):
+                normalize_task_gnome_snapshot(row, corrected)
+
+
 def session_sort_key(path: Path) -> tuple[int, str, str]:
     parts = path.name.split("-", 2)
     if len(parts) == 3 and parts[0] == "day":
@@ -812,6 +851,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         trace = trace_quality(summary, evals)
         work = work_summary(session_dir, outcome, summary, evals, blockers, commits)
         latest_gnomes = corrected_gnomes(summary, work)
+        normalize_work_gnome_snapshots(work, latest_gnomes)
         session = {
             "id": session_dir.name,
             "day": outcome.get("day"),
@@ -2232,7 +2272,9 @@ HTML = r"""<!doctype html>
         const commits = (row.commit_shas || []).map(sha => String(sha).slice(0, 7)).join(", ") || "no commit";
         const evalText = row.eval_verdict || (row.eval_statuses || []).join(", ") || "no eval";
         const deltaCount = Object.keys(row.gnome_deltas || {}).length;
-        return `<li>${text(row.task_id || "")}: ${text(row.title || "")}<br><span class="muted">plan ${text(planned)} → touched ${text(touched)} → ${text(commits)} → eval ${text(evalText)} → ${text(deltaCount)} gnome delta(s)</span></li>`;
+        const correctionCount = Object.keys(row.gnome_corrections || {}).length;
+        const correctionText = correctionCount ? ` / ${correctionCount} corrected gnome(s)` : "";
+        return `<li>${text(row.task_id || "")}: ${text(row.title || "")}<br><span class="muted">plan ${text(planned)} → touched ${text(touched)} → ${text(commits)} → eval ${text(evalText)} → ${text(deltaCount)} gnome delta(s)${text(correctionText)}</span></li>`;
       }).join("")}</ul>`;
     }
 
@@ -2399,8 +2441,10 @@ HTML = r"""<!doctype html>
         const evalVerdict = task.eval && task.eval.verdict ? ` / eval ${task.eval.verdict}` : "";
         const deltaCount = Object.keys(task.gnome_deltas || {}).length;
         const deltaText = deltaCount ? ` / ${deltaCount} gnome delta(s)` : "";
+        const correctionCount = Object.keys(task.gnome_corrections || {}).length;
+        const correctionText = correctionCount ? ` / ${correctionCount} corrected gnome(s)` : "";
         const method = task.commit_linkage_method ? ` / ${task.commit_linkage_method}` : "";
-        return `<li>${text(task.task_id || "")} ${text(task.status || "-")}: ${text(task.task_title || "")} (${text(fileCount)} files, ${text(commitCount)} commits${method}${evalVerdict}${deltaText})</li>`;
+        return `<li>${text(task.task_id || "")} ${text(task.status || "-")}: ${text(task.task_title || "")} (${text(fileCount)} files, ${text(commitCount)} commits${method}${evalVerdict}${deltaText}${correctionText})</li>`;
       }).join("")}</ul>`;
     }
 
@@ -2421,7 +2465,8 @@ HTML = r"""<!doctype html>
           const files = (task.source_files || task.touched_files || []).length;
           const commits = (task.commit_shas || []).length;
           const deltas = Object.keys(task.gnome_deltas || {}).length;
-          items.push({ kind: "Task link", className: deltas ? "good" : "info", session: session.id, title: `${task.task_id || ""} ${task.task_title || ""}`, detail: `${task.status || "-"} / ${files} files / ${commits} commits / ${deltas} gnome deltas` });
+          const corrections = Object.keys(task.gnome_corrections || {}).length;
+          items.push({ kind: "Task link", className: deltas || corrections ? "good" : "info", session: session.id, title: `${task.task_id || ""} ${task.task_title || ""}`, detail: `${task.status || "-"} / ${files} files / ${commits} commits / ${deltas} gnome deltas / ${corrections} corrected gnomes` });
         });
         (session.evals || []).slice(-2).forEach(evalData => {
           items.push({ kind: "Eval", className: evalData.status === "passed" ? "good" : "warn", session: session.id, title: evalData.eval_id || evalData.suite || "evaluation", detail: `${evalData.suite || "-"} ${evalData.status || "-"} score ${evalData.score === undefined ? "-" : evalData.score}` });
