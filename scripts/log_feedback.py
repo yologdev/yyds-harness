@@ -780,7 +780,7 @@ def build_assessment(
         and test_ok
         and not reverted
         and int(artifact_metrics.get("planner_no_task_count") or 0) == 0
-        and (attempted == 0 or succeeded >= attempted)
+        and (attempted == 0 or counted_succeeded >= attempted)
     )
     retry_success_rate = None
     if parsed["retry_markers"]:

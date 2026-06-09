@@ -1688,7 +1688,10 @@ EVALEOF
         if [ -f "session_plan/eval_task_${TASK_NUM}.md" ]; then
             EVAL_VERDICT=$(grep -i '^Verdict:' "session_plan/eval_task_${TASK_NUM}.md" | head -1 || true)
         fi
-        EVAL_VERDICT_TOKEN=$(printf '%s\n' "$EVAL_VERDICT" | sed -E 's/^[Vv]erdict:[[:space:]]*//; s/[[:space:]].*$//' | tr '[:lower:]' '[:upper:]')
+        EVAL_VERDICT_TOKEN=$(printf '%s\n' "$EVAL_VERDICT" \
+            | sed -E 's/^[Vv]erdict:[[:space:]]*//' \
+            | tr '[:lower:]' '[:upper:]' \
+            | sed -E 's/^[[:space:]]*(PASS|FAIL)[[:punct:]]*([[:space:]].*)?$/\1/; s/[[:space:]].*$//')
 
         if [ "$EVAL_VERDICT_TOKEN" = "FAIL" ]; then
             EVAL_REASON=$(grep -i '^Reason:' "session_plan/eval_task_${TASK_NUM}.md" | head -1 | sed 's/^Reason:[[:space:]]*//' || true)

@@ -199,6 +199,10 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
 
             work = data["sessions"][0]["work_summary"]
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            self.assertIn("const planned = text((row.planned_files || [])", html)
+            self.assertIn("const touched = text((row.touched_files || [])", html)
+            self.assertNotIn("planned ${(row.planned_files || [])", html)
             self.assertIn("1/1 verified tasks", work["headline"])
             self.assertIn("outcome reported 2/2 tasks", work["headline"])
             self.assertEqual(work["edited_files"], ["scripts/build_evolution_dashboard.py"])

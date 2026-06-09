@@ -63,6 +63,7 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('Planning guard failed: planning agent produced 0 tasks', evolve)
         self.assertIn('Evaluator: timed out — failing task because no verifier verdict exists', evolve)
         self.assertIn('EVAL_VERDICT_TOKEN', evolve)
+        self.assertIn('[[:punct:]]*', evolve)
         self.assertIn('[ "$EVAL_VERDICT_TOKEN" = "PASS" ]', evolve)
         self.assertIn('scripts/task_verification_gate.py', evolve)
         self.assertNotIn('Title: Self-improvement', evolve)
@@ -276,6 +277,47 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertIn("task_manifest_available", summary["latest_gnomes"])
             self.assertIn("task_artifact_coverage", summary["latest_gnomes"])
             self.assertIn("state_replay_integrity_rate", summary["latest_gnomes"])
+
+    def test_log_feedback_session_success_uses_strict_verified_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [{"task_id": "task_01"}],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {"task_id": "task_01", "status": "completed"},
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["task_success_rate"], 0.0)
+            self.assertEqual(metrics["session_success_rate"], 0.0)
+            self.assertEqual(metrics["evaluator_unverified_count"], 1)
 
     def test_summary_merges_post_wrapup_commit_links(self):
         with tempfile.TemporaryDirectory() as tmp:

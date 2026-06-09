@@ -2037,7 +2037,9 @@ HTML = r"""<!doctype html>
       const verificationRows = (verification.rows || []).slice(0, 4).map(row => {
         const problems = (row.problems || []).join(", ") || "verified";
         const klass = row.strict_success ? "good" : "warn";
-        return `<li><span class="${klass}">${text(row.task_id || "")}</span> ${text(row.title || "")}<br><span class="muted">planned ${(row.planned_files || []).slice(0, 2).join(", ") || "none"} → touched ${(row.touched_files || []).slice(0, 2).join(", ") || "none"} → ${text(problems)}</span></li>`;
+        const planned = text((row.planned_files || []).slice(0, 2).join(", ") || "none");
+        const touched = text((row.touched_files || []).slice(0, 2).join(", ") || "none");
+        return `<li><span class="${klass}">${text(row.task_id || "")}</span> ${text(row.title || "")}<br><span class="muted">planned ${planned} → touched ${touched} → ${text(problems)}</span></li>`;
       }).join("");
       const manifestBlock = manifest.task_count !== undefined ? `<div class="task-evidence">
           <strong>Plan decision ${manifest.planning_failed ? "(planning failed)" : ""}</strong>
