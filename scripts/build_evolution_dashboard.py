@@ -306,6 +306,9 @@ def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
                 "has_outcome": bool(outcome),
                 "task_title": outcome.get("task_title") if isinstance(outcome, dict) else None,
                 "status": outcome.get("status") if isinstance(outcome, dict) else None,
+                "source_files": outcome.get("source_files") if isinstance(outcome.get("source_files"), list) else [],
+                "touched_files": outcome.get("touched_files") if isinstance(outcome.get("touched_files"), list) else [],
+                "commit_shas": outcome.get("commit_shas") if isinstance(outcome.get("commit_shas"), list) else [],
                 "attempt_count": len(attempts),
                 "attempts": attempts[:8],
                 "eval_statuses": [
@@ -366,8 +369,24 @@ def task_verification_summary(
         planned = [str(path) for path in (task.get("files") or lineage.get("planned_files") or []) if path]
         touched = [
             str(path)
-            for path in (lineage.get("source_files") or lineage.get("touched_files") or [])
+            for path in (
+                lineage.get("source_files")
+                or artifact.get("source_files")
+                or lineage.get("touched_files")
+                or artifact.get("touched_files")
+                or []
+            )
             if path
+        ]
+        landed_commits = [
+            str(sha)
+            for sha in (
+                lineage.get("commit_shas")
+                or lineage.get("linked_commit_shas")
+                or artifact.get("commit_shas")
+                or []
+            )
+            if sha
         ]
         overlap = file_overlap(planned, touched) if planned and touched else False
         verified = eval_passed(artifact.get("evals") or [], lineage.get("eval"))
@@ -381,6 +400,8 @@ def task_verification_summary(
             problems.append("no_planned_file_overlap")
         if not verified:
             problems.append("no_passing_verifier")
+        if touched and outcome_status == "completed" and not landed_commits:
+            problems.append("no_landed_source_commit")
         rows.append(
             {
                 "task_id": task_id,
@@ -390,9 +411,10 @@ def task_verification_summary(
                 "overlap": overlap,
                 "verified": verified,
                 "outcome_status": outcome_status or None,
+                "landed_commit_shas": landed_commits,
                 "eval_statuses": artifact.get("eval_statuses") or [],
                 "problems": problems,
-                "strict_success": overlap and verified and not problems,
+                "strict_success": outcome_status == "completed" and overlap and verified and not problems,
             }
         )
     total = len(rows)
@@ -404,6 +426,58 @@ def task_verification_summary(
         "all_verified": bool(total == 0 or verified_count == total),
         "rows": rows,
     }
+
+
+def augment_evolution_suggestions(
+    suggestions: list[dict[str, Any]],
+    task_verification: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows = task_verification.get("rows") if isinstance(task_verification.get("rows"), list) else []
+    unlanded = sum(
+        1
+        for row in rows
+        if isinstance(row, dict) and "no_landed_source_commit" in (row.get("problems") or [])
+    )
+    unverified = int(task_verification.get("unverified_task_count") or 0)
+    out = [dict(row) for row in suggestions if isinstance(row, dict)]
+
+    def upsert(kind: str, title: str, reason: str, metric: str, value: Any, priority: int) -> None:
+        for row in out:
+            if row.get("metric") == metric:
+                row["value"] = value
+                row["priority"] = max(int(row.get("priority") or 0), priority)
+                return
+        out.append(
+            {
+                "kind": kind,
+                "title": title,
+                "reason": reason,
+                "metric": metric,
+                "value": value,
+                "priority": priority,
+            }
+        )
+
+    if unverified:
+        upsert(
+            "eval",
+            "Bound evaluator checks so verdicts are not skipped",
+            "Some tasks were not strictly verified by evaluator and commit evidence.",
+            "evaluator_unverified_count",
+            unverified,
+            90,
+        )
+    if unlanded:
+        upsert(
+            "commit",
+            "Require source commits before task success",
+            "A task had source edits and verifier output but no landed source commit.",
+            "task_unlanded_source_count",
+            unlanded,
+            88,
+        )
+    out.sort(key=lambda item: (-int(item.get("priority") or 0), str(item.get("title") or "")))
+    return out
 
 
 def task_manifest_summary(session_dir: Path) -> dict[str, Any]:
@@ -519,6 +593,7 @@ def work_summary(
     bookkeeping_commits = [commit for commit in commits if not commit.get("source_files")]
     task_lineage = summary.get("task_lineage") if isinstance(summary.get("task_lineage"), list) else []
     task_verification = task_verification_summary(task_manifest, task_artifacts, task_lineage)
+    suggestions = augment_evolution_suggestions(suggestions, task_verification)
     source_patch_count = len(source_commits)
     labels: list[str] = []
     if attempted:
@@ -583,11 +658,20 @@ def corrected_gnomes(summary: dict[str, Any], work: dict[str, Any]) -> dict[str,
     if task_count:
         verified = int(verification.get("verified_task_count") or 0)
         unverified = int(verification.get("unverified_task_count") or 0)
+        unlanded = sum(
+            1
+            for row in (verification.get("rows") or [])
+            if isinstance(row, dict) and "no_landed_source_commit" in (row.get("problems") or [])
+        )
         gnomes["task_success_rate"] = verified / task_count
         gnomes["session_success_rate"] = 1.0 if verified == task_count else 0.0
         gnomes["evaluator_unverified_count"] = max(
             int(gnomes.get("evaluator_unverified_count") or 0),
             unverified,
+        )
+        gnomes["task_unlanded_source_count"] = max(
+            int(gnomes.get("task_unlanded_source_count") or 0),
+            unlanded,
         )
     if manifest.get("planning_failed"):
         gnomes["planner_no_task_count"] = max(int(gnomes.get("planner_no_task_count") or 0), 1)
@@ -663,35 +747,35 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         trace = trace_quality(summary, evals)
         work = work_summary(session_dir, outcome, summary, evals, blockers, commits)
         latest_gnomes = corrected_gnomes(summary, work)
-        sessions.append(
-            {
-                "id": session_dir.name,
-                "day": outcome.get("day"),
-                "ts": outcome.get("ts") or summary.get("generated_at"),
-                "session_time": outcome.get("session_time"),
-                "github_run_id": outcome.get("github_run_id"),
-                "github_run_attempt": outcome.get("github_run_attempt"),
-                "build_ok": outcome.get("build_ok"),
-                "test_ok": outcome.get("test_ok"),
-                "tasks_attempted": outcome.get("tasks_attempted"),
-                "tasks_succeeded": outcome.get("tasks_succeeded"),
-                "reverted": outcome.get("reverted"),
-                "event_count": summary.get("event_count", 0),
-                "event_counts": summary.get("event_counts", {}),
-                "trace_quality": trace,
-                "latest_gnomes": latest_gnomes,
-                "gnome_keys": summary.get("gnome_keys", []),
-                "evals": evals,
-                "latest_eval": latest_eval,
-                "latest_decision": latest_decision,
-                "patches": summary.get("patches", []),
-                "decisions": summary.get("decisions", []),
-                "blockers": blockers,
-                "code_refs": summary.get("code_refs", []),
-                "work_summary": work,
-                "audit_url": f"{REPO_URL}/tree/audit-log/sessions/{session_dir.name}",
-            }
-        )
+        session = {
+            "id": session_dir.name,
+            "day": outcome.get("day"),
+            "ts": outcome.get("ts") or summary.get("generated_at"),
+            "session_time": outcome.get("session_time"),
+            "github_run_id": outcome.get("github_run_id"),
+            "github_run_attempt": outcome.get("github_run_attempt"),
+            "build_ok": outcome.get("build_ok"),
+            "test_ok": outcome.get("test_ok"),
+            "tasks_attempted": outcome.get("tasks_attempted"),
+            "tasks_succeeded": outcome.get("tasks_succeeded"),
+            "reverted": outcome.get("reverted"),
+            "event_count": summary.get("event_count", 0),
+            "event_counts": summary.get("event_counts", {}),
+            "trace_quality": trace,
+            "latest_gnomes": latest_gnomes,
+            "gnome_keys": summary.get("gnome_keys", []),
+            "evals": evals,
+            "latest_eval": latest_eval,
+            "latest_decision": latest_decision,
+            "patches": summary.get("patches", []),
+            "decisions": summary.get("decisions", []),
+            "blockers": blockers,
+            "code_refs": summary.get("code_refs", []),
+            "work_summary": work,
+            "audit_url": f"{REPO_URL}/tree/audit-log/sessions/{session_dir.name}",
+        }
+        session["health"] = run_health(session)
+        sessions.append(session)
     return sessions
 
 
@@ -1564,6 +1648,7 @@ HTML = r"""<!doctype html>
       task_spec_quality_score: "Task spec quality",
       state_replay_integrity_rate: "State replay integrity",
       evaluator_unverified_count: "Evaluator unverified count",
+      task_unlanded_source_count: "Unlanded source tasks",
       max_task_turn_count: "Max task turns",
       avg_task_turn_count: "Avg task turns",
       total_task_turn_count: "Total task turns",

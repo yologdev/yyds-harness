@@ -29,6 +29,7 @@ GNOME_COMPARE_KEYS = [
     "command_timeout_count",
     "evaluator_timeout_count",
     "evaluator_unverified_count",
+    "task_unlanded_source_count",
     "search_error_count",
     "max_task_turn_count",
     "deepseek_cache_hit_ratio",
@@ -373,6 +374,8 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
         add("planner", "Make planning failure actionable", "The planner produced no concrete task files.", "planner_no_task_count", gnomes.get("planner_no_task_count"), 100)
     if int(gnomes.get("evaluator_unverified_count") or 0) > 0:
         add("eval", "Bound evaluator checks so verdicts are not skipped", "Some task evals were unverified or timed out.", "evaluator_unverified_count", gnomes.get("evaluator_unverified_count"), 90)
+    if int(gnomes.get("task_unlanded_source_count") or 0) > 0:
+        add("commit", "Require source commits before task success", "A task had source edits and verifier output but no landed source commit.", "task_unlanded_source_count", gnomes.get("task_unlanded_source_count"), 88)
     if int(gnomes.get("evaluator_timeout_count") or 0) > 0:
         add("eval", "Make evaluator timeouts resumable or cheaper", "Evaluator timeout friction still appears in action logs.", "evaluator_timeout_count", gnomes.get("evaluator_timeout_count"), 85)
     if int(gnomes.get("search_error_count") or 0) > 0:

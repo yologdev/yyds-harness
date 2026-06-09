@@ -185,6 +185,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "evolution_friction_count",
                     "session_success_rate",
                     "task_success_rate",
+                    "task_unlanded_source_count",
                 ],
             )
             self.assertEqual(
@@ -195,6 +196,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "evolution_friction_count": 2.0,
                     "session_success_rate": 1.0,
                     "task_success_rate": 1.0,
+                    "task_unlanded_source_count": 0.0,
                 },
             )
 
@@ -227,6 +229,89 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["task_lineage"][0]["task_id"], "task_01")
             self.assertEqual(work["task_lineage"][0]["gnome_deltas"], {"coding_log_score": 0.1})
             self.assertEqual(data["sessions"][0]["trace_quality"]["status"], "full")
+            self.assertEqual(data["sessions"][0]["health"], "passed")
+
+    def test_strict_verification_requires_landed_source_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 4,
+                    "event_counts": {"RunStarted": 1, "RunCompleted": 1, "PatchEvaluated": 1},
+                    "latest_gnomes": {"coding_log_score": 0.8},
+                    "gnome_keys": ["coding_log_score"],
+                    "evals": [{"suite": "log-feedback", "status": "passed", "score": 0.8}],
+                    "task_lineage": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "task_title": "Unlanded source edit",
+                            "status": "completed",
+                            "planned_files": ["src/state.rs"],
+                            "source_files": ["src/state.rs"],
+                            "commit_shas": [],
+                            "eval": {"verdict": "PASS"},
+                        }
+                    ],
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Unlanded source edit",
+                            "files": ["src/state.rs"],
+                            "artifact_path": "tasks/task_01/task.md",
+                            "quality": {"score": 1.0},
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": [],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "Verdict: PASS"},
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+            verification = session_data["work_summary"]["task_verification"]
+
+            self.assertEqual(verification["verified_task_count"], 0)
+            self.assertEqual(verification["unverified_task_count"], 1)
+            self.assertIn("no_landed_source_commit", verification["rows"][0]["problems"])
+            self.assertEqual(session_data["latest_gnomes"]["task_success_rate"], 0.0)
+            self.assertEqual(session_data["latest_gnomes"]["session_success_rate"], 0.0)
+            self.assertEqual(session_data["latest_gnomes"]["task_unlanded_source_count"], 1)
+            self.assertEqual(session_data["health"], "attention")
 
     def test_derives_source_changes_from_matching_session_commits(self):
         with tempfile.TemporaryDirectory() as tmp:

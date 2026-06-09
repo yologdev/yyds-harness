@@ -69,6 +69,50 @@ Expected Evidence:
             self.assertEqual(payload["tasks"][0]["task_title"], "Improve evaluator timeout evidence")
             self.assertEqual(payload["tasks"][0]["planned_files"], ["scripts/log_feedback.py", "scripts/build_evolution_dashboard.py"])
 
+    def test_manifest_parses_blank_separated_task_header_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "task_01.md").write_text(
+                """Title: Capture panic diagnostics
+
+Files: src/state.rs
+
+Issue: none
+
+Origin: planner
+
+Objective:
+Make panic details visible in RunCompleted error_detail.
+
+Success Criteria:
+- panic diagnostics are stashed
+
+Verification:
+- cargo test panic_hook
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+            payload = task_manifest.decision_payload(manifest)
+
+            self.assertEqual(manifest["selected_tasks"][0]["files"], ["src/state.rs"])
+            self.assertEqual(payload["tasks"][0]["planned_files"], ["src/state.rs"])
+
     def test_manifest_records_planning_failure_without_fake_task(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -318,6 +318,58 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["task_success_rate"], 0.0)
             self.assertEqual(metrics["session_success_rate"], 0.0)
             self.assertEqual(metrics["evaluator_unverified_count"], 1)
+            self.assertEqual(metrics["task_unlanded_source_count"], 0)
+
+    def test_log_feedback_requires_landed_commit_for_passed_source_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [{"task_id": "task_01"}],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": [],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "Verdict: PASS"},
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["task_success_rate"], 0.0)
+            self.assertEqual(metrics["session_success_rate"], 0.0)
+            self.assertEqual(metrics["evaluator_unverified_count"], 1)
+            self.assertEqual(metrics["task_unlanded_source_count"], 1)
 
     def test_summary_merges_post_wrapup_commit_links(self):
         with tempfile.TemporaryDirectory() as tmp:

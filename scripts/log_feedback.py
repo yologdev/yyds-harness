@@ -96,6 +96,7 @@ GNOME_KEYS = [
     "task_spec_quality_score",
     "state_replay_integrity_rate",
     "evaluator_unverified_count",
+    "task_unlanded_source_count",
     "max_task_turn_count",
     "avg_task_turn_count",
     "total_task_turn_count",
@@ -558,6 +559,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     artifact_coverage = ratio(len(task_dirs), attempted) if attempted else (1.0 if not task_dirs else None)
     strict_verified = 0
     evaluator_unverified = 0
+    unlanded_source = 0
     for task_dir in task_dirs:
         outcome = load_json(task_dir / "outcome.json")
         evals = [load_json(path) for path in sorted(task_dir.glob("eval_attempt_*.json"))]
@@ -566,10 +568,15 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             explicit_pass(row.get("status")) or explicit_pass(row.get("verdict"))
             for row in evals
         )
-        if outcome.get("status") == "completed" and has_pass:
+        touched = outcome.get("source_files") or outcome.get("touched_files") or []
+        landed = bool(outcome.get("commit_shas") or outcome.get("commits"))
+        has_landed_source = not touched or landed
+        if outcome.get("status") == "completed" and has_pass and has_landed_source:
             strict_verified += 1
         elif outcome.get("status") == "completed" or evals:
             evaluator_unverified += 1
+        if outcome.get("status") == "completed" and has_pass and touched and not landed:
+            unlanded_source += 1
     replay = replay_check_session(session_dir)
     return {
         "task_manifest_available": bool(manifest),
@@ -580,6 +587,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "task_artifact_coverage": artifact_coverage,
         "task_strict_verified_count": strict_verified,
         "evaluator_unverified_count": evaluator_unverified,
+        "task_unlanded_source_count": unlanded_source,
         "task_spec_quality_score": round(sum(quality_scores) / len(quality_scores), 4)
         if quality_scores
         else None,
@@ -721,6 +729,7 @@ def score_assessment(metrics: dict[str, Any]) -> float:
             + float(metrics.get("evolution_friction_count") or 0)
             + float(metrics.get("planner_no_task_count") or 0) * 3.0
             + float(metrics.get("evaluator_unverified_count") or 0)
+            + float(metrics.get("task_unlanded_source_count") or 0) * 2.0
         )
         / 12.0,
     )

@@ -39,6 +39,8 @@ def parse_task(path: Path, task_number: int) -> dict[str, Any]:
         if in_fields and match:
             fields[match.group(1).strip().lower().replace(" ", "_")] = match.group(2).strip()
             continue
+        if in_fields and not line.strip():
+            continue
         in_fields = False
         body_lines.append(line)
 
