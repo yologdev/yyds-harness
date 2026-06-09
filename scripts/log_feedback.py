@@ -165,6 +165,11 @@ def is_noise_failure_message(message: str) -> bool:
     lower = message.lower().strip()
     if not lower:
         return True
+    if re.match(
+        r"^(let me|actually\b|wait\b|so\b|unless\b|i need\b|i can\b|i should\b|now\b|good\b|that's expected\b|the evaluator agent needs\b)",
+        lower,
+    ):
+        return True
     if lower.startswith(("##[group]run ", "##[endgroup]", "#", "+", "-")):
         return True
     if lower.startswith(("ok:", "warning:", "compiling ", "checking ", "finished ")):
@@ -1108,11 +1113,16 @@ def run_self_tests() -> int:
                 "evolve\tInstall xurl\t2026-06-06T14:57:41.9956725Z Compiling proc-macro-error v1.0.4",
                 "evolve\tRun evolution session\t2026-06-06T15:39:56.0227640Z store_schema = format!(\"SQLite integrity OK, schema version error: {e}\");",
                 "evolve\tRun evolution session\t2026-06-06T15:10:45.1599289Z 1. The `context explain` timed out - that might be a real bug worth fixing",
+                "evolve\tRun evolution session\t2026-06-09T11:52:59.0607692Z Let me look at the test failure. The test at line 6536 panicked, and then at line 6541. Let me read what's there.",
+                "evolve\tRun evolution session\t2026-06-09T11:53:09.4054420Z Actually, the output says \"2 test_assertion\" errors at lines 6536 and 6541.",
+                "evolve\tRun evolution session\t2026-06-09T11:53:14.8839934Z Wait, the error says the thread panicked at line 6536 and line 6541.",
             ]
         )
     )
     check("benign action log lines are not failures", noisy["distinct_failure_count"] == 0, noisy["failure_fingerprints"])
     check("timestamps and retry counts are not provider errors", noisy["provider_error_count"] == 0, noisy["provider_error_count"])
+    real_panic = parse_log("evolve\tRun evolution session\t2026-06-09T11:52:59Z thread 'main' panicked at src/state.rs:42:9:")
+    check("real rust panic lines are still failures", real_panic["distinct_failure_count"] == 1, real_panic)
     operational = parse_log(
         "\n".join(
             [
