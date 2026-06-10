@@ -2852,6 +2852,43 @@ HTML = r"""<!doctype html>
       }).join("");
     }
 
+    function metricDeltaValue(key, value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
+      const n = Number(value);
+      const prefix = n > 0 ? "+" : "";
+      return `${prefix}${metricValue(key, n)}`;
+    }
+
+    function summarizeGnomeMovement(row) {
+      const corrections = row.gnome_corrections || {};
+      const deltas = row.gnome_deltas || {};
+      const priority = [
+        "task_success_rate",
+        "session_success_rate",
+        "task_verification_rate",
+        "evaluator_unverified_count",
+        "evaluator_timeout_with_verdict_count",
+        "task_unlanded_source_count",
+        "max_task_turn_count",
+        "state_operational_capture_coverage",
+        "deepseek_cache_hit_ratio",
+        "deepseek_cache_ratio_unverified_count",
+        "coding_log_score"
+      ];
+      const allKeys = Array.from(new Set(Object.keys(corrections).concat(Object.keys(deltas))));
+      const ordered = priority.filter(key => allKeys.includes(key)).concat(allKeys.filter(key => !priority.includes(key)));
+      const parts = ordered.slice(0, 4).map(key => {
+        const label = text(gnomeLabels[key] || key);
+        const correction = corrections[key];
+        if (correction && typeof correction === "object" && ("from" in correction || "to" in correction)) {
+          return `${label} ${metricValue(key, correction.from)}→${metricValue(key, correction.to)}`;
+        }
+        return `${label} ${metricDeltaValue(key, deltas[key])}`;
+      });
+      const remaining = Math.max(0, allKeys.length - parts.length);
+      return parts.length ? `${parts.join(", ")}${remaining ? ` +${text(remaining)} more` : ""}` : "";
+    }
+
     function renderCausalChains(work) {
       const rows = (work.causal_chains || []).slice(0, 6);
       if (!rows.length) return `<p class="muted">No causal-chain rows recorded yet.</p>`;
@@ -2868,7 +2905,9 @@ HTML = r"""<!doctype html>
         const deltaCount = Object.keys(row.gnome_deltas || {}).length;
         const correctionCount = Object.keys(row.gnome_corrections || {}).length;
         const correctionText = correctionCount ? ` / ${correctionCount} corrected gnome(s)` : "";
-        return `<li>${text(row.task_id || "")}: ${text(row.title || "")}<br><span class="muted">plan ${text(planned)} → touched ${text(touched)} → ${text(commits)} → eval ${text(evalText)}${strictText}${problemText} → ${text(deltaCount)} gnome delta(s)${text(correctionText)}</span></li>`;
+        const movement = summarizeGnomeMovement(row);
+        const movementText = movement || `${text(deltaCount)} gnome delta(s)${text(correctionText)}`;
+        return `<li>${text(row.task_id || "")}: ${text(row.title || "")}<br><span class="muted">plan ${text(planned)} → touched ${text(touched)} → ${text(commits)} → eval ${text(evalText)}${strictText}${problemText} → ${movementText}</span></li>`;
       }).join("")}</ul>`;
     }
 
@@ -3044,7 +3083,9 @@ HTML = r"""<!doctype html>
         const problems = (task.verification_problems || []).slice(0, 3).join(", ");
         const strictText = strict ? ` / ${strict.replace("_", " ")}` : "";
         const problemText = problems ? ` / ${problems}` : "";
-        return `<li><span class="${strictClass}">${text(task.task_id || "")} ${text(task.status || "-")}</span>: ${text(task.task_title || "")} (${text(fileCount)} files, ${text(commitCount)} commits${method}${evalVerdict}${strictText}${problemText}${deltaText}${correctionText})</li>`;
+        const movement = summarizeGnomeMovement(task);
+        const movementText = movement ? ` / ${movement}` : `${deltaText}${correctionText}`;
+        return `<li><span class="${strictClass}">${text(task.task_id || "")} ${text(task.status || "-")}</span>: ${text(task.task_title || "")} (${text(fileCount)} files, ${text(commitCount)} commits${method}${evalVerdict}${strictText}${problemText}${movementText})</li>`;
       }).join("")}</ul>`;
     }
 

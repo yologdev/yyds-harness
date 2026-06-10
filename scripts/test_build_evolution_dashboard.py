@@ -737,6 +737,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
             html = (root / "out/index.html").read_text(encoding="utf-8")
             self.assertIn("corrected gnome(s)", html)
+            self.assertIn("function summarizeGnomeMovement", html)
+            self.assertIn("Task success", html)
+            self.assertIn("metricDeltaValue", html)
 
     def test_cache_ratio_without_token_evidence_is_marked_unverified(self):
         with tempfile.TemporaryDirectory() as tmp:
