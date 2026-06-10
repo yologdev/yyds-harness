@@ -96,7 +96,34 @@ def transcript_path_token(value: str) -> str:
     text = text.split()[0] if text.split() else text
     text = text.split(":", 1)[0]
     text = WORKSPACE_PREFIX_RE.sub("", text).strip()
+    text = normalize_transcript_path(text)
     return "" if text in {"?", "-", "."} else text
+
+
+def normalize_transcript_path(path: str) -> str:
+    text = path.strip()
+    if text.startswith("..") and not text.startswith("../"):
+        text = text[1:]
+    if text.startswith("./"):
+        text = text[2:]
+    pseudo_roots = (
+        "Cargo.",
+        "README",
+        "docs/",
+        "eval/",
+        "journals/",
+        "memory/",
+        "scripts/",
+        "session_plan/",
+        "site/",
+        "skills/",
+        "src/",
+        "tasks/",
+        "tests/",
+    )
+    if text.startswith(".") and any(text[1:].startswith(root) for root in pseudo_roots):
+        return text[1:]
+    return text
 
 
 def summarize_transcript_actions(session_dir: Path) -> dict[str, Any]:

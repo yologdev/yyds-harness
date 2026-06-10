@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from build_evolution_dashboard import build  # noqa: E402
+from build_evolution_dashboard import build, summarize_transcript_actions  # noqa: E402
 
 
 def write_json(path: Path, value: object) -> None:
@@ -29,6 +29,34 @@ def write_events(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class BuildEvolutionDashboard(unittest.TestCase):
+    def test_transcript_action_paths_drop_pseudo_workspace_dot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "\n".join(
+                    [
+                        "  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (5ms)",
+                        "  ▶ edit /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md ✓ (5ms)",
+                        "  ▶ edit /home/runner/work/yyds-harness/yyds-harness/.github/workflows/ci.yml ✓ (5ms)",
+                        "  ▶ edit /home/runner/work/yyds-harness/yyds-harness/.gitignore ✓ (5ms)",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            actions = summarize_transcript_actions(session)
+
+            self.assertIn("src/state.rs", actions["read_files"])
+            self.assertIn("session_plan/eval_task_1.md", actions["edited_files"])
+            self.assertIn(".github/workflows/ci.yml", actions["edited_files"])
+            self.assertIn(".gitignore", actions["edited_files"])
+            self.assertNotIn(".src/state.rs", actions["read_files"])
+            self.assertNotIn(".session_plan/eval_task_1.md", actions["edited_files"])
+
     def test_data_contract_reports_generated_at_and_latest_session(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
