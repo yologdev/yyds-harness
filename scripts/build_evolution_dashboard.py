@@ -255,9 +255,9 @@ def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[
             "FailureObserved",
             "TestStarted",
             "TestCompleted",
-            "TaskLineageLinked",
         )
     )
+    task_lineage_events = int(counts.get("TaskLineageLinked") or 0)
     feedback_evals = sum(
         1
         for eval_data in evals
@@ -269,9 +269,12 @@ def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[
     elif trace_events <= 0 and (patch_evaluated or feedback_evals):
         status = "feedback_only"
         label = "feedback-only trace"
-    elif operational_events <= 0:
+    elif operational_events <= 0 and task_lineage_events <= 0:
         status = "lifecycle"
         label = "lifecycle-only trace"
+    elif operational_events <= 0 and task_lineage_events > 0:
+        status = "thin"
+        label = "task-lineage trace"
     elif operational_events < 2 or trace_events < 5:
         status = "thin"
         label = "thin state trace"
@@ -284,10 +287,12 @@ def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[
         "event_count": total,
         "trace_event_count": trace_events,
         "operational_event_count": operational_events,
+        "task_lineage_event_count": task_lineage_events,
         "patch_evaluated_count": patch_evaluated,
         "feedback_eval_count": feedback_evals,
         "state_capture_coverage": 1.0 if trace_events > 0 else 0.0,
         "operational_capture_coverage": 1.0 if operational_events > 0 else 0.0,
+        "task_lineage_capture_coverage": 1.0 if task_lineage_events > 0 else 0.0,
     }
 
 
@@ -1071,6 +1076,14 @@ def corrected_gnomes(summary: dict[str, Any], work: dict[str, Any], trace: dict[
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             gnomes["state_operational_capture_coverage"] = value
             recalc_score = True
+    if "task_lineage_capture_coverage" not in gnomes and isinstance(trace, dict):
+        value = trace.get("task_lineage_capture_coverage")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            gnomes["task_lineage_capture_coverage"] = value
+    if "task_lineage_event_count" not in gnomes and isinstance(trace, dict):
+        value = trace.get("task_lineage_event_count")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            gnomes["task_lineage_event_count"] = value
     cache_hit_tokens = gnomes.get("deepseek_cache_hit_tokens")
     cache_miss_tokens = gnomes.get("deepseek_cache_miss_tokens")
     if gnomes.get("deepseek_cache_hit_ratio") is not None and not (
@@ -2254,6 +2267,8 @@ HTML = r"""<!doctype html>
       planner_no_task_count: "Planner no-task count",
       task_manifest_available: "Task manifest available",
       task_artifact_coverage: "Task artifact coverage",
+      task_lineage_capture_coverage: "Task lineage capture",
+      task_lineage_event_count: "Task lineage events",
       task_spec_quality_score: "Task spec quality",
       state_replay_integrity_rate: "State replay integrity",
       evaluator_unverified_count: "Evaluator unverified count",
@@ -2271,6 +2286,7 @@ HTML = r"""<!doctype html>
       "coding_log_score",
       "task_success_rate",
       "state_operational_capture_coverage",
+      "task_lineage_capture_coverage",
       "state_capture_coverage",
       "workflow_success_rate",
       "evolution_friction_count",
@@ -2621,11 +2637,15 @@ HTML = r"""<!doctype html>
       }
       const stateCoverage = Number(gnomes.state_capture_coverage ?? NaN);
       const operationalCoverage = Number(gnomes.state_operational_capture_coverage ?? NaN);
+      const lineageCoverage = Number(gnomes.task_lineage_capture_coverage ?? NaN);
       if (!Number.isNaN(stateCoverage) && stateCoverage > 0 && !Number.isNaN(operationalCoverage) && operationalCoverage === 0) {
+        const lineageText = !Number.isNaN(lineageCoverage) && lineageCoverage > 0
+          ? " Task lineage evidence exists, but it is not a substitute for model/tool/cache events."
+          : "";
         notes.push({
           kind: "State evidence",
           className: "warn",
-          text: "State replay evidence exists, but the latest visible session did not capture yyds/tool operational events. Treat its trace as lifecycle-only until a fresh run emits model/tool/cache events."
+          text: `State replay evidence exists, but the latest visible session did not capture yyds/tool operational events.${lineageText} Treat its trace as thin until a fresh run emits model/tool/cache events.`
         });
       }
       document.getElementById("metricNotes").innerHTML = notes.length
@@ -2647,7 +2667,7 @@ HTML = r"""<!doctype html>
         });
       });
       keys.sort();
-      const preferred = ["coding_log_score", "task_success_rate", "workflow_success_rate", "state_operational_capture_coverage", "state_capture_coverage", "evolution_friction_count", "max_task_turn_count", "deepseek_cache_hit_ratio", "cache_hit_ratio"];
+      const preferred = ["coding_log_score", "task_success_rate", "workflow_success_rate", "state_operational_capture_coverage", "task_lineage_capture_coverage", "state_capture_coverage", "evolution_friction_count", "max_task_turn_count", "deepseek_cache_hit_ratio", "cache_hit_ratio"];
       preferred.reverse().forEach(key => {
         const idx = keys.indexOf(key);
         if (idx >= 0) {
@@ -2891,6 +2911,7 @@ HTML = r"""<!doctype html>
         "task_unlanded_source_count",
         "max_task_turn_count",
         "state_operational_capture_coverage",
+        "task_lineage_capture_coverage",
         "deepseek_cache_hit_ratio",
         "deepseek_cache_ratio_unverified_count",
         "coding_log_score"

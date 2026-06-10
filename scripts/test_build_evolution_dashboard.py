@@ -1034,9 +1034,11 @@ class BuildEvolutionDashboard(unittest.TestCase):
             current = data["sessions"][0]
 
             self.assertEqual(current["trace_quality"]["status"], "thin")
-            self.assertEqual(current["trace_quality"]["label"], "thin state trace")
-            self.assertEqual(current["trace_quality"]["operational_event_count"], 1)
-            self.assertEqual(current["trace_quality"]["operational_capture_coverage"], 1.0)
+            self.assertEqual(current["trace_quality"]["label"], "task-lineage trace")
+            self.assertEqual(current["trace_quality"]["operational_event_count"], 0)
+            self.assertEqual(current["trace_quality"]["operational_capture_coverage"], 0.0)
+            self.assertEqual(current["trace_quality"]["task_lineage_event_count"], 1)
+            self.assertEqual(current["trace_quality"]["task_lineage_capture_coverage"], 1.0)
             self.assertEqual(data["aggregate"]["full_trace_sessions"], 0)
             self.assertEqual(data["aggregate"]["lifecycle_trace_sessions"], 0)
             self.assertIn("Operational traces", (root / "out/index.html").read_text(encoding="utf-8"))

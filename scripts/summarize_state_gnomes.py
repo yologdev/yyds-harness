@@ -61,6 +61,8 @@ GNOME_KEYS = [
     "planner_no_task_count",
     "task_manifest_available",
     "task_artifact_coverage",
+    "task_lineage_capture_coverage",
+    "task_lineage_event_count",
     "task_spec_quality_score",
     "state_replay_integrity_rate",
     "evaluator_unverified_count",

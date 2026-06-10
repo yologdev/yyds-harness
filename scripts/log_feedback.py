@@ -88,7 +88,6 @@ OPERATIONAL_STATE_EVENTS = {
     "FailureObserved",
     "TestStarted",
     "TestCompleted",
-    "TaskLineageLinked",
 }
 GNOME_KEYS = [
     "coding_log_score",
@@ -115,6 +114,8 @@ GNOME_KEYS = [
     "planner_no_task_count",
     "task_manifest_available",
     "task_artifact_coverage",
+    "task_lineage_capture_coverage",
+    "task_lineage_event_count",
     "task_spec_quality_score",
     "state_replay_integrity_rate",
     "evaluator_unverified_count",
@@ -296,11 +297,14 @@ def event_count(events_path: Path) -> int:
 def state_trace_metrics(session_dir: Path) -> dict[str, Any]:
     events = load_events(session_dir / "state" / "events.jsonl")
     operational_count = sum(1 for event in events if event_kind(event) in OPERATIONAL_STATE_EVENTS)
+    lineage_count = sum(1 for event in events if event_kind(event) == "TaskLineageLinked")
     return {
         "state_event_count": len(events),
         "state_capture_coverage": 1.0 if events else 0.0,
         "state_operational_event_count": operational_count,
         "state_operational_capture_coverage": 1.0 if operational_count else 0.0,
+        "task_lineage_event_count": lineage_count,
+        "task_lineage_capture_coverage": 1.0 if lineage_count else 0.0,
     }
 
 

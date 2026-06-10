@@ -24,6 +24,7 @@ GNOME_COMPARE_KEYS = [
     "task_verification_rate",
     "task_mechanical_verification_rate",
     "task_artifact_coverage",
+    "task_lineage_capture_coverage",
     "task_spec_quality_score",
     "state_operational_capture_coverage",
     "evolution_friction_count",

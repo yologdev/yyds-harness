@@ -361,6 +361,7 @@ class TaskLineageFeedback(unittest.TestCase):
             )
             metrics = {"coding_log_score": 1.0}
             tasks = log_feedback.task_lineage(root, metrics, {})
+            trace_metrics = log_feedback.state_trace_metrics(root)
 
             task = summary["task_lineage"][0]
             self.assertEqual(task["started_event_id"], "evt-TaskLineageLinked-0")
@@ -372,6 +373,10 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(tasks[0]["completed_event_id"], "evt-TaskLineageLinked-1")
             self.assertEqual(tasks[0]["planned_files"], ["src/state.rs"])
             self.assertEqual(tasks[0]["source_files"], ["src/state.rs"])
+            self.assertEqual(trace_metrics["task_lineage_event_count"], 2)
+            self.assertEqual(trace_metrics["task_lineage_capture_coverage"], 1.0)
+            self.assertEqual(trace_metrics["state_operational_event_count"], 0)
+            self.assertEqual(trace_metrics["state_operational_capture_coverage"], 0.0)
 
     def test_log_feedback_session_success_uses_strict_verified_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
