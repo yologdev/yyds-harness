@@ -1061,7 +1061,7 @@ ASSESSEOF
 
 AGENT_LOG=$(mktemp)
 ASSESS_EXIT=0
-STAGE_NAME=assess run_agent_with_fallback "$ASSESS_TIMEOUT" "$ASSESS_PROMPT" "$AGENT_LOG" || ASSESS_EXIT=$?
+STAGE_NAME=assess run_agent_with_fallback "$ASSESS_TIMEOUT" "$ASSESS_PROMPT" "$AGENT_LOG" "--no-auto-watch" || ASSESS_EXIT=$?
 
 rm -f "$ASSESS_PROMPT"
 
@@ -1290,7 +1290,7 @@ PLANEOF
 
 AGENT_LOG=$(mktemp)
 PLAN_EXIT=0
-STAGE_NAME=plan run_agent_with_fallback "$PLAN_TIMEOUT" "$PLAN_PROMPT" "$AGENT_LOG" || PLAN_EXIT=$?
+STAGE_NAME=plan run_agent_with_fallback "$PLAN_TIMEOUT" "$PLAN_PROMPT" "$AGENT_LOG" "--no-auto-watch" || PLAN_EXIT=$?
 
 rm -f "$PLAN_PROMPT"
 

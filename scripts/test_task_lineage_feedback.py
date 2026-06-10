@@ -66,6 +66,8 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('append_task_attempt_evidence()', evolve)
         self.assertIn('write_task_eval_evidence()', evolve)
         self.assertIn('run_agent_with_completion_watch()', evolve)
+        self.assertIn('STAGE_NAME=assess run_agent_with_fallback "$ASSESS_TIMEOUT" "$ASSESS_PROMPT" "$AGENT_LOG" "--no-auto-watch"', evolve)
+        self.assertIn('STAGE_NAME=plan run_agent_with_fallback "$PLAN_TIMEOUT" "$PLAN_PROMPT" "$AGENT_LOG" "--no-auto-watch"', evolve)
         self.assertIn('^Verdict:\\s*(PASS|FAIL)\\b', evolve)
         self.assertIn('write_task_outcome_evidence()', evolve)
         self.assertIn('scripts/task_manifest.py', evolve)
