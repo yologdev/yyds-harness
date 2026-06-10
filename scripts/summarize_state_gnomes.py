@@ -60,6 +60,7 @@ GNOME_KEYS = [
     "task_verification_rate",
     "task_mechanical_verification_rate",
     "planner_no_task_count",
+    "task_unattempted_count",
     "task_manifest_available",
     "task_artifact_coverage",
     "task_lineage_capture_coverage",

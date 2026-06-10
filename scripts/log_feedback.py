@@ -113,6 +113,7 @@ GNOME_KEYS = [
     "task_verification_rate",
     "task_mechanical_verification_rate",
     "planner_no_task_count",
+    "task_unattempted_count",
     "task_manifest_available",
     "task_artifact_coverage",
     "task_lineage_capture_coverage",
@@ -699,7 +700,15 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         score = quality.get("score")
         if isinstance(score, (int, float)):
             quality_scores.append(float(score))
-    artifact_coverage = ratio(len(task_dirs), attempted) if attempted else (1.0 if not task_dirs else None)
+    planned_count = int(planner.get("task_count") or len(tasks) or len(task_dirs) or 0)
+    selected_count = int(planner.get("selected_task_count") or len(tasks) or len(task_dirs) or 0)
+    artifact_denominator = selected_count or attempted
+    artifact_coverage = (
+        min(1.0, ratio(len(task_dirs), artifact_denominator))
+        if artifact_denominator
+        else (1.0 if not task_dirs else None)
+    )
+    task_unattempted = max(selected_count - attempted, 0) if selected_count else 0
     strict_verified = 0
     evaluator_unverified = 0
     evaluator_timeout_with_verdict = 0
@@ -725,8 +734,9 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     return {
         "task_manifest_available": bool(manifest),
         "planner_no_task_count": 1 if planner.get("planning_failed") else 0,
-        "planned_task_count": int(planner.get("task_count") or len(tasks) or len(task_dirs) or 0),
-        "selected_task_count": int(planner.get("selected_task_count") or len(tasks) or len(task_dirs) or 0),
+        "planned_task_count": planned_count,
+        "selected_task_count": selected_count,
+        "task_unattempted_count": task_unattempted,
         "task_artifact_count": len(task_dirs),
         "task_artifact_coverage": artifact_coverage,
         "task_strict_verified_count": strict_verified,
@@ -874,6 +884,7 @@ def score_assessment(metrics: dict[str, Any]) -> float:
             + float(metrics.get("recurring_failure_count") or 0) * 2.0
             + float(metrics.get("evolution_friction_count") or 0)
             + float(metrics.get("planner_no_task_count") or 0) * 3.0
+            + float(metrics.get("task_unattempted_count") or 0) * 2.0
             + float(metrics.get("evaluator_unverified_count") or 0)
             + float(metrics.get("evaluator_timeout_with_verdict_count") or 0) * 2.0
             + float(metrics.get("task_unlanded_source_count") or 0) * 2.0
@@ -1009,6 +1020,14 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "planner_no_tasks",
                 "fingerprint": "planning agent produced no concrete task files",
                 "action": "tighten task schema adherence and preserve planner failure evidence instead of running generic fallback work",
+            }
+        )
+    if int(metrics.get("task_unattempted_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "task_unattempted",
+                "fingerprint": "planner selected tasks that implementation phase never started",
+                "action": "reduce selected task count or preserve enough implementation budget to attempt every selected task",
             }
         )
     if int(metrics.get("state_live_baseline_shrink_count") or 0) > 0:

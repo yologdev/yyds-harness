@@ -68,6 +68,9 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('run_agent_with_completion_watch()', evolve)
         self.assertIn('STAGE_NAME=assess run_agent_with_fallback "$ASSESS_TIMEOUT" "$ASSESS_PROMPT" "$AGENT_LOG" "--no-auto-watch"', evolve)
         self.assertIn('STAGE_NAME=plan run_agent_with_fallback "$PLAN_TIMEOUT" "$PLAN_PROMPT" "$AGENT_LOG" "--no-auto-watch"', evolve)
+        self.assertIn('run_agent_with_fallback "$IMPL_TIMEOUT" "$TASK_PROMPT" "$TASK_LOG" "--context-strategy checkpoint --no-auto-watch"', evolve)
+        self.assertIn('run_agent_with_fallback "$BFIX_TIMEOUT" "$BFIX_PROMPT" "$BFIX_LOG" "--context-strategy checkpoint --no-auto-watch"', evolve)
+        self.assertIn('run_agent_with_fallback "$FIX_TIMEOUT" "$FIX_PROMPT" "$FIX_LOG" "--context-strategy checkpoint --no-auto-watch"', evolve)
         self.assertIn('^Verdict:\\s*(PASS|FAIL)\\b', evolve)
         self.assertIn('write_task_outcome_evidence()', evolve)
         self.assertIn('scripts/task_manifest.py', evolve)
@@ -323,10 +326,12 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertIn("coding_log_score", task["gnome_metrics"])
             self.assertIn("task_manifest_available", task["gnome_metrics"])
             self.assertIn("task_artifact_coverage", task["gnome_metrics"])
+            self.assertIn("task_unattempted_count", task["gnome_metrics"])
             self.assertIn("state_replay_integrity_rate", task["gnome_metrics"])
             self.assertGreater(task["gnome_deltas"]["coding_log_score"], 0)
             self.assertIn("task_manifest_available", summary["latest_gnomes"])
             self.assertIn("task_artifact_coverage", summary["latest_gnomes"])
+            self.assertIn("task_unattempted_count", summary["latest_gnomes"])
             self.assertIn("state_replay_integrity_rate", summary["latest_gnomes"])
 
     def test_task_lineage_linked_events_reconstruct_task_lifecycle(self):
@@ -425,6 +430,53 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["session_success_rate"], 0.0)
             self.assertEqual(metrics["evaluator_unverified_count"], 1)
             self.assertEqual(metrics["task_unlanded_source_count"], 0)
+
+    def test_log_feedback_counts_selected_but_unattempted_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 2,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 3, "selected_task_count": 3},
+                    "selected_tasks": [
+                        {"task_id": "task_01"},
+                        {"task_id": "task_02"},
+                        {"task_id": "task_03"},
+                    ],
+                },
+            )
+            write_json(session / "tasks/task_01/outcome.json", {"task_id": "task_01", "status": "reverted"})
+            write_json(session / "tasks/task_02/outcome.json", {"task_id": "task_02", "status": "reverted"})
+            write_json(session / "tasks/task_03/decision.json", {"task_id": "task_03"})
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["selected_task_count"], 3)
+            self.assertEqual(metrics["tasks_attempted"], 2)
+            self.assertEqual(metrics["task_unattempted_count"], 1)
+            self.assertEqual(metrics["task_artifact_coverage"], 1.0)
+            lesson_kinds = {lesson["kind"] for lesson in assessment["top_lessons"]}
+            self.assertIn("task_unattempted", lesson_kinds)
 
     def test_log_feedback_requires_landed_commit_for_passed_source_task(self):
         with tempfile.TemporaryDirectory() as tmp:

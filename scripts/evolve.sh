@@ -1446,7 +1446,7 @@ TEOF
         TASK_EXIT=0
         TASK_STAGE_NAME="task_$(printf '%02d_attempt%d' "$TASK_NUM" "$ATTEMPT")"
         STAGE_NAME="$TASK_STAGE_NAME" \
-            run_agent_with_fallback "$IMPL_TIMEOUT" "$TASK_PROMPT" "$TASK_LOG" "--context-strategy checkpoint" || TASK_EXIT=$?
+            run_agent_with_fallback "$IMPL_TIMEOUT" "$TASK_PROMPT" "$TASK_LOG" "--context-strategy checkpoint --no-auto-watch" || TASK_EXIT=$?
         rm -f "$TASK_PROMPT"
 
         TASK_ATTEMPT_STATUS="completed"
@@ -1717,7 +1717,7 @@ BFIXEOF
         BFIX_EXIT=0
         BFIX_STAGE_NAME="bfix_task${TASK_NUM}_attempt${BUILD_FIX_ATTEMPT}"
         STAGE_NAME="$BFIX_STAGE_NAME" \
-            run_agent_with_fallback "$BFIX_TIMEOUT" "$BFIX_PROMPT" "$BFIX_LOG" "--context-strategy checkpoint" || BFIX_EXIT=$?
+            run_agent_with_fallback "$BFIX_TIMEOUT" "$BFIX_PROMPT" "$BFIX_LOG" "--context-strategy checkpoint --no-auto-watch" || BFIX_EXIT=$?
         BFIX_STATUS="completed"
         if [ "$BFIX_EXIT" -eq 124 ]; then
             echo "    WARNING: Build-fix agent timed out after ${BFIX_TIMEOUT}s."
@@ -1866,7 +1866,7 @@ FIXEOF
                 FIX_EXIT=0
                 FIX_STAGE_NAME="fix_task${TASK_NUM}_attempt${EVAL_ATTEMPT}"
                 STAGE_NAME="$FIX_STAGE_NAME" \
-                    run_agent_with_fallback "$FIX_TIMEOUT" "$FIX_PROMPT" "$FIX_LOG" "--context-strategy checkpoint" || FIX_EXIT=$?
+                    run_agent_with_fallback "$FIX_TIMEOUT" "$FIX_PROMPT" "$FIX_LOG" "--context-strategy checkpoint --no-auto-watch" || FIX_EXIT=$?
                 FIX_STATUS="completed"
                 if [ "$FIX_EXIT" -eq 124 ]; then
                     echo "    WARNING: Fix agent timed out after ${FIX_TIMEOUT}s."
