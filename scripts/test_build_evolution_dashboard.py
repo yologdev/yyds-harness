@@ -1074,6 +1074,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
 
             data = build(root / "sessions", root / "out")
             lineage = data["sessions"][0]["work_summary"]["task_lineage"][0]
+            causal = data["sessions"][0]["work_summary"]["causal_chains"][0]
             verification = data["sessions"][0]["work_summary"]["task_verification"]
 
             self.assertEqual(lineage["eval"]["verdict"], "TIMEOUT")
@@ -1083,6 +1084,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertFalse(lineage["strict_success"])
             self.assertEqual(lineage["verification_status"], "strict_failed")
             self.assertIn("no_passing_verifier", lineage["verification_problems"])
+            self.assertFalse(causal["strict_success"])
+            self.assertEqual(causal["verification_status"], "strict_failed")
+            self.assertIn("no_passing_verifier", causal["verification_problems"])
             self.assertEqual(verification["verified_task_count"], 0)
             self.assertIn("no_passing_verifier", verification["rows"][0]["problems"])
 

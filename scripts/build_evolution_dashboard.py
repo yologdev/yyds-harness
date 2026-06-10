@@ -947,6 +947,7 @@ def work_summary(
     task_lineage = enrich_task_lineage_with_artifacts(task_lineage, task_artifacts)
     task_verification = task_verification_summary(task_manifest, task_artifacts, task_lineage)
     task_lineage = annotate_task_lineage_verification(task_lineage, task_verification)
+    causal_chains = annotate_task_lineage_verification(causal_chains, task_verification)
     suggestions = augment_evolution_suggestions(suggestions, task_verification)
     source_patch_count = len(source_commits)
     labels: list[str] = []
@@ -2780,10 +2781,15 @@ HTML = r"""<!doctype html>
         const touched = (row.source_files || row.touched_files || []).slice(0, 2).join(", ") || "no touched files";
         const commits = (row.commit_shas || []).map(sha => String(sha).slice(0, 7)).join(", ") || "no commit";
         const evalText = row.eval_verdict || (row.eval_statuses || []).join(", ") || "no eval";
+        const strict = row.verification_status || (row.strict_success ? "strict_pass" : "");
+        const strictClass = strict === "strict_pass" ? "good" : (strict === "strict_failed" ? "warn" : "muted");
+        const strictText = strict ? ` → <span class="${strictClass}">${text(strict.replace("_", " "))}</span>` : "";
+        const problems = (row.verification_problems || []).slice(0, 3).join(", ");
+        const problemText = problems ? ` (${text(problems)})` : "";
         const deltaCount = Object.keys(row.gnome_deltas || {}).length;
         const correctionCount = Object.keys(row.gnome_corrections || {}).length;
         const correctionText = correctionCount ? ` / ${correctionCount} corrected gnome(s)` : "";
-        return `<li>${text(row.task_id || "")}: ${text(row.title || "")}<br><span class="muted">plan ${text(planned)} → touched ${text(touched)} → ${text(commits)} → eval ${text(evalText)} → ${text(deltaCount)} gnome delta(s)${text(correctionText)}</span></li>`;
+        return `<li>${text(row.task_id || "")}: ${text(row.title || "")}<br><span class="muted">plan ${text(planned)} → touched ${text(touched)} → ${text(commits)} → eval ${text(evalText)}${strictText}${problemText} → ${text(deltaCount)} gnome delta(s)${text(correctionText)}</span></li>`;
       }).join("")}</ul>`;
     }
 
