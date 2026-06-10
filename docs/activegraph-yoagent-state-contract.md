@@ -72,12 +72,14 @@ The graph helpers and dashboard should keep these signals visible:
 
 - `task_manifest_available`
 - `task_artifact_coverage`
+- `task_lineage_capture_coverage`
 - `task_spec_quality_score`
 - `task_mechanical_verification_rate`
 - `task_verification_rate`
 - `planner_no_task_count`
 - `evaluator_unverified_count`
 - `state_replay_integrity_rate`
+- `state_operational_capture_coverage`
 - `coding_log_score`
 - `evolution_friction_count`
 - `max_task_turn_count`
