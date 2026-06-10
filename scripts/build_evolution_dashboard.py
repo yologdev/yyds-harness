@@ -441,6 +441,8 @@ def state_pipeline_summary(session_dir: Path) -> dict[str, Any]:
         "merge_scope": "live_delta" if merge else None,
         "merge_live_events": merge.get("live_events") if isinstance(merge, dict) else None,
         "merge_base_lines": merge.get("base_lines") if isinstance(merge, dict) else None,
+        "merge_effective_base_lines": merge.get("effective_base_lines") if isinstance(merge, dict) else None,
+        "merge_baseline_shrunk": bool(merge.get("baseline_shrunk")) if isinstance(merge, dict) else False,
         "merge_delta_events": merge.get("delta_events") if isinstance(merge, dict) else None,
         "merge_added_events": merge.get("added") if isinstance(merge, dict) else None,
         "merge_duplicates_skipped": merge.get("skipped_duplicate") if isinstance(merge, dict) else None,
@@ -2253,6 +2255,7 @@ HTML = r"""<!doctype html>
       max_failure_fingerprint_recurrence: "Max failure recurrence",
       state_capture_coverage: "State capture",
       state_operational_capture_coverage: "Operational state capture",
+      state_live_baseline_shrink_count: "State baseline shrinks",
       audit_capture_coverage: "Audit capture",
       state_trace_event_count: "Trace events",
       closed_loop_fix_rate: "Closed-loop fix rate",
@@ -2286,6 +2289,7 @@ HTML = r"""<!doctype html>
       "coding_log_score",
       "task_success_rate",
       "state_operational_capture_coverage",
+      "state_live_baseline_shrink_count",
       "task_lineage_capture_coverage",
       "state_capture_coverage",
       "workflow_success_rate",
@@ -2667,7 +2671,7 @@ HTML = r"""<!doctype html>
         });
       });
       keys.sort();
-      const preferred = ["coding_log_score", "task_success_rate", "workflow_success_rate", "state_operational_capture_coverage", "task_lineage_capture_coverage", "state_capture_coverage", "evolution_friction_count", "max_task_turn_count", "deepseek_cache_hit_ratio", "cache_hit_ratio"];
+      const preferred = ["coding_log_score", "task_success_rate", "workflow_success_rate", "state_operational_capture_coverage", "state_live_baseline_shrink_count", "task_lineage_capture_coverage", "state_capture_coverage", "evolution_friction_count", "max_task_turn_count", "deepseek_cache_hit_ratio", "cache_hit_ratio"];
       preferred.reverse().forEach(key => {
         const idx = keys.indexOf(key);
         if (idx >= 0) {
@@ -2820,6 +2824,9 @@ HTML = r"""<!doctype html>
       }
       if (hasMerge) {
         rows.push(`live delta ${text(pipe.merge_added_events || 0)} added / ${text(pipe.merge_delta_events || 0)} seen; ${text(pipe.session_events_after_merge || 0)} session event(s) after merge`);
+        if (pipe.merge_baseline_shrunk) {
+          rows.push(`warning: live state log had fewer events than replay baseline, so merge used ${text(pipe.merge_effective_base_lines || 0)} as the effective baseline`);
+        }
       } else if (hasReplay) {
         rows.push(`live delta merge diagnostics not recorded for this session`);
       }

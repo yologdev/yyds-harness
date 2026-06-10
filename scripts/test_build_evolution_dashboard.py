@@ -429,6 +429,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 {
                     "live_events": 25,
                     "base_lines": 20,
+                    "effective_base_lines": 20,
+                    "baseline_shrunk": 0,
                     "delta_events": 5,
                     "added": 4,
                     "skipped_duplicate": 1,
@@ -450,9 +452,12 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(pipeline["replay_events_written"], 20)
             self.assertEqual(pipeline["merge_scope"], "live_delta")
             self.assertEqual(pipeline["merge_added_events"], 4)
+            self.assertFalse(pipeline["merge_baseline_shrunk"])
+            self.assertEqual(pipeline["merge_effective_base_lines"], 20)
             self.assertEqual(pipeline["append_problem_lines"], 1)
             self.assertIn("State pipeline", html)
             self.assertIn("audit replay", html)
+            self.assertIn("merge_baseline_shrunk", html)
 
     def test_state_pipeline_explains_missing_live_merge_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:

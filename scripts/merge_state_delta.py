@@ -42,7 +42,9 @@ def merge_delta(live_path: Path, session_path: Path, base_lines: int) -> dict[st
     seen = {event_key(event, raw) for event, raw in session_rows}
 
     live_rows = load_jsonl(live_path)
-    delta_rows = live_rows[base_lines:]
+    baseline_shrunk = len(live_rows) < base_lines
+    effective_base_lines = 0 if baseline_shrunk else base_lines
+    delta_rows = live_rows[effective_base_lines:]
     merged_rows = list(session_rows)
     added = 0
     skipped_duplicate = 0
@@ -70,6 +72,8 @@ def merge_delta(live_path: Path, session_path: Path, base_lines: int) -> dict[st
     return {
         "live_events": len(live_rows),
         "base_lines": base_lines,
+        "effective_base_lines": effective_base_lines,
+        "baseline_shrunk": int(baseline_shrunk),
         "delta_events": len(delta_rows),
         "session_events_before": len(session_rows),
         "session_events_after": len(merged_rows),
@@ -138,6 +142,29 @@ def run_self_tests() -> int:
         assert stats["added"] == 1, stats
         assert stats["skipped_duplicate"] == 1, stats
         assert [row["id"] for row in rows] == ["same-yoyo-id", "new-yoyo-id"]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        live = root / "live.jsonl"
+        session = root / "session.jsonl"
+        live.write_text(
+            "\n".join(
+                [
+                    json.dumps({"id": "current-run", "kind": "RunStarted"}),
+                    json.dumps({"id": "current-tool", "kind": "ToolCallStarted"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        session.write_text(json.dumps({"id": "harness-start", "kind": "RunStarted"}) + "\n", encoding="utf-8")
+        stats = merge_delta(live, session, 10)
+        rows = [json.loads(line) for line in session.read_text(encoding="utf-8").splitlines()]
+        assert stats["baseline_shrunk"] == 1, stats
+        assert stats["effective_base_lines"] == 0, stats
+        assert stats["delta_events"] == 2, stats
+        assert stats["added"] == 2, stats
+        assert [row["id"] for row in rows] == ["harness-start", "current-run", "current-tool"]
     print("merge_state_delta self-tests passed")
     return 0
 

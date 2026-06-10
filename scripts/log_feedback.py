@@ -101,6 +101,7 @@ GNOME_KEYS = [
     "max_failure_fingerprint_recurrence",
     "state_capture_coverage",
     "state_operational_capture_coverage",
+    "state_live_baseline_shrink_count",
     "audit_capture_coverage",
     "closed_loop_fix_rate",
     "evolution_friction_count",
@@ -305,6 +306,14 @@ def state_trace_metrics(session_dir: Path) -> dict[str, Any]:
         "state_operational_capture_coverage": 1.0 if operational_count else 0.0,
         "task_lineage_event_count": lineage_count,
         "task_lineage_capture_coverage": 1.0 if lineage_count else 0.0,
+    }
+
+
+def state_pipeline_metrics(session_dir: Path) -> dict[str, Any]:
+    merge = load_json(session_dir / "state" / "merge_state_delta.json")
+    baseline_shrunk = bool(merge.get("baseline_shrunk")) if merge else False
+    return {
+        "state_live_baseline_shrink_count": 1 if baseline_shrunk else 0,
     }
 
 
@@ -868,6 +877,7 @@ def score_assessment(metrics: dict[str, Any]) -> float:
             + float(metrics.get("evaluator_unverified_count") or 0)
             + float(metrics.get("evaluator_timeout_with_verdict_count") or 0) * 2.0
             + float(metrics.get("task_unlanded_source_count") or 0) * 2.0
+            + float(metrics.get("state_live_baseline_shrink_count") or 0) * 2.0
         )
         / 12.0,
     )
@@ -898,6 +908,7 @@ def build_assessment(
 ) -> dict[str, Any]:
     outcome = load_json(session_dir / "outcome.json")
     state_metrics = state_trace_metrics(session_dir)
+    pipeline_metrics = state_pipeline_metrics(session_dir)
     audit_exists = (session_dir / "audit.jsonl").is_file()
     parsed = parse_log(log_text) if log_available else parse_log("")
     turn_metrics = task_turn_metrics(session_dir)
@@ -965,6 +976,7 @@ def build_assessment(
         "retry_success_rate": retry_success_rate,
         "audit_capture_coverage": audit_capture_coverage,
         **state_metrics,
+        **pipeline_metrics,
         **parsed,
         **artifact_metrics,
         **turn_metrics,
@@ -997,6 +1009,14 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "planner_no_tasks",
                 "fingerprint": "planning agent produced no concrete task files",
                 "action": "tighten task schema adherence and preserve planner failure evidence instead of running generic fallback work",
+            }
+        )
+    if int(metrics.get("state_live_baseline_shrink_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "state_baseline_shrink",
+                "fingerprint": "live state log had fewer events than the replay baseline",
+                "action": "inspect concurrent state writers and keep live state append-only before merging session evidence",
             }
         )
     if int(metrics.get("protected_file_revert_count") or 0) > 0:
@@ -1428,6 +1448,16 @@ def run_self_tests() -> int:
         check("timed-out verdict counted", artifacts["evaluator_timeout_with_verdict_count"] == 1, artifacts)
         check("timed-out verdict is not strict verified", artifacts["task_strict_verified_count"] == 0, artifacts)
         check("timed-out verdict is evaluator-unverified", artifacts["evaluator_unverified_count"] == 1, artifacts)
+
+        (session / "state").mkdir(exist_ok=True)
+        (session / "state" / "merge_state_delta.json").write_text(
+            json.dumps({"baseline_shrunk": 1}),
+            encoding="utf-8",
+        )
+        pipeline = state_pipeline_metrics(session)
+        check("state baseline shrink counted", pipeline["state_live_baseline_shrink_count"] == 1, pipeline)
+        shrink_lessons = [lesson["kind"] for lesson in top_lessons(pipeline)]
+        check("state baseline shrink lesson emitted", "state_baseline_shrink" in shrink_lessons, shrink_lessons)
 
         attempt1 = root / "attempt-1"
         attempt2 = root / "attempt-2"
