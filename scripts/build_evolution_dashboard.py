@@ -255,6 +255,7 @@ def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[
             "FailureObserved",
             "TestStarted",
             "TestCompleted",
+            "TaskLineageLinked",
         )
     )
     feedback_evals = sum(
@@ -271,7 +272,7 @@ def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[
     elif operational_events <= 0:
         status = "lifecycle"
         label = "lifecycle-only trace"
-    elif trace_events < 5:
+    elif operational_events < 2 or trace_events < 5:
         status = "thin"
         label = "thin state trace"
     else:

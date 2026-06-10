@@ -1010,7 +1010,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["aggregate"]["feedback_only_sessions"], 1)
             self.assertEqual(data["aggregate"]["full_trace_sessions"], 0)
 
-    def test_lifecycle_only_trace_is_not_counted_as_full(self):
+    def test_task_lineage_only_trace_is_thin_not_full(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             session = root / "sessions/day-1"
@@ -1033,12 +1033,12 @@ class BuildEvolutionDashboard(unittest.TestCase):
             data = build(root / "sessions", root / "out")
             current = data["sessions"][0]
 
-            self.assertEqual(current["trace_quality"]["status"], "lifecycle")
-            self.assertEqual(current["trace_quality"]["label"], "lifecycle-only trace")
-            self.assertEqual(current["trace_quality"]["operational_event_count"], 0)
-            self.assertEqual(current["trace_quality"]["operational_capture_coverage"], 0.0)
+            self.assertEqual(current["trace_quality"]["status"], "thin")
+            self.assertEqual(current["trace_quality"]["label"], "thin state trace")
+            self.assertEqual(current["trace_quality"]["operational_event_count"], 1)
+            self.assertEqual(current["trace_quality"]["operational_capture_coverage"], 1.0)
             self.assertEqual(data["aggregate"]["full_trace_sessions"], 0)
-            self.assertEqual(data["aggregate"]["lifecycle_trace_sessions"], 1)
+            self.assertEqual(data["aggregate"]["lifecycle_trace_sessions"], 0)
             self.assertIn("Operational traces", (root / "out/index.html").read_text(encoding="utf-8"))
 
     def test_task_lineage_eval_is_enriched_from_task_artifacts(self):

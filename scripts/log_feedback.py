@@ -88,6 +88,7 @@ OPERATIONAL_STATE_EVENTS = {
     "FailureObserved",
     "TestStarted",
     "TestCompleted",
+    "TaskLineageLinked",
 }
 GNOME_KEYS = [
     "coding_log_score",
@@ -782,6 +783,7 @@ def task_lineage(session_dir: Path, metrics: dict[str, Any], deltas: dict[str, A
             continue
         if data.get("phase") != "task":
             continue
+        status = str(data.get("status") or "")
         task_id = str(data.get("task_id") or "")
         if not task_id and data.get("task_number") is not None:
             try:
@@ -800,12 +802,12 @@ def task_lineage(session_dir: Path, metrics: dict[str, Any], deltas: dict[str, A
                 "completed_event_id": None,
             },
         )
-        if kind == "RunStarted":
+        if kind in {"RunStarted", "TaskLineageLinked"} and status == "started":
             row["started_event_id"] = event.get("event_id")
             for key in ("planned_files", "issue", "base_commit"):
                 if data.get(key) is not None:
                     row[key] = data.get(key)
-        elif kind == "RunCompleted":
+        elif kind in {"RunCompleted", "TaskLineageLinked"} and status != "started":
             row["completed_event_id"] = event.get("event_id")
             for key in (
                 "status",

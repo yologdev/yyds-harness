@@ -196,6 +196,7 @@ def summarize_task_lineage(events: list[dict[str, Any]]) -> list[dict[str, Any]]
         kind = event_type(event)
         data = payload(event)
         if data.get("phase") == "task":
+            status = str(data.get("status") or "")
             key = task_key(data)
             if not key:
                 continue
@@ -211,12 +212,12 @@ def summarize_task_lineage(events: list[dict[str, Any]]) -> list[dict[str, Any]]
                     "gnome_deltas": {},
                 },
             )
-            if kind == "RunStarted":
+            if kind in {"RunStarted", "TaskLineageLinked"} and status == "started":
                 row["started_event_id"] = event_id(event)
                 for field in ("planned_files", "issue", "base_commit"):
                     if data.get(field) is not None:
                         row[field] = data.get(field)
-            elif kind == "RunCompleted":
+            elif kind in {"RunCompleted", "TaskLineageLinked"} and status != "started":
                 row["completed_event_id"] = event_id(event)
                 for field in (
                     "status",

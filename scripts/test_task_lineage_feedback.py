@@ -65,6 +65,7 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('^Verdict:\\s*(PASS|FAIL)\\b', evolve)
         self.assertIn('write_task_outcome_evidence()', evolve)
         self.assertIn('scripts/task_manifest.py', evolve)
+        self.assertIn('git branch --show-current', evolve)
         self.assertIn('planning_failure.md', evolve)
         self.assertIn('Planning guard failed: planning agent produced 0 tasks', evolve)
         self.assertIn('Evaluator: timed out — failing task because no verifier verdict exists', evolve)
@@ -81,6 +82,8 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('attempts.jsonl', evolve)
         self.assertIn('eval_attempt_${attempt}.json', evolve)
         self.assertIn('outcome.json', evolve)
+        self.assertIn('record_state_event "TaskLineageLinked" "$(task_lineage_payload "started" "$PRE_TASK_SHA")"', evolve)
+        self.assertNotIn('record_state_event "RunStarted" "$(task_lineage_payload "started" "$PRE_TASK_SHA")"', evolve)
 
     def test_task_lineage_payload_captures_source_commits(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -319,6 +322,56 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertIn("task_manifest_available", summary["latest_gnomes"])
             self.assertIn("task_artifact_coverage", summary["latest_gnomes"])
             self.assertIn("state_replay_integrity_rate", summary["latest_gnomes"])
+
+    def test_task_lineage_linked_events_reconstruct_task_lifecycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            events_path = root / "state/events.jsonl"
+            append_event(
+                events_path,
+                "TaskLineageLinked",
+                {
+                    "phase": "task",
+                    "task_id": "task_01",
+                    "task_number": 1,
+                    "task_title": "Track lineage",
+                    "status": "started",
+                    "planned_files": ["src/state.rs"],
+                    "base_commit": "base-sha",
+                },
+            )
+            append_event(
+                events_path,
+                "TaskLineageLinked",
+                {
+                    "phase": "task",
+                    "task_id": "task_01",
+                    "task_number": 1,
+                    "task_title": "Track lineage",
+                    "status": "completed",
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": ["head-sha"],
+                    "eval": {"verdict": "PASS", "reason": "verified"},
+                },
+            )
+
+            summary = summarize_state_gnomes.summarize(
+                summarize_state_gnomes.load_jsonl(events_path),
+                events_path,
+            )
+            metrics = {"coding_log_score": 1.0}
+            tasks = log_feedback.task_lineage(root, metrics, {})
+
+            task = summary["task_lineage"][0]
+            self.assertEqual(task["started_event_id"], "evt-TaskLineageLinked-0")
+            self.assertEqual(task["completed_event_id"], "evt-TaskLineageLinked-1")
+            self.assertEqual(task["planned_files"], ["src/state.rs"])
+            self.assertEqual(task["source_files"], ["src/state.rs"])
+            self.assertEqual(task["commit_shas"], ["head-sha"])
+            self.assertEqual(tasks[0]["started_event_id"], "evt-TaskLineageLinked-0")
+            self.assertEqual(tasks[0]["completed_event_id"], "evt-TaskLineageLinked-1")
+            self.assertEqual(tasks[0]["planned_files"], ["src/state.rs"])
+            self.assertEqual(tasks[0]["source_files"], ["src/state.rs"])
 
     def test_log_feedback_session_success_uses_strict_verified_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:

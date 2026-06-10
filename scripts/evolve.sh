@@ -417,7 +417,7 @@ fi
 STATE_BASE_LINES=$(wc -l < "$STATE_EVENTS" 2>/dev/null | tr -d '[:space:]')
 STATE_BASE_LINES="${STATE_BASE_LINES:-0}"
 SESSION_SOURCE_SHA="${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || true)}"
-SESSION_SOURCE_REF="${GITHUB_REF_NAME:-${GITHUB_REF:-}}"
+SESSION_SOURCE_REF="${GITHUB_REF_NAME:-${GITHUB_REF:-$(git branch --show-current 2>/dev/null || true)}}"
 if "$YOYO_BIN" state project --rebuild >>"$TRAJ_STDERR" 2>&1; then
     echo "  state: replayed $STATE_BASE_LINES prior event(s) into live yoagent-state."
 else
@@ -1400,7 +1400,7 @@ for TASK_FILE in session_plan/task_*.md; do
         TASK_FAILURES=$((TASK_FAILURES + 1))
         break
     fi
-    record_state_event "RunStarted" "$(task_lineage_payload "started" "$PRE_TASK_SHA")"
+    record_state_event "TaskLineageLinked" "$(task_lineage_payload "started" "$PRE_TASK_SHA")"
 
     # ── Checkpoint-restart retry loop (max 2 attempts) ──
     CHECKPOINT_SECTION=""
@@ -1559,7 +1559,7 @@ and commit if needed."
         REVERT_REASON="Implementation agent API error"
         TASK_LINEAGE_PAYLOAD=$(task_lineage_payload "reverted" "$PRE_TASK_SHA" "$REVERT_REASON")
         write_task_outcome_evidence "$TASK_ID" "$TASK_LINEAGE_PAYLOAD" || true
-        record_state_event "RunCompleted" "$TASK_LINEAGE_PAYLOAD"
+        record_state_event "TaskLineageLinked" "$TASK_LINEAGE_PAYLOAD"
         break
     fi
 
@@ -2091,12 +2091,12 @@ ${REVERT_DETAILS:-no details captured}" 2>/dev/null; then
                     --label "agent-self" 2>/dev/null || echo "    WARNING: Could not file revert issue"
             fi
         fi
-        record_state_event "RunCompleted" "$TASK_LINEAGE_PAYLOAD"
+        record_state_event "TaskLineageLinked" "$TASK_LINEAGE_PAYLOAD"
     else
         echo "    Task $TASK_NUM: verified OK"
         TASK_LINEAGE_PAYLOAD=$(task_lineage_payload "completed" "$PRE_TASK_SHA")
         write_task_outcome_evidence "$TASK_ID" "$TASK_LINEAGE_PAYLOAD" || true
-        record_state_event "RunCompleted" "$TASK_LINEAGE_PAYLOAD"
+        record_state_event "TaskLineageLinked" "$TASK_LINEAGE_PAYLOAD"
     fi
 
 done
