@@ -131,6 +131,52 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(latest["state_operational_capture_coverage"], 0.0)
             self.assertIn("state_operational_capture_coverage", data["aggregate"]["gnome_keys"])
 
+    def test_dashboard_prioritizes_operational_state_capture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"day": 1, "tasks_attempted": 0, "tasks_succeeded": 0})
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 2,
+                    "event_counts": {"RunStarted": 1, "PatchEvaluated": 1},
+                    "latest_gnomes": {
+                        "coding_log_score": 0.8,
+                        "task_success_rate": 0.0,
+                        "workflow_success_rate": 1.0,
+                        "state_capture_coverage": 1.0,
+                    },
+                    "gnome_keys": [
+                        "coding_log_score",
+                        "task_success_rate",
+                        "workflow_success_rate",
+                        "state_capture_coverage",
+                    ],
+                    "evals": [
+                        {
+                            "suite": "log-feedback",
+                            "gnomes": {
+                                "coding_log_score": 0.8,
+                                "task_success_rate": 0.0,
+                                "workflow_success_rate": 1.0,
+                                "state_capture_coverage": 1.0,
+                            },
+                        }
+                    ],
+                },
+            )
+
+            build(root / "sessions", root / "out")
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            priority_block = html.split("const priorityGnomes = [", 1)[1].split("];", 1)[0]
+
+            self.assertLess(
+                priority_block.index('"state_operational_capture_coverage"'),
+                priority_block.index('"state_capture_coverage"'),
+            )
+            self.assertIn('return "-"', html)
+
     def test_derives_work_summary_and_gnome_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

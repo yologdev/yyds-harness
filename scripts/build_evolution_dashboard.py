@@ -2217,9 +2217,9 @@ HTML = r"""<!doctype html>
     const priorityGnomes = [
       "coding_log_score",
       "task_success_rate",
-      "workflow_success_rate",
-      "state_capture_coverage",
       "state_operational_capture_coverage",
+      "state_capture_coverage",
+      "workflow_success_rate",
       "evolution_friction_count",
       "max_task_turn_count",
       "deepseek_cache_hit_ratio"
@@ -2251,7 +2251,7 @@ HTML = r"""<!doctype html>
     }
 
     function metricValue(key, value) {
-      if (value === null || value === undefined || Number.isNaN(Number(value))) return text(value);
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
       const n = Number(value);
       if (key.endsWith("_rate") || key.endsWith("_ratio") || key.endsWith("_coverage")) return percent(n);
       if (key === "coding_log_score" || key === "coding_log_confidence") return fmt.format(n);
@@ -2520,9 +2520,11 @@ HTML = r"""<!doctype html>
       const allGnomes = agg.latest_gnomes || {};
       const priorityRows = priorityGnomes
         .filter(key => Object.prototype.hasOwnProperty.call(allGnomes, key))
+        .filter(key => allGnomes[key] !== null && allGnomes[key] !== undefined)
         .map(key => [key, allGnomes[key]]);
       const fallbackRows = Object.entries(allGnomes)
         .filter(([key]) => !priorityGnomes.includes(key))
+        .filter(([, value]) => value !== null && value !== undefined)
         .slice(0, Math.max(0, 4 - priorityRows.length));
       const gnomeRows = priorityRows.concat(fallbackRows).slice(0, 4);
       document.getElementById("gnomes").innerHTML = gnomeRows.length
