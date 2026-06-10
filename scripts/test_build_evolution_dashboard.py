@@ -57,6 +57,23 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertNotIn(".src/state.rs", actions["read_files"])
             self.assertNotIn(".session_plan/eval_task_1.md", actions["edited_files"])
 
+    def test_transcript_search_in_src_does_not_emit_pseudo_dot_src(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "  ▶ search 'mark_run_completed_with_error' in /home/runner/work/yyds-harness/yyds-harness/src ✗ (17ms)\n",
+                encoding="utf-8",
+            )
+
+            actions = summarize_transcript_actions(session)
+
+            self.assertNotIn(".src", actions["read_files"])
+            self.assertNotIn("src", actions["read_files"])
+            self.assertIn("search 'mark_run_completed_with_error' in src", actions["failed_commands"])
+
     def test_data_contract_reports_generated_at_and_latest_session(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

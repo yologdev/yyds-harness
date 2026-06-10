@@ -21,6 +21,19 @@ TRANSCRIPT_ACTION_RE = re.compile(r"▶\s+([^▶\n]+)")
 TRANSCRIPT_STATUS_RE = re.compile(r"\s+[✓✗]\s*\([^)]*\)\s*$")
 WATCH_RE = re.compile(r"([✓✗])\s+Watch\s+(?:passed|failed):\s+`([^`]+)`")
 WORKSPACE_PREFIX_RE = re.compile(r"/home/runner/work/yyds-harness/yyds-harness/?")
+PSEUDO_ROOT_NAMES = {
+    "docs",
+    "eval",
+    "journals",
+    "memory",
+    "scripts",
+    "session_plan",
+    "site",
+    "skills",
+    "src",
+    "tasks",
+    "tests",
+}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -88,6 +101,9 @@ def compact_list(values: list[str], limit: int) -> list[str]:
 def clean_transcript_action(value: str) -> str:
     text = TRANSCRIPT_STATUS_RE.sub("", str(value)).strip()
     text = WORKSPACE_PREFIX_RE.sub(".", text)
+    for root in PSEUDO_ROOT_NAMES:
+        text = text.replace(f".{root}/", f"{root}/")
+        text = re.sub(rf"(?<!\S)\.{re.escape(root)}(?=$|\s)", root, text)
     return re.sub(r"\bcd\s+\.\s*&&\s*", "", text).strip()
 
 
@@ -122,6 +138,8 @@ def normalize_transcript_path(path: str) -> str:
         "tests/",
     )
     if text.startswith(".") and any(text[1:].startswith(root) for root in pseudo_roots):
+        return text[1:]
+    if text.startswith(".") and text[1:] in PSEUDO_ROOT_NAMES:
         return text[1:]
     return text
 
