@@ -2070,10 +2070,10 @@ mod tests {
 
         assert_eq!(payload["context_policy"], "deepseek_native");
         assert_eq!(payload["prompt_version"], "deepseek_native_prompt@v7");
-        assert_eq!(payload["prompt_contract_version"], 2);
+        assert_eq!(payload["prompt_contract_version"], 3);
         assert_eq!(
             payload["system_contract_version"],
-            "deepseek_native_contract@v2"
+            "deepseek_native_contract@v3"
         );
         assert_eq!(payload["layout_version"], 7);
         assert_eq!(payload["tool_schema_version"], 1);

@@ -21,7 +21,7 @@ pub const FIM_MAX_OUTPUT_TOKENS: u32 = 4_096;
 pub const CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;
 pub const MAX_OUTPUT_TOKENS: u32 = 384_000;
 pub const HARNESS_GENOME_VERSION: &str = "ds-harness-genome-v1";
-pub const DEEPSEEK_PROMPT_CONTRACT_VERSION: u32 = 2;
+pub const DEEPSEEK_PROMPT_CONTRACT_VERSION: u32 = 3;
 pub const STRICT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1107,7 +1107,7 @@ fn transport_decision_reason(
     }
 }
 
-pub const DEEPSEEK_SYSTEM_CONTRACT_VERSION: &str = "deepseek_native_contract@v2";
+pub const DEEPSEEK_SYSTEM_CONTRACT_VERSION: &str = "deepseek_native_contract@v3";
 
 pub fn stable_system_contract() -> &'static str {
     r#"# DeepSeek Native Harness Contract
@@ -1115,6 +1115,8 @@ pub fn stable_system_contract() -> &'static str {
 - Preserve a deterministic prompt layout: stable policy, tools, project instructions, repo map, then dynamic task context.
 - Use state, eval, logs, command output, and git evidence before drawing conclusions.
 - Keep source inspection bounded: search first, then read targeted files, functions, or line ranges.
+- Prefer rg/project search over recursive grep; exclude target/.git/generated state paths; use literal search for snippets with regex punctuation.
+- Keep verification bounded: run the narrowest useful check first, and do not repeat expensive checks without new evidence.
 - Use thinking for root-cause analysis, patch planning, risky edits, and failed-task repair.
 - Do not treat raw reasoning content as durable truth; distill decisions into hypotheses, evidence, risks, and patch intent.
 - Do not claim completion unless code, artifacts, state events, or verification results support it.
@@ -2603,11 +2605,13 @@ mod tests {
         let contract = stable_system_contract();
         assert_eq!(
             DEEPSEEK_SYSTEM_CONTRACT_VERSION,
-            "deepseek_native_contract@v2"
+            "deepseek_native_contract@v3"
         );
         assert!(contract.contains("deterministic prompt layout"));
         assert!(contract.contains("state, eval, logs"));
         assert!(contract.contains("source inspection bounded"));
+        assert!(contract.contains("rg/project search"));
+        assert!(contract.contains("verification bounded"));
         assert!(contract.contains("Do not claim completion"));
         assert!(contract.contains("structured outputs"));
     }

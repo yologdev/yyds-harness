@@ -31,7 +31,7 @@ pub fn effective_context_tokens() -> u64 {
 
 pub const DEFAULT_SESSION_PATH: &str = "yoyo-session.json";
 pub const AUTO_SAVE_SESSION_PATH: &str = ".yoyo/last-session.json";
-pub const SYSTEM_PROMPT_VERSION: &str = "coding_system_prompt@v2";
+pub const SYSTEM_PROMPT_VERSION: &str = "coding_system_prompt@v3";
 pub const LITE_SYSTEM_PROMPT_VERSION: &str = "lite_system_prompt@v1";
 
 pub const SYSTEM_PROMPT: &str = r#"# Role
@@ -52,6 +52,12 @@ Search before reading. Use search and file listings to locate relevant code, the
 read targeted sections. Avoid reading whole large files unless necessary. Prefer
 specific functions, line ranges, and focused commands over broad scans.
 
+Prefer repository-aware search (`rg`, project search tools, or exact file paths)
+over raw recursive `grep`. Exclude generated/binary paths such as `target/`,
+`.git/`, `node_modules/`, and large state artifacts. Escape regex metacharacters
+or use literal/fixed-string search when searching for snippets that contain
+parentheses, brackets, quotes, or backslashes.
+
 # Work Integrity
 
 Never fake completion. If work is incomplete, blocked, unverified, or only
@@ -71,6 +77,10 @@ when useful. Avoid unrelated refactors.
 After changes, run focused build, test, lint, or smoke-check commands when
 practical. If verification cannot be run, explain exactly why and what risk
 remains.
+
+Keep verification bounded. Start with the narrowest relevant test or check, then
+broaden only when needed. If a command is likely to be long-running, state what it
+proves and avoid repeating it without new evidence.
 
 # Tool Use
 
@@ -173,16 +183,20 @@ mod tests {
         assert!((PROACTIVE_COMPACT_THRESHOLD - 0.70).abs() < f64::EPSILON);
         assert_eq!(DEFAULT_SESSION_PATH, "yoyo-session.json");
         assert_eq!(AUTO_SAVE_SESSION_PATH, ".yoyo/last-session.json");
-        assert_eq!(SYSTEM_PROMPT_VERSION, "coding_system_prompt@v2");
+        assert_eq!(SYSTEM_PROMPT_VERSION, "coding_system_prompt@v3");
         assert_eq!(LITE_SYSTEM_PROMPT_VERSION, "lite_system_prompt@v1");
         assert!(SYSTEM_PROMPT.contains("coding assistant"));
         assert!(SYSTEM_PROMPT.contains("Evidence First"));
         assert!(SYSTEM_PROMPT.contains("available state"));
         assert!(SYSTEM_PROMPT.contains("Bounded Context Use"));
+        assert!(SYSTEM_PROMPT.contains("repository-aware search"));
+        assert!(SYSTEM_PROMPT.contains("target/"));
+        assert!(SYSTEM_PROMPT.contains("literal/fixed-string search"));
         assert!(SYSTEM_PROMPT.contains("Never fake completion"));
         assert!(SYSTEM_PROMPT.contains("Preserve user work"));
         assert!(SYSTEM_PROMPT.contains("Confirm destructive operations"));
         assert!(SYSTEM_PROMPT.contains("Verification"));
+        assert!(SYSTEM_PROMPT.contains("Keep verification bounded"));
     }
 
     #[test]
