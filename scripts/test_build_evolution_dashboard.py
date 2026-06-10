@@ -1185,6 +1185,62 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(aggregate["unverified_raw_task_outcome_attempted"], 3)
             self.assertEqual(aggregate["unverified_raw_task_outcome_succeeded"], 3)
 
+    def test_task_artifacts_without_manifest_still_enter_strict_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {"coding_log_score": 0.8},
+                    "gnome_keys": ["coding_log_score"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Historical task without manifest",
+                    "status": "completed",
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": [],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {
+                    "task_id": "task_01",
+                    "status": "pass",
+                    "exit_code": 0,
+                    "verdict": "Verdict: PASS",
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            verification = data["sessions"][0]["work_summary"]["task_verification"]
+
+            self.assertEqual(verification["task_count"], 1)
+            self.assertEqual(verification["verified_task_count"], 0)
+            self.assertEqual(verification["unverified_task_count"], 1)
+            self.assertEqual(verification["rows"][0]["task_id"], "task_01")
+            self.assertIn("missing_planned_files", verification["rows"][0]["problems"])
+            self.assertIn("no_landed_source_commit", verification["rows"][0]["problems"])
+            self.assertEqual(data["aggregate"]["tasks_attempted"], 1)
+            self.assertEqual(data["aggregate"]["tasks_succeeded"], 0)
+            self.assertEqual(data["aggregate"]["unverified_raw_task_outcome_attempted"], 0)
+
     def test_missing_optional_artifacts_do_not_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

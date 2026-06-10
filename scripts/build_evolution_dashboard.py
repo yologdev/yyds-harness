@@ -601,6 +601,23 @@ def task_verification_summary(
         for row in task_lineage
         if isinstance(row, dict) and row.get("task_id")
     }
+    if not selected:
+        task_ids = list(dict.fromkeys(list(artifacts_by_id) + list(lineage_by_id)))
+        selected = [
+            {
+                "task_id": task_id,
+                "title": (
+                    artifacts_by_id.get(task_id, {}).get("task_title")
+                    or lineage_by_id.get(task_id, {}).get("task_title")
+                ),
+                "files": (
+                    artifacts_by_id.get(task_id, {}).get("planned_files")
+                    or lineage_by_id.get(task_id, {}).get("planned_files")
+                    or []
+                ),
+            }
+            for task_id in task_ids
+        ]
     rows: list[dict[str, Any]] = []
     for task in selected:
         if not isinstance(task, dict):
