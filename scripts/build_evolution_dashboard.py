@@ -915,9 +915,13 @@ def work_summary(
     labels: list[str] = []
     if attempted:
         verified = int(task_verification.get("verified_task_count") or 0)
-        strict_total = int(task_verification.get("task_count") or attempted)
-        labels.append(f"{verified}/{strict_total} verified tasks")
-        if succeeded != verified:
+        strict_total = int(task_verification.get("task_count") or 0)
+        if strict_total:
+            labels.append(f"{verified}/{strict_total} verified tasks")
+        else:
+            labels.append(f"{succeeded}/{attempted} raw outcome task(s)")
+            labels.append("missing strict task evidence")
+        if strict_total and succeeded != verified:
             labels.append(f"outcome reported {succeeded}/{attempted} tasks")
     elif task_manifest.get("planning_failed"):
         labels.append("planning produced no task files")
@@ -1280,6 +1284,12 @@ def run_health(session: dict[str, Any]) -> str:
         return "attention"
     if verified_total and verified_count < verified_total:
         return "partial" if verified_count else "attention"
+    if verified_total and verified_count == verified_total:
+        if session.get("build_ok") is True and session.get("test_ok") is True:
+            return "passed"
+        return "partial"
+    if attempted:
+        return "attention"
     if session.get("build_ok") is True and session.get("test_ok") is True and attempted == succeeded:
         return "passed"
     if succeeded:
@@ -1295,6 +1305,10 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     events = 0
     tasks_attempted = 0
     tasks_succeeded = 0
+    raw_tasks_attempted = 0
+    raw_tasks_succeeded = 0
+    unverified_raw_task_attempted = 0
+    unverified_raw_task_succeeded = 0
     latest_gnomes: dict[str, Any] = {}
     gnome_keys: list[str] = []
     health = {"passed": 0, "partial": 0, "attention": 0, "reverted": 0}
@@ -1311,12 +1325,16 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
         verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
         strict_total = int(verification.get("task_count") or 0)
+        raw_attempted = int(session.get("tasks_attempted") or 0)
+        raw_succeeded = int(session.get("tasks_succeeded") or 0)
+        raw_tasks_attempted += raw_attempted
+        raw_tasks_succeeded += raw_succeeded
         if strict_total:
             tasks_attempted += strict_total
             tasks_succeeded += int(verification.get("verified_task_count") or 0)
-        else:
-            tasks_attempted += int(session.get("tasks_attempted") or 0)
-            tasks_succeeded += int(session.get("tasks_succeeded") or 0)
+        elif raw_attempted:
+            unverified_raw_task_attempted += raw_attempted
+            unverified_raw_task_succeeded += raw_succeeded
         health[run_health(session)] += 1
         trace = session.get("trace_quality") if isinstance(session.get("trace_quality"), dict) else {}
         trace_event_count += int(trace.get("trace_event_count") or 0)
@@ -1358,6 +1376,10 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         "tasks_attempted": tasks_attempted,
         "tasks_succeeded": tasks_succeeded,
         "task_success_rate": (tasks_succeeded / tasks_attempted) if tasks_attempted else None,
+        "raw_task_outcome_attempted": raw_tasks_attempted,
+        "raw_task_outcome_succeeded": raw_tasks_succeeded,
+        "unverified_raw_task_outcome_attempted": unverified_raw_task_attempted,
+        "unverified_raw_task_outcome_succeeded": unverified_raw_task_succeeded,
         "health": health,
         "event_counts": event_counts,
         "latest_gnomes": latest_gnomes,
@@ -2221,6 +2243,10 @@ HTML = r"""<!doctype html>
       if (session.reverted) return "reverted";
       if (manifest.planning_failed) return "attention";
       if (strictTotal && strictVerified < strictTotal) return strictVerified ? "partial" : "attention";
+      if (strictTotal && strictVerified === strictTotal) {
+        return session.build_ok === true && session.test_ok === true ? "passed" : "partial";
+      }
+      if (attempted) return "attention";
       if (session.build_ok === true && session.test_ok === true && attempted === succeeded) return "passed";
       if (succeeded > 0) return "partial";
       return "attention";
@@ -2248,6 +2274,10 @@ HTML = r"""<!doctype html>
       let eventCount = 0;
       let tasksAttempted = 0;
       let tasksSucceeded = 0;
+      let rawTasksAttempted = 0;
+      let rawTasksSucceeded = 0;
+      let unverifiedRawTasksAttempted = 0;
+      let unverifiedRawTasksSucceeded = 0;
       let evalCount = 0;
       let blockers = 0;
       let promoted = 0;
@@ -2263,12 +2293,16 @@ HTML = r"""<!doctype html>
         eventCount += Number(session.event_count || 0);
         const verification = session.work_summary?.task_verification || {};
         const strictTotal = Number(verification.task_count || 0);
+        const rawAttempted = Number(session.tasks_attempted || 0);
+        const rawSucceeded = Number(session.tasks_succeeded || 0);
+        rawTasksAttempted += rawAttempted;
+        rawTasksSucceeded += rawSucceeded;
         if (strictTotal) {
           tasksAttempted += strictTotal;
           tasksSucceeded += Number(verification.verified_task_count || 0);
-        } else {
-          tasksAttempted += Number(session.tasks_attempted || 0);
-          tasksSucceeded += Number(session.tasks_succeeded || 0);
+        } else if (rawAttempted) {
+          unverifiedRawTasksAttempted += rawAttempted;
+          unverifiedRawTasksSucceeded += rawSucceeded;
         }
         blockers += (session.blockers || []).length;
         if (session.latest_eval && Object.keys(session.latest_eval).length) evalCount += 1;
@@ -2305,6 +2339,10 @@ HTML = r"""<!doctype html>
         tasks_attempted: tasksAttempted,
         tasks_succeeded: tasksSucceeded,
         task_success_rate: tasksAttempted ? tasksSucceeded / tasksAttempted : null,
+        raw_task_outcome_attempted: rawTasksAttempted,
+        raw_task_outcome_succeeded: rawTasksSucceeded,
+        unverified_raw_task_outcome_attempted: unverifiedRawTasksAttempted,
+        unverified_raw_task_outcome_succeeded: unverifiedRawTasksSucceeded,
         eval_count: evalCount,
         blocker_count: blockers,
         promoted_decisions: promoted,
@@ -2363,7 +2401,11 @@ HTML = r"""<!doctype html>
       const score = latestMetric(agg, "coding_log_score");
       const stateCapture = latestMetric(agg, "state_capture_coverage");
       const heroTitle = session
-        ? (strictTotal ? `${text(strictVerified)} of ${text(strictTotal)} tasks verified` : `${text(session.tasks_succeeded || 0)} of ${text(session.tasks_attempted || 0)} tasks completed`)
+        ? (strictTotal
+            ? `${text(strictVerified)} of ${text(strictTotal)} tasks verified`
+            : (Number(session.tasks_attempted || 0)
+                ? `${text(session.tasks_succeeded || 0)} of ${text(session.tasks_attempted || 0)} raw outcome tasks`
+                : "No task evidence captured"))
         : "No audit-backed evolution sessions yet";
       const heroMeta = session
         ? `Day ${text(session.day)} / ${text(session.session_time || session.ts || "latest")} / <code>${text(session.id)}</code>`
@@ -2400,9 +2442,13 @@ HTML = r"""<!doctype html>
 
     function renderSummary(agg) {
       const rate = agg.task_success_rate;
+      const unverified = Number(agg.unverified_raw_task_outcome_attempted || 0);
+      const rawHint = unverified
+        ? `; ${text(unverified)} raw outcome task(s) lacked strict evidence`
+        : "";
       const cards = [
         ["Sessions", agg.session_count || 0, "audit-backed runs"],
-        ["Task success", rate === null || rate === undefined ? "-" : percent(rate), `${text(agg.tasks_succeeded || 0)}/${text(agg.tasks_attempted || 0)} tasks`],
+        ["Strict task success", rate === null || rate === undefined ? "-" : percent(rate), `${text(agg.tasks_succeeded || 0)}/${text(agg.tasks_attempted || 0)} verified tasks${rawHint}`],
         ["Operational traces", agg.full_trace_sessions || 0, `${text(agg.lifecycle_trace_sessions || 0)} lifecycle-only / ${text(agg.feedback_only_sessions || 0)} feedback-only`],
         ["Blockers", agg.blocker_count || 0, "real blocking signals"],
       ];
@@ -2420,9 +2466,13 @@ HTML = r"""<!doctype html>
 
       const attempted = Number(agg.tasks_attempted || 0);
       const succeeded = Number(agg.tasks_succeeded || 0);
+      const unverified = Number(agg.unverified_raw_task_outcome_attempted || 0);
       document.getElementById("taskChart").innerHTML = attempted
-        ? barRow("Successful tasks", succeeded, attempted, succeeded === attempted ? "good" : "warn", `of ${attempted}`)
-        : `<div class="empty">No task outcome data yet.</div>`;
+        ? barRow("Strict verified tasks", succeeded, attempted, succeeded === attempted ? "good" : "warn", `of ${attempted}`)
+        : `<div class="empty">No strict task verification rows in this filter.</div>`;
+      if (unverified) {
+        document.getElementById("taskChart").innerHTML += `<p class="explain">${text(unverified)} raw outcome task(s) are shown in session rows but excluded from strict success because task evidence was missing.</p>`;
+      }
 
       const eventRows = Object.entries(agg.event_counts || {})
         .sort((a, b) => Number(b[1]) - Number(a[1]))

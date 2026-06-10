@@ -1146,6 +1146,45 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("task_unlanded_source_count", data["aggregate"]["gnome_keys"])
             self.assertEqual(data["aggregate"]["latest_gnomes"]["task_unlanded_source_count"], 1)
 
+    def test_raw_outcome_tasks_without_strict_evidence_are_not_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 3,
+                    "tasks_succeeded": 3,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {"coding_log_score": 0.8},
+                    "gnome_keys": ["coding_log_score"],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+            aggregate = data["aggregate"]
+
+            self.assertEqual(session_data["health"], "attention")
+            self.assertIn("3/3 raw outcome task(s)", session_data["work_summary"]["headline"])
+            self.assertIn("missing strict task evidence", session_data["work_summary"]["labels"])
+            self.assertEqual(aggregate["tasks_attempted"], 0)
+            self.assertEqual(aggregate["tasks_succeeded"], 0)
+            self.assertIsNone(aggregate["task_success_rate"])
+            self.assertEqual(aggregate["raw_task_outcome_attempted"], 3)
+            self.assertEqual(aggregate["raw_task_outcome_succeeded"], 3)
+            self.assertEqual(aggregate["unverified_raw_task_outcome_attempted"], 3)
+            self.assertEqual(aggregate["unverified_raw_task_outcome_succeeded"], 3)
+
     def test_missing_optional_artifacts_do_not_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
