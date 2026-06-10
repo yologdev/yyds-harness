@@ -622,6 +622,36 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["deepseek_cache_metric_source"], "state")
             self.assertEqual(metrics["deepseek_cache_metric_event_count"], 2)
 
+    def test_state_summary_keeps_new_log_feedback_gnomes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "state/events.jsonl"
+            append_event(
+                events,
+                "PatchEvaluated",
+                {
+                    "suite": "log-feedback",
+                    "metrics": {
+                        "state_metrics": {
+                            "coding_log_score": 0.7,
+                            "state_live_baseline_shrink_count": 1,
+                            "evaluator_timeout_with_verdict_count": 2,
+                            "task_unlanded_source_count": 3,
+                        }
+                    },
+                },
+            )
+
+            summary = summarize_state_gnomes.summarize(
+                summarize_state_gnomes.load_jsonl(events),
+                events,
+            )
+
+            latest = summary["latest_gnomes"]
+            self.assertEqual(latest["state_live_baseline_shrink_count"], 1)
+            self.assertEqual(latest["evaluator_timeout_with_verdict_count"], 2)
+            self.assertEqual(latest["task_unlanded_source_count"], 3)
+            self.assertIn("state_live_baseline_shrink_count", summary["gnome_keys"])
+
     def test_summary_merges_post_wrapup_commit_links(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

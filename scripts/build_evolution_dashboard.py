@@ -45,6 +45,16 @@ def load_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def log_feedback_metrics(session_dir: Path) -> dict[str, Any]:
+    feedback = load_json(session_dir / "log_feedback.json")
+    metrics = feedback.get("metrics") if isinstance(feedback.get("metrics"), dict) else {}
+    return {
+        str(key): value
+        for key, value in metrics.items()
+        if value is None or isinstance(value, (bool, int, float))
+    }
+
+
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     if not path.is_file():
@@ -1066,9 +1076,16 @@ def work_summary(
     }
 
 
-def corrected_gnomes(summary: dict[str, Any], work: dict[str, Any], trace: dict[str, Any]) -> dict[str, Any]:
+def corrected_gnomes(
+    summary: dict[str, Any],
+    work: dict[str, Any],
+    trace: dict[str, Any],
+    feedback_metrics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     gnomes = dict(summary.get("latest_gnomes") if isinstance(summary.get("latest_gnomes"), dict) else {})
     recalc_score = False
+    if feedback_metrics:
+        gnomes.update(feedback_metrics)
     if (
         "state_operational_capture_coverage" not in gnomes
         and "state_capture_coverage" in gnomes
@@ -1324,7 +1341,8 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         commits = session_commits(outcome, repo_root)
         trace = trace_quality(summary, evals)
         work = work_summary(session_dir, outcome, summary, evals, blockers, commits)
-        latest_gnomes = corrected_gnomes(summary, work, trace)
+        feedback_metrics = log_feedback_metrics(session_dir)
+        latest_gnomes = corrected_gnomes(summary, work, trace, feedback_metrics)
         normalize_work_gnome_snapshots(work, latest_gnomes)
         evals, latest_eval, latest_eval_corrections = normalize_latest_eval_gnomes(evals, latest_gnomes)
         if latest_eval:

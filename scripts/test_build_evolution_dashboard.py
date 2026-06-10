@@ -1273,6 +1273,54 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("task_unlanded_source_count", data["aggregate"]["gnome_keys"])
             self.assertEqual(data["aggregate"]["latest_gnomes"]["task_unlanded_source_count"], 1)
 
+    def test_dashboard_merges_log_feedback_metrics_missing_from_state_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {"coding_log_score": 0.8},
+                    "gnome_keys": ["coding_log_score"],
+                    "evals": [{"suite": "log-feedback", "gnomes": {"coding_log_score": 0.8}}],
+                },
+            )
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "coding_log_score": 0.7,
+                        "state_live_baseline_shrink_count": 1,
+                        "state_operational_capture_coverage": 1.0,
+                        "evidence": ["not a gnome"],
+                        "workflow_conclusion": "success",
+                    }
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            latest = data["sessions"][0]["latest_gnomes"]
+
+            self.assertEqual(latest["state_live_baseline_shrink_count"], 1)
+            self.assertEqual(latest["state_operational_capture_coverage"], 1.0)
+            self.assertNotIn("evidence", latest)
+            self.assertNotIn("workflow_conclusion", latest)
+            self.assertEqual(data["gnome_history"][0]["values"]["state_live_baseline_shrink_count"], 1.0)
+            self.assertIn("state_live_baseline_shrink_count", data["aggregate"]["gnome_keys"])
+            self.assertEqual(data["sessions"][0]["latest_eval"]["gnomes"]["state_live_baseline_shrink_count"], 1)
+
     def test_raw_outcome_tasks_without_strict_evidence_are_not_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
