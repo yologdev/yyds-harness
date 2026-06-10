@@ -1321,6 +1321,11 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
             "session_time": outcome.get("session_time"),
             "github_run_id": outcome.get("github_run_id"),
             "github_run_attempt": outcome.get("github_run_attempt"),
+            "source_sha": outcome.get("source_sha"),
+            "source_ref": outcome.get("source_ref"),
+            "github_sha": outcome.get("github_sha"),
+            "github_ref": outcome.get("github_ref"),
+            "github_ref_name": outcome.get("github_ref_name"),
             "build_ok": outcome.get("build_ok"),
             "test_ok": outcome.get("test_ok"),
             "tasks_attempted": outcome.get("tasks_attempted"),
@@ -2288,6 +2293,20 @@ HTML = r"""<!doctype html>
       return escapeHtml(value);
     }
 
+    function shortSha(value) {
+      const raw = String(value || "").trim();
+      return raw ? raw.slice(0, 12) : "";
+    }
+
+    function sessionSourceLine(session) {
+      const sha = shortSha(session.source_sha || session.github_sha);
+      const ref = session.source_ref || session.github_ref_name || session.github_ref || "";
+      if (!sha && !ref) return "source revision not recorded";
+      if (sha && ref) return `source ${sha} on ${ref}`;
+      if (sha) return `source ${sha}`;
+      return `source ${ref}`;
+    }
+
     function metricChip(name, value) {
       return `<span class="pill">${text(name)}: ${text(value)}</span>`;
     }
@@ -2937,7 +2956,7 @@ HTML = r"""<!doctype html>
             <span class="pill ${healthClass(healthOf(session))}">${text(healthOf(session))}</span>
             <span class="pill soft">${text(trace.label || "unknown trace")}</span>
             <strong class="work-title">${text(session.id)}</strong>
-            <p class="muted">${text(work.headline || "No detailed work signals captured")}</p>
+            <p class="muted">${text(sessionSourceLine(session))}<br>${text(work.headline || "No detailed work signals captured")}</p>
           </div>
           <div>
             <div class="work-facts">
@@ -3057,7 +3076,7 @@ HTML = r"""<!doctype html>
         const verification = work.task_verification || {};
         const verifiedText = verification.task_count ? `<br>verified ${text(verification.verified_task_count || 0)}/${text(verification.task_count || 0)}` : "";
         return `<tr>
-          <td><strong>${text(session.id)}</strong><div class="muted">Day ${text(session.day)} at ${text(session.session_time)}<br>${text(session.ts)}${session.github_run_id ? `<br>run ${text(session.github_run_id)} attempt ${text(session.github_run_attempt || "-")}` : ""}</div></td>
+          <td><strong>${text(session.id)}</strong><div class="muted">Day ${text(session.day)} at ${text(session.session_time)}<br>${text(session.ts)}<br>${text(sessionSourceLine(session))}${session.github_run_id ? `<br>run ${text(session.github_run_id)} attempt ${text(session.github_run_attempt || "-")}` : ""}</div></td>
           <td><span class="pill ${healthClass(health)}">${text(health)}</span><div class="muted">build ${text(session.build_ok)} / test ${text(session.test_ok)}<br>tasks ${text(session.tasks_succeeded)}/${text(session.tasks_attempted)}${verifiedText}<br>${text(work.headline)}</div></td>
           <td><span class="${decisionClass(decision)}">${text(decision.criterion || decision.decision || decision.decision_type)}</span><div class="muted">${text(decision.reason)}</div></td>
           <td><span class="pill soft">${text(trace.label || "unknown trace")}</span><div class="muted">${text(trace.trace_event_count || 0)} trace events / ${text(events)} total<br>eval ${text(evalData.status)} ${evalData.score === undefined ? "" : `score ${text(evalData.score)}`}</div></td>

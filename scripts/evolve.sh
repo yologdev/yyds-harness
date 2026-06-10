@@ -416,12 +416,14 @@ fi
 
 STATE_BASE_LINES=$(wc -l < "$STATE_EVENTS" 2>/dev/null | tr -d '[:space:]')
 STATE_BASE_LINES="${STATE_BASE_LINES:-0}"
+SESSION_SOURCE_SHA="${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || true)}"
+SESSION_SOURCE_REF="${GITHUB_REF_NAME:-${GITHUB_REF:-}}"
 if "$YOYO_BIN" state project --rebuild >>"$TRAJ_STDERR" 2>&1; then
     echo "  state: replayed $STATE_BASE_LINES prior event(s) into live yoagent-state."
 else
     echo "  state: sqlite projection rebuild failed (state JSONL remains available)" >&2
 fi
-record_state_event "RunStarted" "{\"phase\":\"session\",\"day\":$DAY,\"session_time\":\"$SESSION_TIME\",\"github_run_id\":\"${GITHUB_RUN_ID:-}\",\"github_run_attempt\":\"${GITHUB_RUN_ATTEMPT:-}\"}"
+record_state_event "RunStarted" "{\"phase\":\"session\",\"day\":$DAY,\"session_time\":\"$SESSION_TIME\",\"github_run_id\":\"${GITHUB_RUN_ID:-}\",\"github_run_attempt\":\"${GITHUB_RUN_ATTEMPT:-}\",\"source_sha\":\"$SESSION_SOURCE_SHA\",\"source_ref\":\"$SESSION_SOURCE_REF\"}"
 
 # ── Helper: refresh GitHub App token (tokens expire after 1 hour) ──
 # Uses APP_ID, APP_PRIVATE_KEY, and APP_INSTALLATION_ID env vars.
@@ -2585,6 +2587,11 @@ if [ -d "$SESSION_STAGING" ]; then
         YOYO_OUT_TASKS_ATTEMPTED="${SESSION_TASKS_ATTEMPTED:-0}" \
         YOYO_OUT_TASKS_SUCCEEDED="${SESSION_TASKS_SUCCEEDED:-0}" \
         YOYO_OUT_REVERTED="${SESSION_REVERTED:-false}" \
+        YOYO_OUT_SOURCE_SHA="$SESSION_SOURCE_SHA" \
+        YOYO_OUT_SOURCE_REF="$SESSION_SOURCE_REF" \
+        YOYO_OUT_GITHUB_SHA="${GITHUB_SHA:-}" \
+        YOYO_OUT_GITHUB_REF="${GITHUB_REF:-}" \
+        YOYO_OUT_GITHUB_REF_NAME="${GITHUB_REF_NAME:-}" \
         YOYO_OUT_PATH="$SESSION_STAGING/outcome.json" \
         python3 - <<'PYEOF'
 import json, os, time
@@ -2595,6 +2602,11 @@ out = {
     "session_time": os.environ.get("YOYO_OUT_SESSION_TIME", ""),
     "github_run_id": os.environ.get("GITHUB_RUN_ID", ""),
     "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+    "source_sha": os.environ.get("YOYO_OUT_SOURCE_SHA", ""),
+    "source_ref": os.environ.get("YOYO_OUT_SOURCE_REF", ""),
+    "github_sha": os.environ.get("YOYO_OUT_GITHUB_SHA", ""),
+    "github_ref": os.environ.get("YOYO_OUT_GITHUB_REF", ""),
+    "github_ref_name": os.environ.get("YOYO_OUT_GITHUB_REF_NAME", ""),
     "build_ok": os.environ.get("YOYO_OUT_BUILD_OK", "false") == "true",
     "test_ok":  os.environ.get("YOYO_OUT_TEST_OK",  "false") == "true",
     "tasks_attempted": int(os.environ.get("YOYO_OUT_TASKS_ATTEMPTED", "0") or 0),

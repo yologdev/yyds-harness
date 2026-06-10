@@ -96,6 +96,11 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "ts": "2026-06-10T00:00:00Z",
                     "tasks_attempted": 0,
                     "tasks_succeeded": 0,
+                    "source_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                    "source_ref": "main",
+                    "github_sha": "0123456789abcdef0123456789abcdef01234567",
+                    "github_ref": "refs/heads/main",
+                    "github_ref_name": "main",
                 },
             )
             write_json(newer / "state/summary.json", {"latest_gnomes": {"coding_log_score": 0.9}})
@@ -107,6 +112,13 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["aggregate"]["latest_session_id"], newer.name)
             self.assertEqual(data["aggregate"]["latest_ts"], "2026-06-10T00:00:00Z")
             self.assertEqual(data["aggregate"]["latest_gnomes"]["coding_log_score"], 0.9)
+            self.assertEqual(data["sessions"][1]["source_sha"], "fedcba9876543210fedcba9876543210fedcba98")
+            self.assertEqual(data["sessions"][1]["source_ref"], "main")
+            self.assertEqual(data["sessions"][1]["github_sha"], "0123456789abcdef0123456789abcdef01234567")
+            self.assertEqual(data["sessions"][1]["github_ref_name"], "main")
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            self.assertIn("function sessionSourceLine", html)
+            self.assertIn("source revision not recorded", html)
 
     def test_derives_operational_state_capture_from_trace_quality(self):
         with tempfile.TemporaryDirectory() as tmp:
