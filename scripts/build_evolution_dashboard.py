@@ -674,7 +674,7 @@ def task_verification_summary(
         "task_count": total,
         "verified_task_count": verified_count,
         "unverified_task_count": total - verified_count,
-        "all_verified": bool(total == 0 or verified_count == total),
+        "all_verified": bool(total > 0 and verified_count == total),
         "rows": rows,
     }
 
@@ -1112,6 +1112,9 @@ def normalize_latest_eval_gnomes(
     raw = latest.get("gnomes") if isinstance(latest.get("gnomes"), dict) else {}
     corrections = gnome_corrections(raw, corrected)
     latest["gnomes"] = dict(corrected)
+    score = corrected.get("coding_log_score")
+    if numeric_value(score):
+        latest["score"] = score
     if corrections:
         latest["gnome_corrections"] = corrections
     normalized[-1] = latest
@@ -1223,6 +1226,9 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         latest_gnomes = corrected_gnomes(summary, work, trace)
         normalize_work_gnome_snapshots(work, latest_gnomes)
         evals, latest_eval, latest_eval_corrections = normalize_latest_eval_gnomes(evals, latest_gnomes)
+        if latest_eval:
+            work["latest_eval_status"] = latest_eval.get("status")
+            work["latest_eval_score"] = latest_eval.get("score")
         session = {
             "id": session_dir.name,
             "day": outcome.get("day"),

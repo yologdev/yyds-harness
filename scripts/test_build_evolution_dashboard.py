@@ -630,6 +630,14 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 lineage["gnome_corrections"]["task_success_rate"],
                 {"from": 0.5, "to": 0.0},
             )
+            self.assertEqual(
+                session_data["latest_eval"]["score"],
+                session_data["latest_gnomes"]["coding_log_score"],
+            )
+            self.assertEqual(
+                session_data["work_summary"]["latest_eval_score"],
+                session_data["latest_gnomes"]["coding_log_score"],
+            )
             html = (root / "out/index.html").read_text(encoding="utf-8")
             self.assertIn("corrected gnome(s)", html)
 
@@ -1148,6 +1156,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             data = build(root / "sessions", root / "out")
 
             self.assertEqual(len(data["sessions"]), 1)
+            self.assertFalse(data["sessions"][0]["work_summary"]["task_verification"]["all_verified"])
             self.assertEqual(data["gnome_history"][0]["values"], {})
             self.assertEqual(
                 data["sessions"][0]["work_summary"]["headline"],
