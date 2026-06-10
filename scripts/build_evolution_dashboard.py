@@ -2832,6 +2832,13 @@ HTML = r"""<!doctype html>
           const turns = attempt.turn_count === undefined || attempt.turn_count === null ? "-" : attempt.turn_count;
           return `${name} <span class="muted">${text(attempt.status || "-")} / ${text(turns)} turns / ${text(attempt.line_count || 0)} lines</span>`;
         }).join("</li><li>");
+        const evalRows = (task.evals || []).slice(0, 3).map(evalRow => {
+          const label = evalRow.transcript_path ? auditLink(session, evalRow.transcript_path, `eval ${evalRow.attempt || ""}`.trim()) : `eval ${text(evalRow.attempt || "")}`;
+          const verdict = evalRow.verdict || evalRow.status || "no verdict";
+          const reason = evalRow.reason ? ` — ${String(evalRow.reason).slice(0, 220)}` : "";
+          const klass = String(evalRow.status || evalRow.verdict || "").toLowerCase().includes("pass") ? "good" : "warn";
+          return `${label} <span class="${klass}">${text(verdict)}</span><span class="muted">${text(reason)}</span>`;
+        }).join("</li><li>");
         const artifacts = (task.artifacts || []).slice(0, 6).map(artifact =>
           `${auditLink(session, artifact.path, artifact.name)} <span class="muted">${text(artifact.line_count || 0)} lines</span>`
         ).join("</li><li>");
@@ -2839,6 +2846,7 @@ HTML = r"""<!doctype html>
           <strong>${text(task.task_id || "")} ${text(task.status || "")}: ${text(task.task_title || "")}</strong>
           <p class="muted">${text(task.attempt_count || 0)} attempt artifact(s); max ${text(task.max_turn_count || 0)} turns; eval ${text(statuses)}; task file ${text(task.task_line_count || 0)} lines</p>
           ${attempts ? `<ul class="mini-list"><li>${attempts}</li></ul>` : ""}
+          ${evalRows ? `<ul class="mini-list"><li>${evalRows}</li></ul>` : ""}
           ${artifacts ? `<ul class="mini-list"><li>${artifacts}</li></ul>` : ""}
         </div>`;
       }).join("");

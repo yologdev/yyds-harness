@@ -313,6 +313,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "attempt": 1,
                     "status": "pass",
                     "verdict": "Verdict: PASS",
+                    "reason": "Evaluator saw the dashboard evidence and checks passed.",
                     "transcript_path": "transcripts/eval_task1_attempt1.log",
                 },
             )
@@ -372,6 +373,10 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["task_artifacts"][0]["max_turn_count"], 4)
             self.assertEqual(work["task_artifacts"][0]["attempts"][0]["turn_count"], 4)
             self.assertEqual(work["task_artifacts"][0]["eval_statuses"], ["pass"])
+            self.assertEqual(
+                work["task_artifacts"][0]["evals"][0]["reason"],
+                "Evaluator saw the dashboard evidence and checks passed.",
+            )
             self.assertTrue(work["task_artifacts"][0]["has_outcome"])
             self.assertEqual(work["task_verification"]["verified_task_count"], 1)
             self.assertEqual(work["task_verification"]["unverified_task_count"], 0)
@@ -388,6 +393,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["task_lineage"][0]["verification_problems"], [])
             self.assertEqual(data["sessions"][0]["trace_quality"]["status"], "full")
             self.assertEqual(data["sessions"][0]["health"], "passed")
+            self.assertIn("const evalRows = (task.evals || [])", html)
+            self.assertIn("evalRow.reason", html)
 
     def test_state_pipeline_diagnostics_are_visible(self):
         with tempfile.TemporaryDirectory() as tmp:
