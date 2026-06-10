@@ -825,6 +825,11 @@ def augment_evolution_suggestions(
         if isinstance(row, dict)
         and "evaluator_timed_out_after_verdict" in (row.get("problems") or [])
     )
+    unattempted = sum(
+        1
+        for row in rows
+        if isinstance(row, dict) and row.get("outcome_status") is None
+    )
     unverified = int(task_verification.get("unverified_task_count") or 0)
     out = [dict(row) for row in suggestions if isinstance(row, dict)]
 
@@ -853,6 +858,15 @@ def augment_evolution_suggestions(
             "evaluator_unverified_count",
             unverified,
             90,
+        )
+    if unattempted:
+        upsert(
+            "implementation",
+            "Preserve budget to start every selected task",
+            "The planner selected tasks that the implementation phase never attempted.",
+            "task_unattempted_count",
+            unattempted,
+            94,
         )
     if timeout_with_verdict:
         upsert(
@@ -1022,6 +1036,8 @@ def work_summary(
             labels.append("missing strict task evidence")
         if strict_total and succeeded != verified:
             labels.append(f"outcome reported {succeeded}/{attempted} tasks")
+        if strict_total > attempted:
+            labels.append(f"{strict_total - attempted} selected task(s) not attempted")
     elif task_manifest.get("planning_failed"):
         labels.append("planning produced no task files")
     if source_files:
@@ -1080,6 +1096,7 @@ def corrected_gnomes(
     summary: dict[str, Any],
     work: dict[str, Any],
     trace: dict[str, Any],
+    outcome: dict[str, Any],
     feedback_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     gnomes = dict(summary.get("latest_gnomes") if isinstance(summary.get("latest_gnomes"), dict) else {})
@@ -1119,6 +1136,15 @@ def corrected_gnomes(
         )
     manifest = work.get("task_manifest") if isinstance(work.get("task_manifest"), dict) else {}
     verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
+    task_artifacts = work.get("task_artifacts") if isinstance(work.get("task_artifacts"), list) else []
+    attempted = int(outcome.get("tasks_attempted") or 0)
+    selected_count = int(manifest.get("selected_task_count") or 0)
+    if selected_count:
+        task_unattempted = max(selected_count - attempted, 0)
+        if task_unattempted:
+            gnomes["task_unattempted_count"] = task_unattempted
+            recalc_score = True
+        gnomes["task_artifact_coverage"] = min(1.0, len(task_artifacts) / selected_count)
     task_count = int(verification.get("task_count") or 0)
     if task_count:
         verified = int(verification.get("verified_task_count") or 0)
@@ -1194,9 +1220,11 @@ def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
             + metric_float(metrics, "recurring_failure_count") * 2.0
             + metric_float(metrics, "evolution_friction_count")
             + metric_float(metrics, "planner_no_task_count") * 3.0
+            + metric_float(metrics, "task_unattempted_count") * 2.0
             + metric_float(metrics, "evaluator_unverified_count")
             + metric_float(metrics, "evaluator_timeout_with_verdict_count") * 2.0
             + metric_float(metrics, "task_unlanded_source_count") * 2.0
+            + metric_float(metrics, "state_live_baseline_shrink_count") * 2.0
         )
         / 12.0,
     )
@@ -1342,7 +1370,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         trace = trace_quality(summary, evals)
         work = work_summary(session_dir, outcome, summary, evals, blockers, commits)
         feedback_metrics = log_feedback_metrics(session_dir)
-        latest_gnomes = corrected_gnomes(summary, work, trace, feedback_metrics)
+        latest_gnomes = corrected_gnomes(summary, work, trace, outcome, feedback_metrics)
         normalize_work_gnome_snapshots(work, latest_gnomes)
         evals, latest_eval, latest_eval_corrections = normalize_latest_eval_gnomes(evals, latest_gnomes)
         if latest_eval:
@@ -2286,6 +2314,7 @@ HTML = r"""<!doctype html>
       task_verification_rate: "Task verification",
       task_mechanical_verification_rate: "Mechanical task verification",
       planner_no_task_count: "Planner no-task count",
+      task_unattempted_count: "Unattempted selected tasks",
       task_manifest_available: "Task manifest available",
       task_artifact_coverage: "Task artifact coverage",
       task_lineage_capture_coverage: "Task lineage capture",

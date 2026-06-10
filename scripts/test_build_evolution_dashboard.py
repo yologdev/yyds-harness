@@ -349,6 +349,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "evaluator_unverified_count",
                     "evolution_friction_count",
                     "session_success_rate",
+                    "task_artifact_coverage",
                     "task_success_rate",
                     "task_unlanded_source_count",
                 ],
@@ -361,6 +362,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "evaluator_unverified_count": 0.0,
                     "evolution_friction_count": 2.0,
                     "session_success_rate": 1.0,
+                    "task_artifact_coverage": 1.0,
                     "task_success_rate": 1.0,
                     "task_unlanded_source_count": 0.0,
                 },
@@ -559,6 +561,74 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(session_data["latest_gnomes"]["session_success_rate"], 0.0)
             self.assertEqual(session_data["latest_gnomes"]["task_unlanded_source_count"], 1)
             self.assertEqual(session_data["health"], "attention")
+
+    def test_corrects_selected_but_unattempted_task_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 2,
+                    "tasks_succeeded": 0,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 4,
+                    "event_counts": {"RunStarted": 1, "RunCompleted": 1, "PatchEvaluated": 1},
+                    "latest_gnomes": {
+                        "coding_log_score": 0.8,
+                        "task_artifact_coverage": 1.5,
+                    },
+                    "gnome_keys": ["coding_log_score", "task_artifact_coverage"],
+                    "evals": [
+                        {
+                            "suite": "log-feedback",
+                            "status": "failed",
+                            "score": 0.8,
+                            "gnomes": {
+                                "coding_log_score": 0.8,
+                                "task_artifact_coverage": 1.5,
+                            },
+                        }
+                    ],
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 3, "selected_task_count": 3},
+                    "selected_tasks": [
+                        {"task_id": "task_01", "task_number": 1, "title": "Task 1", "artifact_path": "tasks/task_01/task.md"},
+                        {"task_id": "task_02", "task_number": 2, "title": "Task 2", "artifact_path": "tasks/task_02/task.md"},
+                        {"task_id": "task_03", "task_number": 3, "title": "Task 3", "artifact_path": "tasks/task_03/task.md"},
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            for task_id in ("task_01", "task_02", "task_03"):
+                write_json(session / f"tasks/{task_id}/decision.json", {"task_id": task_id})
+
+            data = build(root / "sessions", root / "out")
+            latest = data["sessions"][0]["latest_gnomes"]
+            work = data["sessions"][0]["work_summary"]
+
+            self.assertEqual(latest["task_unattempted_count"], 1)
+            self.assertEqual(latest["task_artifact_coverage"], 1.0)
+            self.assertEqual(data["sessions"][0]["latest_eval"]["gnomes"]["task_unattempted_count"], 1)
+            self.assertEqual(data["sessions"][0]["latest_eval"]["gnomes"]["task_artifact_coverage"], 1.0)
+            self.assertEqual(data["aggregate"]["latest_gnomes"]["task_unattempted_count"], 1)
+            self.assertIn("task_unattempted_count", data["aggregate"]["gnome_keys"])
+            self.assertIn("1 selected task(s) not attempted", work["headline"])
+            suggestion_metrics = {row["metric"] for row in work["evolution_suggestions"]}
+            self.assertIn("task_unattempted_count", suggestion_metrics)
 
     def test_timed_out_verdict_does_not_count_as_strict_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
