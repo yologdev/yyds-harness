@@ -2127,6 +2127,7 @@ HTML = r"""<!doctype html>
         <div class="panel-body">
           <p class="explain">Priority health signals first, followed by metric availability. Availability means the session emitted the metric; missing does not mean zero.</p>
           <div id="gnomes"></div>
+          <div id="metricNotes"></div>
           <div id="gnomeAvailability"></div>
         </div>
       </section>
@@ -2541,6 +2542,32 @@ HTML = r"""<!doctype html>
         : (agg.gnome_keys || []).length
           ? `<div class="stack">${(agg.gnome_keys || []).slice(0, 16).map(key => `<span class="pill soft">${text(gnomeLabels[key] || key)}</span>`).join("")}</div><p class="explain">These signals are configured, but this audit window has not emitted numeric KPI values yet.</p>`
           : `<div class="empty">No gnome KPI values captured yet. This is expected until eval or log-feedback events emit metrics.</div>`;
+      renderMetricNotes(agg);
+    }
+
+    function renderMetricNotes(agg) {
+      const gnomes = agg.latest_gnomes || {};
+      const notes = [];
+      const unverifiedCache = Number(gnomes.deepseek_cache_ratio_unverified_count || 0);
+      if (unverifiedCache > 0 && (gnomes.deepseek_cache_hit_ratio === null || gnomes.deepseek_cache_hit_ratio === undefined)) {
+        notes.push({
+          kind: "Cache evidence",
+          className: "warn",
+          text: `${text(unverifiedCache)} DeepSeek cache ratio report(s) were withheld because token evidence was missing. A trusted cache KPI needs CacheMetricsRecorded events with prompt_cache_hit_tokens and prompt_cache_miss_tokens.`
+        });
+      }
+      const stateCoverage = Number(gnomes.state_capture_coverage ?? NaN);
+      const operationalCoverage = Number(gnomes.state_operational_capture_coverage ?? NaN);
+      if (!Number.isNaN(stateCoverage) && stateCoverage > 0 && !Number.isNaN(operationalCoverage) && operationalCoverage === 0) {
+        notes.push({
+          kind: "State evidence",
+          className: "warn",
+          text: "State replay evidence exists, but the latest visible session did not capture yyds/tool operational events. Treat its trace as lifecycle-only until a fresh run emits model/tool/cache events."
+        });
+      }
+      document.getElementById("metricNotes").innerHTML = notes.length
+        ? `<div class="stack metric-notes">${notes.map(note => `<p class="explain"><span class="pill ${note.className}">${text(note.kind)}</span> ${note.text}</p>`).join("")}</div>`
+        : "";
     }
 
     function gnomeRowsForFilteredSessions(sessions) {

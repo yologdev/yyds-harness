@@ -781,6 +781,10 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["gnome_history"][0]["values"]["deepseek_cache_ratio_unverified_count"], 1.0)
             self.assertIn("deepseek_cache_ratio_unverified_count", data["aggregate"]["gnome_keys"])
             self.assertIn("deepseek_cache_ratio_unverified_count", data["gnome_numeric_keys"])
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            self.assertIn("Cache evidence", html)
+            self.assertIn("token evidence was missing", html)
+            self.assertIn("CacheMetricsRecorded events", html)
 
     def test_manifest_files_backfilled_from_task_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
