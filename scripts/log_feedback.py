@@ -711,8 +711,8 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     return {
         "task_manifest_available": bool(manifest),
         "planner_no_task_count": 1 if planner.get("planning_failed") else 0,
-        "planned_task_count": int(planner.get("task_count") or len(tasks) or 0),
-        "selected_task_count": int(planner.get("selected_task_count") or len(tasks) or 0),
+        "planned_task_count": int(planner.get("task_count") or len(tasks) or len(task_dirs) or 0),
+        "selected_task_count": int(planner.get("selected_task_count") or len(tasks) or len(task_dirs) or 0),
         "task_artifact_count": len(task_dirs),
         "task_artifact_coverage": artifact_coverage,
         "task_strict_verified_count": strict_verified,
@@ -911,7 +911,11 @@ def build_assessment(
         int(artifact_metrics.get("evaluator_unverified_count") or 0),
     )
     strict_succeeded = int(artifact_metrics.get("task_strict_verified_count") or 0)
-    counted_succeeded = strict_succeeded if attempted and artifact_metrics.get("task_manifest_available") else succeeded
+    has_task_evidence = bool(
+        artifact_metrics.get("task_manifest_available")
+        or int(artifact_metrics.get("task_artifact_count") or 0) > 0
+    )
+    counted_succeeded = strict_succeeded if attempted and has_task_evidence else succeeded
     task_success_rate = ratio(counted_succeeded, attempted)
     workflow_success = workflow_conclusion.lower() in {"success", "passed"}
     build_ok = bool(outcome.get("build_ok"))
