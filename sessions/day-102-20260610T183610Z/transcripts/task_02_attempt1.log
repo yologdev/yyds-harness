@@ -1,0 +1,601 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task: fix recurring grep escape errors in `scripts/evolve.sh`. The issue is that grep calls with literal parentheses in patterns without proper escaping cause "grep: unmatched ( or \\(" errors.
+
+Let me follow the plan:
+1. Search for grep calls with unescaped parentheses
+2. Fix them appropriately
+3. Verify with bash syntax check
+4. Run tests
+
+Let me start by finding the problematic grep calls.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'grep.*\(' (scripts/evolve.sh) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search didn't find anything. Let me try a different approach - search for lines in evolve.sh that contain "grep" and have parentheses.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep.*(' scripts/evolve.sh | grep -v 'grep -F' | grep -v 'grep -E' | gr… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The grep itself is exiting with code 1, which might indicate no matches. Let me try a broader search.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep' scripts/evolve.sh | head -60 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output shows many grep calls but none of them have literal parentheses (like `(`, `)`) in the pattern. Let me look more carefully. Let me search for the specific error pattern "unmatched (" to understand where the errors come from.
+
+Let me look at the trajectory extraction script and the log_feedback.py to understand where these grep errors are generated.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at where the grep errors are generated and find the actual patterns with parentheses:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep.*(' scripts/evolve.sh 2>/dev/null; echo "---EXIT:$?" ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, let me approach this differently. The task says "grep: unmatched ( or \\(" error appears in the CI trajectory feedback. Let me look at the scripts that do CI log analysis - particularly `scripts/log_feedback.py` and `scripts/extract_trajectory.py`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'grep.*(' scripts/log_feedback.py scripts/extract_trajectory.py 2>/dev/… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No output. Let me search differently - look for the grep patterns that have parentheses in them more broadly across all scripts.
+
+Actually, let me re-read the task. It says: "Fix recurring grep escape errors in evolve.sh". So the grep errors are in evolve.sh. Let me look more carefully at the grep calls in evolve.sh, specifically looking for ones that might have parentheses in patterns.
+
+Let me look at each grep invocation in evolve.sh more carefully. The error "unmatched (" means there's a literal `(` in the pattern string without escaping or `-F` flag. Let me search for lines that have grep with patterns that might contain parentheses.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep.*(' scripts/evolve.sh | cat; echo "---"; grep -n 'grep.*)' scripts… ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see grep patterns with `'^### Issue'` - but these don't have parentheses. The `)` on the lines is from the closing `)` of subshell or command substitution, not the grep pattern.
+
+Let me think about this differently. The `)` results came from lines that use `$(...)` command substitution syntax. The closing `)` is part of the command substitution, not the grep pattern.
+
+Let me look at lines with grep patterns that contain parentheses more carefully. Let me search for grep patterns within single quotes that contain parentheses, or grep patterns within double quotes that contain parentheses.
+
+Actually wait - let me look at what the trajectory extraction does. The task mentions "trajectory log feedback" - let me look at `scripts/log_feedback.py` more carefully, specifically around how it runs grep.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep' scripts/log_feedback.py | head -30 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! So the grep errors aren't directly in evolve.sh's grep calls - they're showing up in search tool output during evolution sessions. Let me look at the error fingerprints in log_feedback.py more carefully.
+
+But the task specifically says "Fix recurring grep escape errors in evolve.sh". Let me look more carefully at the entire evolve.sh file for any grep patterns that might have parentheses. Let me look at all the grep patterns more systematically.
+
+Actually, let me search for patterns that might have literal `(` inside quotes after `grep`. Let me look at the `grep -v` patterns, for example line 2213 has:
+```
+grep -v "session wrap-up\|cargo fmt"
+```
+
+And line 2302:
+```
+grep -v "session wrap-up\|cargo fmt\|journal entry\|update learnings"
+```
+
+These use basic regex with `\|` alternation. The `\|` is escaped in basic regex, and there are no unescaped parentheses.
+
+Let me think about what might cause "grep: unmatched (" errors. In basic regex (default grep), `(` and `)` are literal. In extended regex (`grep -E`), `(` and `)` are metacharacters. So `grep -E 'pattern(with_parens)'` would cause an error if the parens are unbalanced.
+
+Let me look for `grep -E` calls in evolve.sh.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep.*-E' scripts/evolve.sh ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No `grep -E` in evolve.sh. Let me look at all grep patterns more carefully - maybe there are patterns with parentheses in them that I'm missing. Let me extract all grep invocations from evolve.sh and inspect each pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep ' scripts/evolve.sh | grep -v '^[[:space:]]*#' ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Looking at all these grep calls, I don't see any with literal parentheses in the patterns. Let me look at the patterns more carefully:
+
+1. `grep -q .` - pattern is `.`, matches any char
+2. `grep -c '^### Issue'` - counts lines starting with "### Issue"
+3. `grep -q '"type":"error"'` - literal string search
+4. `grep '^Title:'` - lines starting with "Title:"
+5. `grep -q '\[Agent stopped:'` - literal string with escaped `[`
+6. `grep -i '^Verdict:'` - case-insensitive search
+7. `grep -i '^Reason:'` - case-insensitive search
+8. `grep -q "## Day $DAY.*$SESSION_TIME"` - regex with `.*`
+9. `grep -v "session wrap-up\|cargo fmt"` - basic regex with alternation
+10. `grep -q "Day $DAY"` - basic regex
+11. `grep -oE '### Issue #[0-9]+'` - extended regex
+12. `grep -oE '[0-9]+'` - extended regex
+
+None of these have literal parentheses. But wait - let me check if there are any patterns with parentheses that I'm missing by looking more broadly.
+
+Actually, I think the issue might be in how grep is invoked through search tools or through the agent's own use of grep during evolution sessions, not in static grep invocations in evolve.sh.
+
+But the task says "Files: scripts/evolve.sh" - so the fix should be in evolve.sh. Let me read the full file to look for any grep patterns with parentheses that I might have missed.
+
+Actually wait - let me look at the lines with grep that use `-v` more carefully. The `||` in basic regex needs to be `\|`. But some patterns might contain `${...}` or other shell expansions that could inject parentheses.
+
+Hmm, let me reconsider. Let me look at line 2213 again:
+```bash
+COMMITS=$(git log --oneline "$SESSION_START_SHA"..HEAD --format="%s" | grep -v "session wrap-up\|cargo fmt" | sed "s/Day $DAY[^:]*: //" | paste -sd ", " - || true)
+```
+
+The `$DAY[^:]*` in the sed pattern - the `[^:]` is a bracket expression, not parentheses. No issue there.
+
+Line 2302:
+```bash
+COMMITS_FOR_REFLECTION=$(git log --oneline "$SESSION_START_SHA"..HEAD --format="%s" | grep -v "session wrap-up\|cargo fmt\|journal entry\|update learnings" | paste -sd ", " - || true)
+```
+Same thing - no parentheses.
+
+I really need to look more carefully. Let me look at the format_issues.py script too.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep.*(' scripts/format_issues.py 2>/dev/null; echo "---"; grep -n 'gre… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at this from a different angle. The task says to find "grep: unmatched (" errors. Let me look at what scripts or tools in this repo generate grep calls with parentheses. Let me check if any Rust code generates grep-like patterns.
+
+Actually, wait. Let me re-read the trajectory log error more carefully: "search error: grep: unmatched ( or \\( 3×". This could be coming from the agent's own `search` tool or from a bash tool invocation during an evolution session. Let me check the Rust source for any patterns with parentheses.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'grep.*(' src/ 2>/dev/null | grep -v target | grep -v '.git' | head -30 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+These are all just references to grep in documentation and Rust code, not actual grep invocations with parentheses. Let me take a step back and think about where "grep: unmatched (" errors actually come from.
+
+The task explicitly says "Files: scripts/evolve.sh" - so the fix should be in evolve.sh. But I've scanned all grep calls in evolve.sh and none have literal parentheses. 
+
+Wait - maybe the issue is that the variable values can contain parentheses. For example:
+```bash
+grep -q "## Day $DAY.*$SESSION_TIME" journals/JOURNAL.md 2>/dev/null
+```
+
+If `$SESSION_TIME` somehow contains parentheses, that could cause issues. But that seems unlikely since it's set by `date`.
+
+Let me look at the other scripts that are called from evolve.sh. Let me check `scripts/log_feedback.py` for any grep patterns with parentheses.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep\|subprocess.*grep\|run.*grep' scripts/log_feedback.py 2>/dev/null … ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The only grep-related things in log_feedback.py are the fingerprint pattern "search tool or grep produced an error" and a specific example. Let me look at the fingerprint detection more carefully - it might be matching on grep errors from the agent's own tool output.
+
+But this doesn't help me find where the grep errors with parentheses come from. Let me take yet another approach - let me look at the `scripts/yoyo_context.sh` which builds the context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'grep.*(' scripts/ 2>/dev/null | grep -v '.py:' | grep -v '.pyc' | head… ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, let me think about this differently. The task explicitly says the fix is in `scripts/evolve.sh`. Let me re-read the task more carefully.
+
+The task says: "Fix the recurring 'grep: unmatched ( or \\(' error that appears 3× in the CI trajectory feedback."
+
+Maybe the error isn't from grep calls in evolve.sh specifically - maybe it's from grep calls that the agent makes during evolution sessions when executing bash commands. The agent uses `search` and `bash` tools, and those might produce grep errors.
+
+But the task says "Files: scripts/evolve.sh" - so the fix must be in evolve.sh.
+
+Let me look at this from one more angle. Let me search for any pattern in evolve.sh that could produce parentheses in a grep context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'sed' scripts/evolve.sh | head -30 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I notice line 824 uses `\(.number)` in a jq string - that's inside a `jq` filter, not a grep pattern. The `\(...)` is jq's string interpolation syntax.
+
+Let me look at this from the log_feedback.py angle - it might be categorizing search errors from the agent's tool output as "grep" errors. Let me look at the fingerprint logic more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1040..1080 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `search_error_count` is a metric that counts how many search errors happened during an evolution session. These are errors from the agent's own `search` tool or `grep` usage during evolution, not from static code in evolve.sh. 
+
+But the task says "Files: scripts/evolve.sh". Let me re-read the task title: "Fix recurring grep escape errors in evolve.sh".
+
+Maybe the task is poorly specified and the issue is actually about grep patterns that the agent *will* run when executing evolve.sh - i.e., patterns that are embedded in the agent prompts within evolve.sh.
+
+Let me look at the evolve.sh prompts to find any grep patterns with parentheses embedded in them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep.*(' scripts/evolve.sh 2>/dev/null; echo "---"; grep -n 'grep.*)' s… ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, I see the output for `grep 'grep.*)'` but these `)` are actually from `$(...)` command substitution, not from grep patterns. Let me look at it differently. Let me see if there's a `grep` with a pattern containing `(` specifically.
+
+Let me search for actual `grep` patterns containing parentheses.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "grep.*'[^']*([^']*'" scripts/evolve.sh 2>/dev/null; echo "---"; grep -n… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No grep calls with literal parentheses in evolve.sh. Let me take a completely different approach and look at what log_feedback.py considers a "search error" - maybe the grep errors come from the agent's own search/grep tool invocations during evolution sessions, which would produce search errors in the audit log.
+
+But the task says to fix "scripts/evolve.sh". Let me look at the `search` function in the Rust codebase that might be generating grep commands.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'grep\|rg\|ripgrep' src/tools.rs | head -20 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `build_project_grep_args` function more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:330..390 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK! Now I see the key issue. The `build_project_grep_args` function on line 348-349 does this:
+```rust
+if !regex {
+    args.push("-F".to_string());
+}
+```
+
+So when `regex=false` (the default), it uses `grep -F` which treats the pattern as a fixed string (no regex interpretation). But when `regex=true`, it uses `grep` without `-F`, which treats the pattern as a basic regex. In basic regex, `(` and `)` are literal - but wait, they're not literal! In basic regex, `(` is literal and `)` is literal... actually no, in POSIX basic regex, `(` and `)` are literal characters. They only become grouping operators when escaped: `\(` and `\)`.
+
+Wait, that's actually the reverse of what I was thinking! In basic regex (`grep` without `-E`):
+- `(` is a literal `(`
+- `\(` is the start of a group
+
+In extended regex (`grep -E`):
+- `(` is the start of a group
+- `\(` is a literal `(`
+
+So with `grep` (basic regex), parentheses in the pattern should be safe. The error "unmatched (" would only happen with `grep -E` (extended regex).
+
+But there's no `grep -E` in evolve.sh. Hmm.
+
+Wait, let me re-read line 2389 more carefully:
+```bash
+done < <(echo "$ALL_ISSUES" | grep -oE '### Issue #[0-9]+' | grep -oE '[0-9]+')
+```
+
+These use `grep -oE` which is extended regex. The patterns are `'### Issue #[0-9]+'` and `'[0-9]+'` - no parentheses. But what if `$ALL_ISSUES` contains something that makes grep error? No, that's the input, not the pattern.
+
+OK let me think about this differently. The task says "search error: grep: unmatched ( or \\(" appears 3× in the CI trajectory feedback. This is from the agent's own tool usage during evolution sessions. The agent may be using its `search` tool with `regex=true` and a pattern containing `(` or `)`. 
+
+When `regex=true`, the `search` tool generates `grep` (not `grep -E`) which uses basic regex. In basic regex, `(` and `)` are literal. So `grep 'some(pattern)'` should work fine with basic regex - the `(` and `)` are literal characters.
+
+BUT - the `search` tool in Rust doesn't add `-E` when `regex=true`. It just omits `-F`. So the grep command would be something like:
+```
+grep -r -n -I --color=never -m100 'some(pattern)' .
+```
+
+In basic regex:
+- `(` is a literal opening parenthesis
+- `)` is a literal closing parenthesis
+
+So this should work fine. Unless there's a GNU grep vs BSD grep difference. Let me check...
+
+On macOS (BSD grep), basic regex treats `(` as literal. On GNU grep, basic regex also treats `(` as literal.
+
+Wait, actually, the pattern might be causing issues when it's something like `(foo|bar)` - in basic regex, `|` is literal too! So `(foo|bar)` would match the literal string "(foo|bar)" not "foo" or "bar".
+
+Hmm, but the error is "unmatched (" not "invalid pattern". Let me reconsider...
+
+Actually, the error "grep: unmatched ( or \\(" is specifically a GNU grep error. It occurs when:
+1. In basic regex: you have `\(` without a matching `\)` (opening group without closing) 
+2. In extended regex: you have `(` without a matching `)` (opening group without closing)
+
+But in basic regex, bare `(` is literal, so `grep 'foo(bar' file` would match the literal string "foo(bar"... unless the grep implementation has some edge case.
+
+Wait, I just realized something. Let me check: does GNU grep treat `\(` in basic regex as a group opener? Yes, it does! In GNU grep basic regex mode:
+- `\(` opens a group
+- `\)` closes a group  
+- `(` is literal
+- `)` is literal
+
+So if a pattern contains `(` without a closing `)` (or vice versa), it should be fine in basic regex because bare parens are literal.
+
+But the error message says "grep: unmatched ( or \\(" - which means grep found an unmatched group opener. This would happen if:
+1. In basic regex mode: `\(` appears without matching `\)`
+2. In extended regex mode: `(` appears without matching `)`
+
+For case 1: this could happen if the agent searches for a pattern that contains the literal string `\(` (like looking for escaped parens in code). In the `search` tool, the pattern comes from the user and is passed directly to grep. If the pattern is `\(something`, grep interprets `\(` as opening a group, and if there's no `\)` later, it errors.
+
+Actually wait, let me re-read the error message: "grep: unmatched ( or \\(". The backslash in front of the `(` in the error message is escaped for display. The actual error is about either `(` (unescaped in extended regex mode) or `\(` (escaped in basic regex mode).
+
+Hmm, I'm going in circles. Let me look at the actual evidence: the CI trajectory log. Let me check `scripts/extract_trajectory.py` and `scripts/log_feedback.py` for where these errors are captured.
+
+Actually, let me just focus on what the task asks: find grep patterns with unescaped parentheses in `scripts/evolve.sh` and fix them. Let me do a thorough scan.
+
+Let me use a Python script to find all grep invocations and check for parens.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (14 lines) ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's a false positive - the `)` is from the `$(...)` command substitution, not the grep pattern. Let me do a more precise search.
+
+Actually, let me step back. The task description says "grep calls in evolve.sh that use literal parentheses in patterns are fixed". But I've searched thoroughly and there are NO grep calls in evolve.sh with literal parentheses in their patterns.
+
+Let me look at other scripts that might be referenced. The task says "The trajectory log feedback explicitly flags this as a repeated issue". Let me look at how the trajectory log feedback works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep.*(' scripts/extract_trajectory.py 2>/dev/null | head -10; echo "--… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No grep invocations in extract_trajectory.py either. Let me also check all shell scripts in scripts/ directory.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rln 'grep.*(' scripts/*.sh 2>/dev/null | while read f; do echo "=== $f ===… ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No results. Let me try a different approach - search for any grep pattern anywhere in the repo that contains literal parentheses.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn "grep.*'[^']*([^']*'" scripts/ 2>/dev/null; echo "==="; grep -rn 'grep.… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for grep patterns with parentheses more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn "grep.*'" scripts/evolve.sh 2>/dev/null | grep -E '[()]' | head -20 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Every result shows the `)` is from `$(...)` command substitution, not from a grep pattern. Let me also check with double quotes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'grep.*"' scripts/evolve.sh 2>/dev/null | grep -E '[()]' | head -20 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Same - all the `)` are from `$(...)`. There are literally no grep patterns with parentheses in evolve.sh.
+
+OK, I think the task description might be inaccurate about the location. Let me re-read the task:
+
+"Fix the recurring 'grep: unmatched ( or \\(' error that appears 3× in the CI trajectory feedback. This is a harness noise issue — the evolution pipeline's grep calls use literal parentheses in patterns without proper escaping, causing spurious error output that pollutes CI logs and may cause grep to silently fail on some pattern matches."
+
+So the error shows up in CI trajectory feedback, which is generated from audit.jsonl logs of agent behavior. The agent's `search` tool runs grep commands. The search tool is in `src/tools.rs` - when `regex=true`, it runs grep without `-F`, and the pattern goes straight to grep.
+
+The root cause could be that the agent's `search` tool produces grep errors when the agent searches for patterns containing parentheses. But the task says to fix `scripts/evolve.sh`...
+
+Let me look at this from a completely different angle. Maybe the issue is in the `--grep` flag of `git log` on line 82:
+```
+LAST_SCHEDULED_EPOCH=$(git log -1 --format="%ct" --grep="session wrap-up" 2>/dev/null || true)
+```
+
+The `--grep="session wrap-up"` doesn't have parens. 
+
+Let me look at the jq filter on line 824:
+```
+--jq "[.[] | select(.closedAt > \"$CUTOFF_DATE\")] | .[] | \"${BOUNDARY_BEGIN}\n### Issue #\(.number) ✅ RESOLVED\n**Title:** \(.title)\n\(if (.comments | length) > 0 then \"Human's comment:\\n\" + (.comments[-1].body) else \"Closed without comment.\" end)\n${BOUNDARY_END}\n\"" 2>/dev/null \
+```
+
+The `\(...)` is jq's string interpolation syntax, not a grep pattern. This is fine.
+
+OK, I think I need to look at this from the perspective of what the agent does during evolution. The agent runs grep (via its search tool or bash tool) during evolution sessions. The errors show up in the CI trajectory log. The fix should prevent these errors from polluting the log.
+
+Let me look at the `search` tool in `src/tools.rs` more carefully and see if there's an issue with how grep patterns are handled.
+
+Actually wait - let me reconsider. The task says "Files: scripts/evolve.sh" and the task is to fix grep calls in evolve.sh. But I've checked every grep call in evolve.sh and none have parentheses in patterns.
+
+Let me re-read the task one more time with fresh eyes...
+
+"Fix the recurring 'grep: unmatched ( or \\(' error that appears 3× in the CI trajectory feedback. This is a harness noise issue — the evolution pipeline's grep calls use literal parentheses in patterns without proper escaping, causing spurious error output that pollutes CI logs and may cause grep to silently fail on some pattern matches."
+
+What if the "evolution pipeline's grep calls" means the grep calls run by the agent during evolution (i.e., when the agent executes the pipeline), not the grep calls that are statically in evolve.sh? And "pollutes CI logs" means the grep errors show up in the agent's tool output, which gets logged.
+
+But then "Files: scripts/evolve.sh" doesn't make sense unless the fix is to add filtering for grep errors in the pipeline...
+
+OR - maybe the fix is to add `2>/dev/null` to grep calls in `src/tools.rs` `build_project_grep_args` so that grep errors don't pollute output?
+
+OR - maybe the fix is in `evolve.sh` to filter out grep errors from the agent output before it goes into the log.
+
+Let me look at how the agent log is processed in evolve.sh...
+
+Actually wait, I just realized something. Let me look at the `search` tool more carefully. When the agent uses the `search` tool, it runs `grep` or `rg`. If the pattern contains `(` and the tool is in regex mode (`regex=true`), it runs `grep` without `-F`. In basic regex, `(` is literal. So there shouldn't be an error... unless the implementation has a bug where `(` IS treated as a group opener.
+
+Let me check: does GNU grep treat `(` as a group opener in basic regex?
+
+Actually, I just recalled something. `grep` without `-E` uses BRE (Basic Regular Expressions). In BRE:
+- `\(` opens a group
+- `\)` closes a group
+- `(` is a literal `(`
+- `)` is a literal `)`
+
+So `grep '(foo|bar)' file` would match the literal string "(foo|bar)", which is fine.
+
+But what about `grep 'foo(bar' file`? That matches "foo(bar" - also fine.
+
+The error "unmatched (" can only happen in ERE (Extended Regular Expressions) with `grep -E`, where `(` opens a group. Or if `\(` appears in a BRE pattern without a matching `\)`.
+
+Hmm, but the `search` tool never adds `-E`! When `regex=true`, it just omits `-F`, resulting in basic regex mode.
+
+Wait, let me re-read the code:
+
+```rust
+if !regex {
+    args.push("-F".to_string());
+}
+```
+
+When `regex=false` (default, literal search): `grep -F` - fixed strings, no regex
+When `regex=true`: `grep` (basic regex) - `(` is literal
+
+So there shouldn't be issues with `(` in patterns either way.
+
+UNLESS... the issue is different. What if the grep error comes from elsewhere - like a pattern that contains `\(` (escaped paren) and the error is actually about unmatched `\)`? Let me check what the agent might search for...
+
+Actually, I think I'm overcomplicating this. Let me look at what's actually in the CI trajectory log. Let me look at log_feedback.py more carefully for the "search error" fingerprint.
+
+But wait - the task says to fix `scripts/evolve.sh`. Let me look at it from a practical angle. What grep calls in evolve.sh might produce errors?
+
+Let me look at the `sed` calls that contain parentheses in their patterns:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "sed.*'" scripts/evolve.sh | grep -E '[()]' | head -20 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 1836 has an interesting sed pattern with `-E` (extended regex):
+```
+| sed -E 's/^[[:space:]]*(PASS|FAIL)[[:punct:]]*([[:space:]].*)?$/\1/; s/[[:space:]].*$//'
+```
+
+This uses `(PASS|FAIL)` for alternation and `([[:space:]].*)?` for optional groups. These are in `sed -E`, not `grep`, so they're correct.
+
+But wait - this is `sed -E`, not `grep -E`. sed and grep have different regex engines. The `(PASS|FAIL)` in `sed -E` is correct.
+
+OK, I'm going to take a completely different approach. Let me look at what happens when the agent runs its search tool during evolution. The search tool in `src/tools.rs` falls back to grep if `rg` isn't available. When the agent needs to search for code patterns that contain parentheses (like function calls like `foo()`, or regex patterns like `\(foo\)`), the grep command might error.
+
+Actually, now I'm curious - let me check whether rg is available in CI. If rg is present, grep wouldn't even be used. The `search` tool prefers rg over grep.
+
+But the error "grep: unmatched (" would only happen if grep is being used and the pattern contains unbalanced parentheses in a context where they're treated as grouping. 
+
+Let me look at this from another angle entirely. Maybe the task is actually about `scripts/evolve.sh` and there's a grep call with parentheses that I'm missing. Let me do a line-by-line scan of a specific section.
+
+Actually, let me look at what the `sed` on line 1834-1836 does more carefully:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1828..1858 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see `sed -E` on line 1834 and 1836. These use extended regex. But sed and grep have different regex syntaxes. The patterns here use `(PASS|FAIL)` which is valid sed extended regex.
+
+OK, I've spent a lot of time searching. Let me look at this from a completely different perspective. Let me check if there's a `grep` call somewhere in `evolve.sh` that uses a *variable* as the pattern, where the variable might contain parentheses.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep.*\$' scripts/evolve.sh | head -20 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Most of these use variables as file arguments, not patterns. The only ones that use variables in patterns are:
+
+1. Line 2211: `grep -q "## Day $DAY.*$SESSION_TIME" journals/JOURNAL.md` - `$DAY` and `$SESSION_TIME` are expanded
+2. Line 2285: Same pattern
+3. Line 2385: `grep -q "Day $DAY"` - `$DAY` expanded
+4. Line 2493: `grep -q "Day $DAY"` - same
+5. Line 1069, 1298, 1463, 1471, 1725, 1874, 1960, 2481: `grep -q '"type":"error"'` - literal pattern
+6. Line 1487: `grep -q '\[Agent stopped:'` - literal pattern (escaped `[`)
+
+For lines 2211 and 2285, `$DAY` is a number and `$SESSION_TIME` is a time string like "18:36". These shouldn't contain parentheses.
+
+OK, I'm convinced there are no grep calls with literal parentheses in patterns in `scripts/evolve.sh`. The task might be based on a misunderstanding, or the actual issue is elsewhere.
+
+Wait - let me reconsider the task description one more time: "Fix recurring grep escape errors in evolve.sh". Maybe the "grep: unmatched (" errors are coming from grep output that appears in evolve.sh logs, not from evolve.sh itself running grep. The fix might be to add error handling or filtering in evolve.sh to suppress these errors.
+
+OR - maybe the issue is that when the agent (running as part of the evolve.sh pipeline) uses its search tool, the search tool runs grep, and the grep errors pollute the output. The fix could be in the Rust search tool itself.
+
+Let me look at the `search` tool's integration with grep more carefully. Let me check if there's a `ProjectSearchTool`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:160..220 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the `search` tool:
+1. Uses `rg` if available (which handles regex properly without paren issues)
+2. Falls back to `grep` without `-F` when `regex=true`, which uses basic regex where `(` is literal
+
+Since rg is typically available in CI and works fine, and grep in basic regex mode treats `(` as literal, there shouldn't be grep errors from the search tool.
+
+But wait - what about when the agent uses `bash` tool to run grep directly? The agent might run commands like:
+```bash
+grep -r "some(pattern)" src/
+```
+In basic regex, `(` is literal, so this should match "some(pattern)" literally.
+
+But what if the agent runs:
+```bash
+grep -E "some(pattern)" src/
+```
+In extended regex, `(` opens a group, and if there's no closing `)`, you get "unmatched (" error.
+
+Or:
+```bash
+grep "\(foo" src/
+```
+In basic regex, `\(` opens a group, and if there's no closing `\)`, you get "unmatched (" or "unmatched \\)" error.
+
+So the agent might be running grep commands with unbalanced escaped parentheses. This could happen if the agent tries to search for code patterns.
+
+OK, I think the actual fix might need to be about preventing the agent from generating bad grep commands. But that's not something we can fix in `evolve.sh`.
+
+Let me try yet another approach. Let me look at the log output from CI to see if there are actual grep error lines. But I can't access CI logs directly. Let me look at the `build_evolution_dashboard.py` which processes CI outputs.
+
+Actually, let me step back and think about what's the most likely scenario:
+1. The agent uses its `search` tool with `regex=true` and a pattern containing `(`
+2. The `search` tool runs `grep` (not `grep -F`) with that pattern
+3. In basic regex, `(` is literal, so no error
+
+OR:
+4. The agent uses `bash` tool to run `grep` directly with a problematic pattern
+5. This produces stderr "grep: unmatched ("
+
+In either case, the fix would be in the Rust code (`src/tools.rs`) to properly handle/escape patterns before passing them to grep. But the task says to fix `scripts/evolve.sh`.
+
+Let me look at this from another angle - maybe there are grep calls in `evolve.sh` that are NOT in the bash script itself, but in the HERE documents (agent prompts) embedded in evolve.sh. The agent might receive instructions that include grep commands.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'grep' scripts/evolve.sh | grep -i 'heredoc\|<<\|prompt\|instruction\|to… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me try a completely different approach. Let me search for patterns that the agent actually uses grep for, by looking at what the search tool or bash tool output shows in the CI logs.
+
+Actually, let me look at the `ProjectSearchTool` name - it's called "search" as a tool. Let me check if this search tool is what's generating the errors.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:114..194 ✓ (6ms)
+
+  ✓ Watch passed: `cargo clippy --all-targets -- -D warnings && cargo test`
+

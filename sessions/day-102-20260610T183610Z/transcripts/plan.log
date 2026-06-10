@@ -1,0 +1,371 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. This is Day 102 session. I need to write a session plan.
+2. The assessment is already done - build passes, tests pass, clippy passes.
+3. No open issues on the repo.
+4. I need to check if ISSUES_TODAY.md exists and read it.
+5. The key signals from assessment:
+   - Crash reporter coverage gap (api_key_present:false crashes not diagnosed)
+   - `commands_state.rs` at 23,848 lines is structural debt
+   - State recording only captures agent actions, not pre-start failures
+   - No open issues
+   
+Let me start by creating the session_plan directory and checking for ISSUES_TODAY.md.
+
+The trajectory and assessment already give me a clear picture. Let me identify the highest-impact tasks:
+
+From state evidence:
+1. Wire crash reporter into API key check path - this would close the diagnostic gap for the most common failure mode
+2. Something to improve state recording coverage or eval quality
+
+Let me be practical. The assessment says:
+- "Wire the crash reporter into the API key check path so api_key_present:false runs produce a diagnostic stash before exit. This is a harness-level fix, not an upstream change."
+- `commands_state.rs` is too big but splitting it would violate the 3-file rule
+- The state subsystem needs better coverage
+
+Also the planning output guard says I must have at least one task file by my final third of turns, so I need to move quickly.
+
+Let me read ISSUES_TODAY.md first, then create the plan.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && rm -f session_plan/task_*.md session_plan/planning_fail…  ▶ read ISSUES_TODAY.md ✓ (5ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No trusted issues today. So I'm working purely from state evidence and the assessment.
+
+Let me identify the best 3 tasks:
+
+**Signal 1: Crash reporter coverage gap** — `api_key_present:false` crashes leave no diagnostic stash. The crash reporter (`stash_diagnostic_error` / `take_diagnostic_error`) is wired into state init failure but not the API key check. This is the dominant failure mode. Fix: wire the crash reporter into the API key check path.
+
+**Signal 2: State recording coverage** — State events capture RunStarted/SessionStarted/RunCompleted shells but no intermediate state for failed sessions. The trajectory report shows 0/0 tasks attempted for day-102 despite many RunStarted events — this means sessions are starting and dying without recording why.
+
+**Signal 3: CI error recurrence** — The trajectory shows `test watch::tests::test_watch_result_failed_with_error ... ok` as a recurring CI error. But wait, that says "ok" — let me re-read. Actually looking at trajectory:
+```
+[3×] test watch::tests::test_watch_result_failed_with_error ... ok
+[3×] ^[[1m^[[91merror^[[0m: test failed, to rerun pass `--lib`
+[3×] ##[error]process completed with exit code 101.
+```
+
+The `ok` line is just a test that passed before failure elsewhere. The actual failures are `test failed` and exit code 101. But this is in CI logs, not current build. Assessment says build passes.
+
+Let me focus on tasks:
+
+**Task 1: Wire crash reporter into API key check path**
+- Files: `src/lib.rs` (where state init + API key check happens), possibly `src/cli.rs`
+- This is the #1 diagnostic gap — the most common failure mode leaves no evidence
+
+**Task 2: Improve state recording for pre-agent failures**
+- The state recording starts too late — after the API key check
+- Move state init earlier or add a pre-init stash mechanism
+- This would make `state why last-failure` actually work
+
+**Task 3: Something else?**
+Looking at the trajectory feedback:
+- "agent commands timed out during evolution -> prefer bounded diagnostics and targeted commands before broad cargo/state scans"
+- "max task turn count is high: 18 -> split broad tasks earlier"
+- These are more about evolution process than code changes
+
+Looking at the assessment's bugs:
+1. Crash reporter coverage gap ✓ (task 1)
+2. `commands_state.rs` size — structural debt, but too big for a 20-min task
+3. Journal gap — not a code task
+4. State recording coverage ✓ (task 2)
+5. No open issues — not actionable
+
+For task 3, let me look at what would improve DeepSeek harness reliability:
+
+The trajectory also shows CI errors with `test failed, to rerun pass `--lib`` recurring 3 times. Let me check what's actually happening there. But assessment says build passes now. So maybe not.
+
+Actually, the log feedback says:
+- "search error: grep: unmatched ( or \(" — 3x recurring
+- "error: test failed, to rerun pass `--lib`" — 3x recurring
+
+These are CI-level issues, not code bugs. The search error is probably from evolve.sh using grep with unescaped patterns.
+
+For task 3, I could:
+- Add a harness guard against the grep escape issue in evolve.sh
+- Or improve the state eval pipeline
+- Or improve the dashboard
+
+Let me think about what's highest impact for DeepSeek harness reliability...
+
+The assessment also mentions "State graph is tool-centric rather than flow-centric — it tracks tools invoked, not task outcomes." This could be improved but it's a big change.
+
+Let me go with:
+1. Wire crash reporter into API key check
+2. Move state init earlier so pre-agent failures are captured
+3. Fix the recurring grep escape issue in evolve.sh or improve something about state/dashboard
+
+Actually, for task 3, let me look at what the dashboard feedback says more carefully. The log feedback says "latest score=0.9219" which is good. The top lessons are process-level, not code-level.
+
+Let me pick task 3 from the state evidence: The trajectory says "search error: grep: unmatched ( or \(" recurs 3x. This is likely in evolve.sh where grep patterns with parens aren't escaped. Let me check that.
+
+Actually, I think I should focus. Let me pick three tasks:
+
+1. **Wire crash reporter into API key check** — closes the #1 diagnostic gap
+2. **Move state init before API key check** — makes pre-agent failures visible in state
+3. **Improve something about eval or dashboard** — maybe add the api_key_present metric to dashboard health
+
+Wait, tasks 1 and 2 might overlap. Let me think about whether they can be done together or separately.
+
+Task 1: Wire `stash_diagnostic_error` into the API key check path. This means: when the API key is missing, before exit, stash a diagnostic error so the crash reporter can pick it up.
+
+Task 2: Move state init earlier. Currently state init happens after API key check. If we move it before, then state events would capture the API key check failure.
+
+Actually, these are complementary:
+- Task 2 moves the state recording to start earlier (so failures before agent init are recorded)
+- Task 1 ensures the crash reporter captures the specific reason
+
+But they might touch the same files. Let me think about whether to combine or separate.
+
+Looking at `src/lib.rs` — it likely has both the state init and the API key check. If I move state init earlier and wire the crash reporter, that could be one task touching `src/lib.rs` and maybe `src/state.rs`.
+
+Let me make it two tasks:
+- Task 1: Wire crash reporter into API key check (touches lib.rs, maybe state.rs)
+- Task 2: Move state init before API key validation (touches lib.rs)
+
+Hmm, but these overlap on lib.rs. The 3-file rule per task is fine since they each touch at most 2-3 files. But they both touch lib.rs — the implementation agents need to be careful about ordering.
+
+Actually, let me make them one task since they're closely related:
+
+**Task 1: Fix crash reporter coverage for pre-agent failures**
+- Move state recording init before API key check
+- Wire crash reporter into the API key check path
+- Files: src/lib.rs, src/state.rs
+
+**Task 2: Fix recurring grep escape in evolve.sh**
+- Files: scripts/evolve.sh
+
+**Task 3: Improve state eval or dashboard with api_key health metric**
+- Files: scripts/log_feedback.py or scripts/build_evolution_dashboard.py
+
+Wait, but Task 1 might be too big for one task (touching 2 files with significant logic changes). Let me split:
+
+Task 1: Wire crash reporter into API key check (src/lib.rs only, or lib.rs + state.rs)
+Task 2: Move state init earlier (src/lib.rs only)
+
+These would conflict if both touch the same function. Better to make it one task.
+
+Let me go with:
+
+**Task 1: Wire crash reporter into API key check and move state init earlier**
+Files: src/lib.rs, src/state.rs
+This closes the #1 diagnostic gap. The crash reporter exists but isn't hooked into the most common crash path.
+
+**Task 2: Fix recurring grep escape errors in evolve.sh**
+Files: scripts/evolve.sh
+The trajectory shows "search error: grep: unmatched ( or \()" recurring 3 times. This is in the evolution harness and causes noise in CI.
+
+**Task 3: Add api_key_present health metric to dashboard**
+Files: scripts/log_feedback.py, scripts/build_evolution_dashboard.py
+The dashboard health score doesn't track api_key status, which is the dominant failure mode.
+
+Hmm, actually, wait. Task 2 and 3 are script-level changes, not Rust code. The policy says "Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality."
+
+Task 1 is clearly in scope. Task 2 (fixing grep escapes) improves harness reliability. Task 3 (dashboard health metric) improves observability.
+
+Let me finalize these three tasks. Let me also verify the grep escape issue by checking evolve.sh briefly.
+
+Actually, the assessment says "Do NOT read source code files. The assessment above already contains the source architecture, build status, bugs, and capability gaps. Plan from the assessment." So I should plan from what the assessment and trajectory tell me.
+
+Let me write the three task files.
+
+For task sizing: each should touch at most 3 source files and be completable in 20 minutes.
+
+Task 1: src/lib.rs and src/state.rs — 2 files, focused change
+Task 2: scripts/evolve.sh — 1 file, focused fix
+Task 3: scripts/log_feedback.py and scripts/build_evolution_dashboard.py — 2 files
+
+Let me write them now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 32.1s (2 ✓)
+
+Good — no trusted owner issues today. The assessment is thorough and I have clear state evidence to work from. Let me identify the highest-impact tasks and write the plan.
+
+Key signals from state evidence:
+1. **Crash reporter coverage gap** — `api_key_present:false` is the dominant failure mode but leaves no diagnostic stash (crash reporter wired only into state init failure, not API key check)
+2. **Pre-agent failure blindness** — state recording starts after API key check, so failed sessions produce empty RunStarted/SessionStarted/RunCompleted shells with no diagnostic content
+3. **Recurring grep escape errors** — trajectory shows "search error: grep: unmatched ( or \\(" 3× recurring in CI
+  + Title: Wire crash reporter into API key check and move state init earlier
+  + Files: src/lib.rs, src/state.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Close the #1 diagnostic gap in the harness: api_key_present:false crashes produce no diagnostic stash. Move state recording init before the API key check and wire stash_diagnostic_error into the missing-key path so that `state why last-failure` and the crash reporter actually capture the reason for the most common failure mode.
+  + 
+  + Why this matters:
+  + State evidence shows 10+ SessionStarted/RunCompleted error events with api_key_present:false in this session alone, all producing empty shells with no diagnostic content. The crash reporter (stash_diagnostic_error / take_diagnostic_error in src/state.rs) was added in Day 100 but is only wired into state init failure (lib.rs ~line 1032), not the API key check path. This means the harness's own observability system is blind to its most frequent failure. Fixing this makes state why last-failure work for the dominant crash mode and gives the eval/dashboard pipeline actual failure data to score.
+  + 
+  + Success Criteria:
+  + - When DEEPSEEK_API_KEY is unset, a diagnostic error is stashed before exit (not just printed to stderr)
+  + - state why last-failure produces meaningful output (not "no state event found for 'last-failure'")
+  + - State events for failed sessions include the api_key_present:false diagnostic, not just empty RunStarted/RunCompleted shells
+  + - Existing behavior with valid API key is unchanged (state init, agent start, normal flow all work)
+  + 
+  + Verification:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (51 lines)
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (51 lines) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task 2: Fix recurring grep escape errors in evolve.sh. The trajectory shows "search error: grep: unmatched ( or \(" recurring 3 times. This is likely from evolve.sh using grep with unescaped parentheses in patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+  + Title: Fix recurring grep escape errors in evolve.sh
+  + Files: scripts/evolve.sh
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Fix the recurring "grep: unmatched ( or \\(" error that appears 3× in the CI trajectory feedback. This is a harness noise issue — the evolution pipeline's grep calls use literal parentheses in patterns without proper escaping, causing spurious error output that pollutes CI logs and may cause grep to silently fail on some pattern matches.
+  + 
+  + Why this matters:
+  + The trajectory log feedback explicitly flags this as a repeated issue: "search error: grep: unmatched ( or \\( 3×". This is harness-level noise that:
+  + - Pollutes CI logs with spurious error output
+  + - May cause grep to return incorrect results when patterns with parens are used
+  + - Adds noise to the feedback pipeline, making real errors harder to spot
+  + - Is a simple fix (escape or use grep -F) that has been recurring without resolution
+  + 
+  + This is a classic "small duplicated unit survives longest" pattern — a trivial fix that keeps getting deferred because it never blocks a session.
+  + 
+  + Success Criteria:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (46 lines)
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (46 lines) ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task 3. Let me think about what would best improve DeepSeek harness observability.
+
+From the assessment and trajectory:
+- The dashboard health score is 0.9219 - good but could track api_key status
+- State evidence shows the dominant failure mode is api_key_present:false
+- The log feedback pipeline already processes CI logs and extracts metrics
+
+A good task 3 would be: Add api_key health tracking to the dashboard and/or log feedback, so the dashboard can show when sessions are dying from missing keys vs. actual code failures.
+
+Or alternatively, looking at the assessment's note about "State graph is tool-centric rather than flow-centric" — but that's too big.
+
+Let me think about what's highest impact and fits in 20 min...
+
+Actually, the trajectory also mentions "Recurring CI errors" with test failures. Let me look more carefully:
+
+```
+[2×] thread 'release::tests::public_readme_metadata_uses_yoyo_ds_harness_identity' (1
+[2×] assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"
+```
+
+These are test failures from a release test that checks README contains specific strings. This is a real recurring CI failure. But the assessment says build passes now (4,201 passed, 0 failed). So maybe these are from past CI runs, not current.
+
+Let me focus on the dashboard/api_key task:
+
+Task 3: Add api_key_present health metric to dashboard
+- Files: scripts/log_feedback.py, scripts/build_evolution_dashboard.py
+- This would surface the dominant failure mode in the dashboard
+
+Actually, I'm not sure this is the best use of a slot. Let me reconsider.
+
+The assessment mentions several bugs:
+1. Crash reporter gap → Task 1 addresses this
+2. commands_state.rs size → Too big for one task
+3. Journal gap → Not a code task
+4. State recording coverage → Task 1 partially addresses this
+5. No open issues → Not actionable
+
+The trajectory feedback says:
+- "agent commands timed out during evolution -> prefer bounded diagnostics"
+- "max task turn count is high: 18 -> split broad tasks earlier"  
+- "error: test failed, to rerun pass `--lib` -> inspect the failing phase"
+
+These are process recommendations, not code bugs.
+
+Let me think about what would make the biggest difference for the DeepSeek harness...
+
+The assessment also mentions: "State events capture RunStarted/SessionStarted/RunCompleted shells but no intermediate state for failed sessions" — Task 1 addresses the api_key case, but what about other pre-agent failures?
+
+Actually, I think adding the api_key metric to the dashboard is a good task 3. It directly improves observability of the #1 failure mode. Let me write it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Add api_key_present health metric to evolution dashboard
+  + Files: scripts/log_feedback.py, scripts/build_evolution_dashboard.py
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Surface the harness's dominant failure mode (api_key_present:false) as a tracked health metric in the evolution dashboard. Currently the dashboard health score (0.9219) doesn't distinguish between "sessions that attempted work and failed" vs. "sessions that never started because the API key was missing." This makes the dashboard blind to infrastructure failures vs. code failures.
+  + 
+  + Why this matters:
+  + State evidence shows api_key_present:false is the #1 failure mode — 10+ events in this session alone. The log feedback pipeline already parses CI logs and extracts metrics, but doesn't track API key status as a health signal. Adding this metric:
+  + - Makes infrastructure failures visible in the dashboard (not hidden inside "failed" sessions)
+  + - Lets the dashboard distinguish "harness code problem" from "environment config problem"
+  + - Gives operators a quick answer to "why did sessions fail?" without digging into logs
+  + - Complements Task 1 (crash reporter wiring) by making the diagnostic data visible at the dashboard level
+  + 
+  + Success Criteria:
+  + - log_feedback.py extracts api_key_present status from session events or CI logs
+  + - Dashboard HTML shows an api_key health indicator (e.g., "API key: 8/10 sessions OK" or a count of key-missing sessions)
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_03.md (55 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_03.md (55 lines) ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to create the issue_responses.md file and commit. No issues to respond to today, so it'll be a simple "no issues" note.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 102
+  + 
+  + No trusted owner issues today. No responses needed.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (3 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (3 lines) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now commit the session plan.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add session_plan/ && git c… ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+session_plan is gitignored. That's intentional — the assessment says "session_plan/ — ephemeral directory with per-task files (task_01.md, task_02.md, etc.), written by Phase A planning agent (gitignored)". So I can't commit it. The plan files are still written to disk for implementation agents to read, but they won't be committed.
+
+Let me verify the files exist and summarize what I've done.
+────────────────────────────────────────────────────────────────────────────────
+
+Plan files written. `session_plan/` is gitignored (by design — it's ephemeral), so no commit needed. Let me verify the files are in place:
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The files are there. Let me summarize the session plan for the user.
+────────────────────────────────────────────────────────────────────────────────
+
+## Session Plan — Day 102
+
+Three tasks written to `session_plan/`, all driven by state/trajectory evidence:
+
+| # | Task | Files | Signal |
+|---|------|-------|--------|
+| 1 | Wire crash reporter into API key check + move state init earlier | src/lib.rs, src/state.rs | 10+ api_key_present:false crashes with zero diagnostic stash — the #1 observability gap |
+| 2 | Fix recurring grep escape errors in evolve.sh | scripts/evolve.sh | "grep: unmatched (" recurs 3× in trajectory CI feedback — harness noise |
+| 3 | Add api_key_present health metric to dashboard | scripts/log_feedback.py, scripts/build_evolution_dashboard.py | Dashboard blind to infra vs. code failures — complements task 1 by making the diagnostic visible |
+
+**No issues to respond to** — zero open issues on the repo.
+
+**Rationale:** All three tasks come from state evidence, not guesswork. Task 1 closes the crash reporter coverage gap (the most common failure mode leaves no trace). Task 2 cleans up harness noise that's been recurring without resolution. Task 3 surfaces the api_key signal in the dashboard so operators can distinguish "code problem" from "config problem" at a glance.
+
+

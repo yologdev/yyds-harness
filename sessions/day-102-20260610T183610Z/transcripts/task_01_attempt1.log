@@ -1,0 +1,645 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  👀 Auto-watch: `cargo clippy --all-targets -- -D warnings && cargo test` (disable with auto_watch = false)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. I need to:
+
+1. Wire crash reporter (`stash_diagnostic_error`) into the API key check path
+2. Move state recording init before the API key validation
+3. Ensure `take_diagnostic_error` is called when reporting crashes
+
+Let me start by understanding the current code structure in `src/lib.rs` and `src/state.rs`.
+
+Let me search for the relevant pieces:
+- API key validation (DEEPSEEK_API_KEY)
+- State recording init
+- stash_diagnostic_error / take_diagnostic_error
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'DEEPSEEK_API_KEY' in src  ▶ search 'stash_diagnostic_error' in src  ▶ search 'take_diagnostic_error' in src  ▶ search 'StateRecorder' in src ✓ (16ms)
+ ✓ (33ms)
+ ✓ (26ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the key areas:
+
+1. `src/lib.rs` around line 1032 for the current state init and stash_diagnostic_error usage
+2. `src/lib.rs` around line 1122 for the API key check
+3. `src/state.rs` for stash_diagnostic_error and take_diagnostic_error
+
+Let me read the relevant sections.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.3s (4 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1010..1140  ▶ read src/state.rs:60..100  ▶ read src/state.rs:82..112 ✓ (31ms)
+ ✓ (28ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to see more context. Let me look at:
+
+1. Where `state::init_state_recorder` is called (around line 1010-1034)
+2. Where the `exit_with_state` function is defined
+3. Where `take_diagnostic_error` is used (around line 369 in state.rs)
+4. The beginning of the main function to understand the flow
+
+Let me read more of lib.rs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.5s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:960..1020  ▶ read src/state.rs:340..400  ▶ search 'exit_with_state' in src ✓ (14ms)
+ ✓ (37ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the structure. Let me read from line 430 to understand the API key check that happens early in `run_cli`:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.7s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:420..500  ▶ read src/state.rs:50..80 ✓ (20ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to find the API key check. Let me look for it. The task says the key check happens "BEFORE state init," but looking at the code, line 981 starts `run_cli`, then at line 986-988 we parse args, then at line 994 we call `state::init_global`. The API key check doesn't seem to be in the lines I've read. Let me look earlier - maybe it's inside `apply_config_flags` or `parse_args`.
+
+Wait, let me re-read: the task says "Move state init before the API key check and wire stash_diagnostic_error into the missing-key path."
+
+Let me check where the API key is validated. Looking at lib.rs:1122, `std::env::var("DEEPSEEK_API_KEY").is_ok()` — that's just checking whether it's present, not failing on missing.
+
+Let me search for where the API key is validated to actually block execution.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.3s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'api_key_present' in src  ▶ search 'api.key.*not.*set\|api.key.*missing\|api key.*not.*found\|mi…' in src  ▶ search 'No API key' in src ✓ (24ms)
+ ✓ (26ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the dispatch_sub.rs for the API key check, and cli.rs for the key validation flow.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:455..505  ▶ read src/cli.rs:500..540 ✓ (19ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the flow:
+
+1. In `src/cli.rs` at line 527, `std::process::exit(1)` is called directly when no API key is found in piped/single-shot mode.
+2. In `src/dispatch_sub.rs` at line 475, `return 1` is used when no API key is found for sub-commands.
+
+And the state init happens in `src/lib.rs` at line 994, which is called in `run_cli()`. But the API key check in `cli.rs` at line 527 calls `std::process::exit(1)` — a hard exit that completely bypasses `run_cli()` and thus bypasses `exit_with_state`.
+
+Let me trace the main entry point to see how everything connects.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn main\|pub fn main' in src/lib.rs  ▶ search 'fn main' in src/main.rs ✓ (15ms)
+ ✗ (25ms)
+    │ Search error: grep: src/main.rs: No such file or directory
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how the program entry point works.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (1 ✓, 1 ✗)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn main' in src/lib.rs  ▶ read src/lib.rs:1..51 ✓ (6ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look for how the binary entry point works. There must be a main.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ ls src (main.rs)  ▶ search 'run_cli' in src ✓ (13ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let's look at the binary entry point and the full flow:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/bin/yyds.rs  ▶ read src/bin/yoyo.rs ✓ (20ms)
+ ✗ (20ms)
+    │ Cannot access src/bin/yoyo.rs: No such file or directory (os error 2)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the binary just calls `run_cli()`. Now, the flow is:
+
+1. `main()` → `run_cli()` is called
+2. In `run_cli()`:
+   - Line 986: `parse_args(&args)` — this is where the API key check happens in `cli.rs` line 527: `std::process::exit(1);` if key is missing
+   - Line 994: `state::init_global(config.state.clone(), ...)` — state init
+   - ...
+
+So the problem is that `parse_args` calls `std::process::exit(1)` directly BEFORE state init when the API key is missing. This bypasses all state recording and crash reporting.
+
+But wait — the `parse_args` call in `cli.rs` at line 527 uses `std::process::exit(1)` which is a hard exit. It's not a `return`. Let me look more carefully at the flow.
+
+Let me look at parse_args in cli.rs more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (1 ✓, 1 ✗)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:470..520 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. In `cli.rs` around line 527, when there's no API key and we're in piped/single-shot mode:
+```rust
+std::process::exit(1);
+```
+This hard exit happens inside `parse_args`, which is called at line 986 in `lib.rs`, BEFORE state init at line 994.
+
+The fix according to the task:
+
+1. Move state init BEFORE the API key check
+2. Add `stash_diagnostic_error` call in the key-missing path
+
+But the problem is that `parse_args` is a function that either returns `Some(Config)` or `None` (for `--help`/`--version`), but the API key check path calls `std::process::exit(1)` — a hard process exit. That means the only way to fix this is to change the API key check path to NOT call `std::process::exit(1)` inside `parse_args`, but instead return an error or signal that the caller should handle.
+
+Wait, let me re-read the `parse_args` return type.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn parse_args' in src/cli.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:802..832 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the problem. Inside `parse_args`, when no API key is found (non-interactive/piped mode), `std::process::exit(1)` is called directly. This bypasses all state recording.
+
+The fix needs to:
+1. Remove the `std::process::exit(1)` from the API key check in `parse_args` 
+2. Instead, return `None` or use a different mechanism to signal that the API key is missing
+3. In `run_cli()` in `lib.rs`, check for the missing API key AFTER state init and call `stash_diagnostic_error` before `exit_with_state`
+
+But wait — `parse_args` returns `Option<Config>`. `None` is returned for `--help`/`--version`. The `std::process::exit(1)` is a hard exit. 
+
+Let me think about the cleanest way to handle this. The key insight is that the API key missing path calls `std::process::exit(1)` which is a hard exit. We need to change this so that state can be initialized first.
+
+Option A: Change `parse_args` to not call `std::process::exit(1)` and instead handle the missing key in `run_cli()`.
+Option B: Initialize state even earlier, before `parse_args`.
+
+But option B has a chicken-and-egg problem: we need the config to know where to store state. The state config is in `config.state`.
+
+Actually, looking more carefully, `stash_diagnostic_error` uses a thread-local `LAST_DIAGNOSTIC_ERROR` — it doesn't require the global state recorder. And `exit_with_state` in lib.rs calls `mark_run_completed_with_error` which calls `record`. So `record` needs the global recorder to be initialized.
+
+Wait, actually let me re-read the code. `stash_diagnostic_error` sets a thread-local, it does NOT require the global recorder. And `take_diagnostic_error` reads from the thread-local. But `mark_run_completed_with_error` calls `record` which needs the global recorder.
+
+Hmm, but looking at the flow more carefully:
+
+1. `parse_args` is called at line 986
+2. State init is at line 994
+3. If `parse_args` internally calls `std::process::exit(1)`, we never get to state init
+
+So the fix is: change `parse_args` to signal the missing API key back to the caller instead of hard-exiting. Then in `run_cli()`, initialize state first, then check for the missing key, stash diagnostic, and call `exit_with_state`.
+
+Let me trace through more carefully what changes are needed.
+
+Let me also look at how `parse_args` signals "no key" — I need to understand the full control flow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:525..575 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — this is inside a function that returns `ModelConfig`. And the `std::process::exit(1)` is a hard exit. Let me trace the call chain. Let me find what function this is in.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:430..470 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `parse_model_config` at line 527 has `std::process::exit(1)`. This is a hard exit during argument parsing. Now I understand the full picture.
+
+Let me now plan the changes:
+
+1. **Change `parse_model_config`** to return a `Result<ModelConfig, String>` or some other error type, instead of calling `std::process::exit(1)`. The error message should still be printed.
+
+2. **In `parse_args`**, handle the error: if `parse_model_config` fails, we still need to return something to `run_cli()`. But `parse_args` returns `Option<Config>`, and `None` is used for `--help`/`--version`. We could change the return type.
+
+Actually, let me look at the overall architecture more carefully. The `std::process::exit(1)` is only called in the piped/single-shot mode. In interactive mode, it returns `String::new()` as the API key and lets the setup wizard handle it.
+
+Most clean approach:
+- Change `parse_model_config` to NOT call `std::process::exit(1)`. Instead, in the non-interactive case where the key is missing, return the empty string AND print the error. 
+- Then in `run_cli()` in `lib.rs`, after state init, check if the API key is empty/not set for a non-ollama provider, and if so, stash the diagnostic and call `exit_with_state`.
+
+Wait, but `parse_model_config` already does print the error in the non-key case. And the empty string would eventually cause issues when the agent tries to call the API.
+
+Actually, looking more carefully, there's a simpler approach. The task says:
+
+"Move the state recording init (whatever sets up the global state recorder) to happen BEFORE the API key validation check."
+
+"stash_diagnostic_error" is thread-local and doesn't require the global recorder.
+
+But `exit_with_state` calls `mark_run_completed_with_error` which calls `record` which needs the global recorder.
+
+So the fix is:
+1. Move `state::init_global` to happen BEFORE `parse_args` is called (in `run_cli`)
+2. The `stash_diagnostic_error` is thread-local so it works even without global recorder
+3. Change the `std::process::exit(1)` in `parse_model_config` to use `exit_with_state` somehow... but `exit_with_state` is in lib.rs and requires the global recorder.
+
+Hmm, the issue is that `parse_model_config` is called inside `parse_args`, and `std::process::exit(1)` is a hard exit. We can't call `exit_with_state` from inside `parse_model_config` because `exit_with_state` is in `lib.rs` and that creates a circular dependency.
+
+Wait, actually `exit_with_state` is defined in `lib.rs` around line 971. And `cli.rs` already uses functions from `lib.rs` (they're in the same crate). Let me check if there would be a circular dependency issue...
+
+Actually, both `cli.rs` and `lib.rs` are in the same crate (yoyo_ds_harness). They can use each other's functions. `exit_with_state` is `pub(crate)` or just a regular function.
+
+Wait, let me check if `exit_with_state` is public:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:971..986 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`exit_with_state` is a private function in `lib.rs`. It calls `state::mark_run_completed_with_error` which calls `record()` which needs the global state recorder to be initialized.
+
+The safest approach that doesn't overcomplicate things:
+
+1. In `run_cli()`: Move `state::init_global` BEFORE `parse_args`
+2. In `cli.rs` in `parse_model_config`: 
+   - Remove the `std::process::exit(1)` 
+   - Instead, when in piped/non-interactive mode with no key, print the error AND call `crate::state::stash_diagnostic_error(...)` — this is thread-local, no global recorder needed
+   - Return an empty string as the API key
+3. In `run_cli()`: After `parse_args` returns successfully, check if the API key is empty AND the provider is not ollama/custom AND we're not in interactive REPL mode. If so, call `exit_with_state` (which will pick up the stashed diagnostic)
+
+Wait, but that changes the flow. Currently when in piped mode with no key, the process exits immediately at line 527. Now it would:
+1. Continue through parse_args
+2. Return a Config with an empty API key  
+3. Back in run_cli, init_global has already happened
+4. Check for missing API key, stash_diagnostic_error, and exit_with_state
+
+This is actually cleaner. Let me implement this.
+
+But I need to be careful about the interactive vs. non-interactive case. Looking at line 512-515:
+```rust
+} else if std::io::stdin().is_terminal() && prompt_arg.is_none() {
+    // Interactive REPL with no API key: needs_setup() will
+    // be checked in main() and the wizard run there
+    String::new()
+}
+```
+
+This returns empty string for interactive mode. So `String::new()` already means "no key but wizard will handle it." And the piped mode calls `std::process::exit(1)`.
+
+So my approach is:
+1. In `parse_model_config`: Replace `std::process::exit(1)` with printing the error AND calling `state::stash_diagnostic_error(...)`, then returning `String::new()`
+2. In `run_cli()`: Move `state::init_global` BEFORE `parse_args`
+3. After `parse_args`, if API key is empty and we're in non-interactive mode (stdin not terminal or has prompt_arg), call `exit_with_state`
+
+Wait, but at this point we need to distinguish "empty because interactive" from "empty because non-interactive failure." Let me think...
+
+Actually, the simpler approach: stash the diagnostic error from `parse_model_config`, and after state init in `run_cli`, check if the API key build would fail. The cleanest way is to check if the API key is empty right after parse_args returns (at the point where agent_config is constructed), but before the agent is built.
+
+Let me look at where the agent config is built in `run_cli`. It's around line 1061. The `config.api_key` is set at line 1063: `api_key: config.api_key`.
+
+Actually, I realize I should just look at `run_cli` more holistically.
+
+Let me look at the full flow from the beginning of `run_cli` to where agent_config is built:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:981..1101 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full flow. Let me plan the changes:
+
+### Change 1: `src/cli.rs` — Replace `std::process::exit(1)` with diagnostic stash + empty string return
+
+In `parse_model_config()` around line 527, instead of `std::process::exit(1)`, we:
+- Print the error (already done)
+- Call `crate::state::stash_diagnostic_error("API key not found: DEEPSEEK_API_KEY (or equivalent) environment variable not set")`
+- Return `String::new()` (empty API key indicating no key found)
+
+### Change 2: `src/lib.rs` — Move state init before parse_args, then gate on empty API key
+
+In `run_cli()`:
+- Move `state::init_global(...)` to BEFORE `parse_args` 
+- But wait — `init_global` needs `config.state`, and `config` comes from `parse_args`. Hmm.
+
+Actually, that's the challenge. `state::init_global` needs `config.state` which is built by `parse_args`. We can't move state init before `parse_args`.
+
+OK let me re-think. The task says "Move the state recording init... to happen BEFORE the API key validation check." The API key validation happens inside `parse_args`. But state init requires config from `parse_args`.
+
+So the real approach is:
+1. Inside `parse_args` / `parse_model_config`: Don't call `std::process::exit(1)`. Instead, stash the diagnostic error and let `parse_args` return `Some(Config)` normally (with empty api_key)
+2. In `run_cli()`: After `parse_args`, init state, THEN check for missing API key, and call `exit_with_state` if needed
+
+This way:
+- `stash_diagnostic_error` is called from within `parse_model_config` (thread-local, doesn't need global recorder)
+- State init happens in `run_cli()` after `parse_args` returns
+- Then we check for missing API key and call `exit_with_state` which calls `mark_run_completed_with_error` which calls `take_diagnostic_error` and `record`
+
+This is the correct approach. Let me implement it.
+
+But I need to be careful: Currently when the API key is missing in piped mode, the program exits with code 1 immediately. With this change, `parse_args` returns `Some(Config)` with an empty API key. Then state init happens. Then we need to detect the missing key and exit.
+
+How to detect: check `config.api_key.is_empty() && config.provider != "ollama" && config.provider != "custom"`. But we also need to distinguish "interactive mode (where empty key is OK because wizard will handle)" from "piped mode (where empty key is fatal)."
+
+In interactive mode (line 512), the key is already `String::new()` — meaning empty. In piped mode, currently it calls `std::process::exit(1)`, but after my change it will return `String::new()` too.
+
+The distinguishing factor: In piped mode, the error was already printed to stderr. And `state::stash_diagnostic_error` was called. The `take_diagnostic_error` will return `Some(...)` if the key was missing due to piped-mode failure, but won't return it if it was just interactive mode.
+
+Wait, that's clever! Let me check:
+- In interactive mode (line 512-515): No diagnostic stashed, `String::new()` returned
+- In piped mode (line 517-527): Diagnostic stashed, `String::new()` returned
+
+Then in `run_cli`, after state init, we check: if `config.api_key.is_empty()` AND we're not in the interactive+no-prompt case (where `is_interactive && prompt_arg.is_none()`), then call `exit_with_state(1)`.
+
+Actually, let me simplify. In the piped case, `stash_diagnostic_error` was called. So `take_diagnostic_error()` will return `Some(...)`. In the interactive case, no diagnostic was stashed. So we can use the diagnostic as the signal.
+
+But that's fragile. Better to be explicit. Let me look at how to detect the piped case at the `run_cli` level.
+
+At line 1058: `let is_interactive = io::stdin().is_terminal() && config.prompt_arg.is_none();`
+
+So if `!is_interactive` OR `config.prompt_arg.is_some()`, we're not in interactive REPL mode (we're in piped/single-shot mode).
+
+The cleanest approach: after state init, check:
+```rust
+if agent_config.api_key.is_empty() 
+    && agent_config.provider != "ollama" 
+    && agent_config.provider != "custom"
+    && !is_interactive
+{
+    state::stash_diagnostic_error("API key not found: ...");
+    exit_with_state(1);
+}
+```
+
+Actually wait, for the piped case, `stash_diagnostic_error` was already called in `parse_model_config`. So in `run_cli` we just need to detect the condition and call `exit_with_state`. `exit_with_state` → `mark_run_completed_with_error` → `take_diagnostic_error()` — it will pick up what was stashed.
+
+But for interactive mode with no key, `is_interactive` is true and `prompt_arg` is None. The `String::new()` is returned and the setup wizard later handles it. We should NOT exit in that case.
+
+OK, let me refine my plan:
+
+### In `cli.rs`:
+In `parse_model_config`, replace:
+```rust
+std::process::exit(1);
+```
+with:
+```rust
+let error_msg = format!("API key not found: {} environment variable not set. Set it, use --api-key <key>, or add api_key to .yoyo.toml.", env_hint);
+crate::state::stash_diagnostic_error(&error_msg);
+String::new()
+```
+
+### In `lib.rs`:
+After state init (line 1035) and after `agent_config` is built, but before `run_setup_wizard_if_needed`:
+```rust
+// Check for missing API key in non-interactive mode
+// (interactive mode handles this via the setup wizard)
+if agent_config.api_key.is_empty() 
+    && !is_interactive 
+    && agent_config.provider != "ollama" 
+    && agent_config.provider != "custom"
+{
+    exit_with_state(1);
+}
+```
+
+Wait, but there's another issue. Looking at line 1058:
+```rust
+let is_interactive = io::stdin().is_terminal() && config.prompt_arg.is_none();
+```
+
+This is computed AFTER state init at line 1035. So we already have all the information we need.
+
+But also, looking at the flow more carefully: 
+
+Currently, `std::process::exit(1)` in `cli.rs` fires before `parse_args` returns. With my change, `parse_args` returns `Some(Config)` normally with an empty API key. Then `run_cli` continues:
+- Line 990: `apply_config_flags` — should be fine
+- Line 994: `state::init_global` — this succeeds
+- Line 1035: `_run_completion` guard
+- Line 1037: `install_panic_hook`
+- ...
+- Line 1058: `is_interactive` computed
+- Line 1061: `agent_config` built with empty api_key
+
+Then where should I add the check? After agent_config is built (line 1086) and before `run_setup_wizard_if_needed` (line 1088).
+
+But wait, let me also look at what happens with `run_setup_wizard_if_needed`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn run_setup_wizard_if_needed' in src/lib.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:913..938 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `run_setup_wizard_if_needed` handles the interactive case. For non-interactive, it returns true immediately (since `is_interactive` is false).
+
+Now, my plan is solid:
+
+1. In `cli.rs`, change `parse_model_config`: replace `std::process::exit(1)` with `crate::state::stash_diagnostic_error(...)` + returning `String::new()`
+2. In `lib.rs`, after `agent_config` is built and we know `is_interactive`, add a check for missing API key in non-interactive mode, calling `exit_with_state(1)` if needed
+
+But wait — there's a subtlety. In `cli.rs` line 512-515:
+```rust
+} else if std::io::stdin().is_terminal() && prompt_arg.is_none() {
+    // Interactive REPL with no API key: needs_setup() will
+    // be checked in main() and the wizard run there
+    String::new()
+}
+```
+
+This returns `String::new()` for interactive mode. And for the pipped/single-shot mode (the `else` branch), currently `std::process::exit(1)`. After my change, it returns `String::new()` too but with diagnostic stashed.
+
+In `run_cli`, both cases have `String::new()` as the API key. But I can distinguish them because:
+- For interactive: `is_interactive` is true
+- For piped: `!is_interactive` is true
+
+So the check is: if API key is empty AND provider is not ollama/custom AND NOT interactive → `exit_with_state(1)`.
+
+Now, there's one more thing: `exit_with_state` calls `mark_run_completed_with_error` which calls `take_diagnostic_error`. If the diagnostic was stashed in `cli.rs`, it will be picked up here. If the diagnostic was NOT stashed (e.g., some other path gets here), it'll just record the generic "exit code 1" error.
+
+Let me also check: do I need to also call `stash_diagnostic_error` from `run_cli` itself before `exit_with_state`? No — it was already stashed in `cli.rs`. But to be safe and handle edge cases, I could also call it. But I think it's cleaner to let the already-stashed diagnostic carry through.
+
+Actually wait, one more issue. I'm removing `std::process::exit(1)` from `parse_model_config`. But there might be other places in the `parse_args` flow that also call `std::process::exit`. Let me search:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'std::process::exit' in src/cli.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are multiple places calling `std::process::exit` from within `parse_args`. But the task is specifically about the API key check at line 527. The other exits (lines 373, 898, 933, 939, 985) are different error conditions. I should only fix the one the task targets.
+
+But wait, looking at line 373 — that's in a different function. Let me check if it's also in the `parse_args` path or elsewhere.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:370..380 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK those are different error conditions. The task only targets the API key check.
+
+Let me now implement the changes. Let me also check if the `empty API key check` might cause issues with the ollama/custom providers. Looking at lines 510-511:
+```rust
+if provider == "ollama" || provider == "custom" {
+    "not-needed".to_string()
+}
+```
+
+So ollama and custom return "not-needed" not empty string. So checking for empty API key won't affect them.
+
+Now let me also look at how the `api_key` flows through. In `parse_model_config`, when the user is in the piped path with no key: the key is empty string `String::new()`. The function constructs a `ModelConfig` which eventually feeds into `Config.api_key`. Let me verify:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub struct Config' in src/cli.rs  ▶ search 'pub struct Config' in src/cli_config.rs ✓ (13ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/cli_config.rs:127..177 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. `config.api_key` is a `String`. When it's empty from `parse_model_config`, `config.api_key` will be `""`.
+
+Now let me also check the `dispatch_sub.rs` API key check — it also has a similar issue:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:440..470 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's in `dispatch_sub.rs` line 466+, separate from the main `parse_args` flow in `cli.rs`. The `dispatch_sub.rs` path handles subcommands like `yoyo review`, not the main run flow.
+
+The task only targets the main API key check in `cli.rs` (parse_args flow), so I'll focus there.
+
+Now, let me also think about another edge case. Currently in interactive mode with no key, `parse_model_config` returns `String::new()` (line 515). Then `run_cli` calls `run_setup_wizard_if_needed` which calls `needs_setup` and if the user completes the wizard, the key gets populated. But if the user cancels, `run_setup_wizard_if_needed` returns false, and `run_cli` returns without calling `exit_with_state`.
+
+With my change: for interactive mode, `String::new()` is still returned (same as before). The diagnostic is NOT stashed. `is_interactive` is true. So the empty-key check I add at the end skips (because of `!is_interactive`). The wizard handles it as before. Good.
+
+For non-interactive mode: diagnostic IS stashed, `String::new()` returned. State init happens. Then `is_interactive` is false (stdin not terminal). So the empty-key check fires and calls `exit_with_state(1)`. `exit_with_state` calls `mark_run_completed_with_error` which calls `take_diagnostic_error()` and gets the stashed diagnostic. Then `record()` writes the RunCompleted event with error_detail. Then `std::process::exit(1)`. 
+
+For normal mode with valid key: everything works as before.
+
+Let me now implement the changes.
+
+One more thing: I need to check if `state::stash_diagnostic_error` is accessible from `cli.rs`. Looking at line 71 of `state.rs`:
+```rust
+pub fn stash_diagnostic_error(msg: &str) {
+```
+
+It's `pub` — accessible from the crate. Good.
+
+And `cli.rs` is in the same crate (`yoyo_ds_harness`), so `crate::state::stash_diagnostic_error(...)` should work.
+
+Let me also check what `env_hint` is in that context:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:480..560 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have the full picture. Let me also check if `apply_config_flags` at line 990 could also trigger an exit before state init — that would potentially be another gap. But the task only targets the API key check.
+
+Actually wait, I should check: is there any other early exit between parse_args and init_global? Let me look:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:990..1000 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+If `apply_config_flags` returns false, we return from `run_cli` without state init. And then `main()` in `yyds.rs` just exits. That's another gap, but not what the task is about.
+
+OK, let me now implement the changes.
+
+### Summary of changes:
+
+1. **`src/cli.rs` line 527**: Replace `std::process::exit(1)` with:
+   ```rust
+   let error_msg = format!(
+       "API key not found: {} environment variable not set. Set it, use --api-key <key>, or add api_key to .yoyo.toml.",
+       env_hint
+   );
+   crate::state::stash_diagnostic_error(&error_msg);
+   String::new()
+   ```
+
+2. **`src/lib.rs`**: After `agent_config` is built (around line 1086), before `run_setup_wizard_if_needed` (line 1088), add:
+   ```rust
+   if agent_config.api_key.is_empty() 
+       && !is_interactive 
+       && agent_config.provider != "ollama" 
+       && agent_config.provider != "custom"
+   {
+       exit_with_state(1);
+   }
+   ```
+
+Wait, but I also want to make sure the user-facing behavior stays the same. Currently the error message is printed at lines 523-526. With my changes, it's still printed there. Then `String::new()` is returned. `parse_args` returns `Some(Config)`. State is initialized. Then we call `exit_with_state(1)` which records the event and exits.
+
+Actually, I realize there's one more subtlety: the `stash_diagnostic_error` call happens before `state::init_global`, but that's fine because `stash_diagnostic_error` uses a thread-local, not the global recorder. The `take_diagnostic_error` call inside `mark_run_completed_with_error` happens after `state::init_global`, and `record` then uses the global recorder. So the timing works out.
+
+Let me also double-check that `take_diagnostic_error` is called from `mark_run_completed_with_error`. Looking at state.rs lines 367-375:
+```rust
+pub fn mark_run_completed_with_error(msg: &str) {
+    store_run_error(msg);
+    let error_detail = take_diagnostic_error();
+    record(...);
+}
+```
+
+Yes, `take_diagnostic_error()` is called and the result is passed to `record` as `error_detail`. Good.
+
+Now let me implement.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding of the code. Let me create the task plan and implement the changes.
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+
+  ✓ Watch passed: `cargo clippy --all-targets -- -D warnings && cargo test`
+
