@@ -254,7 +254,10 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
             (session / "transcripts").mkdir()
             (session / "transcripts/plan.log").write_text("plan\n", encoding="utf-8")
-            (session / "transcripts/task_01_attempt1.log").write_text("task\nline2\n", encoding="utf-8")
+            (session / "transcripts/task_01_attempt1.log").write_text(
+                "╭─ Turn 1 ─╮\n▶ read src/lib.rs\n╭─ Turn 4 ─╮\n▶ cargo test\n",
+                encoding="utf-8",
+            )
             (session / "tasks/task_01").mkdir(parents=True)
             write_json(
                 session / "tasks/manifest.json",
@@ -360,12 +363,14 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["edited_files"], ["scripts/build_evolution_dashboard.py"])
             self.assertEqual(work["commands"], ["cargo test"])
             self.assertEqual(work["transcripts"]["phase_counts"], {"plan": 1, "task": 1})
-            self.assertEqual(work["transcripts"]["files"][1]["line_count"], 2)
+            self.assertEqual(work["transcripts"]["files"][1]["line_count"], 4)
             self.assertEqual(work["task_manifest"]["selected_task_count"], 1)
             self.assertFalse(work["task_manifest"]["planning_failed"])
             self.assertEqual(work["task_manifest"]["tasks"][0]["quality_score"], 1.0)
             self.assertEqual(work["task_artifacts"][0]["task_id"], "task_01")
             self.assertEqual(work["task_artifacts"][0]["attempt_count"], 1)
+            self.assertEqual(work["task_artifacts"][0]["max_turn_count"], 4)
+            self.assertEqual(work["task_artifacts"][0]["attempts"][0]["turn_count"], 4)
             self.assertEqual(work["task_artifacts"][0]["eval_statuses"], ["pass"])
             self.assertTrue(work["task_artifacts"][0]["has_outcome"])
             self.assertEqual(work["task_verification"]["verified_task_count"], 1)

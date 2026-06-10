@@ -19,6 +19,7 @@ from task_manifest import parse_task as parse_task_file
 REPO_URL = "https://github.com/yologdev/yyds-harness"
 TRANSCRIPT_ACTION_RE = re.compile(r"▶\s+([^▶\n]+)")
 TRANSCRIPT_STATUS_RE = re.compile(r"\s+[✓✗]\s*\([^)]*\)\s*$")
+TURN_MARKER_RE = re.compile(r"╭─\s*Turn\s+(\d+)\s*─")
 WATCH_RE = re.compile(r"([✓✗])\s+Watch\s+(?:passed|failed):\s+`([^`]+)`")
 WORKSPACE_PREFIX_RE = re.compile(r"/home/runner/work/yyds-harness/yyds-harness/?")
 PSEUDO_ROOT_NAMES = {
@@ -451,6 +452,40 @@ def file_stats(path: Path) -> dict[str, int]:
     return {"line_count": len(raw.splitlines()), "byte_count": len(raw)}
 
 
+def transcript_turn_count(text: str) -> int:
+    turns: list[int] = []
+    for match in TURN_MARKER_RE.finditer(text):
+        try:
+            turns.append(int(match.group(1)))
+        except ValueError:
+            continue
+    if turns:
+        return max(turns)
+    action_count = len(TRANSCRIPT_ACTION_RE.findall(text))
+    if action_count:
+        return action_count
+    return 1 if text.strip() else 0
+
+
+def enrich_attempts_with_turns(session_dir: Path, attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for attempt in attempts:
+        if not isinstance(attempt, dict):
+            continue
+        row = dict(attempt)
+        if not isinstance(row.get("turn_count"), int):
+            transcript = row.get("transcript_path")
+            if isinstance(transcript, str) and transcript:
+                path = session_dir / transcript
+                try:
+                    text_data = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    text_data = ""
+                row["turn_count"] = transcript_turn_count(text_data)
+        enriched.append(row)
+    return enriched
+
+
 def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
     tasks_dir = session_dir / "tasks"
     if not tasks_dir.is_dir():
@@ -458,7 +493,7 @@ def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for task_dir in sorted(path for path in tasks_dir.iterdir() if path.is_dir()):
         task_id = task_dir.name
-        attempts = load_jsonl(task_dir / "attempts.jsonl")
+        attempts = enrich_attempts_with_turns(session_dir, load_jsonl(task_dir / "attempts.jsonl"))
         evals: list[dict[str, Any]] = []
         for path in sorted(task_dir.glob("eval_attempt_*.json")):
             eval_data = load_json(path)
@@ -492,6 +527,14 @@ def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
                 "commit_shas": outcome.get("commit_shas") if isinstance(outcome.get("commit_shas"), list) else [],
                 "attempt_count": len(attempts),
                 "attempts": attempts[:8],
+                "max_turn_count": max(
+                    [
+                        int(attempt.get("turn_count"))
+                        for attempt in attempts
+                        if isinstance(attempt, dict) and isinstance(attempt.get("turn_count"), int)
+                    ]
+                    or [0]
+                ),
                 "eval_statuses": [
                     str(eval_data.get("status"))
                     for eval_data in evals
@@ -2786,14 +2829,15 @@ HTML = r"""<!doctype html>
         const statuses = (task.eval_statuses || []).length ? task.eval_statuses.join(", ") : "no eval artifact";
         const attempts = (task.attempts || []).slice(0, 4).map(attempt => {
           const name = attempt.transcript_path ? auditLink(session, attempt.transcript_path, attempt.stage_name || attempt.phase) : text(attempt.stage_name || attempt.phase || "attempt");
-          return `${name} <span class="muted">${text(attempt.status || "-")} / ${text(attempt.line_count || 0)} lines</span>`;
+          const turns = attempt.turn_count === undefined || attempt.turn_count === null ? "-" : attempt.turn_count;
+          return `${name} <span class="muted">${text(attempt.status || "-")} / ${text(turns)} turns / ${text(attempt.line_count || 0)} lines</span>`;
         }).join("</li><li>");
         const artifacts = (task.artifacts || []).slice(0, 6).map(artifact =>
           `${auditLink(session, artifact.path, artifact.name)} <span class="muted">${text(artifact.line_count || 0)} lines</span>`
         ).join("</li><li>");
         return `<div class="task-evidence">
           <strong>${text(task.task_id || "")} ${text(task.status || "")}: ${text(task.task_title || "")}</strong>
-          <p class="muted">${text(task.attempt_count || 0)} attempt artifact(s); eval ${text(statuses)}; task file ${text(task.task_line_count || 0)} lines</p>
+          <p class="muted">${text(task.attempt_count || 0)} attempt artifact(s); max ${text(task.max_turn_count || 0)} turns; eval ${text(statuses)}; task file ${text(task.task_line_count || 0)} lines</p>
           ${attempts ? `<ul class="mini-list"><li>${attempts}</li></ul>` : ""}
           ${artifacts ? `<ul class="mini-list"><li>${artifacts}</li></ul>` : ""}
         </div>`;
