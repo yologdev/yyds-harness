@@ -413,6 +413,51 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["evaluator_unverified_count"], 1)
             self.assertEqual(metrics["task_unlanded_source_count"], 1)
 
+    def test_log_feedback_distinguishes_lifecycle_from_operational_state_capture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            events = session / "state/events.jsonl"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            append_event(events, "RunStarted", {"phase": "session"})
+            lifecycle = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )["metrics"]
+
+            self.assertEqual(lifecycle["state_capture_coverage"], 1.0)
+            self.assertEqual(lifecycle["state_operational_event_count"], 0)
+            self.assertEqual(lifecycle["state_operational_capture_coverage"], 0.0)
+
+            append_event(events, "FileRead", {"path": "src/lib.rs"})
+            operational = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )["metrics"]
+
+            self.assertEqual(operational["state_operational_event_count"], 1)
+            self.assertEqual(operational["state_operational_capture_coverage"], 1.0)
+
     def test_log_feedback_uses_state_cache_metric_events(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

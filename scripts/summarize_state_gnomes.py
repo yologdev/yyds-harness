@@ -47,6 +47,7 @@ GNOME_KEYS = [
     "recurring_failure_count",
     "max_failure_fingerprint_recurrence",
     "state_capture_coverage",
+    "state_operational_capture_coverage",
     "audit_capture_coverage",
     "closed_loop_fix_rate",
     "evolution_friction_count",

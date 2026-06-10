@@ -91,6 +91,29 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["aggregate"]["latest_ts"], "2026-06-10T00:00:00Z")
             self.assertEqual(data["aggregate"]["latest_gnomes"]["coding_log_score"], 0.9)
 
+    def test_derives_operational_state_capture_from_trace_quality(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"day": 1, "tasks_attempted": 0, "tasks_succeeded": 0})
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 2,
+                    "event_counts": {"RunStarted": 1, "PatchEvaluated": 1},
+                    "latest_gnomes": {"state_capture_coverage": 1.0},
+                    "gnome_keys": ["state_capture_coverage"],
+                    "evals": [{"suite": "log-feedback", "gnomes": {"state_capture_coverage": 1.0}}],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            latest = data["sessions"][0]["latest_eval"]["gnomes"]
+
+            self.assertEqual(latest["state_capture_coverage"], 1.0)
+            self.assertEqual(latest["state_operational_capture_coverage"], 0.0)
+            self.assertIn("state_operational_capture_coverage", data["aggregate"]["gnome_keys"])
+
     def test_derives_work_summary_and_gnome_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

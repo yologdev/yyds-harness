@@ -973,8 +973,18 @@ def work_summary(
     }
 
 
-def corrected_gnomes(summary: dict[str, Any], work: dict[str, Any]) -> dict[str, Any]:
+def corrected_gnomes(summary: dict[str, Any], work: dict[str, Any], trace: dict[str, Any]) -> dict[str, Any]:
     gnomes = dict(summary.get("latest_gnomes") if isinstance(summary.get("latest_gnomes"), dict) else {})
+    recalc_score = False
+    if (
+        "state_operational_capture_coverage" not in gnomes
+        and "state_capture_coverage" in gnomes
+        and isinstance(trace, dict)
+    ):
+        value = trace.get("operational_capture_coverage")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            gnomes["state_operational_capture_coverage"] = value
+            recalc_score = True
     cache_hit_tokens = gnomes.get("deepseek_cache_hit_tokens")
     cache_miss_tokens = gnomes.get("deepseek_cache_miss_tokens")
     if gnomes.get("deepseek_cache_hit_ratio") is not None and not (
@@ -984,6 +994,7 @@ def corrected_gnomes(summary: dict[str, Any], work: dict[str, Any]) -> dict[str,
         and not isinstance(cache_miss_tokens, bool)
     ):
         gnomes["deepseek_cache_hit_ratio"] = None
+        recalc_score = True
         gnomes["deepseek_cache_ratio_unverified_count"] = max(
             int(gnomes.get("deepseek_cache_ratio_unverified_count") or 0),
             1,
@@ -1007,6 +1018,7 @@ def corrected_gnomes(summary: dict[str, Any], work: dict[str, Any]) -> dict[str,
         )
         gnomes["task_success_rate"] = verified / task_count
         gnomes["session_success_rate"] = 1.0 if verified == task_count else 0.0
+        recalc_score = True
         gnomes["evaluator_unverified_count"] = max(
             int(gnomes.get("evaluator_unverified_count") or 0),
             unverified,
@@ -1022,11 +1034,63 @@ def corrected_gnomes(summary: dict[str, Any], work: dict[str, Any]) -> dict[str,
     if manifest.get("planning_failed"):
         gnomes["planner_no_task_count"] = max(int(gnomes.get("planner_no_task_count") or 0), 1)
         gnomes["session_success_rate"] = 0.0
+        recalc_score = True
+    if recalc_score:
+        score = corrected_coding_log_score(gnomes)
+        if score is not None:
+            gnomes["coding_log_score"] = score
     return gnomes
 
 
 def numeric_value(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def metric_float(metrics: dict[str, Any], key: str, default: float = 0.0) -> float:
+    value = metrics.get(key)
+    return float(value) if numeric_value(value) else default
+
+
+def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
+    if not numeric_value(metrics.get("coding_log_score")):
+        return None
+    if not numeric_value(metrics.get("workflow_success_rate")) or not numeric_value(
+        metrics.get("session_success_rate")
+    ):
+        return None
+    task_rate = metrics.get("task_success_rate")
+    outcome_parts = [
+        metric_float(metrics, "workflow_success_rate"),
+        metric_float(metrics, "session_success_rate"),
+        float(task_rate) if numeric_value(task_rate) else 0.5,
+        0.0 if metrics.get("session_reverted") is True else 1.0,
+    ]
+    outcome = sum(outcome_parts) / len(outcome_parts)
+    failure_pressure = min(
+        1.0,
+        (
+            metric_float(metrics, "distinct_failure_count")
+            + metric_float(metrics, "provider_error_count")
+            + metric_float(metrics, "json_error_count")
+            + metric_float(metrics, "tool_error_count")
+            + metric_float(metrics, "recurring_failure_count") * 2.0
+            + metric_float(metrics, "evolution_friction_count")
+            + metric_float(metrics, "planner_no_task_count") * 3.0
+            + metric_float(metrics, "evaluator_unverified_count")
+            + metric_float(metrics, "evaluator_timeout_with_verdict_count") * 2.0
+            + metric_float(metrics, "task_unlanded_source_count") * 2.0
+        )
+        / 12.0,
+    )
+    state_capture = metrics.get("state_operational_capture_coverage")
+    if not numeric_value(state_capture):
+        state_capture = metrics.get("state_capture_coverage")
+    capture = (float(state_capture or 0.0) + metric_float(metrics, "audit_capture_coverage")) / 2.0
+    reliability = max(0.0, (1.0 - failure_pressure) * 0.75 + capture * 0.25)
+    efficiency = 1.0 - min(1.0, metric_float(metrics, "repair_loop_count") / 6.0)
+    closed = metrics.get("closed_loop_fix_rate")
+    learning = float(closed) if numeric_value(closed) else 0.5
+    return round(outcome * 0.40 + reliability * 0.25 + efficiency * 0.20 + learning * 0.15, 4)
 
 
 def gnome_corrections(raw: dict[str, Any], corrected: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1156,7 +1220,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         commits = session_commits(outcome, repo_root)
         trace = trace_quality(summary, evals)
         work = work_summary(session_dir, outcome, summary, evals, blockers, commits)
-        latest_gnomes = corrected_gnomes(summary, work)
+        latest_gnomes = corrected_gnomes(summary, work, trace)
         normalize_work_gnome_snapshots(work, latest_gnomes)
         evals, latest_eval, latest_eval_corrections = normalize_latest_eval_gnomes(evals, latest_gnomes)
         session = {
@@ -2059,6 +2123,7 @@ HTML = r"""<!doctype html>
       recurring_failure_count: "Recurring failures",
       max_failure_fingerprint_recurrence: "Max failure recurrence",
       state_capture_coverage: "State capture",
+      state_operational_capture_coverage: "Operational state capture",
       audit_capture_coverage: "Audit capture",
       state_trace_event_count: "Trace events",
       closed_loop_fix_rate: "Closed-loop fix rate",
@@ -2091,6 +2156,7 @@ HTML = r"""<!doctype html>
       "task_success_rate",
       "workflow_success_rate",
       "state_capture_coverage",
+      "state_operational_capture_coverage",
       "evolution_friction_count",
       "max_task_turn_count",
       "deepseek_cache_hit_ratio"
@@ -2395,7 +2461,7 @@ HTML = r"""<!doctype html>
         });
       });
       keys.sort();
-      const preferred = ["coding_log_score", "task_success_rate", "workflow_success_rate", "state_capture_coverage", "evolution_friction_count", "max_task_turn_count", "deepseek_cache_hit_ratio", "cache_hit_ratio"];
+      const preferred = ["coding_log_score", "task_success_rate", "workflow_success_rate", "state_operational_capture_coverage", "state_capture_coverage", "evolution_friction_count", "max_task_turn_count", "deepseek_cache_hit_ratio", "cache_hit_ratio"];
       preferred.reverse().forEach(key => {
         const idx = keys.indexOf(key);
         if (idx >= 0) {

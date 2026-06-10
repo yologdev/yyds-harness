@@ -75,6 +75,20 @@ MAX_EVIDENCE_LINES = 8
 MAX_FINGERPRINTS = 10
 LOG_FETCH_TIMEOUT_SECONDS = 45
 GITHUB_LOG_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z$")
+OPERATIONAL_STATE_EVENTS = {
+    "ToolCallStarted",
+    "ToolCallCompleted",
+    "CommandStarted",
+    "CommandCompleted",
+    "FileRead",
+    "FileEdited",
+    "ModelCallStarted",
+    "ModelCallCompleted",
+    "CacheMetricsRecorded",
+    "FailureObserved",
+    "TestStarted",
+    "TestCompleted",
+}
 GNOME_KEYS = [
     "coding_log_score",
     "coding_log_confidence",
@@ -86,6 +100,7 @@ GNOME_KEYS = [
     "recurring_failure_count",
     "max_failure_fingerprint_recurrence",
     "state_capture_coverage",
+    "state_operational_capture_coverage",
     "audit_capture_coverage",
     "closed_loop_fix_rate",
     "evolution_friction_count",
@@ -275,6 +290,17 @@ def event_count(events_path: Path) -> int:
     except OSError:
         return 0
     return count
+
+
+def state_trace_metrics(session_dir: Path) -> dict[str, Any]:
+    events = load_events(session_dir / "state" / "events.jsonl")
+    operational_count = sum(1 for event in events if event_kind(event) in OPERATIONAL_STATE_EVENTS)
+    return {
+        "state_event_count": len(events),
+        "state_capture_coverage": 1.0 if events else 0.0,
+        "state_operational_event_count": operational_count,
+        "state_operational_capture_coverage": 1.0 if operational_count else 0.0,
+    }
 
 
 def load_events(events_path: Path) -> list[dict[str, Any]]:
@@ -839,10 +865,10 @@ def score_assessment(metrics: dict[str, Any]) -> float:
         )
         / 12.0,
     )
-    capture = (
-        float(metrics.get("state_capture_coverage") or 0.0)
-        + float(metrics.get("audit_capture_coverage") or 0.0)
-    ) / 2.0
+    state_capture = metrics.get("state_operational_capture_coverage")
+    if not isinstance(state_capture, (int, float)) or isinstance(state_capture, bool):
+        state_capture = metrics.get("state_capture_coverage")
+    capture = (float(state_capture or 0.0) + float(metrics.get("audit_capture_coverage") or 0.0)) / 2.0
     reliability = max(0.0, (1.0 - failure_pressure) * 0.75 + capture * 0.25)
 
     repair_pressure = min(1.0, float(metrics.get("repair_loop_count") or 0) / 6.0)
@@ -865,7 +891,7 @@ def build_assessment(
     workflow_conclusion: str,
 ) -> dict[str, Any]:
     outcome = load_json(session_dir / "outcome.json")
-    state_events = event_count(session_dir / "state" / "events.jsonl")
+    state_metrics = state_trace_metrics(session_dir)
     audit_exists = (session_dir / "audit.jsonl").is_file()
     parsed = parse_log(log_text) if log_available else parse_log("")
     turn_metrics = task_turn_metrics(session_dir)
@@ -907,12 +933,11 @@ def build_assessment(
         confidence += 0.45
     if outcome:
         confidence += 0.20
-    if state_events > 0:
+    if int(state_metrics.get("state_event_count") or 0) > 0:
         confidence += 0.20
     if audit_exists:
         confidence += 0.15
 
-    state_capture_coverage = 1.0 if state_events > 0 else 0.0
     audit_capture_coverage = 1.0 if audit_exists else 0.0
     metrics: dict[str, Any] = {
         "coding_log_available": log_available,
@@ -928,9 +953,8 @@ def build_assessment(
         "tasks_succeeded": counted_succeeded,
         "raw_tasks_succeeded": succeeded,
         "retry_success_rate": retry_success_rate,
-        "state_capture_coverage": state_capture_coverage,
         "audit_capture_coverage": audit_capture_coverage,
-        "state_event_count": state_events,
+        **state_metrics,
         **parsed,
         **artifact_metrics,
         **turn_metrics,
