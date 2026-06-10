@@ -427,9 +427,11 @@ def state_pipeline_summary(session_dir: Path) -> dict[str, Any]:
             if "failed" in lower or "warning" in lower:
                 append_problem_lines += 1
     return {
+        "replay_scope": "audit_history" if replay else None,
         "replay_files_read": replay.get("files_read") if isinstance(replay, dict) else None,
         "replay_events_written": replay.get("events_written") if isinstance(replay, dict) else None,
         "replay_duplicates_skipped": replay.get("duplicates_skipped") if isinstance(replay, dict) else None,
+        "merge_scope": "live_delta" if merge else None,
         "merge_live_events": merge.get("live_events") if isinstance(merge, dict) else None,
         "merge_base_lines": merge.get("base_lines") if isinstance(merge, dict) else None,
         "merge_delta_events": merge.get("delta_events") if isinstance(merge, dict) else None,
@@ -2703,10 +2705,12 @@ HTML = r"""<!doctype html>
       }
       const rows = [];
       if (hasReplay) {
-        rows.push(`replay ${text(pipe.replay_events_written || 0)} event(s) from ${text(pipe.replay_files_read || 0)} file(s); ${text(pipe.replay_duplicates_skipped || 0)} duplicate(s) skipped`);
+        rows.push(`audit replay ${text(pipe.replay_events_written || 0)} event(s) from ${text(pipe.replay_files_read || 0)} session file(s); ${text(pipe.replay_duplicates_skipped || 0)} duplicate(s) skipped`);
       }
       if (hasMerge) {
         rows.push(`live delta ${text(pipe.merge_added_events || 0)} added / ${text(pipe.merge_delta_events || 0)} seen; ${text(pipe.session_events_after_merge || 0)} session event(s) after merge`);
+      } else if (hasReplay) {
+        rows.push(`live delta merge diagnostics not recorded for this session`);
       }
       if (pipe.append_log_lines || pipe.append_problem_lines) {
         rows.push(`append log ${text(pipe.append_log_lines || 0)} line(s); ${text(pipe.append_problem_lines || 0)} problem line(s)`);

@@ -422,10 +422,32 @@ class BuildEvolutionDashboard(unittest.TestCase):
             html = (root / "out/index.html").read_text(encoding="utf-8")
 
             self.assertEqual(current["trace_quality"]["operational_event_count"], 1)
+            self.assertEqual(pipeline["replay_scope"], "audit_history")
             self.assertEqual(pipeline["replay_events_written"], 20)
+            self.assertEqual(pipeline["merge_scope"], "live_delta")
             self.assertEqual(pipeline["merge_added_events"], 4)
             self.assertEqual(pipeline["append_problem_lines"], 1)
             self.assertIn("State pipeline", html)
+            self.assertIn("audit replay", html)
+
+    def test_state_pipeline_explains_missing_live_merge_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"day": 1})
+            write_json(session / "state/summary.json", {})
+            write_json(
+                session / "state_replay.json",
+                {"files_read": 3, "events_written": 20, "duplicates_skipped": 2},
+            )
+
+            data = build(root / "sessions", root / "out")
+            pipeline = data["sessions"][0]["work_summary"]["state_pipeline"]
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+
+            self.assertEqual(pipeline["replay_scope"], "audit_history")
+            self.assertIsNone(pipeline["merge_scope"])
+            self.assertIn("live delta merge diagnostics not recorded", html)
 
     def test_strict_verification_requires_landed_source_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
