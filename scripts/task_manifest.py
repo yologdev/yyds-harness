@@ -12,6 +12,7 @@ from typing import Any
 
 
 FIELD_RE = re.compile(r"^([A-Za-z][A-Za-z 0-9_-]*):\s*(.*)$")
+GOAL_RE = re.compile(r"(?im)^(?:#+\s*)?(?:goal|objective)\s*:?\s*$|^(?:goal|objective)\s*:")
 
 
 def split_list(value: str) -> list[str]:
@@ -41,13 +42,16 @@ def parse_task(path: Path, task_number: int) -> dict[str, Any]:
             continue
         if in_fields and not line.strip():
             continue
+        if in_fields and line.lstrip().startswith("#"):
+            body_lines.append(line)
+            continue
         in_fields = False
         body_lines.append(line)
 
     lower = text.lower()
     has_success = "success criteria" in lower or "acceptance criteria" in lower
     has_verification = "verification" in lower or "test plan" in lower
-    has_goal = "goal:" in lower or "objective:" in lower
+    has_goal = bool(GOAL_RE.search(text))
     generic = (
         fields.get("title", "").strip().lower() == "self-improvement"
         and "identify the most impactful improvement" in lower
@@ -91,6 +95,8 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
         if quality.get("generic_self_improvement"):
             warnings.append(f"{task['task_id']}:generic_self_improvement")
+        if not task.get("files"):
+            warnings.append(f"{task['task_id']}:missing_files")
         if float(quality.get("score") or 0.0) < 0.75:
             warnings.append(f"{task['task_id']}:thin_task_spec")
 

@@ -113,6 +113,51 @@ Verification:
             self.assertEqual(manifest["selected_tasks"][0]["files"], ["src/state.rs"])
             self.assertEqual(payload["tasks"][0]["planned_files"], ["src/state.rs"])
 
+    def test_manifest_parses_markdown_heading_before_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "task_01.md").write_text(
+                """# Task 01: Wire crash reporter into pre-agent bootstrap path
+
+Title: Wire crash reporter into pre-agent bootstrap path
+Files: src/lib.rs
+Issue: none
+Origin: planner
+
+## Objective
+Install the crash reporter before context loading can fail.
+
+Success Criteria:
+- startup failures are recorded
+
+Verification:
+- cargo test crash_reporter
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+            task = manifest["selected_tasks"][0]
+
+            self.assertEqual(task["title"], "Wire crash reporter into pre-agent bootstrap path")
+            self.assertEqual(task["files"], ["src/lib.rs"])
+            self.assertTrue(task["quality"]["has_goal"])
+            self.assertNotIn("task_01:missing_files", manifest["warnings"])
+
     def test_manifest_records_planning_failure_without_fake_task(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

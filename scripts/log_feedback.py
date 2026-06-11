@@ -218,8 +218,10 @@ def is_noise_failure_message(message: str) -> bool:
     lower = message.lower().strip()
     if not lower:
         return True
+    if lower.startswith(">"):
+        return True
     if re.match(
-        r"^(let me|actually\b|wait\b|so\b|unless\b|i need\b|i can\b|i should\b|now\b|good\b|that's expected\b|the evaluator agent needs\b)",
+        r"^(let me|actually\b|but wait\b|wait\b|so\b|ok,?\s+so\b|unless\b|i need\b|i can\b|i should\b|looking at\b|these are\b|that [\"']|the task\b|the implementation\b|now\b|good\b|that's expected\b|the evaluator agent needs\b)",
         lower,
     ):
         return True
@@ -1300,6 +1302,9 @@ def run_self_tests() -> int:
                 "evolve\tRun evolution session\t2026-06-09T11:52:59.0607692Z Let me look at the test failure. The test at line 6536 panicked, and then at line 6541. Let me read what's there.",
                 "evolve\tRun evolution session\t2026-06-09T11:53:09.4054420Z Actually, the output says \"2 test_assertion\" errors at lines 6536 and 6541.",
                 "evolve\tRun evolution session\t2026-06-09T11:53:14.8839934Z Wait, the error says the thread panicked at line 6536 and line 6541.",
+                "evolve\tRun evolution session\t2026-06-11T04:40:00Z > \"The diagnostic mechanism records failures for later review\"",
+                "evolve\tRun evolution session\t2026-06-11T04:40:01Z But wait - looking at the recent events, the prior command failed with exit code 1.",
+                "evolve\tRun evolution session\t2026-06-11T04:40:02Z These are quoted evaluator notes about failure evidence, not current command output.",
             ]
         )
     )

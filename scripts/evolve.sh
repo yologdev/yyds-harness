@@ -1811,7 +1811,7 @@ BFIXEOF
         TASK_DIFF=$(git diff "$PRE_TASK_SHA"..HEAD 2>/dev/null || echo "(git diff failed)")
         cat > "$EVAL_PROMPT" <<EVALEOF
 You are an evaluator agent. Your job: verify that a task was implemented correctly.
-You have 3 minutes. Be fast and focused.
+You have 3 minutes. Be fast and focused. Write the verdict as soon as the diff and evidence are enough.
 
 === TASK DESCRIPTION ===
 $TASK_DESC
@@ -1826,9 +1826,12 @@ Tests: PASS
 === YOUR JOB ===
 
 1. Review the diff — does it match what the task asked for?
-2. Run \`cargo test\` to confirm tests pass
-3. If the task added a user-facing feature, try it: run the binary and test the feature
-4. Check if docs were updated (if the task changed behavior)
+2. Treat the build/test status above as authoritative baseline evidence.
+3. Do NOT rerun full \`cargo test\`, full clippy, or broad build commands in this evaluator step.
+4. Run at most one focused command only if it is directly tied to the task verification and should finish in under 60 seconds.
+5. If a command would be broad or slow, skip it and explain the verifier reason from the diff and task criteria.
+6. If the task added a user-facing feature, try one bounded invocation if practical.
+7. Check if docs were updated (if the task changed behavior).
 
 Write your verdict to session_plan/eval_task_${TASK_NUM}.md with exactly this format (no code fences):
 
