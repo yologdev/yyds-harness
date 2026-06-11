@@ -187,6 +187,34 @@ Verification:
             self.assertTrue(payload["planning_failed"])
             self.assertEqual(payload["decision"], "planning_failed")
 
+    def test_manifest_records_missing_assessment_diagnostic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment_missing.md").write_text("assessment agent wrote no artifact\n", encoding="utf-8")
+            (plan / "planning_failure.md").write_text("planner produced no tasks\n", encoding="utf-8")
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "assessment_missing_file": plan / "assessment_missing.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": True,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+
+            self.assertFalse(manifest["planner"]["assessment_present"])
+            self.assertTrue(manifest["planner"]["assessment_missing_present"])
+            self.assertIsNone(manifest["artifacts"]["assessment"])
+            self.assertEqual(manifest["artifacts"]["assessment_missing"], "tasks/assessment_missing.md")
+
     def test_write_task_decisions_creates_per_task_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1589,6 +1589,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                         "task_count": 1,
                         "selected_task_count": 1,
                         "assessment_present": False,
+                        "assessment_missing_present": True,
                     },
                     "selected_tasks": [
                         {
@@ -1599,10 +1600,19 @@ class BuildEvolutionDashboard(unittest.TestCase):
                             "artifact_path": "tasks/task_01/task.md",
                         }
                     ],
+                    "artifacts": {
+                        "manifest": "tasks/manifest.json",
+                        "assessment": None,
+                        "assessment_missing": "tasks/assessment_missing.md",
+                    },
                 },
             )
             (session / "tasks/task_01").mkdir(parents=True)
             (session / "tasks/task_01/task.md").write_text("Title: Fallback task\n", encoding="utf-8")
+            (session / "tasks/assessment_missing.md").write_text(
+                "# Assessment Missing - Day 1\n",
+                encoding="utf-8",
+            )
             (session / "transcripts").mkdir()
             (session / "transcripts/assess.log").write_text("assessment phase ran\n", encoding="utf-8")
             write_json(
@@ -1626,6 +1636,11 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertFalse(work["assessment_artifact_present"])
             self.assertTrue(work["assessment_transcript_present"])
             self.assertFalse(work["task_manifest"]["assessment_present"])
+            self.assertTrue(work["task_manifest"]["assessment_missing_present"])
+            self.assertEqual(
+                work["task_manifest"]["artifacts"]["assessment_missing"],
+                "tasks/assessment_missing.md",
+            )
             self.assertEqual(
                 work["task_artifacts"][0]["revert_reason"],
                 "Task scope mismatch: task produced no git-visible file changes",
@@ -1640,6 +1655,16 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
             self.assertIn("assessment artifact", html)
             self.assertIn("revert_reason", html)
+
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            assessment_claim = next(
+                claim
+                for claim in claims["sessions"][0]["claims"]
+                if claim["name"] == "assessment_artifact_and_transcript_state"
+            )
+            self.assertEqual(assessment_claim["status"], "observed")
+            self.assertTrue(assessment_claim["actual"]["diagnostic_present"])
+            self.assertIn("diagnostic artifact", assessment_claim["detail"])
 
     def test_transcript_actions_fill_work_evidence_when_state_events_are_sparse(self):
         with tempfile.TemporaryDirectory() as tmp:

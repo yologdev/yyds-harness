@@ -1092,10 +1092,32 @@ fi
 # Check if assessment was produced
 ASSESSMENT=""
 if [ -s session_plan/assessment.md ]; then
+    rm -f session_plan/assessment_missing.md
     ASSESSMENT=$(cat session_plan/assessment.md)
     echo "  Assessment written ($(wc -l < session_plan/assessment.md) lines)."
 else
     echo "  WARNING: No assessment produced — planning agent will read source directly (slower)."
+    mkdir -p session_plan
+    cat > session_plan/assessment_missing.md <<ASSESSMISSING
+# Assessment Missing - Day $DAY ($SESSION_TIME)
+
+The assessment phase produced a transcript but did not write \`session_plan/assessment.md\`.
+
+Guard result:
+- status: assessment_missing
+- assessment_exit_code: $ASSESS_EXIT
+- assessment_timeout_seconds: $ASSESS_TIMEOUT
+- required_artifact: session_plan/assessment.md
+- transcript: transcripts/assess.log
+
+Why this matters:
+- The planning agent loses the structured A1 summary and must use fallback evidence.
+- The dashboard should preserve this as an explicit artifact instead of only inferring it from transcripts.
+
+Expected follow-up:
+- Improve assessment prompt/tool reliability so future runs write \`session_plan/assessment.md\`.
+- Use \`transcripts/assess.log\` as audit evidence for the failed assessment phase.
+ASSESSMISSING
 fi
 rm -f session_plan/task_*.md
 if [ -s session_plan/assessment.md ]; then
@@ -1405,11 +1427,13 @@ PLANFAIL
 fi
 mkdir -p "$SESSION_STAGING/tasks"
 [ -f session_plan/assessment.md ] && cp session_plan/assessment.md "$SESSION_STAGING/tasks/assessment.md" 2>/dev/null || true
+[ -f session_plan/assessment_missing.md ] && cp session_plan/assessment_missing.md "$SESSION_STAGING/tasks/assessment_missing.md" 2>/dev/null || true
 [ -f session_plan/issue_responses.md ] && cp session_plan/issue_responses.md "$SESSION_STAGING/tasks/issue_responses.md" 2>/dev/null || true
 [ -f session_plan/planning_failure.md ] && cp session_plan/planning_failure.md "$SESSION_STAGING/tasks/planning_failure.md" 2>/dev/null || true
 TASK_MANIFEST_ARGS=(
     --session-plan-dir session_plan
     --assessment-file session_plan/assessment.md
+    --assessment-missing-file session_plan/assessment_missing.md
     --issue-responses-file session_plan/issue_responses.md
     --planning-failure-file session_plan/planning_failure.md
     --selected-limit 3

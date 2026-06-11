@@ -85,6 +85,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     tasks = [parse_task(path, index + 1) for index, path in enumerate(task_paths)]
     selected = tasks[: args.selected_limit]
     assessment_text = read_text(args.assessment_file)
+    assessment_missing_text = read_text(getattr(args, "assessment_missing_file", None))
     issue_text = read_text(args.issue_responses_file)
     failure_text = read_text(args.planning_failure_file)
     planning_failed = bool(args.planning_failed or failure_text or not tasks)
@@ -108,6 +109,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "task_count": len(tasks),
             "selected_task_count": min(len(tasks), args.selected_limit),
             "assessment_present": bool(assessment_text.strip()),
+            "assessment_missing_present": bool(assessment_missing_text.strip()),
             "issue_responses_present": bool(issue_text.strip()),
             "planning_failure_present": bool(failure_text.strip()),
         },
@@ -115,6 +117,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "selected_tasks": selected,
         "artifacts": {
             "assessment": "tasks/assessment.md" if assessment_text.strip() else None,
+            "assessment_missing": "tasks/assessment_missing.md" if assessment_missing_text.strip() else None,
             "issue_responses": "tasks/issue_responses.md" if issue_text.strip() else None,
             "planning_failure": "tasks/planning_failure.md" if failure_text.strip() else None,
             "manifest": "tasks/manifest.json",
@@ -175,6 +178,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--session-plan-dir", type=Path, default=Path("session_plan"))
     parser.add_argument("--assessment-file", type=Path)
+    parser.add_argument("--assessment-missing-file", type=Path)
     parser.add_argument("--issue-responses-file", type=Path)
     parser.add_argument("--planning-failure-file", type=Path)
     parser.add_argument("--selected-limit", type=int, default=3)

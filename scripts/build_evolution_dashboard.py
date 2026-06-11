@@ -1061,6 +1061,7 @@ def task_manifest_summary(session_dir: Path) -> dict[str, Any]:
         "task_count": int(planner.get("task_count") or 0),
         "selected_task_count": int(planner.get("selected_task_count") or 0),
         "assessment_present": bool(planner.get("assessment_present")),
+        "assessment_missing_present": bool(planner.get("assessment_missing_present")),
         "issue_responses_present": bool(planner.get("issue_responses_present")),
         "planning_failure_present": bool(planner.get("planning_failure_present")),
         "tasks": tasks,
@@ -1887,12 +1888,17 @@ def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
     manifest = work.get("task_manifest") if isinstance(work.get("task_manifest"), dict) else {}
     artifact_present = work.get("assessment_artifact_present")
     transcript_present = work.get("assessment_transcript_present")
+    manifest_artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), dict) else {}
+    diagnostic_present = bool(manifest.get("assessment_missing_present") or manifest_artifacts.get("assessment_missing"))
     if not manifest:
         status = "missing"
         detail = "No task manifest is available, so assessment artifact state is unknown."
     elif artifact_present is True:
         status = "proven"
         detail = "Assessment artifact is present."
+    elif diagnostic_present and transcript_present:
+        status = "observed"
+        detail = "Assessment transcript and missing-assessment diagnostic artifact exist, but assessment.md is missing."
     elif transcript_present:
         status = "observed"
         detail = "Assessment phase transcript exists but the assessment artifact is missing."
@@ -1903,8 +1909,12 @@ def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
         "assessment_artifact_and_transcript_state",
         status,
         {"artifact_present": True},
-        {"artifact_present": artifact_present, "transcript_present": transcript_present},
-        ["tasks/assessment.md", "transcripts/assess.log"],
+        {
+            "artifact_present": artifact_present,
+            "transcript_present": transcript_present,
+            "diagnostic_present": diagnostic_present,
+        },
+        ["tasks/assessment.md", "tasks/assessment_missing.md", "transcripts/assess.log"],
         detail,
         ["work_summary.task_manifest", "work_summary.transcripts"],
     )
