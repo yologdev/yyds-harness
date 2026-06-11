@@ -65,6 +65,10 @@ def git(repo: Path, args: list[str]) -> str:
     return result.stdout if result.returncode == 0 else ""
 
 
+def git_lines(repo: Path, args: list[str]) -> list[str]:
+    return [line.strip() for line in git(repo, args).splitlines() if line.strip()]
+
+
 def task_id(task_number: int) -> str:
     return f"task_{task_number:02d}"
 
@@ -139,9 +143,10 @@ def commit_records(repo: Path, base: str, head: str) -> list[dict[str, Any]]:
 def changed_files(repo: Path, base: str, head: str) -> list[str]:
     files: list[str] = []
     if base and head and base != head:
-        files.extend(git(repo, ["diff", "--name-only", f"{base}..{head}"]).splitlines())
-    files.extend(git(repo, ["diff", "--cached", "--name-only"]).splitlines())
-    files.extend(git(repo, ["diff", "--name-only"]).splitlines())
+        files.extend(git_lines(repo, ["diff", "--name-only", f"{base}..{head}"]))
+    files.extend(git_lines(repo, ["diff", "--cached", "--name-only"]))
+    files.extend(git_lines(repo, ["diff", "--name-only"]))
+    files.extend(git_lines(repo, ["ls-files", "--others", "--exclude-standard"]))
     return compact(files)
 
 

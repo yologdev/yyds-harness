@@ -414,14 +414,17 @@ if [ -z "$(echo "$YOYO_TRAJECTORY" | tr -d '[:space:]')" ]; then
     YOYO_TRAJECTORY="(no trajectory data yet)"
 fi
 
-STATE_BASE_LINES=$(wc -l < "$STATE_EVENTS" 2>/dev/null | tr -d '[:space:]')
-STATE_BASE_LINES="${STATE_BASE_LINES:-0}"
+STATE_REPLAYED_LINES=$(wc -l < "$STATE_EVENTS" 2>/dev/null | tr -d '[:space:]')
+STATE_REPLAYED_LINES="${STATE_REPLAYED_LINES:-0}"
 SESSION_SOURCE_SHA="${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || true)}"
 SESSION_SOURCE_REF="${GITHUB_REF_NAME:-${GITHUB_REF:-$(git branch --show-current 2>/dev/null || true)}}"
 if "$YOYO_BIN" state project --rebuild >>"$TRAJ_STDERR" 2>&1; then
-    echo "  state: replayed $STATE_BASE_LINES prior event(s) into live yoagent-state."
+    STATE_BASE_LINES=$(wc -l < "$STATE_EVENTS" 2>/dev/null | tr -d '[:space:]')
+    STATE_BASE_LINES="${STATE_BASE_LINES:-0}"
+    echo "  state: replayed $STATE_REPLAYED_LINES prior event(s); live merge baseline is $STATE_BASE_LINES event(s)."
 else
     echo "  state: sqlite projection rebuild failed (state JSONL remains available)" >&2
+    STATE_BASE_LINES="$STATE_REPLAYED_LINES"
 fi
 record_state_event "RunStarted" "{\"phase\":\"session\",\"day\":$DAY,\"session_time\":\"$SESSION_TIME\",\"github_run_id\":\"${GITHUB_RUN_ID:-}\",\"github_run_attempt\":\"${GITHUB_RUN_ATTEMPT:-}\",\"source_sha\":\"$SESSION_SOURCE_SHA\",\"source_ref\":\"$SESSION_SOURCE_REF\"}"
 

@@ -57,6 +57,7 @@ def changed_files(repo: Path, base: str) -> list[str]:
         files.extend(git(repo, ["diff", "--name-only", f"{base}..{current}"]))
     files.extend(git(repo, ["diff", "--cached", "--name-only"]))
     files.extend(git(repo, ["diff", "--name-only"]))
+    files.extend(git(repo, ["ls-files", "--others", "--exclude-standard"]))
     return compact(files)
 
 

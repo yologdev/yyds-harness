@@ -37,6 +37,7 @@ def uncommitted_source_files(repo: Path) -> list[str]:
     files = []
     files.extend(git_lines(repo, ["diff", "--cached", "--name-only"]))
     files.extend(git_lines(repo, ["diff", "--name-only"]))
+    files.extend(git_lines(repo, ["ls-files", "--others", "--exclude-standard"]))
     return task_lineage.compact([path for path in files if task_lineage.source_file(path)])
 
 

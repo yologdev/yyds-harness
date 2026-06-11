@@ -381,6 +381,15 @@ def summarize_decision(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def meaningful_decision(row: dict[str, Any]) -> bool:
+    if row.get("decision_type") == "tool_permission_policy" and not row.get("decision"):
+        return False
+    return any(
+        row.get(key) is not None
+        for key in ("decision", "criterion", "eligible", "patch_id", "reason")
+    )
+
+
 def summarize_blocker(event: dict[str, Any]) -> Optional[dict[str, Any]]:
     data = payload(event)
     kind = event_type(event)
@@ -438,7 +447,9 @@ def summarize(events: list[dict[str, Any]], source: Path) -> dict[str, Any]:
             evals.append(eval_summary)
             latest_gnomes.update(eval_summary["gnomes"])
         if kind == "DecisionRecorded":
-            decisions.append(summarize_decision(event))
+            decision_summary = summarize_decision(event)
+            if meaningful_decision(decision_summary):
+                decisions.append(decision_summary)
         if kind in {"FailureObserved", "PatchRejected", "DecisionRecorded"}:
             blocker = summarize_blocker(event)
             if blocker:

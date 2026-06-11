@@ -57,6 +57,8 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('append_state_event_checked "$SESSION_STATE_EVENTS" "session"', evolve)
         self.assertIn("scripts/merge_state_delta.py", evolve)
         self.assertIn('--base-lines "$STATE_BASE_LINES"', evolve)
+        self.assertIn('STATE_REPLAYED_LINES=$(wc -l < "$STATE_EVENTS"', evolve)
+        self.assertIn("live merge baseline is $STATE_BASE_LINES event(s)", evolve)
         self.assertIn("merge_state_delta.json", evolve)
         self.assertIn('--events "$SESSION_STATE_EVENTS"', evolve)
         self.assertIn('--link-commits \\\n    --events "$SESSION_STATE_EVENTS"', evolve)
@@ -157,6 +159,43 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(len(payload["commit_shas"]), 1)
             self.assertEqual(payload["eval"], {"verdict": "PASS", "reason": "works"})
 
+    def test_task_lineage_payload_captures_untracked_source_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            (repo / "src").mkdir()
+            (repo / "session_plan").mkdir()
+            (repo / "src/lib.rs").write_text("pub fn before() {}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+            base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+            task_file = repo / "session_plan/task_01.md"
+            task_file.write_text("Title: Add module\nFiles: src/new_module.rs\nIssue: none\n", encoding="utf-8")
+            (repo / "src/new_module.rs").write_text("pub fn added() {}\n", encoding="utf-8")
+
+            args = type(
+                "Args",
+                (),
+                {
+                    "repo_root": repo,
+                    "base": base,
+                    "head": "",
+                    "task_number": 1,
+                    "task_title": "Add module",
+                    "status": "completed",
+                    "task_file": task_file,
+                    "eval_file": None,
+                    "reason": "",
+                },
+            )()
+            payload = task_lineage.build_payload(args)
+
+            self.assertEqual(payload["source_files"], ["src/new_module.rs"])
+            self.assertIn("src/new_module.rs", payload["touched_files"])
+
     def test_single_task_linkage_leaves_unplanned_source_commits_unassigned(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -240,6 +279,27 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertFalse(bad["ok"])
             self.assertEqual(bad["reason"], "task changes do not overlap planned Files entries")
 
+    def test_task_verification_gate_sees_untracked_planned_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            (repo / "src").mkdir()
+            (repo / "session_plan").mkdir()
+            (repo / "src/lib.rs").write_text("pub fn before() {}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+            base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+            task = repo / "session_plan/task_01.md"
+            task.write_text("Title: New module\nFiles: src/new_module.rs\nIssue: none\n", encoding="utf-8")
+            (repo / "src/new_module.rs").write_text("pub fn added() {}\n", encoding="utf-8")
+            ok = task_verification_gate.verify(repo, base, task)
+
+            self.assertTrue(ok["ok"])
+            self.assertEqual(ok["overlapping_files"], ["src/new_module.rs"])
+
     def test_task_completion_gate_auto_commits_verified_source_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -272,6 +332,29 @@ class TaskLineageFeedback(unittest.TestCase):
             )
             self.assertTrue(bookkeeping["ok"])
             self.assertFalse(bookkeeping["auto_commit"]["attempted"])
+
+    def test_task_completion_gate_auto_commits_untracked_source_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            (repo / "src").mkdir()
+            (repo / "src/lib.rs").write_text("pub mod before;\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+            base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+            (repo / "src/new_module.rs").write_text("pub fn added() {}\n", encoding="utf-8")
+            unlanded = task_completion_gate.verify(repo, base, "Task commit", auto=False)
+            self.assertFalse(unlanded["ok"])
+            self.assertEqual(unlanded["uncommitted_source_files"], ["src/new_module.rs"])
+
+            landed = task_completion_gate.verify(repo, base, "Task commit", auto=True)
+            self.assertTrue(landed["ok"])
+            self.assertTrue(landed["source_commit_shas"])
+            self.assertTrue(landed["auto_commit"]["attempted"])
+            self.assertEqual(landed["source_files"], ["src/new_module.rs"])
 
     def test_log_feedback_links_gnome_deltas_to_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -404,6 +487,39 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(trace_metrics["task_lineage_capture_coverage"], 1.0)
             self.assertEqual(trace_metrics["state_operational_event_count"], 0)
             self.assertEqual(trace_metrics["state_operational_capture_coverage"], 0.0)
+
+    def test_summary_keeps_latest_decision_meaningful(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            events_path = root / "state/events.jsonl"
+            append_event(
+                events_path,
+                "DecisionRecorded",
+                {
+                    "phase": "plan",
+                    "decision_type": "session_plan",
+                    "decision": "tasks_selected",
+                    "reason": "planner selected tasks",
+                },
+            )
+            append_event(
+                events_path,
+                "DecisionRecorded",
+                {
+                    "decision_type": "tool_permission_policy",
+                    "decision": None,
+                    "reason": "allowed medium-risk file_operation via session_always",
+                },
+            )
+
+            summary = summarize_state_gnomes.summarize(
+                summarize_state_gnomes.load_jsonl(events_path),
+                events_path,
+            )
+
+            self.assertEqual(len(summary["decisions"]), 1)
+            self.assertEqual(summary["latest_decision"]["decision"], "tasks_selected")
+            self.assertEqual(summary["latest_decision"]["decision_type"], "session_plan")
 
     def test_log_feedback_session_success_uses_strict_verified_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
