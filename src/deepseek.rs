@@ -1013,6 +1013,15 @@ pub fn record_deepseek_transport_failure(source: &str, model: &str, error_text: 
             &policy,
         ),
     );
+
+    // Stash as diagnostic error for crash analysis — makes transport
+    // failures visible via /state crashes and CrashDiagnosticStashed events.
+    let status = extract_deepseek_transport_status(error_text);
+    let class = classify_transport_error(status, error_text);
+    let summary: String = error_text.chars().take(200).collect();
+    crate::state::stash_diagnostic_error(&format!(
+        "yyds deepseek: transport failure ({source} on {model}, {class:?}): {summary}"
+    ));
 }
 
 fn classify_transport_error(status: Option<u16>, error_text: &str) -> DeepSeekTransportErrorClass {
