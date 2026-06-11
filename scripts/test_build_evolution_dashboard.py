@@ -73,6 +73,33 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertNotIn(".src", actions["read_files"])
             self.assertNotIn("src", actions["read_files"])
             self.assertIn("search 'mark_run_completed_with_error' in src", actions["failed_commands"])
+            self.assertIn("search 'mark_run_completed_with_error' in src", actions["failed_tools"])
+
+    def test_transcript_failed_edit_keeps_error_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_02_attempt1.log").write_text(
+                "\n".join(
+                    [
+                        "  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs ✗ (12ms)",
+                        "      │ old_text matches 2 locations in /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs. Include more surrounding context to make the match unique.",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            actions = summarize_transcript_actions(session)
+
+            self.assertEqual(
+                actions["failed_tools"],
+                [
+                    "edit src/prompt.rs: old_text matches 2 locations in src/prompt.rs. Include more surrounding context to make the match unique."
+                ],
+            )
 
     def test_data_contract_reports_generated_at_and_latest_session(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1250,6 +1277,10 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn(
                 "cargo clippy --all-targets -- -D warnings && cargo test",
                 work["failed_commands"],
+            )
+            self.assertIn(
+                "search 'fn build_why_report' in src/commands_state.rs",
+                work["failed_tools"],
             )
             self.assertIn("1 source file(s) touched", work["headline"])
             self.assertIn("2 command/check signal(s)", work["headline"])

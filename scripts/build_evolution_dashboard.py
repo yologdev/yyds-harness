@@ -118,6 +118,24 @@ def clean_transcript_action(value: str) -> str:
     return re.sub(r"\bcd\s+\.\s*&&\s*", "", text).strip()
 
 
+def transcript_failure_detail(lines: list[str], index: int) -> str:
+    details: list[str] = []
+    for next_line in lines[index + 1 : index + 5]:
+        stripped = next_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("▶") or stripped.startswith("╭─") or " Watch " in stripped:
+            break
+        cleaned = re.sub(r"^[│|]\s*", "", stripped).strip()
+        cleaned = re.sub(r"^[-=]+\s*", "", cleaned).strip()
+        cleaned = clean_transcript_action(cleaned)
+        if cleaned:
+            details.append(cleaned)
+        if details:
+            break
+    return details[0] if details else ""
+
+
 def transcript_path_token(value: str) -> str:
     text = str(value).strip().strip("`'\"")
     text = text.split()[0] if text.split() else text
@@ -160,6 +178,7 @@ def summarize_transcript_actions(session_dir: Path) -> dict[str, Any]:
     files = sorted(transcript_dir.glob("*.log")) if transcript_dir.is_dir() else []
     commands: list[str] = []
     failed_commands: list[str] = []
+    failed_tools: list[str] = []
     read_files: list[str] = []
     edited_files: list[str] = []
 
@@ -168,7 +187,7 @@ def summarize_transcript_actions(session_dir: Path) -> dict[str, Any]:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
-        for line in lines:
+        for index, line in enumerate(lines):
             for marker, command in WATCH_RE.findall(line):
                 command_text = clean_transcript_action(command)
                 commands.append(command_text)
@@ -180,6 +199,14 @@ def summarize_transcript_actions(session_dir: Path) -> dict[str, Any]:
                 if not action or action == "todo":
                     continue
                 failed = "✗" in raw
+                if failed and (
+                    action.startswith("read ")
+                    or action.startswith("edit ")
+                    or action.startswith("write ")
+                    or action.startswith("search ")
+                ):
+                    detail = transcript_failure_detail(lines, index)
+                    failed_tools.append(f"{action}: {detail}" if detail else action)
                 if action.startswith("$ "):
                     command = action[2:].strip()
                     if command:
@@ -212,6 +239,7 @@ def summarize_transcript_actions(session_dir: Path) -> dict[str, Any]:
     return {
         "commands": compact_list(commands, 12),
         "failed_commands": compact_list(failed_commands, 8),
+        "failed_tools": compact_list(failed_tools, 8),
         "read_files": compact_list(read_files, 12),
         "edited_files": compact_list(edited_files, 12),
     }
@@ -944,6 +972,7 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     read_files: list[str] = []
     commands: list[str] = []
     failed_commands: list[str] = []
+    failed_tools: list[str] = []
     tool_names: dict[str, int] = {}
 
     for event in events:
@@ -971,12 +1000,19 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
             tool = data.get("tool_name")
             if isinstance(tool, str) and kind == "ToolCallStarted":
                 tool_names[tool] = tool_names.get(tool, 0) + 1
+            if kind == "ToolCallCompleted" and data.get("is_error") is True and isinstance(tool, str):
+                message = data.get("error") or data.get("message")
+                if isinstance(message, str) and message.strip():
+                    failed_tools.append(f"{tool}: {message.strip()}")
+                else:
+                    failed_tools.append(tool)
 
     return {
         "edited_files": compact_list(edited_files, 12),
         "read_files": compact_list(read_files, 12),
         "commands": compact_list(commands, 12),
         "failed_commands": compact_list(failed_commands, 8),
+        "failed_tools": compact_list(failed_tools, 8),
         "tool_counts": dict(sorted(tool_names.items(), key=lambda item: (-item[1], item[0]))[:8]),
         "command_count": len(commands),
     }
@@ -1012,6 +1048,7 @@ def work_summary(
     read_files = compact_list(event_data["read_files"] + transcript_actions["read_files"], 12)
     commands = compact_list(event_data["commands"] + transcript_actions["commands"], 12)
     failed_commands = compact_list(event_data["failed_commands"] + transcript_actions["failed_commands"], 8)
+    failed_tools = compact_list(event_data["failed_tools"] + transcript_actions["failed_tools"], 8)
     attempted = int(outcome.get("tasks_attempted") or 0)
     succeeded = int(outcome.get("tasks_succeeded") or 0)
     patches = summary.get("patches", []) if isinstance(summary.get("patches"), list) else []
@@ -1054,6 +1091,8 @@ def work_summary(
         labels.append(f"{len(evals)} eval record(s)")
     if blockers:
         labels.append(f"{len(blockers)} blocker(s)")
+    if failed_tools:
+        labels.append(f"{len(failed_tools)} failed tool action(s)")
     if not labels:
         labels.append("No detailed work signals captured")
 
@@ -1077,6 +1116,7 @@ def work_summary(
         "read_files": read_files,
         "commands": commands,
         "failed_commands": failed_commands,
+        "failed_tools": failed_tools,
         "transcript_actions": transcript_actions,
         "tool_counts": event_data["tool_counts"],
         "patch_count": len(patches),
@@ -3078,6 +3118,7 @@ HTML = r"""<!doctype html>
                 <div><strong>Read</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
                 <div><strong>State edits</strong>${listItems(work.edited_files, "No FileEdited events recorded.")}</div>
                 <div><strong>Failures</strong>${listItems(work.failed_commands, "No failed commands recorded.")}</div>
+                <div><strong>Tool failures</strong>${listItems(work.failed_tools, "No failed tool calls recorded.")}</div>
               </div>
               <p class="muted">Transcript phases: ${text(phaseText || "no transcripts")}. ${text(trace.label || "unknown trace")} from ${text(trace.event_count || 0)} total event(s). Audit files: <a href="${text(session.audit_url)}">open session evidence</a>.</p>
             </details>
