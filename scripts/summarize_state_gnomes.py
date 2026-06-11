@@ -76,6 +76,9 @@ GNOME_KEYS = [
     "deepseek_cache_hit_ratio",
     "deepseek_cache_hit_tokens",
     "deepseek_cache_miss_tokens",
+    "deepseek_cache_metric_event_count",
+    "deepseek_cache_metric_expected_count",
+    "deepseek_cache_metric_missing_count",
 ]
 
 

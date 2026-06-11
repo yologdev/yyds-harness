@@ -869,6 +869,56 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertAlmostEqual(metrics["deepseek_cache_hit_ratio"], 100 / 120, places=6)
             self.assertEqual(metrics["deepseek_cache_metric_source"], "state")
             self.assertEqual(metrics["deepseek_cache_metric_event_count"], 2)
+            self.assertEqual(metrics["deepseek_cache_metric_expected_count"], 0)
+            self.assertEqual(metrics["deepseek_cache_metric_missing_count"], 0)
+
+    def test_log_feedback_counts_expected_but_missing_state_cache_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            append_event(
+                session / "state/events.jsonl",
+                "RunStarted",
+                {
+                    "model": "deepseek-v4-pro",
+                    "provider": "deepseek",
+                    "deepseek_native": True,
+                    "harness_genome": {
+                        "cache_policy": {
+                            "record_metrics": True,
+                            "stable_prefix": True,
+                            "optimize_prompt_order": True,
+                        }
+                    },
+                },
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertIsNone(metrics["deepseek_cache_hit_ratio"])
+            self.assertEqual(metrics["deepseek_cache_metric_source"], "state")
+            self.assertEqual(metrics["deepseek_cache_metric_expected_count"], 1)
+            self.assertEqual(metrics["deepseek_cache_metric_event_count"], 0)
+            self.assertEqual(metrics["deepseek_cache_metric_missing_count"], 1)
 
     def test_state_summary_keeps_new_log_feedback_gnomes(self):
         with tempfile.TemporaryDirectory() as tmp:

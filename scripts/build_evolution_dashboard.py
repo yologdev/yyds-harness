@@ -98,6 +98,18 @@ def event_payload(event: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+def cache_metrics_expected(payload: dict[str, Any]) -> bool:
+    genome = payload.get("harness_genome") if isinstance(payload.get("harness_genome"), dict) else {}
+    cache_policy = genome.get("cache_policy") if isinstance(genome.get("cache_policy"), dict) else {}
+    record_metrics = cache_policy.get("record_metrics") is True
+    model = payload.get("model")
+    provider = payload.get("provider")
+    deepseek_native = payload.get("deepseek_native") is True
+    deepseek_model = isinstance(model, str) and model.startswith("deepseek")
+    deepseek_provider = provider == "deepseek"
+    return record_metrics and (deepseek_native or deepseek_model or deepseek_provider)
+
+
 def compact_list(values: list[str], limit: int) -> list[str]:
     out: list[str] = []
     for value in values:
@@ -1079,10 +1091,16 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     tool_names: dict[str, int] = {}
     tool_starts: dict[str, dict[str, Any]] = {}
     command_starts: dict[str, str] = {}
+    expected_cache_metrics = 0
+    cache_metric_events = 0
 
     for event in events:
         kind = event_kind(event)
         data = event_payload(event)
+        if kind == "RunStarted" and cache_metrics_expected(data):
+            expected_cache_metrics += 1
+        elif kind == "CacheMetricsRecorded":
+            cache_metric_events += 1
         if kind == "FileEdited":
             path = data.get("path") or data.get("file") or data.get("target_path")
             if isinstance(path, str):
@@ -1135,6 +1153,9 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         "failed_tools": compact_list(failed_tools, 8),
         "tool_counts": dict(sorted(tool_names.items(), key=lambda item: (-item[1], item[0]))[:8]),
         "command_count": len(commands),
+        "deepseek_cache_metric_expected_count": expected_cache_metrics,
+        "deepseek_cache_metric_event_count": cache_metric_events,
+        "deepseek_cache_metric_missing_count": max(expected_cache_metrics - cache_metric_events, 0),
     }
 
 
@@ -1261,6 +1282,9 @@ def work_summary(
         "failed_tools": failed_tools,
         "transcript_actions": transcript_actions,
         "tool_counts": event_data["tool_counts"],
+        "deepseek_cache_metric_expected_count": event_data["deepseek_cache_metric_expected_count"],
+        "deepseek_cache_metric_event_count": event_data["deepseek_cache_metric_event_count"],
+        "deepseek_cache_metric_missing_count": event_data["deepseek_cache_metric_missing_count"],
         "patch_count": len(patches),
         "state_patch_count": len(patches),
         "source_patch_count": source_patch_count,
@@ -1323,6 +1347,27 @@ def corrected_gnomes(
             int(gnomes.get("deepseek_cache_ratio_unverified_count") or 0),
             cache_prose_mentions,
         )
+    cache_metric_signal = any(
+        int(work.get(key) or 0) > 0
+        for key in (
+            "deepseek_cache_metric_expected_count",
+            "deepseek_cache_metric_event_count",
+            "deepseek_cache_metric_missing_count",
+        )
+    )
+    if cache_metric_signal:
+        for key in (
+            "deepseek_cache_metric_expected_count",
+            "deepseek_cache_metric_event_count",
+            "deepseek_cache_metric_missing_count",
+        ):
+            value = work.get(key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            current = gnomes.get(key)
+            if not isinstance(current, (int, float)) or isinstance(current, bool) or int(value) > int(current):
+                gnomes[key] = int(value)
+                recalc_score = True
     failed_tool_count = len(work.get("failed_tools") or []) if isinstance(work.get("failed_tools"), list) else 0
     if failed_tool_count > int(gnomes.get("tool_error_count") or 0):
         gnomes["tool_error_count"] = failed_tool_count
@@ -1926,6 +1971,9 @@ def cache_claim(gnomes: dict[str, Any]) -> dict[str, Any]:
     miss_tokens = gnomes.get("deepseek_cache_miss_tokens")
     prose_mentions = int(gnomes.get("deepseek_cache_prose_mention_count") or 0)
     unverified = int(gnomes.get("deepseek_cache_ratio_unverified_count") or 0)
+    expected_events = int(gnomes.get("deepseek_cache_metric_expected_count") or 0)
+    metric_events = int(gnomes.get("deepseek_cache_metric_event_count") or 0)
+    missing_events = int(gnomes.get("deepseek_cache_metric_missing_count") or 0)
     token_backed = (
         isinstance(hit_tokens, (int, float))
         and not isinstance(hit_tokens, bool)
@@ -1944,21 +1992,38 @@ def cache_claim(gnomes: dict[str, Any]) -> dict[str, Any]:
     elif prose_mentions:
         status = "conflict"
         detail = "Prose-only cache ratio claims exist but are not counted as unverified."
+    elif expected_events and missing_events:
+        status = "missing"
+        detail = "DeepSeek runs advertised cache metric recording but no CacheMetricsRecorded token evidence was captured."
     else:
         status = "missing"
         detail = "No DeepSeek cache ratio evidence was captured."
     return claim_row(
         "deepseek_cache_ratio_is_token_backed_or_marked_unverified",
         status,
-        {"trusted_ratio_requires_tokens": True, "unverified_count_at_least_prose_mentions": prose_mentions},
+        {
+            "trusted_ratio_requires_tokens": True,
+            "unverified_count_at_least_prose_mentions": prose_mentions,
+            "cache_metric_events_at_least_expected": expected_events,
+        },
         {
             "ratio": ratio,
             "hit_tokens": hit_tokens,
             "miss_tokens": miss_tokens,
             "prose_mentions": prose_mentions,
             "unverified_count": unverified,
+            "expected_metric_events": expected_events,
+            "metric_events": metric_events,
+            "missing_metric_events": missing_events,
         },
-        ["deepseek_cache_hit_ratio", "deepseek_cache_hit_tokens", "deepseek_cache_miss_tokens"],
+        [
+            "deepseek_cache_hit_ratio",
+            "deepseek_cache_hit_tokens",
+            "deepseek_cache_miss_tokens",
+            "deepseek_cache_metric_expected_count",
+            "deepseek_cache_metric_event_count",
+            "deepseek_cache_metric_missing_count",
+        ],
         detail,
         ["latest_gnomes", "log_feedback"],
     )
@@ -2791,6 +2856,9 @@ HTML = r"""<!doctype html>
       deepseek_cache_hit_ratio: "DeepSeek cache hit ratio",
       deepseek_cache_hit_tokens: "DeepSeek cache hit tokens",
       deepseek_cache_miss_tokens: "DeepSeek cache miss tokens",
+      deepseek_cache_metric_event_count: "Cache metric events",
+      deepseek_cache_metric_expected_count: "Cache metric expected runs",
+      deepseek_cache_metric_missing_count: "Missing cache metric events",
       deepseek_cache_ratio_unverified_count: "Unverified cache ratio reports"
     };
     const priorityGnomes = [
@@ -3147,6 +3215,14 @@ HTML = r"""<!doctype html>
           text: `${text(unverifiedCache)} DeepSeek cache ratio report(s) were withheld because token evidence was missing. A trusted cache KPI needs CacheMetricsRecorded events with prompt_cache_hit_tokens and prompt_cache_miss_tokens.`
         });
       }
+      const missingCacheMetrics = Number(gnomes.deepseek_cache_metric_missing_count || 0);
+      if (missingCacheMetrics > 0) {
+        notes.push({
+          kind: "Cache metrics",
+          className: "warn",
+          text: `${text(missingCacheMetrics)} DeepSeek run(s) advertised cache metric recording but did not emit CacheMetricsRecorded events. Cache ratio remains untrusted until hit/miss token events are present.`
+        });
+      }
       const stateCoverage = Number(gnomes.state_capture_coverage ?? NaN);
       const operationalCoverage = Number(gnomes.state_operational_capture_coverage ?? NaN);
       const lineageCoverage = Number(gnomes.task_lineage_capture_coverage ?? NaN);
@@ -3430,6 +3506,7 @@ HTML = r"""<!doctype html>
         "state_operational_capture_coverage",
         "task_lineage_capture_coverage",
         "deepseek_cache_hit_ratio",
+        "deepseek_cache_metric_missing_count",
         "deepseek_cache_ratio_unverified_count",
         "coding_log_score"
       ];

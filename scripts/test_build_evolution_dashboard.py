@@ -1217,6 +1217,73 @@ class BuildEvolutionDashboard(unittest.TestCase):
             html = (root / "out/index.html").read_text(encoding="utf-8")
             self.assertIn("DeepSeek cache ratio report(s) were withheld", html)
 
+    def test_missing_deepseek_cache_metric_events_are_claimed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "deepseek_cache_hit_ratio": None,
+                        "deepseek_cache_hit_tokens": None,
+                        "deepseek_cache_miss_tokens": None,
+                    },
+                    "gnome_keys": [
+                        "deepseek_cache_hit_ratio",
+                        "deepseek_cache_hit_tokens",
+                        "deepseek_cache_miss_tokens",
+                    ],
+                },
+            )
+            write_events(
+                session / "state/events.jsonl",
+                [
+                    {
+                        "kind": "RunStarted",
+                        "payload": {
+                            "model": "deepseek-v4-pro",
+                            "provider": "deepseek",
+                            "deepseek_native": True,
+                            "harness_genome": {
+                                "cache_policy": {
+                                    "record_metrics": True,
+                                    "stable_prefix": True,
+                                    "optimize_prompt_order": True,
+                                }
+                            },
+                        },
+                    }
+                ],
+            )
+
+            data = build(root / "sessions", root / "out")
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            cache_claim = next(
+                claim
+                for claim in claims["sessions"][0]["claims"]
+                if claim["name"] == "deepseek_cache_ratio_is_token_backed_or_marked_unverified"
+            )
+
+            latest = data["sessions"][0]["latest_gnomes"]
+            self.assertEqual(latest["deepseek_cache_metric_missing_count"], 1)
+            self.assertEqual(cache_claim["status"], "missing")
+            self.assertEqual(cache_claim["actual"]["expected_metric_events"], 1)
+            self.assertEqual(cache_claim["actual"]["metric_events"], 0)
+            self.assertIn("advertised cache metric recording", cache_claim["detail"])
+            self.assertIn("Missing cache metric events", html)
+            self.assertIn("advertised cache metric recording", html)
+
     def test_manifest_files_backfilled_from_task_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
