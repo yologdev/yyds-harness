@@ -32,6 +32,12 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("YOYO_SKILL_FLAGS=(--skills ./skills)", script)
         self.assertIn("Follow the evolve skill rules", script)
 
+    def test_assessment_phase_uses_self_assess_skill(self):
+        script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("First read and follow `skills/self-assess/SKILL.md`", script)
+        self.assertIn("canonical assessment contract for yyds", script)
+
     def test_self_assess_skill_is_yyds_deepseek_native(self):
         text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")
 

@@ -990,6 +990,13 @@ You are the ASSESSMENT agent — the first of two planning phases.
 Your job: understand the current state of your codebase, test yourself, and research the landscape.
 You do NOT write task files. You produce a single structured assessment document.
 
+First read and follow `skills/self-assess/SKILL.md`. That skill is the
+canonical assessment contract for yyds: DeepSeek harness behavior, yoagent-state
+evidence, gnome metrics, task artifacts, dashboard projections, transcripts,
+and source code are all part of what you are assessing. The steps below are the
+session-specific checklist for this run; the skill defines the assessment
+standard.
+
 Steps:
 
 1. **Read your source code** — all .rs files under src/ (this is YOU). Note module structure, line counts, key entry points.
