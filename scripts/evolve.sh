@@ -2163,6 +2163,28 @@ ${REVERT_DETAILS:-no details captured}" 2>/dev/null; then
         record_state_event "TaskLineageLinked" "$TASK_LINEAGE_PAYLOAD"
     else
         echo "    Task $TASK_NUM: verified OK"
+        if ! cargo fmt -- --check 2>/dev/null; then
+            echo "    Task $TASK_NUM: applying post-task cargo fmt before recording lineage"
+            if cargo fmt 2>/dev/null; then
+                git add -u -- '*.rs'
+                if ! git diff --cached --quiet; then
+                    git commit -m "Day $DAY ($SESSION_TIME): cargo fmt after Task $TASK_NUM" || true
+                fi
+            else
+                echo "    BLOCKED: Task $TASK_NUM cargo fmt failed after verification"
+                TASK_LINEAGE_PAYLOAD=$(task_lineage_payload "reverted" "$PRE_TASK_SHA" "Post-task cargo fmt failed")
+                write_task_outcome_evidence "$TASK_ID" "$TASK_LINEAGE_PAYLOAD" || true
+                if ! git reset --hard "$PRE_TASK_SHA"; then
+                    echo "    FATAL: git reset --hard failed after cargo fmt failure."
+                    TASK_FAILURES=$((TASK_FAILURES + 1))
+                    break
+                fi
+                git clean -fd 2>/dev/null || true
+                TASK_FAILURES=$((TASK_FAILURES + 1))
+                record_state_event "TaskLineageLinked" "$TASK_LINEAGE_PAYLOAD"
+                continue
+            fi
+        fi
         TASK_LINEAGE_PAYLOAD=$(task_lineage_payload "completed" "$PRE_TASK_SHA")
         write_task_outcome_evidence "$TASK_ID" "$TASK_LINEAGE_PAYLOAD" || true
         record_state_event "TaskLineageLinked" "$TASK_LINEAGE_PAYLOAD"
