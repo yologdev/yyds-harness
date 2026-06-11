@@ -1515,6 +1515,18 @@ def dedupe_evals(evals: Any) -> list[dict[str, Any]]:
     return [latest_by_key[key] for key in order]
 
 
+def primary_decision(summary: dict[str, Any]) -> dict[str, Any]:
+    decisions = summary.get("decisions") if isinstance(summary.get("decisions"), list) else []
+    typed = [row for row in decisions if isinstance(row, dict)]
+    if typed:
+        for decision in reversed(typed):
+            if decision.get("decision_type") != "tool_permission_policy":
+                return decision
+        return typed[-1]
+    latest = summary.get("latest_decision")
+    return latest if isinstance(latest, dict) else {}
+
+
 def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]:
     sessions: list[dict[str, Any]] = []
     if not audit_sessions.is_dir():
@@ -1527,9 +1539,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         summary = load_json(session_dir / "state" / "summary.json")
         evals = dedupe_evals(summary.get("evals", []))
         latest_eval = evals[-1] if evals else {}
-        latest_decision = (
-            summary.get("latest_decision") if isinstance(summary.get("latest_decision"), dict) else {}
-        )
+        latest_decision = primary_decision(summary)
         blockers = [
             blocker
             for blocker in (summary.get("blockers", []) if isinstance(summary.get("blockers"), list) else [])

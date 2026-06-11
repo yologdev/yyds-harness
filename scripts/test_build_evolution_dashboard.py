@@ -193,6 +193,40 @@ class BuildEvolutionDashboard(unittest.TestCase):
         self.assertNotIn("bash", work["failed_tools"])
         self.assertIn("git show missing-sha --no-stat -p", work["failed_commands"])
 
+    def test_latest_decision_prefers_session_plan_over_permission_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"day": 1})
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 3,
+                    "event_counts": {"DecisionRecorded": 2, "RunCompleted": 1},
+                    "latest_decision": {
+                        "decision_type": "tool_permission_policy",
+                        "reason": "allowed medium-risk file_operation via session_always",
+                    },
+                    "decisions": [
+                        {
+                            "decision_type": "session_plan",
+                            "decision": "tasks_selected",
+                            "reason": "planning phase selected implementation tasks for this evolution session",
+                        },
+                        {
+                            "decision_type": "tool_permission_policy",
+                            "reason": "allowed medium-risk file_operation via session_always",
+                        },
+                    ],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            latest = data["sessions"][0]["latest_decision"]
+
+            self.assertEqual(latest["decision_type"], "session_plan")
+            self.assertEqual(latest["decision"], "tasks_selected")
+
     def test_data_contract_reports_generated_at_and_latest_session(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
