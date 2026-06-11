@@ -225,7 +225,7 @@ def is_noise_failure_message(message: str) -> bool:
     if lower.startswith(('"', "'", "`")):
         return True
     if re.match(
-        r"^(let me|interesting!?|actually\b|but wait\b|wait\b|so\b|ok,?\s+so\b|unless\b|i need\b|i can\b|i should\b|looking at\b|there are\b|there's\b|these are\b|that [\"']|the task\b|the test\b|the implementation\b|the crashes?\b|the key issue\b|the most common path\b|the grep showed\b|now\b|good\b|that's expected\b|the evaluator agent needs\b)",
+        r"^(let me|interesting!?|actually\b|but wait\b|wait\b|so\b|ok,?\s+so\b|unless\b|i need\b|i can\b|i should\b|looking at\b|there are\b|there's\b|these are\b|that [\"']|the task\b|the test\b|the binary\b|the implementation\b|the crashes?\b|the key issue\b|the most common path\b|the grep showed\b|now\b|good\b|that's expected\b|the evaluator agent needs\b)",
         lower,
     ):
         return True
@@ -1345,6 +1345,7 @@ def run_self_tests() -> int:
                 "evolve\tRun evolution session\t2026-06-11T09:56:16Z                     eprintln!(\"{RED}  error: {e}{RESET}\");",
                 "evolve\tRun evolution session\t2026-06-11T10:32:36Z The grep showed 0 for commands_state.rs and the second grep returned exit code 1 which happens with `grep -c` returning 0.",
                 "evolve\tRun evolution session\t2026-06-11T12:27:42Z The test timed out. Let me try a narrower test or check the specific failing tests from the trajectory.",
+                "evolve\tRun evolution session\t2026-06-11T13:01:09Z The binary timed out on a simple prompt, likely because no real API key is available. Let me just note that.",
             ]
         )
     )

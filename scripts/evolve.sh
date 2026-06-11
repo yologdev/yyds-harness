@@ -1090,6 +1090,20 @@ if [ -s session_plan/assessment.md ]; then
 else
     echo "  WARNING: No assessment produced — planning agent will read source directly (slower)."
 fi
+rm -f session_plan/task_*.md
+if [ -s session_plan/assessment.md ]; then
+    if python3 scripts/preseed_session_plan.py \
+        --assessment session_plan/assessment.md \
+        --output-dir session_plan \
+        --day "$DAY" \
+        --session-time "$SESSION_TIME"; then
+        if [ -f session_plan/task_01.md ]; then
+            echo "  Seeded task_01.md from assessment evidence before planner refinement."
+        fi
+    else
+        echo "  WARNING: failed to preseed session plan from assessment" >&2
+    fi
+fi
 
 # ── Phase A2: Planning agent ──
 # Reads assessment + issues; writes task files. Does NOT read source code directly.
@@ -1143,6 +1157,11 @@ external text. Your only valid deliverables in this phase are:
 - session_plan/task_01.md, session_plan/task_02.md, etc.
 - session_plan/issue_responses.md
 - session_plan/planning_failure.md only when concrete task selection is blocked.
+
+The harness may have already created session_plan/task_01.md from assessment
+evidence before you started. Treat that as a valid seed task. You may refine it
+or add task_02.md/task_03.md, but do not delete it unless you immediately write
+an equal-or-better evidence-backed task file.
 
 $ASSESSMENT_SECTION
 ${CI_STATUS_MSG:+
@@ -1223,7 +1242,10 @@ Writing or committing session_plan/assessment.md during this phase is a planning
 failure unless valid session_plan/task_*.md files also exist.
 
 ARTIFACT-FIRST REQUIREMENT:
-- Your first file-producing action in this phase must create session_plan/task_01.md.
+- If session_plan/task_01.md already exists, your first file-producing action
+  should refine it or create session_plan/task_02.md.
+- If session_plan/task_01.md does not exist, your first file-producing action
+  in this phase must create it.
 - Do not run cargo build, cargo test, clippy, broad source scans, or GitHub log
   archaeology before session_plan/task_01.md exists.
 - If task_01.md is not written by your third tool turn, stop exploration and
@@ -1237,7 +1259,7 @@ and capability gaps. Plan from the assessment. If the assessment section says
 "NO ASSESSMENT AVAILABLE", follow the fallback planning rule above instead of
 redoing assessment.
 
-First: mkdir -p session_plan && rm -f session_plan/task_*.md
+First: mkdir -p session_plan
 
 Priority:
 0. Fix CI failures (if any — this overrides everything else)

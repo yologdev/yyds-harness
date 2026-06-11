@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Create a minimal evidence-backed task before the planning agent explores."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+
+TASKS = [
+    {
+        "keys": ("sub-agent", "sub agent", "api_key_present", "api key", "worker agents"),
+        "title": "Verify and fix sub-agent API key propagation",
+        "files": "src/tools.rs, src/agent_builder.rs, src/lib.rs",
+        "objective": (
+            "Make yyds either pass the resolved DeepSeek API key into spawned side/sub agents "
+            "or record a precise diagnostic explaining why the key is unavailable."
+        ),
+        "why": (
+            "The assessment found rapid RunStarted -> SessionStarted -> error traces with "
+            "`api_key_present: false`. Those traces make autonomous planning brittle and hide "
+            "whether DeepSeek worker agents are failing from missing credentials or another startup path."
+        ),
+        "success": [
+            "Sub-agent construction resolves an explicit key or the provider-specific environment key before spawn.",
+            "Missing-key failures produce a state diagnostic that names the failing sub-agent/startup path.",
+            "Existing side-agent behavior remains unchanged when an explicit key is configured.",
+        ],
+        "verification": [
+            "cargo test agent_builder tools state",
+            "cargo check",
+        ],
+        "evidence": [
+            "Task lineage links the changed source files to this task.",
+            "Future state events distinguish missing credential diagnostics from generic startup errors.",
+        ],
+    },
+    {
+        "keys": ("cache metrics absent", "cache-report", "cache metrics", "prompt_cache", "deepseek cache"),
+        "title": "Record DeepSeek prompt cache metrics during prompt runs",
+        "files": "src/prompt.rs, src/deepseek.rs, src/state.rs",
+        "objective": (
+            "Ensure successful DeepSeek prompt executions record prompt cache hit/miss token usage "
+            "into yoagent-state so `deepseek cache-report` and gnome KPIs have real data."
+        ),
+        "why": (
+            "The assessment found `deepseek cache-report` returning no metrics even though the "
+            "DeepSeek protocol layer and gnome keys exist. Cache observability is required to optimize "
+            "stable-prefix prompt layout and cost/latency."
+        ),
+        "success": [
+            "Prompt usage with cache hit/miss tokens emits CacheMetricsRecorded state events.",
+            "`deepseek cache-report` can read those events after a DeepSeek run.",
+            "No request-side `cache_control` is added for DeepSeek.",
+        ],
+        "verification": [
+            "cargo test deepseek prompt state",
+            "cargo check",
+        ],
+        "evidence": [
+            "State summary includes DeepSeek cache hit/miss token gnomes after a run with usage data.",
+            "Dashboard cache ratio remains sourced from numeric usage/state events, not prose.",
+        ],
+    },
+    {
+        "keys": ("why last-failure", "cold-start", "cold start", "no state event found"),
+        "title": "Improve cold-start state failure diagnostics",
+        "files": "src/commands_state.rs, src/state.rs",
+        "objective": (
+            "Make `yyds state why last-failure` useful when there are no completed failed sessions yet "
+            "by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence."
+        ),
+        "why": (
+            "The assessment found `state why last-failure` returning only `no state event found` during "
+            "fresh-state sessions. That leaves yyds unable to explain the earliest failures that block evolution."
+        ),
+        "success": [
+            "Cold-start `why last-failure` output gives actionable next evidence to inspect.",
+            "Existing behavior for completed failed sessions remains unchanged.",
+            "Output distinguishes no history from missing diagnostics and from active/incomplete runs.",
+        ],
+        "verification": [
+            "cargo test commands_state state",
+            "cargo check",
+        ],
+        "evidence": [
+            "Future assessment logs can cite concrete cold-start diagnostics instead of an empty result.",
+            "State/dashboard blockers become easier to trace to run/session ids.",
+        ],
+    },
+    {
+        "keys": ("commands_state.rs", "23,216", "23216", "16.1%", "state cli"),
+        "title": "Extract another focused state CLI module",
+        "files": "src/commands_state.rs, src/lib.rs",
+        "objective": (
+            "Reduce `commands_state.rs` by extracting one cohesive state CLI subsystem into a dedicated module "
+            "without changing command behavior."
+        ),
+        "why": (
+            "The assessment found `commands_state.rs` still represents roughly 16% of the Rust codebase. "
+            "Continued small extractions lower maintenance risk for state/eval/evolution work."
+        ),
+        "success": [
+            "One cohesive state CLI subsystem moves out of `commands_state.rs`.",
+            "The public state command behavior and tests remain unchanged.",
+            "The extraction touches no unrelated modules.",
+        ],
+        "verification": [
+            "cargo test commands_state",
+            "cargo check",
+        ],
+        "evidence": [
+            "Task lineage shows the new module and `commands_state.rs` shrink.",
+            "Dashboard work evidence lists the extracted module as a source file.",
+        ],
+    },
+]
+
+
+def choose_task(assessment: str) -> dict[str, object]:
+    lower = assessment.lower()
+    for task in TASKS:
+        if any(key in lower for key in task["keys"]):
+            return task
+    return {
+        "title": "Repair evidence-backed planning after no-task sessions",
+        "files": "skills/evolve/SKILL.md, skills/self-assess/SKILL.md, scripts/task_manifest.py",
+        "objective": (
+            "Improve yyds planning guidance and task manifest validation so an evidence-rich assessment "
+            "is reliably converted into concrete task files."
+        ),
+        "why": (
+            "The harness reached planning with no task artifacts. That makes evolution look healthy while "
+            "skipping implementation, so planning reliability itself becomes the highest-priority repair."
+        ),
+        "success": [
+            "The planning skill explicitly prioritizes writing task artifacts before extra exploration.",
+            "Task manifest warnings make no-task planning failures visible.",
+            "Future planning failures preserve enough evidence to select a repair task.",
+        ],
+        "verification": [
+            "python3 -m unittest scripts.test_task_manifest",
+            "python3 scripts/task_manifest.py --help",
+        ],
+        "evidence": [
+            "Future dashboard sessions show selected task artifacts instead of an empty implementation phase.",
+            "planning_failed remains visible when it occurs.",
+        ],
+    }
+
+
+def render_task(task: dict[str, object], day: str, session_time: str) -> str:
+    success = "\n".join(f"- {item}" for item in task["success"])
+    verification = "\n".join(f"- {item}" for item in task["verification"])
+    evidence = "\n".join(f"- {item}" for item in task["evidence"])
+    return f"""Title: {task["title"]}
+Files: {task["files"]}
+Issue: none
+Origin: harness-seed
+
+Objective:
+{task["objective"]}
+
+Why this matters:
+{task["why"]}
+
+Success Criteria:
+{success}
+
+Verification:
+{verification}
+
+Expected Evidence:
+{evidence}
+
+Implementation Notes:
+- This task was seeded by the harness before planner exploration because recent runs reached planning without durable task files.
+- Treat it as a minimum viable task for Day {day} ({session_time}); refine it if the planner has stronger evidence, but do not leave the session with zero task files.
+- Keep the change scoped to the listed files unless verification reveals a direct dependency.
+"""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--assessment", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--day", default="")
+    parser.add_argument("--session-time", default="")
+    parser.add_argument("--test", action="store_true")
+    args = parser.parse_args()
+    if args.test:
+        assessment = "Bugs / Friction Found\nSub-agent spawn failures with api_key_present: false"
+        task = choose_task(assessment)
+        assert task["title"] == "Verify and fix sub-agent API key propagation", task
+        assessment = "Cache metrics absent. deepseek cache-report shows nothing."
+        task = choose_task(assessment)
+        assert task["title"] == "Record DeepSeek prompt cache metrics during prompt runs", task
+        text = render_task(task, "103", "12:53")
+        assert "Title:" in text and "Success Criteria:" in text and "Origin: harness-seed" in text
+        print("preseed_session_plan self-tests passed")
+        return 0
+
+    if any(args.output_dir.glob("task_*.md")):
+        return 0
+    try:
+        assessment = args.assessment.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        assessment = ""
+    if not assessment.strip():
+        return 0
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    task = choose_task(assessment)
+    (args.output_dir / "task_01.md").write_text(
+        render_task(task, args.day, args.session_time),
+        encoding="utf-8",
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
