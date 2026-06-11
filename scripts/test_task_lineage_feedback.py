@@ -871,6 +871,7 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["deepseek_cache_metric_event_count"], 2)
             self.assertEqual(metrics["deepseek_cache_metric_expected_count"], 0)
             self.assertEqual(metrics["deepseek_cache_metric_missing_count"], 0)
+            self.assertEqual(metrics["deepseek_model_call_unmatched_completed_count"], 0)
 
     def test_log_feedback_counts_expected_but_missing_state_cache_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -916,6 +917,7 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["deepseek_model_call_started_count"], 0)
             self.assertEqual(metrics["deepseek_model_call_completed_count"], 1)
             self.assertEqual(metrics["deepseek_model_call_incomplete_count"], 0)
+            self.assertEqual(metrics["deepseek_model_call_unmatched_completed_count"], 1)
 
     def test_log_feedback_counts_incomplete_deepseek_model_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -954,6 +956,7 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["deepseek_model_call_started_count"], 1)
             self.assertEqual(metrics["deepseek_model_call_completed_count"], 0)
             self.assertEqual(metrics["deepseek_model_call_incomplete_count"], 1)
+            self.assertEqual(metrics["deepseek_model_call_unmatched_completed_count"], 0)
 
     def test_state_summary_keeps_new_log_feedback_gnomes(self):
         with tempfile.TemporaryDirectory() as tmp:

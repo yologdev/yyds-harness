@@ -136,6 +136,7 @@ GNOME_KEYS = [
     "deepseek_model_call_started_count",
     "deepseek_model_call_completed_count",
     "deepseek_model_call_incomplete_count",
+    "deepseek_model_call_unmatched_completed_count",
 ]
 
 
@@ -381,6 +382,17 @@ def event_kind(event: dict[str, Any]) -> str:
 def event_payload(event: dict[str, Any]) -> dict[str, Any]:
     value = event.get("payload")
     return value if isinstance(value, dict) else {}
+
+
+def event_run_id(payload: dict[str, Any]) -> str | None:
+    direct = payload.get("run_id")
+    if isinstance(direct, str) and direct:
+        return direct
+    meta = payload.get("_yoyo") if isinstance(payload.get("_yoyo"), dict) else {}
+    meta_run = meta.get("run_id")
+    if isinstance(meta_run, str) and meta_run:
+        return meta_run
+    return None
 
 
 def parse_log(log_text: str) -> dict[str, Any]:
@@ -716,13 +728,27 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
     expected_count = 0
     started_count = 0
     completed_count = 0
+    started_runs: set[str] = set()
+    completed_runs: set[str] = set()
+    unkeyed_starts = 0
+    unkeyed_completions = 0
     for event in load_events(session_dir / "state" / "events.jsonl"):
         kind = event_kind(event)
         payload = event_payload(event)
         if kind == "ModelCallStarted" and deepseek_model_payload(payload):
             started_count += 1
+            run_id = event_run_id(payload)
+            if run_id:
+                started_runs.add(run_id)
+            else:
+                unkeyed_starts += 1
         elif kind == "ModelCallCompleted" and deepseek_model_payload(payload):
             completed_count += 1
+            run_id = event_run_id(payload)
+            if run_id:
+                completed_runs.add(run_id)
+            else:
+                unkeyed_completions += 1
             if cache_metrics_expected_from_completion(payload):
                 expected_count += 1
         if kind != "CacheMetricsRecorded":
@@ -734,7 +760,8 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
         hit_tokens += hit or 0
         miss_tokens += miss or 0
         event_count += 1
-    incomplete_count = max(started_count - completed_count, 0)
+    incomplete_count = len(started_runs - completed_runs) + max(unkeyed_starts - unkeyed_completions, 0)
+    unmatched_completed_count = len(completed_runs - started_runs) + max(unkeyed_completions - unkeyed_starts, 0)
     if event_count == 0 and expected_count == 0 and started_count == 0 and completed_count == 0:
         return {}
     total = hit_tokens + miss_tokens
@@ -746,6 +773,7 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
         "deepseek_model_call_started_count": started_count,
         "deepseek_model_call_completed_count": completed_count,
         "deepseek_model_call_incomplete_count": incomplete_count,
+        "deepseek_model_call_unmatched_completed_count": unmatched_completed_count,
     }
     if event_count:
         metrics.update(

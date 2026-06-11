@@ -1337,11 +1337,69 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(latest["deepseek_cache_metric_expected_count"], 0)
             self.assertEqual(latest["deepseek_cache_metric_missing_count"], 0)
             self.assertEqual(model_claim["status"], "missing")
-            self.assertEqual(model_claim["actual"], {"started": 1, "completed": 0, "incomplete": 1})
-            self.assertIn("start/completion counts differ", model_claim["detail"])
+            self.assertEqual(model_claim["actual"]["started"], 1)
+            self.assertEqual(model_claim["actual"]["completed"], 0)
+            self.assertEqual(model_claim["actual"]["incomplete"], 1)
+            self.assertEqual(model_claim["actual"]["unmatched_completed"], 0)
+            self.assertEqual(model_claim["actual"]["incomplete_runs"], [])
+            self.assertIn("do not pair by run_id", model_claim["detail"])
             self.assertEqual(cache_claim["actual"]["expected_metric_events"], 0)
             self.assertIn("Incomplete DeepSeek model calls", html)
             self.assertIn("started without a matching ModelCallCompleted", html)
+
+    def test_model_call_lifecycle_pairs_by_run_id_not_just_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"day": 1, "tasks_attempted": 0, "tasks_succeeded": 0})
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_events(
+                session / "state/events.jsonl",
+                [
+                    {
+                        "kind": "ModelCallStarted",
+                        "payload": {"_yoyo": {"run_id": "run-a"}, "model": "deepseek-v4-pro"},
+                    },
+                    {
+                        "kind": "RunCompleted",
+                        "payload": {
+                            "_yoyo": {"run_id": "run-a"},
+                            "status": "error",
+                            "error": "exit code 1",
+                            "error_detail": "empty_input",
+                        },
+                    },
+                    {
+                        "kind": "ModelCallCompleted",
+                        "payload": {
+                            "_yoyo": {"run_id": "run-b"},
+                            "model": "deepseek-v4-pro",
+                            "input_tokens": 10,
+                        },
+                    },
+                ],
+            )
+
+            data = build(root / "sessions", root / "out")
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            model_claim = next(
+                claim
+                for claim in claims["sessions"][0]["claims"]
+                if claim["name"] == "deepseek_model_call_lifecycle_balanced"
+            )
+            work = data["sessions"][0]["work_summary"]
+
+            self.assertEqual(work["deepseek_model_call_incomplete_count"], 1)
+            self.assertEqual(work["deepseek_model_call_unmatched_completed_count"], 1)
+            self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["run_id"], "run-a")
+            self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["error_detail"], "empty_input")
+            self.assertEqual(model_claim["status"], "missing")
+            self.assertEqual(model_claim["actual"]["started"], 1)
+            self.assertEqual(model_claim["actual"]["completed"], 1)
+            self.assertEqual(model_claim["actual"]["incomplete"], 1)
+            self.assertEqual(model_claim["actual"]["unmatched_completed"], 1)
+            self.assertEqual(model_claim["actual"]["incomplete_runs"][0]["run_id"], "run-a")
+            self.assertEqual(model_claim["actual"]["unmatched_completed_runs"], ["run-b"])
 
     def test_manifest_files_backfilled_from_task_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
