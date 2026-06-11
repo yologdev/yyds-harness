@@ -25,13 +25,15 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def append_event(path: Path, event_type: str, payload: dict[str, object]) -> None:
+def append_event(path: Path, event_type: str, payload: dict[str, object], *, run_id: str | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     event = {
         "event_id": f"evt-{event_type}-{len(path.read_text(encoding='utf-8').splitlines()) if path.exists() else 0}",
         "event_type": event_type,
         "payload": payload,
     }
+    if run_id:
+        event["run_id"] = run_id
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, separators=(",", ":")) + "\n")
 
@@ -958,6 +960,102 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["deepseek_model_call_incomplete_count"], 1)
             self.assertEqual(metrics["deepseek_model_call_unmatched_completed_count"], 0)
 
+    def test_log_feedback_counts_abnormal_completed_model_calls_with_top_level_run_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            append_event(
+                session / "state/events.jsonl",
+                "ModelCallStarted",
+                {"model": "deepseek-v4-pro"},
+                run_id="run-stream-closed",
+            )
+            append_event(
+                session / "state/events.jsonl",
+                "ModelCallCompleted",
+                {
+                    "model": "deepseek-v4-pro",
+                    "status": "stream_closed_without_agent_end",
+                    "error_detail": "event_channel_closed_before_agent_end",
+                },
+                run_id="run-stream-closed",
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["deepseek_model_call_started_count"], 1)
+            self.assertEqual(metrics["deepseek_model_call_completed_count"], 1)
+            self.assertEqual(metrics["deepseek_model_call_abnormal_completed_count"], 1)
+            self.assertEqual(metrics["deepseek_model_call_incomplete_count"], 0)
+            self.assertEqual(metrics["deepseek_model_call_unmatched_completed_count"], 0)
+
+    def test_log_feedback_pairs_wrapped_yoyo_model_call_run_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            events_path = session / "state/events.jsonl"
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            rows = [
+                {
+                    "payload": {
+                        "_yoyo": {"event_type": "ModelCallStarted", "run_id": "run-wrapped"},
+                        "value": {"model": "deepseek-v4-pro"},
+                    }
+                },
+                {
+                    "payload": {
+                        "_yoyo": {"event_type": "ModelCallCompleted", "run_id": "run-wrapped"},
+                        "value": {"model": "deepseek-v4-pro", "status": "completed"},
+                    }
+                },
+            ]
+            events_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["deepseek_model_call_started_count"], 1)
+            self.assertEqual(metrics["deepseek_model_call_completed_count"], 1)
+            self.assertEqual(metrics["deepseek_model_call_incomplete_count"], 0)
+            self.assertEqual(metrics["deepseek_model_call_unmatched_completed_count"], 0)
+
     def test_state_summary_keeps_new_log_feedback_gnomes(self):
         with tempfile.TemporaryDirectory() as tmp:
             events = Path(tmp) / "state/events.jsonl"
@@ -972,6 +1070,7 @@ class TaskLineageFeedback(unittest.TestCase):
                             "state_live_baseline_shrink_count": 1,
                             "evaluator_timeout_with_verdict_count": 2,
                             "task_unlanded_source_count": 3,
+                            "deepseek_model_call_abnormal_completed_count": 4,
                         }
                     },
                 },
@@ -986,7 +1085,9 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(latest["state_live_baseline_shrink_count"], 1)
             self.assertEqual(latest["evaluator_timeout_with_verdict_count"], 2)
             self.assertEqual(latest["task_unlanded_source_count"], 3)
+            self.assertEqual(latest["deepseek_model_call_abnormal_completed_count"], 4)
             self.assertIn("state_live_baseline_shrink_count", summary["gnome_keys"])
+            self.assertIn("deepseek_model_call_abnormal_completed_count", summary["gnome_keys"])
 
     def test_summary_merges_post_wrapup_commit_links(self):
         with tempfile.TemporaryDirectory() as tmp:

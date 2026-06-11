@@ -135,6 +135,7 @@ GNOME_KEYS = [
     "deepseek_cache_metric_missing_count",
     "deepseek_model_call_started_count",
     "deepseek_model_call_completed_count",
+    "deepseek_model_call_abnormal_completed_count",
     "deepseek_model_call_incomplete_count",
     "deepseek_model_call_unmatched_completed_count",
 ]
@@ -376,15 +377,35 @@ def load_events(events_path: Path) -> list[dict[str, Any]]:
 
 def event_kind(event: dict[str, Any]) -> str:
     value = event.get("event_type") or event.get("kind")
-    return value if isinstance(value, str) else ""
+    if isinstance(value, str):
+        return value
+    raw_payload = event.get("payload")
+    if isinstance(raw_payload, dict):
+        meta = raw_payload.get("_yoyo")
+        if isinstance(meta, dict) and isinstance(meta.get("event_type"), str):
+            return str(meta["event_type"])
+    return ""
 
 
 def event_payload(event: dict[str, Any]) -> dict[str, Any]:
     value = event.get("payload")
-    return value if isinstance(value, dict) else {}
+    if not isinstance(value, dict):
+        return {}
+    wrapped = value.get("value")
+    if set(value.keys()).issubset({"_yoyo", "value"}) and isinstance(wrapped, dict):
+        return wrapped
+    return value
 
 
-def event_run_id(payload: dict[str, Any]) -> str | None:
+def event_run_id(event: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    top_level = event.get("run_id")
+    if isinstance(top_level, str) and top_level:
+        return top_level
+    raw_payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    raw_meta = raw_payload.get("_yoyo") if isinstance(raw_payload.get("_yoyo"), dict) else {}
+    raw_meta_run = raw_meta.get("run_id")
+    if isinstance(raw_meta_run, str) and raw_meta_run:
+        return raw_meta_run
     direct = payload.get("run_id")
     if isinstance(direct, str) and direct:
         return direct
@@ -721,6 +742,15 @@ def cache_metrics_expected_from_completion(payload: dict[str, Any]) -> bool:
     return bool((input_tokens or 0) > 0 or (cache_read_tokens or 0) > 0)
 
 
+def abnormal_model_completion_status(payload: dict[str, Any]) -> str | None:
+    status = str(payload.get("status") or "").strip()
+    if status and status not in {"completed", "success", "ok"}:
+        return status
+    if payload.get("error") or payload.get("error_detail"):
+        return status or "error"
+    return None
+
+
 def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
     hit_tokens = 0
     miss_tokens = 0
@@ -728,6 +758,7 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
     expected_count = 0
     started_count = 0
     completed_count = 0
+    abnormal_completed_count = 0
     started_runs: set[str] = set()
     completed_runs: set[str] = set()
     unkeyed_starts = 0
@@ -737,14 +768,16 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
         payload = event_payload(event)
         if kind == "ModelCallStarted" and deepseek_model_payload(payload):
             started_count += 1
-            run_id = event_run_id(payload)
+            run_id = event_run_id(event, payload)
             if run_id:
                 started_runs.add(run_id)
             else:
                 unkeyed_starts += 1
         elif kind == "ModelCallCompleted" and deepseek_model_payload(payload):
             completed_count += 1
-            run_id = event_run_id(payload)
+            if abnormal_model_completion_status(payload):
+                abnormal_completed_count += 1
+            run_id = event_run_id(event, payload)
             if run_id:
                 completed_runs.add(run_id)
             else:
@@ -772,6 +805,7 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
         "deepseek_cache_metric_missing_count": max(expected_count - event_count, 0),
         "deepseek_model_call_started_count": started_count,
         "deepseek_model_call_completed_count": completed_count,
+        "deepseek_model_call_abnormal_completed_count": abnormal_completed_count,
         "deepseek_model_call_incomplete_count": incomplete_count,
         "deepseek_model_call_unmatched_completed_count": unmatched_completed_count,
     }

@@ -98,7 +98,15 @@ def event_payload(event: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
-def event_run_id(payload: dict[str, Any]) -> str | None:
+def event_run_id(event: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    top_level = event.get("run_id")
+    if isinstance(top_level, str) and top_level:
+        return top_level
+    raw_payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    raw_meta = raw_payload.get("_yoyo") if isinstance(raw_payload.get("_yoyo"), dict) else {}
+    raw_meta_run = raw_meta.get("run_id")
+    if isinstance(raw_meta_run, str) and raw_meta_run:
+        return raw_meta_run
     direct = payload.get("run_id")
     if isinstance(direct, str) and direct:
         return direct
@@ -139,6 +147,15 @@ def cache_metrics_expected_from_completion(payload: dict[str, Any]) -> bool:
     input_tokens = payload_int(payload, "input_tokens")
     cache_read_tokens = payload_int(payload, "cache_read_tokens", "prompt_cache_hit_tokens", "cache_hit_tokens")
     return bool((input_tokens or 0) > 0 or (cache_read_tokens or 0) > 0)
+
+
+def abnormal_model_completion_status(payload: dict[str, Any]) -> str | None:
+    status = str(payload.get("status") or "").strip()
+    if status and status not in {"completed", "success", "ok"}:
+        return status
+    if payload.get("error") or payload.get("error_detail"):
+        return status or "error"
+    return None
 
 
 def compact_list(values: list[str], limit: int) -> list[str]:
@@ -1126,8 +1143,10 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     cache_metric_events = 0
     deepseek_model_call_started = 0
     deepseek_model_call_completed = 0
+    deepseek_model_call_abnormal_completed = 0
     model_call_started_runs: dict[str, dict[str, Any]] = {}
     model_call_completed_runs: set[str] = set()
+    model_call_abnormal_completed_runs: list[dict[str, Any]] = []
     model_call_run_errors: dict[str, dict[str, Any]] = {}
     run_last_events: dict[str, dict[str, Any]] = {}
     unkeyed_model_call_starts = 0
@@ -1136,7 +1155,7 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     for event in events:
         kind = event_kind(event)
         data = event_payload(event)
-        run_id = event_run_id(data)
+        run_id = event_run_id(event, data)
         if run_id:
             run_last_events[run_id] = {
                 "kind": kind,
@@ -1155,6 +1174,19 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
                 unkeyed_model_call_starts += 1
         elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
             deepseek_model_call_completed += 1
+            abnormal_status = abnormal_model_completion_status(data)
+            if abnormal_status:
+                deepseek_model_call_abnormal_completed += 1
+                model_call_abnormal_completed_runs.append(
+                    {
+                        "run_id": run_id,
+                        "model": data.get("model"),
+                        "status": abnormal_status,
+                        "error": data.get("error"),
+                        "error_detail": data.get("error_detail"),
+                        "last_event": run_last_events.get(run_id) if run_id else None,
+                    }
+                )
             if run_id:
                 model_call_completed_runs.add(run_id)
             else:
@@ -1164,7 +1196,7 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         elif kind == "CacheMetricsRecorded":
             cache_metric_events += 1
         elif kind == "RunCompleted":
-            run_id = event_run_id(data)
+            run_id = event_run_id(event, data)
             if run_id and (data.get("status") == "error" or data.get("error") or data.get("error_detail")):
                 model_call_run_errors[run_id] = data
         if kind == "FileEdited":
@@ -1239,9 +1271,11 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         "deepseek_cache_metric_missing_count": max(expected_cache_metrics - cache_metric_events, 0),
         "deepseek_model_call_started_count": deepseek_model_call_started,
         "deepseek_model_call_completed_count": deepseek_model_call_completed,
+        "deepseek_model_call_abnormal_completed_count": deepseek_model_call_abnormal_completed,
         "deepseek_model_call_incomplete_count": incomplete_count,
         "deepseek_model_call_unmatched_completed_count": unmatched_completed_count,
         "deepseek_model_call_incomplete_runs": incomplete_runs,
+        "deepseek_model_call_abnormal_completed_runs": model_call_abnormal_completed_runs[:8],
         "deepseek_model_call_unmatched_completed_runs": unmatched_completed_run_ids[:8],
     }
 
@@ -1374,9 +1408,11 @@ def work_summary(
         "deepseek_cache_metric_missing_count": event_data["deepseek_cache_metric_missing_count"],
         "deepseek_model_call_started_count": event_data["deepseek_model_call_started_count"],
         "deepseek_model_call_completed_count": event_data["deepseek_model_call_completed_count"],
+        "deepseek_model_call_abnormal_completed_count": event_data["deepseek_model_call_abnormal_completed_count"],
         "deepseek_model_call_incomplete_count": event_data["deepseek_model_call_incomplete_count"],
         "deepseek_model_call_unmatched_completed_count": event_data["deepseek_model_call_unmatched_completed_count"],
         "deepseek_model_call_incomplete_runs": event_data["deepseek_model_call_incomplete_runs"],
+        "deepseek_model_call_abnormal_completed_runs": event_data["deepseek_model_call_abnormal_completed_runs"],
         "deepseek_model_call_unmatched_completed_runs": event_data["deepseek_model_call_unmatched_completed_runs"],
         "patch_count": len(patches),
         "state_patch_count": len(patches),
@@ -1448,6 +1484,7 @@ def corrected_gnomes(
             "deepseek_cache_metric_missing_count",
             "deepseek_model_call_started_count",
             "deepseek_model_call_completed_count",
+            "deepseek_model_call_abnormal_completed_count",
             "deepseek_model_call_incomplete_count",
             "deepseek_model_call_unmatched_completed_count",
         )
@@ -1459,6 +1496,7 @@ def corrected_gnomes(
             "deepseek_cache_metric_missing_count",
             "deepseek_model_call_started_count",
             "deepseek_model_call_completed_count",
+            "deepseek_model_call_abnormal_completed_count",
             "deepseek_model_call_incomplete_count",
             "deepseek_model_call_unmatched_completed_count",
         ):
@@ -2133,11 +2171,15 @@ def cache_claim(gnomes: dict[str, Any]) -> dict[str, Any]:
 def model_call_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> dict[str, Any]:
     started = int(gnomes.get("deepseek_model_call_started_count") or 0)
     completed = int(gnomes.get("deepseek_model_call_completed_count") or 0)
+    abnormal_completed = int(gnomes.get("deepseek_model_call_abnormal_completed_count") or 0)
     incomplete = int(gnomes.get("deepseek_model_call_incomplete_count") or 0)
     unmatched_completed = int(gnomes.get("deepseek_model_call_unmatched_completed_count") or 0)
     incomplete_runs = work.get("deepseek_model_call_incomplete_runs")
     if not isinstance(incomplete_runs, list):
         incomplete_runs = []
+    abnormal_completed_runs = work.get("deepseek_model_call_abnormal_completed_runs")
+    if not isinstance(abnormal_completed_runs, list):
+        abnormal_completed_runs = []
     unmatched_completed_runs = work.get("deepseek_model_call_unmatched_completed_runs")
     if not isinstance(unmatched_completed_runs, list):
         unmatched_completed_runs = []
@@ -2147,19 +2189,24 @@ def model_call_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> 
     elif incomplete > 0 or unmatched_completed > 0:
         status = "missing"
         detail = "DeepSeek model call starts and completions do not pair by run_id."
+    elif abnormal_completed > 0:
+        status = "observed"
+        detail = "DeepSeek model call starts and completions pair by run_id, but at least one completion ended abnormally."
     else:
         status = "proven"
-        detail = "DeepSeek model call starts and completions are paired by run_id."
+        detail = "DeepSeek model call starts and completions are paired by run_id and completed normally."
     return claim_row(
         "deepseek_model_call_lifecycle_balanced",
         status,
-        {"started_equals_completed": True},
+        {"started_equals_completed": True, "normal_terminal_status": True},
         {
             "started": started,
             "completed": completed,
+            "abnormal_completed": abnormal_completed,
             "incomplete": incomplete,
             "unmatched_completed": unmatched_completed,
             "incomplete_runs": incomplete_runs[:8],
+            "abnormal_completed_runs": abnormal_completed_runs[:8],
             "unmatched_completed_runs": unmatched_completed_runs[:8],
         },
         [
@@ -2167,6 +2214,7 @@ def model_call_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> 
             "ModelCallCompleted",
             "deepseek_model_call_started_count",
             "deepseek_model_call_completed_count",
+            "deepseek_model_call_abnormal_completed_count",
             "deepseek_model_call_incomplete_count",
             "deepseek_model_call_unmatched_completed_count",
         ],
@@ -3008,6 +3056,7 @@ HTML = r"""<!doctype html>
       deepseek_cache_metric_missing_count: "Missing cache metric events",
       deepseek_model_call_started_count: "DeepSeek model calls started",
       deepseek_model_call_completed_count: "DeepSeek model calls completed",
+      deepseek_model_call_abnormal_completed_count: "Abnormal DeepSeek model completions",
       deepseek_model_call_incomplete_count: "Incomplete DeepSeek model calls",
       deepseek_model_call_unmatched_completed_count: "Unmatched DeepSeek model completions",
       deepseek_cache_ratio_unverified_count: "Unverified cache ratio reports"
@@ -3022,6 +3071,7 @@ HTML = r"""<!doctype html>
       "workflow_success_rate",
       "evolution_friction_count",
       "max_task_turn_count",
+      "deepseek_model_call_abnormal_completed_count",
       "deepseek_cache_hit_ratio"
     ];
 
@@ -3382,6 +3432,14 @@ HTML = r"""<!doctype html>
           text: `${text(incompleteModelCalls)} DeepSeek model call(s) started without a matching ModelCallCompleted event. Cache metrics are not expected until a model call completes with token usage.`
         });
       }
+      const abnormalModelCompletions = Number(gnomes.deepseek_model_call_abnormal_completed_count || 0);
+      if (abnormalModelCompletions > 0) {
+        notes.push({
+          kind: "Model calls",
+          className: "warn",
+          text: `${text(abnormalModelCompletions)} DeepSeek model completion(s) ended with a non-normal terminal status. Inspect lifecycle evidence before treating the session as clean.`
+        });
+      }
       const stateCoverage = Number(gnomes.state_capture_coverage ?? NaN);
       const operationalCoverage = Number(gnomes.state_operational_capture_coverage ?? NaN);
       const lineageCoverage = Number(gnomes.task_lineage_capture_coverage ?? NaN);
@@ -3665,6 +3723,7 @@ HTML = r"""<!doctype html>
         "state_operational_capture_coverage",
         "task_lineage_capture_coverage",
         "deepseek_cache_hit_ratio",
+        "deepseek_model_call_abnormal_completed_count",
         "deepseek_model_call_incomplete_count",
         "deepseek_cache_metric_missing_count",
         "deepseek_cache_ratio_unverified_count",

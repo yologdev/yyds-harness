@@ -1415,6 +1415,93 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(model_claim["actual"]["incomplete_runs"][0]["run_id"], "run-a")
             self.assertEqual(model_claim["actual"]["unmatched_completed_runs"], ["run-b"])
 
+    def test_model_call_lifecycle_pairs_wrapped_yoyo_run_ids(self):
+        work = summarize_events_for_work(
+            [
+                {
+                    "payload": {
+                        "_yoyo": {"event_type": "ModelCallStarted", "run_id": "run-wrapped"},
+                        "value": {"model": "deepseek-v4-pro"},
+                    }
+                },
+                {
+                    "payload": {
+                        "_yoyo": {"event_type": "ModelCallCompleted", "run_id": "run-wrapped"},
+                        "value": {"model": "deepseek-v4-pro", "status": "completed"},
+                    }
+                },
+            ]
+        )
+
+        self.assertEqual(work["deepseek_model_call_started_count"], 1)
+        self.assertEqual(work["deepseek_model_call_completed_count"], 1)
+        self.assertEqual(work["deepseek_model_call_incomplete_count"], 0)
+        self.assertEqual(work["deepseek_model_call_unmatched_completed_count"], 0)
+
+    def test_abnormal_completed_model_calls_are_observed_not_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"ts": "2026-01-01T00:00:00Z"})
+            write_json(
+                session / "state/summary.json",
+                {
+                    "generated_at": "2026-01-01T00:00:00Z",
+                    "evals": [
+                        {
+                            "suite": "log-feedback",
+                            "gnomes": {
+                                "deepseek_model_call_started_count": 1,
+                                "deepseek_model_call_completed_count": 1,
+                                "deepseek_model_call_abnormal_completed_count": 1,
+                                "deepseek_model_call_incomplete_count": 0,
+                                "deepseek_model_call_unmatched_completed_count": 0,
+                            },
+                        }
+                    ],
+                },
+            )
+            write_events(
+                session / "state/events.jsonl",
+                [
+                    {
+                        "kind": "ModelCallStarted",
+                        "run_id": "run-stream-closed",
+                        "payload": {"model": "deepseek-v4-pro"},
+                    },
+                    {
+                        "kind": "ModelCallCompleted",
+                        "run_id": "run-stream-closed",
+                        "payload": {
+                            "model": "deepseek-v4-pro",
+                            "status": "stream_closed_without_agent_end",
+                            "error_detail": "event_channel_closed_before_agent_end",
+                        },
+                    },
+                ],
+            )
+
+            build(root / "sessions", root / "out", repo_root=root)
+            data = json.loads((root / "out/data.json").read_text(encoding="utf-8"))
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+
+            work = data["sessions"][0]["work_summary"]
+            latest = data["sessions"][0]["latest_gnomes"]
+            model_claim = next(
+                claim
+                for claim in claims["sessions"][0]["claims"]
+                if claim["name"] == "deepseek_model_call_lifecycle_balanced"
+            )
+            self.assertEqual(work["deepseek_model_call_abnormal_completed_count"], 1)
+            self.assertEqual(latest["deepseek_model_call_abnormal_completed_count"], 1)
+            self.assertEqual(work["deepseek_model_call_incomplete_count"], 0)
+            self.assertEqual(model_claim["status"], "observed")
+            self.assertEqual(model_claim["actual"]["abnormal_completed"], 1)
+            self.assertEqual(
+                model_claim["actual"]["abnormal_completed_runs"][0]["status"],
+                "stream_closed_without_agent_end",
+            )
+
     def test_manifest_files_backfilled_from_task_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
