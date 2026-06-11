@@ -1,0 +1,127 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task: I need to add `state::stash_diagnostic_error()` calls before `exit_with_state()` calls in `src/lib.rs`, specifically focusing on the `run_piped_mode` function at lines 868 and 871 (post-change). The evaluator says these two lines were missed.
+
+Let me start by reading the relevant section of `src/lib.rs` to see the current state and find the exact lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'exit_with_state' in src/lib.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the context around lines 860-875 and also lines 690-700 to see the `run_piped_mode` function and confirm what stashing calls exist nearby.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:855..890  ▶ read src/lib.rs:685..715 ✓ (14ms)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue. The `run_piped_mode` function at lines 867-871 has two `exit_with_state` calls without preceding `stash_diagnostic_error` calls. I need to add those.
+
+Let me look at the context around lines 867-872 more carefully to understand what error context is available for `should_exit_error`. Let me also look at what's above line 867 to find the error that's being printed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:830..890 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find where `should_exit_error` is set in `run_piped_mode` to understand what error context is available. Let me also find the beginning of `run_piped_mode`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:712..832 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full picture. The `run_piped_mode` function has two `exit_with_state` calls at lines 867-871 (the `should_exit_error` check and the `CHECKPOINT_TRIGGERED` check) that don't have `stash_diagnostic_error` calls before them.
+
+For the `should_exit_error` case (line 867-868), the error comes from `try_fallback_prompt` which returns a `(response, should_exit_error)` tuple. The error context is already recorded earlier via `maybe_record_deepseek_api_failure` at line 805-811. But we still need to stash a diagnostic error before exiting.
+
+For the `CHECKPOINT_TRIGGERED` case at line 870-871, I need to add `state::stash_diagnostic_error("checkpoint_triggered")` before the exit, similar to how it's done in the other function at line 696.
+
+Let me now look at what `should_exit_error` means in this context. It's returned from `try_fallback_prompt`. I should stash something like "api_error: fallback_exhausted" or "agent run: fallback retry exhausted" for the `should_exit_error` case.
+
+Let me check what the `initial` response looks like when it fails, and whether there's an error message already being printed somewhere. Let me also look at other places where `should_exit_error` is used with `stash_diagnostic_error` to be consistent.
+
+Looking at the code:
+1. Line 867-868: `should_exit_error` → `exit_with_state(1)` — needs a `stash_diagnostic_error` before it. The error context is the fallback retry being exhausted. I'll use something like "api_error: fallback_exhausted".
+2. Line 870-871: `CHECKPOINT_TRIGGERED` → `exit_with_state(2)` — needs `state::stash_diagnostic_error("checkpoint_triggered")` before it.
+
+Let me now make the edits.
+────────────────────────────────────────────────────────────────────────────────
+
+I can see the two missing `stash_diagnostic_error` calls in `run_piped_mode` at lines 867-871. Let me fix both.
+        if should_exit_error {
+  +         state::stash_diagnostic_error("api_error: piped_fallback_exhausted");
+            exit_with_state(1);
+        }
+        if CHECKPOINT_TRIGGERED.load(Ordering::SeqCst) {
+  +         state::stash_diagnostic_error("checkpoint_triggered");
+            exit_with_state(2);
+        }
+  ✓ Auto-approved: edit: src/lib.rs (6 → 8 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (6 → 8 lines)
+        if should_exit_error {
+  +         state::stash_diagnostic_error("api_error: piped_fallback_exhausted");
+            exit_with_state(1);
+        }
+        if CHECKPOINT_TRIGGERED.load(Ordering::SeqCst) {
+  +         state::stash_diagnostic_error("checkpoint_triggered");
+            exit_with_state(2);
+        }
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the change by reading the edited lines and then run the build/tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the edit and run the required checks:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'exit_with_state' src/… ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the new lines 869 and 873 are the piped_mode exits. Let me verify the surrounding context to make sure the stash calls are there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:865..877 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edits look correct. Now let me run the build and test commands.
+────────────────────────────────────────────────────────────────────────────────
+
+Edits look correct. Now running the verification gates:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check && cargo … ✓ (15.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now run tests and clippy.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✓ (4m 17s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the actual result of the test run.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✓ (3m 31s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, that only shows doc tests. Let me check the full test result.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | grep -E '^te…

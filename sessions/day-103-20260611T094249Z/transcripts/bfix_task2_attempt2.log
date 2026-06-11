@@ -1,0 +1,516 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The errors show that functions moved to `commands_state_memory.rs` are still being called from `commands_state.rs` without proper imports. The compiler is suggesting adding `use` statements. Let me look at the specific errors:
+
+1. `record_state_memory_candidates` - not found
+2. `build_state_memory_records` - not found
+3. `record_state_memory_decision` - not found (two call sites)
+
+These are called from `commands_state.rs` but the functions were moved to `commands_state_memory.rs`. I need to add the appropriate `use` imports at the top of `commands_state.rs`.
+
+Let me first check what's currently in `commands_state.rs` around the relevant lines, and what's in `commands_state_memory.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me examine the current state of both files to understand what was moved and what needs imports.
+  ▶ search 'use crate::commands_state_memory' in src/commands_state.rs  ▶ search '^pub.*fn (record_state_memory_candidates|build_state_memory_…' in src/commands_state_memory.rs  ▶ search 'record_state_memory_candidates|build_state_memory_records|re…' in src/commands_state.rs ✓ (14ms)
+ ✓ (14ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, the searches returned no matches. Let me check if the files exist and what the actual function names are. The error shows line numbers like 13526, 14439, 14495, 14521 in commands_state.rs. Let me look at what's in the new file and what the actual function signatures are.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.7s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ head -80 src/commands_state_memory.rs 2>/dev/null || echo "FILE NOT FOUND"  ▶ $ grep -n 'pub.*fn (record_state_memory|build_state_memory|memory_candidate)' src/…  ▶ $ grep -c '' src/commands_state_memory.rs src/commands_state.rs src/lib.rs 2>/dev/… ✓ (24ms)
+ ✓ (16ms)
+ ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file exists with 584 lines. Now let me check what public functions are actually in `commands_state_memory.rs` and check the imports in `commands_state.rs` to understand what's missing.
+
+The compiler error says:
+- `record_state_memory_candidates` not found (line 13526 of commands_state.rs)
+- `build_state_memory_records` not found (line 14439)
+- `record_state_memory_decision` not found (line 14495, 14521)
+
+Let me search for the actual function names in the memory file.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.6s (3 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^pub.*fn\|^fn' src/commands_state_memory.rs  ▶ $ grep -n 'record_state_memory\|build_state_memory' src/commands_state_memory.rs ✓ (16ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The functions have different names! They're `build_state_memory_candidates` (not `record_state_memory_candidates`), and the function `record_state_memory_decision` exists in the memory file. Let me look at the specific lines in `commands_state.rs` where these functions are called to see exactly what the code expects.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'record_state_memory\|build_state_memory' src/commands_state.rs  ▶ read src/commands_state.rs:13518..13538 ✓ (4ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The error was at line 13526 where `record_state_memory_candidates` was supposedly called. But that's the `use super::*;` in the tests module. Wait, let me re-read the error.
+
+The error says:
+```
+error[E0425]: cannot find function `record_state_memory_candidates` in this scope
+     --> src/commands_state.rs:14439:23
+```
+
+But my grep only shows `build_state_memory_synthesis` (line 14222) and `record_state_memory_decision` (line 14521). So the `record_state_memory_candidates` and `build_state_memory_records` must be referenced in different places - maybe inside the test module or elsewhere.
+
+Let me re-read the errors more carefully:
+- `record_state_memory_candidates` at line 13526 — this is where the compiler suggested adding `use crate::commands_state_memory::record_state_memory_candidates;`
+- `build_state_memory_records` at line 14439
+- `record_state_memory_decision` at line 14495
+- `record_state_memory_decision` at line 14521
+
+Wait, the line numbers might have shifted because the file was modified. Let me look at what's actually there.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '13520,13550p' src/commands_state.rs  ▶ $ sed -n '14430,14450p' src/commands_state.rs  ▶ $ sed -n '14485,14530p' src/commands_state.rs ✓ (22ms)
+ ✓ (23ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue. The functions `record_state_memory_candidates`, `build_state_memory_records`, and `record_state_memory_decision` are called from within `commands_state.rs` — specifically from tests. But the functions in `commands_state_memory.rs` have names like `build_state_memory_candidates` (not `record_state_memory_candidates`).
+
+Wait, let me check: the code at lines 14439 and 14495/14521 calls `build_state_memory_records` and `record_state_memory_decision`. Let me check if those functions exist in `commands_state_memory.rs`.
+
+Also, the error at line 13526 is about `record_state_memory_candidates` - but the actual code at that line shows `use super::*`. Let me check if there's another call site for `record_state_memory_candidates`.
+
+Let me just look at the full error context again. The 9 errors mentioned include E0422 and E0425. Let me look at what functions are actually exported from commands_state_memory.rs and what names are being called from commands_state.rs.
+
+Let me get the full list of public functions in commands_state_memory.rs:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.1s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'pub' src/commands_state_memory.rs | head -40  ▶ $ grep -n 'record_state_memory_candidates\|build_state_memory_records\|build_state… ✓ (14ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture:
+- `commands_state_memory.rs` has the public functions: `build_state_memory_synthesis`, `record_state_memory_candidates`, `build_state_memory_records`, `record_state_memory_decision`
+- `commands_state.rs` calls: `build_state_memory_synthesis` (line 14222), `record_state_memory_candidates` (some line), `build_state_memory_records` (line 14439), `record_state_memory_decision` (lines 14495, 14521)
+
+The issue is that `commands_state.rs` needs `use` imports for `record_state_memory_candidates`, `build_state_memory_records`, and `record_state_memory_decision`. It may also need `build_state_memory_synthesis`.
+
+Let me check if `build_state_memory_synthesis` is already imported or if it has an error too:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.0s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'use crate::commands_state_memory' src/commands_state.rs  ▶ $ grep -n '^use ' src/commands_state.rs | head -40 ✓ (8ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there's NO `use crate::commands_state_memory::...` import in `commands_state.rs` at all. That's the problem. The functions were moved out but the callers weren't given the proper imports.
+
+Let me find all the call sites in `commands_state.rs` that need these imports. I already know:
+- `build_state_memory_synthesis` at line 14222
+- `record_state_memory_candidates` — somewhere in the test module
+- `build_state_memory_records` at line 14439
+- `record_state_memory_decision` at lines 14495 and 14521
+
+Let me find all call sites more precisely:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'record_state_memory_candidates\|build_state_memory_synthesis\|build_sta… ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see all the matches more clearly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'record_state_memory_candidates\|build_state_memory_synthesis\|build_sta… ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see all the call sites. All of these are in the test module (`#[cfg(test)] mod tests`) of `commands_state.rs`. I need to add a `use` import for these functions.
+
+But wait - `build_state_memory_synthesis` at lines 14222 and 14240 — are these also in the test module? Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14210..14250 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All the call sites are in the `#[cfg(test)] mod tests` block. Since the test module already has `use super::*;`, and these functions were previously in `commands_state.rs` but are now in `commands_state_memory.rs`, I need to add a `use crate::commands_state_memory::...` import.
+
+The required imports are:
+- `build_state_memory_synthesis`
+- `record_state_memory_candidates`
+- `build_state_memory_records`
+- `record_state_memory_decision`
+
+Also, `StateMemoryRecord` is now in `commands_state_memory.rs` - let me check if it's used in the tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'StateMemoryRecord' src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`StateMemoryRecord` is not directly referenced in `commands_state.rs` - it's used through the functions' return types which are inferred.
+
+Now let me also check the E0422 errors mentioned in the compiler output — those were about "cannot find ... in this scope" for something imported but not found. Let me look at what other errors exist.
+
+The compiler output mentioned 9 errors and 1 warning. Let me check what imports might be wrong. But actually, the most direct fix is to add the `use` imports. Let me also check if there's an `E0422` error about an import that can't be found in `commands_state_memory.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 | head -80 ✓ (6.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, `cargo check` passes now! The errors in the `cargo test` output were from test code. Let me run `cargo test` to see the current state:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | tail -60 ✓ (14.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the errors now. All the errors are in test code. There are 9 errors total: `record_state_memory_candidates` (2 call sites), `build_state_memory_records` (1), `record_state_memory_decision` (2), plus `build_state_memory_synthesis` (2) which must also be among the errors.
+
+The compiler suggests adding the imports at line 13526, which is where `use super::*;` is in the test module. I need to add `use crate::commands_state_memory::...` imports.
+
+Wait, the error says 9 errors but I see only 6 function calls (2 + 1 + 2 + ... what about `build_state_memory_synthesis`?). Let me check if `build_state_memory_synthesis` also fails:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | grep 'error\… ✓ (14.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the missing functions are:
+1. `build_state_memory_synthesis` (2 call sites at lines 14222, 14240)
+2. `record_state_memory_candidates` (2 call sites at lines 14370, 14385)
+3. `build_state_memory_records` (1 call site at line 14439)
+4. `record_state_memory_decision` (2 call sites at lines 14495, 14521)
+
+That's 7 call sites total. But the error says 9 errors. Let me count the E0422 errors too.
+
+Anyway, the fix is straightforward: add a `use crate::commands_state_memory::...` line in the test module. Let me find the exact location:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13524..13539 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add `use crate::commands_state_memory::{build_state_memory_records, build_state_memory_synthesis, record_state_memory_candidates, record_state_memory_decision};` right after `use serde_json::json;` at line 13527.
+
+Wait, but what about the E0422 errors? Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | grep 'error\… ✓ (14.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's also `StateMemoryCandidate` being referenced in `commands_state.rs`. Let me find where:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'StateMemoryCandidate' src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `StateMemoryCandidate` is a private struct in `commands_state_memory.rs` (not `pub`), but the tests in `commands_state.rs` try to use it. Let me check the visibility:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14315..14365 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `StateMemoryCandidate` is a private struct in `commands_state_memory.rs` that's used by the test at line 14330 in `commands_state.rs`. I need to either:
+1. Make `StateMemoryCandidate` `pub(crate)` in `commands_state_memory.rs`
+2. Or remove the test
+
+Since the task says "keep the extracted code identical — no refactoring, renaming, or reformatting", but we need to fix the visibility issue. The struct was previously in `commands_state.rs` and accessible via `super::*`. Now it's in `commands_state_memory.rs` and needs to be `pub(crate)` to be accessible from the test module.
+
+Let me check what's currently pub vs private in `commands_state_memory.rs`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'struct StateMemory' src/commands_state_memory.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`StateMemoryCandidate` is private, `StateMemoryRecord` is `pub(crate)`. The test module in `commands_state.rs` uses `StateMemoryCandidate` directly (constructing it at line 14330). I need to make it `pub(crate)`.
+
+Also I need to check: does `StateMemoryCandidate`'s `to_payload` method and field access need to be pub? The test at line 14330 constructs a `StateMemoryCandidate` and calls `.to_payload()` and accesses `.candidate_id`, `.source`, `.evidence_event_ids` etc. All of these need to be accessible.
+
+Let me check the struct definition:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_memory.rs:36..66 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to:
+1. Make `StateMemoryCandidate` and its fields `pub(crate)` 
+2. Make `to_payload` method `pub(crate)`
+3. Add the `use` import line in `commands_state.rs` test module
+
+Wait, actually the test at line 14330 creates a `StateMemoryCandidate` struct literal. That requires the struct itself and all its fields to be `pub`. But since the test is in a different module (the test module of `commands_state`), it needs at least `pub(crate)` visibility.
+
+Let me now do the fixes:
+
+1. In `commands_state_memory.rs`: make `StateMemoryCandidate` and its `to_payload` method `pub(crate)`
+2. In `commands_state.rs`: add `use crate::commands_state_memory::{...};` in the test module
+
+Let me look at what exactly the test at line 14330 accesses to make sure I get the visibility right:
+- Constructs `StateMemoryCandidate { candidate_id, source, summary, evidence_event_ids }` 
+- Calls `.to_payload(1234)`
+
+Plus earlier tests (line 14315-14325) access `.candidate_id`, `.source`, `.evidence_event_ids` on `StateMemoryCandidate`.
+
+Fields need to be `pub(crate)` too. Let me make the fix.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. The functions were moved to `commands_state_memory.rs` but:
+1. Tests in `commands_state.rs` still reference them without imports
+2. `StateMemoryCandidate` struct is private but used by tests in `commands_state.rs`
+
+Two fixes needed:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (4ms)
+  ▶ todo ✓ (4ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the edits. First, make `StateMemoryCandidate` pub(crate):
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  - struct StateMemoryCandidate {
+  -     candidate_id: String,
+  -     source: String,
+  -     summary: String,
+  -     evidence_event_ids: Vec<String>,
+  + pub(crate) struct StateMemoryCandidate {
+  +     pub(crate) candidate_id: String,
+  +     pub(crate) source: String,
+  +     pub(crate) summary: String,
+  +     pub(crate) evidence_event_ids: Vec<String>,
+    }
+    
+    impl StateMemoryCandidate {
+  -     fn to_payload(&self, proposed_at_ms: i64) -> Value {
+  +     pub(crate) fn to_payload(&self, proposed_at_ms: i64) -> Value {
+  ✓ Auto-approved: edit: src/commands_state_memory.rs (9 → 9 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ edit src/commands_state_memory.rs (9 → 9 lines)
+  - struct StateMemoryCandidate {
+  -     candidate_id: String,
+  -     source: String,
+  -     summary: String,
+  -     evidence_event_ids: Vec<String>,
+  + pub(crate) struct StateMemoryCandidate {
+  +     pub(crate) candidate_id: String,
+  +     pub(crate) source: String,
+  +     pub(crate) summary: String,
+  +     pub(crate) evidence_event_ids: Vec<String>,
+    }
+    
+    impl StateMemoryCandidate {
+  -     fn to_payload(&self, proposed_at_ms: i64) -> Value {
+  +     pub(crate) fn to_payload(&self, proposed_at_ms: i64) -> Value {
+ ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the use imports in the test module of commands_state.rs:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (2 ✓)
+
+
+        use super::*;
+  +     use crate::commands_state_memory::{
+  +         build_state_memory_records, build_state_memory_synthesis, record_state_memory_candidates,
+  +         record_state_memory_decision, StateMemoryCandidate,
+  +     };
+        use serde_json::json;
+  ✓ Auto-approved: edit: src/commands_state.rs (2 → 6 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (4ms)
+  ▶ edit src/commands_state.rs (2 → 6 lines)
+        use super::*;
+  +     use crate::commands_state_memory::{
+  +         build_state_memory_records, build_state_memory_synthesis, record_state_memory_candidates,
+  +         record_state_memory_decision, StateMemoryCandidate,
+  +     };
+        use serde_json::json;
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run cargo check first to see if there are any other issues:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.5s (3 ✓)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (6.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`cargo check` passes. The warning about unused imports is pre-existing and not from our changes. Now let me run the full test suite:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (4ms)
+  ▶ todo ✓ (4ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt && cargo build && ca… ✓ (30.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's one more error: `build_state_memory_candidates` is used at line 14305 in `commands_state.rs`, but it's private in `commands_state_memory.rs`. Let me check:
+
+- `build_state_memory_candidates` is `fn` (private) at line 70 in commands_state_memory.rs
+- `record_state_memory_candidates` is `pub(crate) fn` at line 309
+
+The test calls `build_state_memory_candidates` at line 14305, but the function is private. I need to either:
+1. Make `build_state_memory_candidates` `pub(crate)` 
+2. Or import it in the use statement
+
+Let me check what the test does with it:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 35.6s (3 ✓)
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14300..14325 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`build_state_memory_candidates` is a private function in `commands_state_memory.rs` that's tested from `commands_state.rs`. I need to make it `pub(crate)` and add it to the import list.
+────────────────────────────────────────────────────────────────────────────────
+
+Need to make `build_state_memory_candidates` accessible and add it to the import:
+  - fn build_state_memory_candidates(events: &[Value]) -> Vec<StateMemoryCandidate> {
+  + pub(crate) fn build_state_memory_candidates(events: &[Value]) -> Vec<StateMemoryCandidate> {
+  ✓ Auto-approved: edit: src/commands_state_memory.rs (1 → 1 lines)
+        use crate::commands_state_memory::{
+  -         build_state_memory_records, build_state_memory_synthesis, record_state_memory_candidates,
+  -         record_state_memory_decision, StateMemoryCandidate,
+  +         build_state_memory_candidates, build_state_memory_records, build_state_memory_synthesis,
+  +         record_state_memory_candidates, record_state_memory_decision, StateMemoryCandidate,
+        };
+  ✓ Auto-approved: edit: src/commands_state.rs (4 → 4 lines)
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_memory.rs (1 → 1 lines)
+  - fn build_state_memory_candidates(events: &[Value]) -> Vec<StateMemoryCandidate> {
+  + pub(crate) fn build_state_memory_candidates(events: &[Value]) -> Vec<StateMemoryCandidate> {
+  ▶ edit src/commands_state.rs (4 → 4 lines)
+        use crate::commands_state_memory::{
+  -         build_state_memory_records, build_state_memory_synthesis, record_state_memory_candidates,
+  -         record_state_memory_decision, StateMemoryCandidate,
+  +         build_state_memory_candidates, build_state_memory_records, build_state_memory_synthesis,
+  +         record_state_memory_candidates, record_state_memory_decision, StateMemoryCandidate,
+        };
+ ✓ (16ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run cargo test again:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt && cargo build && ca… ✓ (3m 15s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output was truncated but it shows "running 4202 tests" and lots of passing tests. The exit code was 0. Let me check if all tests passed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | tail -10 ✓ (2m 28s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 89 tests pass with 0 failures. Let me also run cargo fmt and cargo check to confirm everything is clean:
+────────────────────────────────────────────────────────────────────────────────
+
+All 89 tests pass. Let me verify the final state:
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check && cargo … ✓ (7.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The warning about unused imports (`Actor`, `EventType`, `StateConfig`, `StateRecorder`) is pre-existing and not caused by our changes — it was there before. Everything passes.
+
+Let me also verify the verification criteria from the task:
+- `grep -c 'fn build_state_memory_synthesis' src/commands_state.rs` should be 0
+- `grep -c 'fn build_state_memory_synthesis' src/commands_state_memory.rs` should be 1
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (4ms)
+  ▶ $ echo "=== build_state_memory_synthesis in commands_state.rs ===" && grep -c 'fn … ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The grep showed 0 for commands_state.rs (which is expected) and the second grep returned exit code 1 which happens with `grep -c` returning 0. Let me verify:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -c 'fn build_state_memory_synthesis' src/commands_state_memory.rs; echo "ex… ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`grep -c` returned 1 match in `commands_state_memory.rs` (exit 0) and 0 in `commands_state.rs` (exit 1). Both are correct.
+
+The fix is complete. Let me summarize the changes:
+
+1. **`src/commands_state_memory.rs`**: 
+   - Made `StateMemoryCandidate` struct and its fields `pub(crate)` 
+   - Made its `to_payload` method `pub(crate)`
+   - Made `build_state_memory_candidates` function `pub(crate)`
+
+2. **`src/commands_state.rs`**: 
+   - Added `use crate::commands_state_memory::{...}` import in the test module for the 5 moved functions + 1 struct
+
+All 89 tests pass, `cargo fmt` check passes, `cargo check` passes.
+────────────────────────────────────────────────────────────────────────────────
+
+All fixed. Here's a summary of the 3 changes made:
+
+**`src/commands_state_memory.rs`** — 3 visibility fixes:
+• `StateMemoryCandidate` struct + fields → `pub(crate)` (was private, needed by tests)
+• `StateMemoryCandidate::to_payload()` → `pub(crate)`
+• `build_state_memory_candidates()` → `pub(crate)`
+
+**`src/commands_state.rs`** — 1 import added in `#[cfg(test)] mod tests`:
+• Added `use crate::commands_state_memory::{build_state_memory_candidates, build_state_memory_records, build_state_memory_synthesis, record_state_memory_candidates, record_state_memory_decision, StateMemoryCandidate};`
+
+**Verification:**
+• `cargo fmt -- --check` — clean
+• `cargo check` — clean (pre-existing warning only)
+• `cargo test` — 89 passed, 0 failed
+• `build_state_memory_synthesis` in `commands_state.rs`: 0 ✓, in `commands_state_memory.rs`: 1 ✓
+
+

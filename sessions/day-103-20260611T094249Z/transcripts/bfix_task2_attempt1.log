@@ -1,0 +1,700 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the errors:
+
+1. **Unused imports**: `BTreeMap`, `BTreeSet` in `commands_state.rs` and `Path` in `commands_state_memory.rs`
+2. **E0277 errors**: "the size for values of type `str` cannot be known at compilation time" at lines 51, 79 in `commands_state_memory.rs` - this suggests `build_state_memory_synthesis` returns `Result<String, String>` but somewhere it's being treated as `str` instead of `String`.
+
+Let me look at the specific code to understand the issues.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/commands_state_memory.rs  ▶ search 'fn build_state_memory_synthesis' in src/commands_state.rs ✓ (10ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The problem is clear now. The file `src/commands_state_memory.rs` contains the memory **handlers** (the CLI dispatch functions like `handle_memory`, `handle_memory_synthesize`, etc.) but NOT the actual core functions (`build_state_memory_synthesis`, `StateMemoryRecord`, `record_state_memory_candidates`, `build_state_memory_records`, `record_state_memory_decision`, `memory_candidate_id`).
+
+Those functions are still in `src/commands_state.rs` at line 12553. The new file is referencing them but they haven't been moved yet. Also, the new file has handler functions that reference those core functions.
+
+Wait, let me re-read the error more carefully. The errors are:
+1. Unused imports: `BTreeMap`, `BTreeSet` in `commands_state_memory.rs` and `Path` in `commands_state_memory.rs`
+2. E0277 - `str` not `Sized` at line 51 and 79 - this is `Ok(report)` where `report` is a `str` and `println!("{report}")` which should work fine for `str`...
+
+Wait, actually looking at line 51: `Ok(report)` — the function `build_state_memory_synthesis` returns `Result<String, String>`. But the error says "the size for values of type `str` cannot be known at compilation time". 
+
+Hmm, that's weird. `Result<String, String>` should be `Sized`. Let me think... The error is at line 51: `Ok(report) => {`. This is matching on the result of `build_state_memory_synthesis(&events)`. If `build_state_memory_synthesis` returns `Result<String, String>`, then `report` should be a `String`, which is `Sized`.
+
+Unless... the function signature in `commands_state.rs` is different from what I expect, or there's some type inference issue because the function isn't in scope properly.
+
+Wait, let me re-read the errors:
+```
+error[E0277]: the size for values of type `str` cannot be known at compilation time
+  --> src/commands_state_memory.rs:51:12
+   |
+51 |         Ok(report) => {
+   |            ^^^^^^ doesn't have a size known at compile-time
+```
+
+This suggests that the compiler is inferring the type of the result as something containing `str` (unsized). But `build_state_memory_synthesis` returns `Result<String, String>`. 
+
+Hmm, but wait — the functions it's calling (`record_state_memory_candidates`, `build_state_memory_records`, `record_state_memory_decision`) might have return types involving `str`. Let me check what's actually in `commands_state.rs`.
+
+Actually, I think the issue might be simpler. Looking at the code, `handle_memory_synthesize` calls `build_state_memory_synthesis`, `record_state_memory_candidates`, and `write_text_artifact`. These functions are NOT defined in `commands_state_memory.rs` — they're still in `commands_state.rs`. And some of those functions might have changed or not exist anymore.
+
+Wait, re-reading the search result: `build_state_memory_synthesis` is still at line 12553 of `commands_state.rs`. So the core functions haven't been moved. But the handlers in `commands_state_memory.rs` call those functions. The functions are imported via `use crate::commands_state::*;` — wait no, they're not in that import. The import list is: `current_time_ms, default_events_path, default_store_path, event_string, evidence_ids, flag_value, payload_str, preview_line, push_report_section, read_events, write_text_artifact`.
+
+But `build_state_memory_synthesis`, `record_state_memory_candidates`, `build_state_memory_records`, `record_state_memory_decision` are NOT in the import list. So they need to either be imported or moved into the new file.
+
+The task says these functions should have been moved from `commands_state.rs` to `commands_state_memory.rs`. But the current state of the file only has the handler functions. The core functions are still in `commands_state.rs`.
+
+So the fix is: move the core functions from `commands_state.rs` into `commands_state_memory.rs`. Let me read the core functions first.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 17.2s (2 ✓)
+
+Let me examine the core functions that should have been moved and the current state of both files.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:12550..13000 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The task says to extract lines 12553-12987 from `commands_state.rs` into `commands_state_memory.rs`. But the current `commands_state_memory.rs` has the handler functions (like `handle_memory`, `handle_memory_synthesize`, etc.) but NOT the core functions. The core functions are still in `commands_state.rs`.
+
+Also, looking at the handler functions in `commands_state_memory.rs`, they call functions like `build_state_memory_synthesis`, `record_state_memory_candidates`, `build_state_memory_records`, `record_state_memory_decision` which are still in `commands_state.rs`.
+
+The fix should be: move the core functions (lines 12553-12987) from `commands_state.rs` into `commands_state_memory.rs`, and fix the imports.
+
+Let me also check what `build_state_memory_candidates` is — it's called at line 12558 but not in the extraction range. Let me search for it.
+
+Also, I need to figure out what the E0277 errors are about. Let me look at the `build_state_memory_synthesis` return type more carefully. It returns `Result<String, String>`. But the error says `str` doesn't have a size... 
+
+Wait, could this be because the function signature is not being found? The handler calls `build_state_memory_synthesis(&events)` but if the compiler can't find the function declaration (because it's in `commands_state.rs` and not imported), then maybe it's falling back to some inference that breaks.
+
+But actually the E0425 error ("unresolved import") should appear before E0277... Let me count: "7 previous errors; 5 warnings emitted". There are also E0425 errors we haven't seen.
+
+Let me re-read the error output more carefully:
+
+```
+error[E0277]: the size for values of type `str` cannot be known at compilation time
+  --> src/commands_state_memory.rs:51:12
+   |
+51 |         Ok(report) => {
+   |            ^^^^^^ doesn't have a size known at compile-time
+```
+
+I think what's happening is: `build_state_memory_synthesis` is being found (it's in `commands_state.rs` which is a sibling module), but its return type is being inferred differently, or there's a conflict.
+
+Actually wait, let me look at what's imported in `commands_state_memory.rs` line 5-9:
+
+```rust
+use crate::commands_state::{
+    current_time_ms, default_events_path, default_store_path, event_string, evidence_ids,
+    flag_value, payload_str, preview_line, push_report_section, read_events,
+    write_text_artifact,
+};
+```
+
+It doesn't import `build_state_memory_synthesis`, `record_state_memory_candidates`, etc. These functions are used but not explicitly imported. If they're `pub(crate)` in `commands_state.rs`, they'd be accessible via `crate::commands_state::build_state_memory_synthesis`. But in the handler code, they're called without the module prefix — just `build_state_memory_synthesis(&events)`. For this to work, they need to either be in the same module or imported via `use`.
+
+Actually wait, since the core functions should be MOVED into `commands_state_memory.rs`, not imported. The current state has only the handlers in the new file. The core functions are still in the old file. That's the bug.
+
+Let me figure out the right approach:
+
+1. Read the exact lines 12553-12987 from `commands_state.rs`
+2. Append them to `commands_state_memory.rs` (or replace the file entirely with both handlers and core functions)
+3. Remove them from `commands_state.rs`
+4. Fix imports
+
+But first, let me check: is there a function `build_state_memory_candidates` that is NOT in the extraction range? It's called at line 12558 from `build_state_memory_synthesis`.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the full picture — what other functions are called by the code being moved, and what the original handler code in commands_state.rs looks like.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_state_memory_candidates' in src/commands_state.rs  ▶ search 'fn handle_memory' in src/commands_state.rs  ▶ read src/commands_state.rs:12700..12800 ✓ (4ms)
+ ✓ (22ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture:
+
+The code that needs to be extracted from `commands_state.rs` (lines 12553-12987) includes:
+1. `build_state_memory_synthesis` (line 12553)
+2. `StateMemoryCandidate` struct + impl (lines 12701-12722)
+3. `StateMemoryRecord` struct (lines 12724-12734) 
+4. `build_state_memory_candidates` (line 12736)
+5. `record_state_memory_candidates` (line 12827)
+6. `build_state_memory_records` (line 12864)
+7. `record_state_memory_decision` (line 12923)
+8. `memory_candidate_id` (line 12969)
+
+The current `commands_state_memory.rs` has the **handler** functions that dispatch CLI commands. But it doesn't have the core functions. The handler functions reference `build_state_memory_synthesis`, `record_state_memory_candidates`, etc., which are still in `commands_state.rs`.
+
+The E0277 error is likely because the compiler can't find `build_state_memory_synthesis` and is making a bad inference. Let me verify by checking if `record_state_memory_candidates` exists, and also check what imports are needed.
+
+Actually, I think the error might be more subtle. Let me re-read the handler code:
+
+```rust
+match build_state_memory_synthesis(&events) {
+    Ok(report) => {
+```
+
+If the compiler can't find `build_state_memory_synthesis` in scope (because it's only in `commands_state.rs` and not imported), then this would be an E0425 error. But the error we see is E0277 about `str` not having a size. That's strange.
+
+Wait — the E0425 errors are mentioned: "Some errors have detailed explanations: E0277, E0425." so there are both E0277 and E0425 errors. We only see the E0277 ones in the output. So there are unresolved references too.
+
+The fix plan:
+1. Read the complete extraction range (lines 12553-12987) from `commands_state.rs`
+2. Add these functions to `commands_state_memory.rs` 
+3. Fix imports in `commands_state_memory.rs` (remove unused, add needed ones)
+4. Remove these functions from `commands_state.rs`
+5. Verify with cargo build
+
+But wait, I also need to check what the original handler code looked like. The task says the handlers should also be part of `commands_state_memory.rs`. Let me check if the handlers (like `handle_memory` etc.) were originally moved from `commands_state.rs` too.
+
+Looking at the `commands_state_memory.rs` content, it has:
+- `handle_memory` (pub fn)
+- `print_memory_usage`
+- `handle_memory_synthesize`
+- `handle_memory_list`
+- `handle_memory_decision`
+
+These make sense as memory-related handlers. But they reference core functions that haven't been moved.
+
+Let me also read the end of the extraction range to make sure I have the complete picture, then plan the fix.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 14.1s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:12800..13000 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. The code to extract is lines 12553-12987 from `commands_state.rs`. This includes:
+
+1. `build_state_memory_synthesis` (12553)
+2. `StateMemoryCandidate` struct + impl (12701-12722) — but wait, this is between 12553 and 12987, but it's a `struct` not a `pub(crate) struct`. It's used internally.
+3. `StateMemoryRecord` struct (12724-12734) — `pub(crate)`
+4. `build_state_memory_candidates` (12736) — this is `fn` (private)
+5. `record_state_memory_candidates` (12827) — `pub(crate)`
+6. `build_state_memory_records` (12864) — `pub(crate)`
+7. `record_state_memory_decision` (12923) — `pub(crate)`
+8. `memory_candidate_id` (12969) — `fn` (private)
+
+The current `commands_state_memory.rs` has the CLI handler functions. To fix the build:
+
+1. Copy the core functions (12553-12987) into `commands_state_memory.rs`
+2. Fix imports in `commands_state_memory.rs`
+3. Remove the corresponding code from `commands_state.rs`
+4. Fix any remaining import issues in `commands_state.rs`
+
+Let me also check what imports `commands_state.rs` has that are used by these functions, to make sure they're available or imported in the new file.
+
+Let me check imports in commands_state.rs first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs (60 lines) ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see it clearly. Line 52:
+```rust
+"memory" => crate::commands_state_memory::handle_memory(&args[3..]),
+```
+
+So `commands_state.rs` already calls `handle_memory` from the `commands_state_memory` module. And `commands_state_memory.rs` has the handler functions but calls core functions like `build_state_memory_synthesis` that are still in `commands_state.rs`.
+
+The fix is to move the core functions (lines 12553-12987) from `commands_state.rs` to `commands_state_memory.rs`. Here's my plan:
+
+1. Read the full content of `commands_state_memory.rs`
+2. Rewrite `commands_state_memory.rs` to include:
+   - Proper imports
+   - The core functions (12553-12987)
+   - The handler functions
+3. Remove the core functions from `commands_state.rs`
+4. Fix unused import warnings in `commands_state.rs`
+
+Let me also check what other functions from `commands_state.rs` are needed by the handlers. Looking at the handler code in `commands_state_memory.rs`, it uses:
+- `default_events_path` — imported ✓
+- `read_events` — imported ✓
+- `flag_value` — imported ✓
+- `preview_line` — imported ✓
+- `write_text_artifact` — imported ✓
+- `build_state_memory_synthesis` — NOT imported (will be local after move)
+- `record_state_memory_candidates` — NOT imported (will be local after move)
+- `build_state_memory_records` — NOT imported (will be local after move)
+- `record_state_memory_decision` — NOT imported (will be local after move)
+
+And the core functions use:
+- `event_string` (from commands_state)
+- `payload_str` (from commands_state)
+- `preview_line` (from commands_state)
+- `evidence_ids` (from commands_state)
+- `current_time_ms` (from commands_state)
+- `default_store_path` (from commands_state)
+- `BTreeMap`, `BTreeSet`
+- `Path`, `PathBuf`
+- `Value`
+- `Actor`, `EventType`, `StateConfig`, `StateRecorder` (from state)
+- Format constants (from format)
+
+Wait, `current_time_ms` is defined in `commands_state.rs`? Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'pub.*fn current_time_ms' in src/commands_state.rs  ▶ search 'pub.*fn event_string' in src/commands_state.rs  ▶ search 'pub.*fn payload_str' in src/commands_state.rs  ▶ search 'pub.*fn evidence_ids' in src/commands_state.rs  ▶ search 'pub.*fn preview_line' in src/commands_state.rs ✓ (22ms)
+ ✓ (22ms)
+ ✓ (22ms)
+ ✓ (22ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Those functions don't have `pub` in their signature, so they might be `pub(crate)` or private. Let me search without `pub`.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 4.9s (5 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn current_time_ms' in src/commands_state.rs  ▶ search 'fn event_string' in src/commands_state.rs  ▶ search 'fn payload_str' in src/commands_state.rs  ▶ search 'fn evidence_ids' in src/commands_state.rs  ▶ search 'fn preview_line' in src/commands_state.rs ✓ (22ms)
+ ✓ (22ms)
+ ✓ (22ms)
+ ✓ (22ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me check what's imported in the existing `commands_state_memory.rs` and what the current handler code looks like to understand the full set of changes needed.
+
+Now I have the full picture. Let me also check `push_report_section` and `write_text_artifact` which are imported in `commands_state_memory.rs` but I want to see if the core functions use them.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 5.1s (5 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn push_report_section' in src/commands_state.rs  ▶ search 'fn write_text_artifact' in src/commands_state.rs  ▶ search 'fn read_events' in src/commands_state.rs  ▶ search 'fn flag_value' in src/commands_state.rs ✓ (17ms)
+ ✓ (17ms)
+ ✓ (17ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me read the rest of `build_state_memory_synthesis` to see what it uses `push_report_section` for.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.9s (4 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:12647..12712 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have everything I need. Let me also check what `format_timestamp_ms` looks like — it's referenced in the imports of `commands_state_memory.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn format_timestamp_ms' in src/commands_state.rs  ▶ search 'fn human_bytes' in src/commands_state.rs ✓ (9ms)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`human_bytes` is a private function in `commands_state.rs`, so it can't be imported by `commands_state_memory.rs`. But looking at the imports in `commands_state_memory.rs`, `human_bytes` is in the import list. Let me check if the handlers actually use it. Looking at the code, I don't see `human_bytes` being used. So it's just an unused import.
+
+Now let me also check if `format_timestamp_ms` is used — looking at the handler code, I don't see it either.
+
+OK, now let me look at the full list of imports in `commands_state_memory.rs` and what's actually needed:
+
+Current imports:
+```rust
+use crate::commands_state::{
+    current_time_ms, default_events_path, default_store_path, event_string, evidence_ids,
+    flag_value, payload_str, preview_line, push_report_section, read_events,
+    write_text_artifact,
+};
+use crate::format::*;
+use crate::state::{Actor, EventType, StateConfig, StateRecorder};
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+```
+
+Issues:
+1. `default_store_path` — needed by core functions
+2. `current_time_ms` — needed by core functions
+3. `event_string` — needed by core functions
+4. `evidence_ids` — needed by core functions
+5. `payload_str` — needed by core functions
+6. `push_report_section` — needed by core functions
+7. `preview_line` — needed by both handlers and core
+8. `default_events_path` — needed by handlers
+9. `read_events` — needed by handlers
+10. `flag_value` — needed by handlers
+11. `write_text_artifact` — needed by handlers
+12. `BTreeMap`, `BTreeSet` — needed by core functions
+13. `Path`, `PathBuf` — needed by core and handlers
+14. `Value` — needed by core and handlers
+15. `Actor`, `EventType`, `StateConfig`, `StateRecorder` — needed by core functions
+16. `format::*` — needed for color constants
+
+Wait, `Path` is unused in the current handler code. The handlers use `PathBuf` for `output_path`, and `events_path` from `default_events_path()` returns `PathBuf`. But the core functions use `Path` (`record_state_memory_candidates(events: &[Value], events_path: &Path)`). So `Path` will be needed once the core functions are moved.
+
+Now, `BTreeMap` and `BTreeSet` — in the current handler-only code they're unused. But they're used by the core functions. So they're fine to keep.
+
+OK, let me now plan the precise edit. I need to:
+
+1. Delete lines 12553-12987 from `commands_state.rs` (the core functions)
+2. Insert the core functions into `commands_state_memory.rs` (before the handlers)
+
+Actually wait, the handlers are at the top of the file. It would be better to have the core functions first, then the handlers. Or just append the core functions after the handlers. Either way works for Rust since there's no ordering requirement within a module.
+
+Let me also check: does the core function `build_state_memory_candidates` reference anything else I haven't checked? Looking at it, it uses `memory_candidate_id` (which is also being moved), `event_string`, `payload_str`, `evidence_ids`, `preview_line`, `BTreeMap`, `Value`. All of these are either being moved or properly imported.
+
+Now let me also check: `build_state_memory_synthesis` references `build_state_memory_candidates` and `push_report_section`. `build_state_memory_candidates` is a private function within the same module (will be after the move). `push_report_section` needs to be imported.
+
+OK, let me proceed with the fix. Here's my plan:
+
+1. Read the full content of `commands_state_memory.rs` (already done - 149 lines)
+2. Create a new version of `commands_state_memory.rs` with:
+   - Proper imports (remove unused, keep needed ones)
+   - Core functions (12553-12987 from commands_state.rs)
+   - Handler functions (existing content)
+3. Remove lines 12553-12987 from `commands_state.rs`
+4. Fix unused imports in `commands_state.rs`
+5. Run `cargo fmt && cargo build && cargo test`
+
+Let me now construct the new `commands_state_memory.rs` content.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 19.1s (2 ✓)
+
+Now I understand the full picture. The `commands_state_memory.rs` has the handler functions but is missing the core functions (`build_state_memory_synthesis`, `StateMemoryRecord`, `build_state_memory_candidates`, `record_state_memory_candidates`, `build_state_memory_records`, `record_state_memory_decision`, `memory_candidate_id`, and `StateMemoryCandidate`) that are still in `commands_state.rs` at lines 12553–12987. The handlers call these functions but they're not in scope.
+
+Let me fix this by moving the core functions into `commands_state_memory.rs` and removing them from `commands_state.rs`.
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (4ms)
+  ▶ todo ✓ (4ms)
+  ▶ todo ✓ (4ms)
+  ▶ todo ✓ (4ms)
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the full extraction range to capture everything precisely.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.8s (5 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I already have the full content of the core functions. Let me now proceed to step 2: rewrite commands_state_memory.rs. I need to combine:
+
+1. The file header and imports (cleaned up)
+2. The core functions (lines 12553-12987 from commands_state.rs)
+3. The handler functions (existing content in commands_state_memory.rs)
+
+Let me construct the full file content now.
+
+Looking at the current `commands_state_memory.rs`:
+- Lines 1-14: module doc, imports
+- Lines 16-84: handle_memory, print_memory_usage, handle_memory_synthesize
+- Lines 86-118: handle_memory_list
+- Lines 120-149: handle_memory_decision
+
+And the core functions from `commands_state.rs` (12553-12987):
+- 12553-12699: build_state_memory_synthesis
+- 12701-12722: StateMemoryCandidate struct + impl
+- 12724-12734: StateMemoryRecord struct
+- 12736-12825: build_state_memory_candidates
+- 12827-12862: record_state_memory_candidates
+- 12864-12921: build_state_memory_records
+- 12923-12967: record_state_memory_decision
+- 12969-12987: memory_candidate_id
+
+The new file should have these in order of dependency: helper functions first, then the main functions, then handlers.
+
+Let me construct it now. I'll also check what format constants are needed by the handlers. The handlers use:
+- `YELLOW` (print_memory_usage, handle_memory_synthesize, handle_memory_list, handle_memory_decision)
+- `RED` (handle_memory_synthesize, handle_memory_decision)
+
+And the core functions don't use any format constants.
+
+Now let me also verify: do the handlers use `default_store_path`? Looking at the import list... `default_store_path` is imported but is it used? Let me check the handler code... No, `default_store_path` is not used by the handler code. It's used by `record_state_memory_candidates` and `record_state_memory_decision` in the core functions. So it needs to stay in the imports.
+
+What about `current_time_ms`? Used by core functions. `event_string`? Used by core functions. `evidence_ids`? Used by core functions. `payload_str`? Used by core functions. `push_report_section`? Used by `build_state_memory_synthesis`. `format_timestamp_ms`? NOT used by handlers or core functions (within the extraction). Let me check if `format_timestamp_ms` is used in the core functions... Searching... No, it's not used in the extraction range. And it's not used by the handlers. So it's an unused import. Similarly `human_bytes` — not used anywhere. And `Path`... wait, `Path` is used by core functions' signatures (`events_path: &Path`).
+
+Actually looking more carefully at the import list:
+```rust
+use crate::commands_state::{
+    current_time_ms, default_events_path, default_store_path, event_string, evidence_ids,
+    flag_value, payload_str, preview_line, push_report_section, read_events,
+    write_text_artifact,
+};
+```
+
+`format_timestamp_ms` and `human_bytes` were NOT in the import list. Let me re-check...
+
+Looking at the current file content:
+```
+use crate::commands_state::{
+    current_time_ms, default_events_path, default_store_path, event_string, evidence_ids,
+    flag_value, payload_str, preview_line, push_report_section, read_events,
+    write_text_artifact,
+};
+use crate::format::*;
+use crate::state::{Actor, EventType, StateConfig, StateRecorder};
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+```
+
+OK so the imports don't have `format_timestamp_ms` or `human_bytes`. They were just listed in the repo map but not actually imported. Good.
+
+Now, which of these are actually used?
+- `current_time_ms` — YES, by `record_state_memory_candidates` and `record_state_memory_decision`
+- `default_events_path` — YES, by `handle_memory_synthesize`, `handle_memory_list`, `handle_memory_decision`
+- `default_store_path` — YES, by `record_state_memory_candidates` and `record_state_memory_decision`
+- `event_string` — YES, by `build_state_memory_synthesis`, `build_state_memory_candidates`, `build_state_memory_records`
+- `evidence_ids` — YES, by `build_state_memory_candidates`, `build_state_memory_records`
+- `flag_value` — YES, by `handle_memory_list`, `handle_memory_decision`
+- `payload_str` — YES, by all core functions
+- `preview_line` — YES, by `build_state_memory_synthesis`, `build_state_memory_candidates`, `handle_memory_list`
+- `push_report_section` — YES, by `build_state_memory_synthesis`
+- `read_events` — YES, by all three handlers
+- `write_text_artifact` — YES, by `handle_memory_synthesize`
+- `Actor` — YES, by `record_state_memory_candidates`, `record_state_memory_decision`
+- `EventType` — YES, by `record_state_memory_candidates`, `record_state_memory_decision`
+- `StateConfig` — YES, by `record_state_memory_candidates`, `record_state_memory_decision`
+- `StateRecorder` — YES, by `record_state_memory_candidates`, `record_state_memory_decision`
+- `Value` — YES, everywhere
+- `BTreeMap`, `BTreeSet` — YES, by core functions
+- `Path`, `PathBuf` — YES, by core functions and handlers
+- `format::*` — YES, by handlers (YELLOW, RED)
+
+So actually the imports are all correct! The only issue is that the core functions haven't been moved yet. Once they are, the imports will all be used.
+
+Wait, but `format_timestamp_ms` is not imported and not used within the extracted code. But it was mentioned in the task description as something to import. Let me check: does `build_state_memory_synthesis` use `format_timestamp_ms`? Let me look... No, it doesn't seem to. And the handlers don't use it either.
+
+Actually, let me also check if `push_report_section` is in the import but I should verify it's also `pub(crate)`. Earlier search confirmed it is. Good.
+
+Now let me also check: does the `format::*` glob import bring in `YELLOW` and `RED`? Let me check what `format::*` exports.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub const YELLOW|pub const RED' in src/format/mod.rs ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, the format constants might not be `pub const` directly. Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'YELLOW' in src/format/mod.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`YELLOW` is a `pub static` in `src/format/mod.rs` line 198. Since `use crate::format::*;` is used, this glob import would bring in `YELLOW` and `RED` and other color constants. Good.
+
+Now let me construct the new `commands_state_memory.rs`. The structure will be:
+
+1. Module doc comment
+2. Imports
+3. Helper: `memory_candidate_id` (private)
+4. Struct: `StateMemoryCandidate` (private) + impl
+5. Struct: `StateMemoryRecord` (pub(crate))
+6. `build_state_memory_candidates` (private)
+7. `build_state_memory_synthesis` (pub(crate))
+8. `record_state_memory_candidates` (pub(crate))
+9. `build_state_memory_records` (pub(crate))
+10. `record_state_memory_decision` (pub(crate))
+11. Handler functions: `handle_memory`, `print_memory_usage`, `handle_memory_synthesize`, `handle_memory_list`, `handle_memory_decision`
+
+Let me now construct the file.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. The core functions are still in `commands_state.rs` and need to be moved into `commands_state_memory.rs`. Let me construct the corrected file.
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now write the new `commands_state_memory.rs` with all the core functions plus the handlers.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 53.9s (2 ✓)
+
+
+    use serde_json::Value;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::{Path, PathBuf};
+  + 
+  + fn memory_candidate_id(kind: &str, key: &str) -> String {
+  +     let normalized = key
+  +         .chars()
+  +         .map(|ch| {
+  +             if ch.is_ascii_alphanumeric() {
+  +                 ch.to_ascii_lowercase()
+  +             } else {
+  +                 '-'
+  +             }
+  +         })
+  +         .collect::<String>()
+  +         .trim_matches('-')
+  +         .to_string();
+  +     if normalized.is_empty() {
+  ... (3 more lines)
+  ✓ Auto-approved: write: src/commands_state_memory.rs (585 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ write src/commands_state_memory.rs (585 lines) ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to remove the core functions from `commands_state.rs` (lines 12553-12987). Let me read the exact boundaries to construct a precise edit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the exact boundaries around 12553-12987 to get the before and after context for a precise edit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+Now let me remove the core functions from `commands_state.rs`. Let me read the exact boundaries:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:12548..12553  ▶ read src/commands_state.rs:12985..12990 ✓ (14ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to remove from line 12553 (the `pub(crate) fn build_state_memory_synthesis`) through line 12987 (end of `memory_candidate_id`). Let me read the lines right before and after to make the edit_file precise.
+
+Lines to remove: 12553-12987 (inclusive). That's 435 lines.
+
+The boundary context:
+- Before: line 12552 is a blank line
+- After: line 12988 is a blank line, then 12989 starts `fn build_state_journal_draft`
+
+Let me construct the edit_file call with the old_text being everything from line 12553 to 12987 and new_text being empty (deleting).
+
+I need to read exactly what's at 12552-12553 and 12987-12988 to get the right text.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.4s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:12552..12555  ▶ read src/commands_state.rs:12987..12990 ✓ (13ms)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to read the full range 12553-12987 to use in the edit_file call. But that's 435 lines — too much for an edit_file call. Let me do this differently: I'll use a bash command to remove the lines directly.
+
+Actually, I can use `sed` to delete lines 12553-12987 from commands_state.rs. That's much more efficient.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+The range is 435 lines — let me use `sed` to remove it efficiently:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -i '12553,12987d' src/comm… ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, 23648 - 23213 = 435 lines removed. Now let me verify the deletion is clean at the boundary (the functions should not have leftover fragments).
+────────────────────────────────────────────────────────────────────────────────
+
+Good — 435 lines removed (23648 → 23213). Let me verify the boundary is clean:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:12548..12558 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's a double blank line (12552 and 12553). That's functional but not ideal. Let me also check there are no other issues. The boundary is clean — `build_state_journal_draft` is now at line 12554, which follows a blank line after the previous function. The double blank line is fine (it'll be fixed by `cargo fmt` later, or we can clean it up manually). Actually wait, `cargo fmt` only formats `.rs` files for code formatting, not blank lines. But a double blank line is harmless.
+
+Now let me check: do any other functions in `commands_state.rs` reference the moved items? Let me search for references to `StateMemoryRecord`, `build_state_memory_synthesis`, `StateMemoryCandidate`, etc.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (4ms)
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if there are any remaining references in `commands_state.rs` to the moved items that would cause unresolved reference errors.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+Let me check for any remaining references to the moved items in `commands_state.rs`:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'StateMemoryRecord|build_state_memory_synthesis|StateMemoryCa…' in src/commands_state.rs ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No remaining references. Now let me check if `commands_state.rs` still imports things that are only used by the moved functions. The imports at the top include `BTreeMap`, `BTreeSet`, `Path`, `PathBuf`, etc. Let me check if those are still used elsewhere in `commands_state.rs`.
+
+Actually, the error output at the top showed:
+```
+warning: unused import: `BTreeMap`
+warning: unused import: `BTreeSet`
+```
+
+These warnings were for `commands_state.rs` line 13. But in the original error output, the warnings appeared to be from `commands_state.rs` not `commands_state_memory.rs`. Let me re-read the error output... Actually the error output didn't clearly distinguish which file the warnings came from. But the warnings were about `BTreeMap` and `BTreeSet` being unused. Let me check if these are still used in `commands_state.rs` after the removal.
+
+Let me also check for unused `Path` import.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'BTreeMap' in src/commands_state.rs  ▶ search 'BTreeSet' in src/commands_state.rs ✓ (9ms)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`BTreeMap` and `BTreeSet` are still heavily used in `commands_state.rs`, so the imports are not unused. The warnings in the original build output must have been from the `commands_state_memory.rs` file BEFORE the core functions were added. Now that the core functions are in `commands_state_memory.rs`, those imports (`BTreeMap`, `BTreeSet`) should be used.
+
+Let me also check `Path` usage in `commands_state.rs`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (2 ✓)
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search '&Path' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`Path` is heavily used in `commands_state.rs`. Good, it's not an unused import.
+
+Now let me check if there are any remaining unused imports in `commands_state_memory.rs`. With all the core functions now present:
+- `BTreeMap` — used ✓
+- `BTreeSet` — used in `record_state_memory_candidates` ✓
+- `Path` — used in function signatures ✓
+- `PathBuf` — used in handlers ✓
+
+All imports should be used now. Let me also verify `default_store_path` is used — yes, by `record_state_memory_candidates` and `record_state_memory_decision`.
+
+Let me also check the `push_report_section` import — it's used in `build_state_memory_synthesis`. ✓
+
+Now let me run cargo build to verify everything compiles.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run cargo build first to check for errors.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt && cargo build 2>&1 ✓ (15.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes with just one warning: unused imports in `commands_state.rs`:
+- `Actor` 
+- `EventType`
+- `StateConfig`
+- `StateRecorder`
+
+These were used by the moved functions (`record_state_memory_candidates`, `record_state_memory_decision`). Let me check if they're still used elsewhere in `commands_state.rs`.
+
+Actually wait, `HarnessPatch` is also in that import line. Let me check what's used.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes! Just one warning — unused imports in `commands_state.rs`. Let me check which of those state types are still used:
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ search 'Actor|EventType|StateConfig|StateRecorder' in src/commands_state.rs ✓ (4ms)
+
+

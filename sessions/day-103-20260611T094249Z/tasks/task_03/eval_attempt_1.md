@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: All 5 `stash_diagnostic_error` calls were added at the exact failure points specified: MCP stdio pre-flight (line 143), MCP stdio connection failure (line 159), MCP structured config pre-flight (line 203), MCP structured config connection failure (line 224), and OpenAPI spec load failure (line 249). All use `crate::state::` fully-qualified paths so no import needed. Build and tests pass. The unrelated `commands_state.rs` import cleanup is harmless.

@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: The implementation covers 10 of 12 explicitly listed exit paths but misses `stash_diagnostic_error` calls before `exit_with_state` at lines 868 (`should_exit_error` in `run_piped_mode`) and 871 (`CHECKPOINT_TRIGGERED` in `run_piped_mode`). The task description explicitly listed old lines 858 and 861 (post-change 868 and 871) as targets requiring stashing, and they remain uncovered.

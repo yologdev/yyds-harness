@@ -1,0 +1,569 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand this task:
+
+1. I need to wire crash diagnostics into agent-run exit paths in `src/lib.rs`
+2. Currently, `exit_with_state(code)` is called without first calling `state::stash_diagnostic_error()`
+3. I need to add `state::stash_diagnostic_error(...)` calls before each `exit_with_state` call in the agent execution paths
+
+Let me start by reading the relevant parts of `src/lib.rs` to understand the current code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant sections of src/lib.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs (100 lines)  ▶ search 'exit_with_state' in src/lib.rs  ▶ search 'stash_diagnostic_error' in src/lib.rs ✓ (16ms)
+ ✓ (15ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the `exit_with_state` function and the surrounding context for each exit call. Let me read the relevant sections.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.1s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full function that contains exit_with_state and the surrounding code for all the exit calls.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me read the key sections containing the exit calls:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:430..490  ▶ read src/lib.rs:560..610  ▶ read src/lib.rs:620..660  ▶ read src/lib.rs:670..750  ▶ read src/lib.rs:830..875  ▶ read src/lib.rs:960..1050 ✓ (48ms)
+ ✓ (45ms)
+ ✓ (41ms)
+ ✓ (38ms)
+ ✓ (34ms)
+ ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me get a clearer picture of all the exit_with_state calls and their surrounding context. Let me also read the piped mode code around line 750 and the run_single_prompt function more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 3.1s (6 ✓)
+
+Let me read the remaining exit call sites:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:740..770  ▶ read src/lib.rs:610..640 ✓ (13ms)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of all the exit points. Let me map them out:
+
+1. **Line 459** (run_single_prompt, stream-json, image read error): `eprintln!("{RED}  error: {e}{RESET}"); exit_with_state(1);`
+2. **Line 479** (run_single_prompt, stream-json, API failure): `exit_with_state(1);` after maybe_record_deepseek_api_failure
+3. **Line 589** (run_single_prompt, with-content prompt, fallback retry error): `exit_with_state(1);` after try_fallback_prompt returned should_exit_error
+4. **Line 595** (run_single_prompt, with-content prompt, prompt error): `eprintln!("{RED}  error: {e}{RESET}"); exit_with_state(1);`
+5. **Line 643** (run_single_prompt, text-only prompt, fallback retry error): `exit_with_state(1);`
+6. **Line 691** (run_single_prompt, CHECKPOINT_TRIGGERED): `exit_with_state(2);`
+7. **Line 721** (run_piped_mode, stdin read error): `eprintln!("Error reading stdin: {e}"); exit_with_state(1);`
+8. **Line 726** (run_piped_mode, empty input): `eprintln!("No input on stdin."); exit_with_state(1);`
+9. **Line 738** (run_piped_mode, slash command in piped): eprintln! warning; `exit_with_state(2);`
+10. **Line 754** (run_piped_mode, stream-json API failure): `exit_with_state(1);` after maybe_record_deepseek_api_failure
+11. **Line 858** (run_piped_mode, should_exit_error after fallback): `exit_with_state(1);`
+12. **Line 861** (run_piped_mode, CHECKPOINT_TRIGGERED): `exit_with_state(2);`
+13. **Line 1034** (run_cli, state init failure): already has `state::stash_diagnostic_error` before exit_with_state
+
+Now, for the crash diagnostics, I need to add `state::stash_diagnostic_error(...)` before each `exit_with_state` call. Let me plan the diagnostic keys:
+
+1. **Line 459**: image read error → `state::stash_diagnostic_error(&format!("agent run: {e}"));`
+2. **Line 479**: stream-json API failure → `state::stash_diagnostic_error("api_error: single_prompt_stream_json_api_failure");`
+3. **Line 589**: fallback retry failure for content prompt → `state::stash_diagnostic_error("api_error: fallback_retry_exhausted");`
+4. **Line 595**: prompt error for content prompt → `state::stash_diagnostic_error(&format!("agent run: {e}"));`
+5. **Line 643**: fallback retry failure for text-only prompt → `state::stash_diagnostic_error("api_error: fallback_retry_exhausted");`
+6. **Line 691**: CHECKPOINT_TRIGGERED in single_prompt → `state::stash_diagnostic_error("checkpoint_triggered");`
+7. **Line 721**: stdin read error → `state::stash_diagnostic_error(&format!("agent run: {e}"));`
+8. **Line 726**: empty input → `state::stash_diagnostic_error("empty_input");`
+9. **Line 738**: slash command in piped → `state::stash_diagnostic_error("invalid_input: slash_command_in_piped_mode");`
+10. **Line 754**: piped stream-json API failure → `state::stash_diagnostic_error("api_error: piped_stream_json_api_failure");`
+11. **Line 858**: should_exit_error in piped fallback → `state::stash_diagnostic_error("api_error: fallback_retry_exhausted");`
+12. **Line 861**: CHECKPOINT_TRIGGERED in piped → `state::stash_diagnostic_error("checkpoint_triggered");`
+
+Now let me check whether `state::stash_diagnostic_error` is imported/available as a public function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 13.0s (2 ✓)
+
+Now let me verify that `stash_diagnostic_error` is available as a public function:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn stash_diagnostic_error' in src ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `stash_diagnostic_error` is a public function in `src/state.rs`. Let me verify the state module is imported in lib.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, it's public. Let me verify it's in scope in `lib.rs`:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'mod state' in src/lib.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `mod state` is declared at line 107. Now let me also check how `stash_diagnostic_error` is called in the existing code at line 1033: `state::stash_diagnostic_error(&format!("state init: {e}"));` — yes, it's called as `state::stash_diagnostic_error(...)`, which means it's in the `state` module and accessible.
+
+Now, let me also verify what the `stash_diagnostic_error` function does exactly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:60..80 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, there's a `#[allow(dead_code)]` on `stash_diagnostic_error` at line 70. That makes sense — it was only being used in one place before. Once I add more calls, this `#[allow(dead_code)]` attribute will no longer be needed, but removing it would be an unrelated change. I'll leave it.
+
+Now let me plan all the edits. I have 12 exit_with_state calls that need stash_diagnostic_error added before them. Let me group them by function:
+
+**run_single_prompt function (starts ~line 420):**
+
+1. Line 459: Image read error in stream-json mode
+2. Line 479: Stream-json API failure
+3. Line 589: Fallback retry exhausted (content prompt)
+4. Line 595: Prompt error
+5. Line 643: Fallback retry exhausted (text-only prompt)
+6. Line 691: CHECKPOINT_TRIGGERED
+
+**run_piped_mode function (starts ~line 706):**
+
+7. Line 721: stdin read error
+8. Line 726: empty input
+9. Line 738: slash command in piped
+10. Line 754: piped stream-json API failure
+11. Line 858: should_exit_error after fallback
+12. Line 861: CHECKPOINT_TRIGGERED
+
+Now, let me read the exact context around each of these to make precise edits.
+
+For lines 457-459:
+```rust
+                Err(e) => {
+                    eprintln!("{RED}  error: {e}{RESET}");
+                    exit_with_state(1);
+                }
+```
+
+For lines 471-479:
+```rust
+        if response.last_api_error.is_some() {
+            maybe_record_deepseek_api_failure(
+                deepseek_native,
+                &agent_config.provider,
+                &agent_config.model,
+                &response,
+                "single_prompt_stream_json_api_failure",
+            );
+            exit_with_state(1);
+        }
+```
+
+For lines 569-589:
+```rust
+                if should_exit_error {
+                    format::maybe_ring_bell(prompt_start.elapsed());
+                    if print_mode {
+                        print!("{}", final_response.text);
+                    } else if wants_json_output {
+                        ...
+                    } else {
+                        write_output_file(output_path, &final_response.text);
+                    }
+                    exit_with_state(1);
+                }
+```
+
+For lines 593-596:
+```rust
+            Err(e) => {
+                eprintln!("{RED}  error: {e}{RESET}");
+                exit_with_state(1);
+            }
+```
+
+For lines 623-643:
+```rust
+        if should_exit_error {
+            format::maybe_ring_bell(prompt_start.elapsed());
+            if print_mode {
+                ...
+            } else if wants_json_output {
+                ...
+            } else {
+                write_output_file(output_path, &final_response.text);
+            }
+            exit_with_state(1);
+        }
+```
+
+For lines 690-692:
+```rust
+    if CHECKPOINT_TRIGGERED.load(Ordering::SeqCst) {
+        exit_with_state(2);
+    }
+```
+
+For lines 719-722:
+```rust
+    if let Err(e) = io::stdin().read_to_string(&mut input) {
+        eprintln!("Error reading stdin: {e}");
+        exit_with_state(1);
+    }
+```
+
+For lines 724-727:
+```rust
+    if input.is_empty() {
+        eprintln!("No input on stdin.");
+        exit_with_state(1);
+    }
+```
+
+For lines 732-739:
+```rust
+    if looks_like_slash_command(input) {
+        eprintln!("{YELLOW}yoyo: slash commands aren't available in piped mode.{RESET}");
+        eprintln!("  Try one of:");
+        ...
+        exit_with_state(2);
+    }
+```
+
+For lines 746-755:
+```rust
+        if response.last_api_error.is_some() {
+            maybe_record_deepseek_api_failure(
+                ...
+                "piped_stream_json_api_failure",
+            );
+            exit_with_state(1);
+        }
+```
+
+For lines 857-859:
+```rust
+    if should_exit_error {
+        exit_with_state(1);
+    }
+```
+
+For lines 860-862:
+```rust
+    if CHECKPOINT_TRIGGERED.load(Ordering::SeqCst) {
+        exit_with_state(2);
+    }
+```
+
+Now let me proceed to make the edits. I'll use edit_file for each one.
+
+Wait, for the fallback retry error paths (lines 589 and 643), there's no explicit error message being printed — the code just prints the final response and exits. The `should_exit_error` is coming from `try_fallback_prompt`. Let me check what's available... these paths don't have an `e` variable, but the diagnostic can be "api_error: fallback_retry_exhausted".
+
+For the stream-json API failure paths (lines 479 and 754), `response.last_api_error` is the error indicator but the response is still available. Let me use a more specific diagnostic message.
+
+Let me read the `maybe_record_deepseek_api_failure` call to understand the failure labels used:
+- Line 477: "single_prompt_stream_json_api_failure"
+- Line 752: "piped_stream_json_api_failure"
+- Line 613: "single_prompt_api_failure"
+
+These labels give me good hints for the diagnostic keys.
+
+Let me now make all the edits. I'll do them in order from top to bottom.
+
+Actually wait - for the `should_exit_error` paths (589, 643, 858), I should check if `last_api_error` is available on the response at those points. Let me read around those areas.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a full understanding. Let me make the edits. I'll work through them systematically.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make all the edits. I'll work through each one.
+────────────────────────────────────────────────────────────────────────────────
+
+Starting with the edits in `run_single_prompt`:
+                    Err(e) => {
+                        eprintln!("{RED}  error: {e}{RESET}");
+  +                     state::stash_diagnostic_error(&format!("agent run: {e}"));
+                        exit_with_state(1);
+                    }
+  ✓ Auto-approved: edit: src/lib.rs (4 → 5 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (4 → 5 lines)
+                    Err(e) => {
+                        eprintln!("{RED}  error: {e}{RESET}");
+  +                     state::stash_diagnostic_error(&format!("agent run: {e}"));
+                        exit_with_state(1);
+                    }
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the stream-json API failure at line 479 (now shifted by 1):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +             state::stash_diagnostic_error("api_error: single_prompt_stream_json");
+                exit_with_state(1);
+  -         }
+  -         return;
+  ✓ Auto-approved: edit: src/lib.rs (3 → 2 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (3 → 2 lines)
+  +             state::stash_diagnostic_error("api_error: single_prompt_stream_json");
+                exit_with_state(1);
+  -         }
+  -         return;
+ ✗ (9ms)
+    │ old_text matches 2 locations in src/lib.rs. Include more surrounding context to make the match unique.
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are two identical matches (one in run_single_prompt and one in run_piped_mode). Let me include more context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:472..492 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+                    "single_prompt_stream_json_api_failure",
+                );
+  +             state::stash_diagnostic_error("api_error: single_prompt_stream_json");
+                exit_with_state(1);
+            }
+            return;
+  ✓ Auto-approved: edit: src/lib.rs (9 → 10 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (9 → 10 lines)
+                    "single_prompt_stream_json_api_failure",
+                );
+  +             state::stash_diagnostic_error("api_error: single_prompt_stream_json");
+                exit_with_state(1);
+            }
+            return;
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the fallback retry exhausted for content prompt (was line 589, now shifted):
+────────────────────────────────────────────────────────────────────────────────
+
+Now the fallback retry for with-content prompt. Let me read the current state:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:568..603 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add stash_diagnostic_error before the exit_with_state(1) at line 591 and 597. Let me do them in order.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                            write_output_file(output_path, &final_response.text);
+                        }
+  +                     state::stash_diagnostic_error("api_error: fallback_retry_exhausted");
+                        exit_with_state(1);
+  ✓ Auto-approved: edit: src/lib.rs (3 → 4 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (3 → 4 lines)
+                            write_output_file(output_path, &final_response.text);
+                        }
+  +                     state::stash_diagnostic_error("api_error: fallback_retry_exhausted");
+                        exit_with_state(1);
+ ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the prompt error in the Err(e) match arm (line 595-598 now):
+────────────────────────────────────────────────────────────────────────────────
+
+
+                Err(e) => {
+                    eprintln!("{RED}  error: {e}{RESET}");
+  +                 state::stash_diagnostic_error(&format!("agent run: {e}"));
+                    exit_with_state(1);
+  ✓ Auto-approved: edit: src/lib.rs (3 → 4 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (3 → 4 lines)
+                Err(e) => {
+                    eprintln!("{RED}  error: {e}{RESET}");
+  +                 state::stash_diagnostic_error(&format!("agent run: {e}"));
+                    exit_with_state(1);
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the fallback retry for text-only prompt (was line 643, now need to find it). Let me read the current state:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:614..654 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add stash_diagnostic_error before exit_with_state(1) at line 647:
+────────────────────────────────────────────────────────────────────────────────
+
+
+                    write_output_file(output_path, &final_response.text);
+                }
+  +             state::stash_diagnostic_error("api_error: fallback_retry_exhausted");
+                exit_with_state(1);
+  ✓ Auto-approved: edit: src/lib.rs (3 → 4 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (3 → 4 lines)
+                    write_output_file(output_path, &final_response.text);
+                }
+  +             state::stash_diagnostic_error("api_error: fallback_retry_exhausted");
+                exit_with_state(1);
+ ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the CHECKPOINT_TRIGGERED at the end of run_single_prompt. Let me find it:
+────────────────────────────────────────────────────────────────────────────────
+
+Now the CHECKPOINT_TRIGGERED for run_single_prompt:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:690..705 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add `state::stash_diagnostic_error("checkpoint_triggered");` before `exit_with_state(2)` at line 696. But wait, this is the end of `run_single_prompt` function - the CHECKPOINT_TRIGGERED block. Let me make this edit:
+────────────────────────────────────────────────────────────────────────────────
+
+
+        if CHECKPOINT_TRIGGERED.load(Ordering::SeqCst) {
+  +         state::stash_diagnostic_error("checkpoint_triggered");
+            exit_with_state(2);
+        }
+    }
+  ✓ Auto-approved: edit: src/lib.rs (6 → 7 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (6 → 7 lines)
+        if CHECKPOINT_TRIGGERED.load(Ordering::SeqCst) {
+  +         state::stash_diagnostic_error("checkpoint_triggered");
+            exit_with_state(2);
+        }
+    }
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me handle the run_piped_mode function. Let me read the current state:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me handle run_piped_mode. First, the stdin read error.
+────────────────────────────────────────────────────────────────────────────────
+
+Now the `run_piped_mode` function edits:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:722..747 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to edit three exit points in run_piped_mode:
+
+1. Line 727: stdin read error → `state::stash_diagnostic_error(&format!("agent run: {e}"));`
+2. Line 732: empty input → `state::stash_diagnostic_error("empty_input");`
+3. Line 744: slash command → `state::stash_diagnostic_error("invalid_input: slash_command_in_piped_mode");`
+
+Let me make these edits.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        if let Err(e) = io::stdin().read_to_string(&mut input) {
+            eprintln!("Error reading stdin: {e}");
+  +         state::stash_diagnostic_error(&format!("agent run: {e}"));
+            exit_with_state(1);
+  ✓ Auto-approved: edit: src/lib.rs (3 → 4 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (3 → 4 lines)
+        if let Err(e) = io::stdin().read_to_string(&mut input) {
+            eprintln!("Error reading stdin: {e}");
+  +         state::stash_diagnostic_error(&format!("agent run: {e}"));
+            exit_with_state(1);
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now empty input:
+────────────────────────────────────────────────────────────────────────────────
+
+
+        if input.is_empty() {
+            eprintln!("No input on stdin.");
+  +         state::stash_diagnostic_error("empty_input");
+            exit_with_state(1);
+  ✓ Auto-approved: edit: src/lib.rs (3 → 4 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (3 → 4 lines)
+        if input.is_empty() {
+            eprintln!("No input on stdin.");
+  +         state::stash_diagnostic_error("empty_input");
+            exit_with_state(1);
+ ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now slash command in piped mode:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:740..755 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the slash command exit at line 746:
+────────────────────────────────────────────────────────────────────────────────
+
+
+            eprintln!("    yoyo                           # interactive REPL");
+  +         state::stash_diagnostic_error("invalid_input: slash_command_in_piped_mode");
+            exit_with_state(2);
+  ✓ Auto-approved: edit: src/lib.rs (2 → 3 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (2 → 3 lines)
+            eprintln!("    yoyo                           # interactive REPL");
+  +         state::stash_diagnostic_error("invalid_input: slash_command_in_piped_mode");
+            exit_with_state(2);
+ ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the piped stream-json API failure at line 754. Let me read the current state:
+────────────────────────────────────────────────────────────────────────────────
+
+Now the piped stream-json API failure:
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:754..769 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add stash_diagnostic_error before exit_with_state(1) at line 763. But I need enough context to make this unique from the other similar block.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                    "piped_stream_json_api_failure",
+                );
+  +             state::stash_diagnostic_error("api_error: piped_stream_json");
+                exit_with_state(1);
+            }
+            return;
+  ✓ Auto-approved: edit: src/lib.rs (8 → 9 lines)
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (8 → 9 lines)
+                    "piped_stream_json_api_failure",
+                );
+  +             state::stash_diagnostic_error("api_error: piped_stream_json");
+                exit_with_state(1);
+            }
+            return;
+ ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need the two remaining exit points in run_piped_mode: should_exit_error (was line 858, now shifted) and CHECKPOINT_TRIGGERED (was line 861, now shifted). Let me find them.
+────────────────────────────────────────────────────────────────────────────────
+
+Now the should_exit_error and CHECKPOINT_TRIGGERED at the end of run_piped_mode:
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:855..880 ✓ (4ms)
+
+
