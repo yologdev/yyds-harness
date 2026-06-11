@@ -84,7 +84,11 @@ class BuildEvolutionDashboard(unittest.TestCase):
             transcript_dir.joinpath("task_02_attempt1.log").write_text(
                 "\n".join(
                     [
-                        "  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs ✗ (12ms)",
+                        "  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs (2 → 3 lines)",
+                        "                        api_error = Some(error_msg);",
+                        '  +                     crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));',
+                        "                    }",
+                        " ✗ (12ms)",
                         "      │ old_text matches 2 locations in /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs. Include more surrounding context to make the match unique.",
                     ]
                 )

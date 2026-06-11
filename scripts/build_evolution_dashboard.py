@@ -118,9 +118,36 @@ def clean_transcript_action(value: str) -> str:
     return re.sub(r"\bcd\s+\.\s*&&\s*", "", text).strip()
 
 
-def transcript_failure_detail(lines: list[str], index: int) -> str:
+def transcript_action_failed(lines: list[str], index: int, raw: str) -> bool:
+    if "✗" in raw:
+        return True
+    for next_line in lines[index + 1 : index + 12]:
+        stripped = next_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("▶") or stripped.startswith("╭─") or " Watch " in stripped:
+            break
+        if re.search(r"✗\s*(?:\([^)]*\))?$", stripped):
+            return True
+    return False
+
+
+def transcript_failure_detail(lines: list[str], index: int, raw: str = "") -> str:
+    detail_start = index + 1 if "✗" in raw else None
+    if detail_start is None:
+        for offset, next_line in enumerate(lines[index + 1 : index + 12], start=index + 1):
+            stripped = next_line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("▶") or stripped.startswith("╭─") or " Watch " in stripped:
+                break
+            if re.search(r"✗\s*(?:\([^)]*\))?$", stripped):
+                detail_start = offset + 1
+                break
+    if detail_start is None:
+        detail_start = index + 1
     details: list[str] = []
-    for next_line in lines[index + 1 : index + 5]:
+    for next_line in lines[detail_start : detail_start + 5]:
         stripped = next_line.strip()
         if not stripped:
             continue
@@ -143,6 +170,14 @@ def transcript_path_token(value: str) -> str:
     text = WORKSPACE_PREFIX_RE.sub("", text).strip()
     text = normalize_transcript_path(text)
     return "" if text in {"?", "-", "."} else text
+
+
+def transcript_tool_label(action: str) -> str:
+    for prefix in ("read ", "edit ", "write "):
+        if action.startswith(prefix):
+            target = transcript_path_token(action.removeprefix(prefix))
+            return f"{prefix.strip()} {target}" if target else action
+    return action
 
 
 def normalize_transcript_path(path: str) -> str:
@@ -198,15 +233,16 @@ def summarize_transcript_actions(session_dir: Path) -> dict[str, Any]:
                 action = clean_transcript_action(raw)
                 if not action or action == "todo":
                     continue
-                failed = "✗" in raw
+                failed = transcript_action_failed(lines, index, raw)
                 if failed and (
                     action.startswith("read ")
                     or action.startswith("edit ")
                     or action.startswith("write ")
                     or action.startswith("search ")
                 ):
-                    detail = transcript_failure_detail(lines, index)
-                    failed_tools.append(f"{action}: {detail}" if detail else action)
+                    detail = transcript_failure_detail(lines, index, raw)
+                    label = transcript_tool_label(action)
+                    failed_tools.append(f"{label}: {detail}" if detail else label)
                 if action.startswith("$ "):
                     command = action[2:].strip()
                     if command:
