@@ -71,6 +71,7 @@ mod commands_skill;
 mod commands_spawn;
 mod commands_stash;
 mod commands_state;
+mod commands_state_crashes;
 mod commands_state_graph;
 mod commands_state_memory;
 mod commands_todo;
