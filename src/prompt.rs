@@ -28,6 +28,34 @@ fn accumulate_usage(total: &mut Usage, delta: &Usage) {
     total.cache_write += delta.cache_write;
 }
 
+fn model_call_terminal_payload(
+    model: &str,
+    usage: &Usage,
+    thinking_observed: bool,
+    status: &str,
+    error_detail: Option<&str>,
+    collected_text: &str,
+    last_tool_name: Option<&str>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "model": model,
+        "status": status,
+        "input_tokens": usage.input,
+        "output_tokens": usage.output,
+        "cache_read_tokens": usage.cache_read,
+        "cache_write_tokens": usage.cache_write,
+        "thinking_observed": thinking_observed,
+        "collected_text_present": !collected_text.trim().is_empty(),
+    });
+    if let Some(detail) = error_detail.filter(|value| !value.is_empty()) {
+        payload["error_detail"] = serde_json::json!(detail);
+    }
+    if let Some(tool_name) = last_tool_name.filter(|value| !value.is_empty()) {
+        payload["last_tool_name"] = serde_json::json!(tool_name);
+    }
+    payload
+}
+
 fn count_text_lines(text: &str) -> usize {
     if text.is_empty() {
         0
@@ -735,6 +763,7 @@ async fn handle_prompt_events(
     model: &str,
 ) -> PromptResult {
     let mut state = PromptEventState::new();
+    let mut model_call_terminal_recorded = false;
     crate::state::record(
         crate::state::EventType::ModelCallStarted,
         crate::state::Actor::Yoyo,
@@ -893,15 +922,17 @@ async fn handle_prompt_events(
                         crate::state::record(
                             crate::state::EventType::ModelCallCompleted,
                             crate::state::Actor::Yoyo,
-                            serde_json::json!({
-                                "model": model,
-                                "input_tokens": state.usage.input,
-                                "output_tokens": state.usage.output,
-                                "cache_read_tokens": state.usage.cache_read,
-                                "cache_write_tokens": state.usage.cache_write,
-                                "thinking_observed": state.thinking_observed,
-                            }),
+                            model_call_terminal_payload(
+                                model,
+                                &state.usage,
+                                state.thinking_observed,
+                                "completed",
+                                None,
+                                &state.collected_text,
+                                state.last_tool_name.as_deref(),
+                            ),
                         );
+                        model_call_terminal_recorded = true;
                         crate::state::record_cache_metrics(model, &state.usage);
                     }
                     AgentEvent::InputRejected { reason } => {
@@ -958,6 +989,21 @@ async fn handle_prompt_events(
                 // Stop spinner if still running
                 if let Some(s) = state.spinner.take() { s.stop(); }
                 agent.abort();
+                if !model_call_terminal_recorded {
+                    crate::state::record(
+                        crate::state::EventType::ModelCallCompleted,
+                        crate::state::Actor::Yoyo,
+                        model_call_terminal_payload(
+                            model,
+                            &state.usage,
+                            state.thinking_observed,
+                            "interrupted",
+                            Some("ctrl_c"),
+                            &state.collected_text,
+                            state.last_tool_name.as_deref(),
+                        ),
+                    );
+                }
                 if state.in_text {
                     println!();
                 }
@@ -982,6 +1028,22 @@ async fn handle_prompt_events(
     if !remaining.is_empty() {
         print!("{}", remaining);
         io::stdout().flush().ok();
+    }
+
+    if !model_call_terminal_recorded {
+        crate::state::record(
+            crate::state::EventType::ModelCallCompleted,
+            crate::state::Actor::Yoyo,
+            model_call_terminal_payload(
+                model,
+                &state.usage,
+                state.thinking_observed,
+                "stream_closed_without_agent_end",
+                Some("event_channel_closed_before_agent_end"),
+                &state.collected_text,
+                state.last_tool_name.as_deref(),
+            ),
+        );
     }
 
     if state.in_text {
@@ -1753,6 +1815,39 @@ mod tests {
         assert_eq!(total.output, 30);
         assert_eq!(total.cache_read, 45);
         assert_eq!(total.cache_write, 60);
+    }
+
+    #[test]
+    fn model_call_terminal_payload_marks_stream_closed_without_agent_end() {
+        let usage = Usage {
+            input: 0,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            ..Default::default()
+        };
+
+        let payload = model_call_terminal_payload(
+            "deepseek-v4-pro",
+            &usage,
+            true,
+            "stream_closed_without_agent_end",
+            Some("event_channel_closed_before_agent_end"),
+            "partial text",
+            Some("edit_file"),
+        );
+
+        assert_eq!(payload["model"], "deepseek-v4-pro");
+        assert_eq!(payload["status"], "stream_closed_without_agent_end");
+        assert_eq!(
+            payload["error_detail"],
+            "event_channel_closed_before_agent_end"
+        );
+        assert_eq!(payload["thinking_observed"], true);
+        assert_eq!(payload["collected_text_present"], true);
+        assert_eq!(payload["last_tool_name"], "edit_file");
+        assert_eq!(payload["input_tokens"], 0);
+        assert_eq!(payload["cache_read_tokens"], 0);
     }
 
     #[test]
