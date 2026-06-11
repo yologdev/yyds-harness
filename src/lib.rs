@@ -456,6 +456,7 @@ async fn run_single_prompt(
                 }
                 Err(e) => {
                     eprintln!("{RED}  error: {e}{RESET}");
+                    state::stash_diagnostic_error(&format!("agent run: {e}"));
                     exit_with_state(1);
                 }
             }
@@ -476,6 +477,7 @@ async fn run_single_prompt(
                 &response,
                 "single_prompt_stream_json_api_failure",
             );
+            state::stash_diagnostic_error("api_error: single_prompt_stream_json");
             exit_with_state(1);
         }
         return;
@@ -586,12 +588,14 @@ async fn run_single_prompt(
                     } else {
                         write_output_file(output_path, &final_response.text);
                     }
+                    state::stash_diagnostic_error("api_error: fallback_retry_exhausted");
                     exit_with_state(1);
                 }
                 final_response
             }
             Err(e) => {
                 eprintln!("{RED}  error: {e}{RESET}");
+                state::stash_diagnostic_error(&format!("agent run: {e}"));
                 exit_with_state(1);
             }
         }
@@ -640,6 +644,7 @@ async fn run_single_prompt(
             } else {
                 write_output_file(output_path, &final_response.text);
             }
+            state::stash_diagnostic_error("api_error: fallback_retry_exhausted");
             exit_with_state(1);
         }
         final_response
@@ -688,6 +693,7 @@ async fn run_single_prompt(
         write_output_file(output_path, &response.text);
     }
     if CHECKPOINT_TRIGGERED.load(Ordering::SeqCst) {
+        state::stash_diagnostic_error("checkpoint_triggered");
         exit_with_state(2);
     }
 }
@@ -718,11 +724,13 @@ async fn run_piped_mode(
     let mut input = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut input) {
         eprintln!("Error reading stdin: {e}");
+        state::stash_diagnostic_error(&format!("agent run: {e}"));
         exit_with_state(1);
     }
     let input = input.trim();
     if input.is_empty() {
         eprintln!("No input on stdin.");
+        state::stash_diagnostic_error("empty_input");
         exit_with_state(1);
     }
 
@@ -735,6 +743,7 @@ async fn run_piped_mode(
         eprintln!("    yoyo doctor                    # run a subcommand directly");
         eprintln!("    yoyo --prompt \"{input}\"        # send the literal text to the agent");
         eprintln!("    yoyo                           # interactive REPL");
+        state::stash_diagnostic_error("invalid_input: slash_command_in_piped_mode");
         exit_with_state(2);
     }
 
@@ -751,6 +760,7 @@ async fn run_piped_mode(
                 &response,
                 "piped_stream_json_api_failure",
             );
+            state::stash_diagnostic_error("api_error: piped_stream_json");
             exit_with_state(1);
         }
         return;
@@ -855,9 +865,11 @@ async fn run_piped_mode(
         write_output_file(output_path, &response.text);
     }
     if should_exit_error {
+        state::stash_diagnostic_error("api_error: piped_fallback_exhausted");
         exit_with_state(1);
     }
     if CHECKPOINT_TRIGGERED.load(Ordering::SeqCst) {
+        state::stash_diagnostic_error("checkpoint_triggered");
         exit_with_state(2);
     }
 }
