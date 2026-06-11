@@ -481,9 +481,10 @@ impl AgentTool for StreamingBashTool {
         let update_interval = self.update_interval;
         let lines_per_update = self.lines_per_update;
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| ToolError::Failed(format!("Failed to spawn: {e}")))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+            ToolError::Failed(format!("Failed to spawn: {e}"))
+        })?;
 
         // Take stdout/stderr handles
         let stdout = child.stdout.take();
@@ -600,13 +601,21 @@ impl AgentTool for StreamingBashTool {
             _ = tokio::time::sleep(timeout) => {
                 let _ = child.kill().await;
                 reader_handle.abort();
+                crate::state::stash_diagnostic_error(&format!(
+                    "bash timeout: {} after {}s",
+                    command,
+                    timeout.as_secs()
+                ));
                 return Err(ToolError::Failed(format!(
                     "Command timed out after {}s",
                     timeout.as_secs()
                 )));
             }
             status = child.wait() => {
-                status.map_err(|e| ToolError::Failed(format!("Failed to wait: {e}")))?
+                status.map_err(|e| {
+                    crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+                    ToolError::Failed(format!("Failed to wait: {e}"))
+                })?
             }
         };
 
