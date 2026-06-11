@@ -57,6 +57,27 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertNotIn(".src/state.rs", actions["read_files"])
             self.assertNotIn(".session_plan/eval_task_1.md", actions["edited_files"])
 
+    def test_state_event_paths_drop_workspace_prefix(self):
+        events = [
+            {
+                "kind": "FileEdited",
+                "payload": {
+                    "path": "/home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_3.md"
+                },
+            },
+            {
+                "kind": "FileRead",
+                "payload": {
+                    "path": "/home/runner/work/yyds-harness/yyds-harness/src/deepseek.rs"
+                },
+            },
+        ]
+
+        work = summarize_events_for_work(events)
+
+        self.assertEqual(work["edited_files"], ["session_plan/eval_task_3.md"])
+        self.assertEqual(work["read_files"], ["src/deepseek.rs"])
+
     def test_transcript_search_in_src_does_not_emit_pseudo_dot_src(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

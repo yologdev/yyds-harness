@@ -259,6 +259,10 @@ def normalize_transcript_path(path: str) -> str:
     return text
 
 
+def normalize_evidence_path(path: str) -> str:
+    return normalize_transcript_path(clean_transcript_action(path))
+
+
 def summarize_transcript_actions(session_dir: Path) -> dict[str, Any]:
     transcript_dir = session_dir / "transcripts"
     files = sorted(transcript_dir.glob("*.log")) if transcript_dir.is_dir() else []
@@ -1075,11 +1079,11 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         if kind == "FileEdited":
             path = data.get("path") or data.get("file") or data.get("target_path")
             if isinstance(path, str):
-                edited_files.append(path)
+                edited_files.append(normalize_evidence_path(path))
         elif kind == "FileRead":
             path = data.get("path")
             if isinstance(path, str):
-                read_files.append(path)
+                read_files.append(normalize_evidence_path(path))
         elif kind == "CommandStarted":
             command = data.get("command")
             if isinstance(command, str):
