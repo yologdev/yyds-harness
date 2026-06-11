@@ -379,7 +379,7 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
     if int(gnomes.get("evaluator_timeout_with_verdict_count") or 0) > 0:
         add("eval", "Stop evaluator once verdict evidence exists", "An evaluator wrote a verdict but still timed out, making the verifier evidence ambiguous.", "evaluator_timeout_with_verdict_count", gnomes.get("evaluator_timeout_with_verdict_count"), 92)
     if int(gnomes.get("task_unlanded_source_count") or 0) > 0:
-        add("commit", "Require source commits before task success", "A task had source edits and verifier output but no landed source commit.", "task_unlanded_source_count", gnomes.get("task_unlanded_source_count"), 88)
+        add("commit", "Make source-edit outcomes land or explain reverts", "A task touched source files without a landed source commit.", "task_unlanded_source_count", gnomes.get("task_unlanded_source_count"), 88)
     if int(gnomes.get("evaluator_timeout_count") or 0) > 0:
         add("eval", "Make evaluator timeouts resumable or cheaper", "Evaluator timeout friction still appears in action logs.", "evaluator_timeout_count", gnomes.get("evaluator_timeout_count"), 85)
     if int(gnomes.get("search_error_count") or 0) > 0:

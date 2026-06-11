@@ -730,11 +730,109 @@ class BuildEvolutionDashboard(unittest.TestCase):
 
             self.assertEqual(verification["verified_task_count"], 0)
             self.assertEqual(verification["unverified_task_count"], 1)
+            self.assertIn("source_edits_not_landed", verification["rows"][0]["problems"])
             self.assertIn("no_landed_source_commit", verification["rows"][0]["problems"])
             self.assertEqual(session_data["latest_gnomes"]["task_success_rate"], 0.0)
             self.assertEqual(session_data["latest_gnomes"]["session_success_rate"], 0.0)
             self.assertEqual(session_data["latest_gnomes"]["task_unlanded_source_count"], 1)
+            self.assertEqual(session_data["work_summary"]["unlanded_source_task_count"], 1)
+            self.assertIn("1 unlanded source task(s)", session_data["work_summary"]["headline"])
             self.assertEqual(session_data["health"], "attention")
+
+    def test_reverted_source_task_counts_as_unlanded_source_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 4,
+                    "event_counts": {"RunStarted": 1, "RunCompleted": 1},
+                    "latest_gnomes": {"task_unlanded_source_count": 0, "coding_log_score": 0.8},
+                    "gnome_keys": ["task_unlanded_source_count", "coding_log_score"],
+                    "task_lineage": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "task_title": "Timed out source edit",
+                            "status": "reverted",
+                            "planned_files": ["src/state.rs"],
+                            "source_files": ["src/state.rs"],
+                            "commit_shas": [],
+                            "eval": {"verdict": "TIMEOUT", "status": "timeout"},
+                            "revert_reason": "Evaluator timed out without a verifier verdict",
+                        }
+                    ],
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Timed out source edit",
+                            "files": ["src/state.rs"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": [],
+                    "revert_reason": "Evaluator timed out without a verifier verdict",
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "timeout", "exit_code": 124},
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+            verification = session_data["work_summary"]["task_verification"]
+            problems = verification["rows"][0]["problems"]
+
+            self.assertEqual(verification["verified_task_count"], 0)
+            self.assertEqual(verification["unverified_task_count"], 1)
+            self.assertIn("source_edits_not_landed", problems)
+            self.assertNotIn("no_landed_source_commit", problems)
+            self.assertIn("no_passing_verifier", problems)
+            self.assertEqual(session_data["latest_gnomes"]["task_unlanded_source_count"], 1)
+            self.assertEqual(session_data["work_summary"]["unlanded_source_task_count"], 1)
+            self.assertIn("1 unlanded source task(s)", session_data["work_summary"]["headline"])
+            self.assertEqual(
+                session_data["work_summary"]["evolution_suggestions"][0]["metric"],
+                "evaluator_unverified_count",
+            )
+            self.assertTrue(
+                any(
+                    row.get("metric") == "task_unlanded_source_count"
+                    and row.get("title") == "Make source-edit outcomes land or explain reverts"
+                    for row in session_data["work_summary"]["evolution_suggestions"]
+                )
+            )
 
     def test_corrects_selected_but_unattempted_task_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:

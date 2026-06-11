@@ -758,7 +758,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             evaluator_unverified += 1
         if has_timeout_with_verdict:
             evaluator_timeout_with_verdict += 1
-        if outcome.get("status") == "completed" and has_pass and touched and not landed:
+        if touched and not landed:
             unlanded_source += 1
     verification_denominator = selected_count or len(task_dirs)
     if verification_denominator:

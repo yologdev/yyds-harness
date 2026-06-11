@@ -871,6 +871,8 @@ def task_verification_summary(
             problems.append("evaluator_timed_out_after_verdict")
         if not verified:
             problems.append("no_passing_verifier")
+        if touched and not landed_commits:
+            problems.append("source_edits_not_landed")
         if touched and outcome_status == "completed" and not landed_commits:
             problems.append("no_landed_source_commit")
         rows.append(
@@ -942,7 +944,11 @@ def augment_evolution_suggestions(
     unlanded = sum(
         1
         for row in rows
-        if isinstance(row, dict) and "no_landed_source_commit" in (row.get("problems") or [])
+        if isinstance(row, dict)
+        and (
+            "source_edits_not_landed" in (row.get("problems") or [])
+            or "no_landed_source_commit" in (row.get("problems") or [])
+        )
     )
     timeout_with_verdict = sum(
         1
@@ -1005,8 +1011,8 @@ def augment_evolution_suggestions(
     if unlanded:
         upsert(
             "commit",
-            "Require source commits before task success",
-            "A task had source edits and verifier output but no landed source commit.",
+            "Make source-edit outcomes land or explain reverts",
+            "A task touched source files without a landed source commit.",
             "task_unlanded_source_count",
             unlanded,
             88,
@@ -1178,6 +1184,16 @@ def work_summary(
     source_patch_count = len(source_commits)
     assessment_artifact_present = bool(task_manifest.get("assessment_present")) if task_manifest else None
     assessment_transcript_present = bool((transcript_data.get("phase_counts") or {}).get("assess"))
+    verification_rows = task_verification.get("rows") if isinstance(task_verification.get("rows"), list) else []
+    unlanded_source_task_count = sum(
+        1
+        for row in verification_rows
+        if isinstance(row, dict)
+        and (
+            "source_edits_not_landed" in (row.get("problems") or [])
+            or "no_landed_source_commit" in (row.get("problems") or [])
+        )
+    )
     labels: list[str] = []
     if attempted:
         verified = int(task_verification.get("verified_task_count") or 0)
@@ -1193,6 +1209,8 @@ def work_summary(
             labels.append(f"{strict_total - attempted} selected task(s) not attempted")
     elif task_manifest.get("planning_failed"):
         labels.append("planning produced no task files")
+    if unlanded_source_task_count:
+        labels.append(f"{unlanded_source_task_count} unlanded source task(s)")
     if task_manifest and assessment_artifact_present is False:
         if assessment_transcript_present:
             labels.append("assessment artifact missing (assess transcript present)")
@@ -1221,6 +1239,7 @@ def work_summary(
         "labels": labels,
         "assessment_artifact_present": assessment_artifact_present,
         "assessment_transcript_present": assessment_transcript_present,
+        "unlanded_source_task_count": unlanded_source_task_count,
         "transcripts": transcript_data,
         "state_pipeline": state_pipeline,
         "task_manifest": task_manifest,
@@ -1315,7 +1334,11 @@ def corrected_gnomes(
         unlanded = sum(
             1
             for row in (verification.get("rows") or [])
-            if isinstance(row, dict) and "no_landed_source_commit" in (row.get("problems") or [])
+            if isinstance(row, dict)
+            and (
+                "source_edits_not_landed" in (row.get("problems") or [])
+                or "no_landed_source_commit" in (row.get("problems") or [])
+            )
         )
         timeout_with_verdict = sum(
             1
@@ -3235,6 +3258,7 @@ HTML = r"""<!doctype html>
               <div class="fact"><strong>${text(session.tasks_succeeded || 0)}/${text(session.tasks_attempted || 0)}</strong>tasks</div>
               <div class="fact"><strong>${text(verification.verified_task_count || 0)}/${text(verification.task_count || 0)}</strong>verified</div>
               <div class="fact"><strong>${text(sourceFiles.length || 0)}</strong>source files</div>
+              <div class="fact"><strong>${text(work.unlanded_source_task_count || 0)}</strong>unlanded source tasks</div>
               <div class="fact"><strong>${text(evidenceFiles.length || 0)}</strong>evidence edits</div>
               <div class="fact"><strong>${text(work.eval_count || 0)}</strong>evals</div>
               <div class="fact"><strong>${hasManifest ? text(manifest.assessment_present ? "yes" : "no") : "-"}</strong>assessment artifact</div>
