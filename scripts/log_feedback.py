@@ -129,6 +129,7 @@ GNOME_KEYS = [
     "deepseek_cache_hit_ratio",
     "deepseek_cache_hit_tokens",
     "deepseek_cache_miss_tokens",
+    "deepseek_cache_ratio_unverified_count",
 ]
 
 
@@ -527,6 +528,7 @@ def parse_log(log_text: str) -> dict[str, Any]:
         "deepseek_cache_hit_tokens": cache_hit_tokens,
         "deepseek_cache_miss_tokens": cache_miss_tokens,
         "deepseek_cache_prose_mention_count": cache_prose_mentions,
+        "deepseek_cache_ratio_unverified_count": cache_prose_mentions if cache_prose_mentions and cache_ratio is None else 0,
         "evolution_friction_count": evolution_friction_count,
         "evidence": evidence,
     }
@@ -1428,6 +1430,7 @@ def run_self_tests() -> int:
     cache_prose = parse_log("DeepSeek cache: 91% hit ratio - very healthy")
     check("cache prose ratio is not treated as KPI", cache_prose["deepseek_cache_hit_ratio"] is None, cache_prose)
     check("cache prose mention counted", cache_prose["deepseek_cache_prose_mention_count"] == 1, cache_prose)
+    check("cache prose ratio marked unverified", cache_prose["deepseek_cache_ratio_unverified_count"] == 1, cache_prose)
     lesson_kinds = [
         lesson["kind"]
         for lesson in top_lessons({**operational, "coding_log_available": True})

@@ -1316,6 +1316,12 @@ def corrected_gnomes(
             int(gnomes.get("deepseek_cache_ratio_unverified_count") or 0),
             1,
         )
+    cache_prose_mentions = int(gnomes.get("deepseek_cache_prose_mention_count") or 0)
+    if gnomes.get("deepseek_cache_hit_ratio") is None and cache_prose_mentions:
+        gnomes["deepseek_cache_ratio_unverified_count"] = max(
+            int(gnomes.get("deepseek_cache_ratio_unverified_count") or 0),
+            cache_prose_mentions,
+        )
     manifest = work.get("task_manifest") if isinstance(work.get("task_manifest"), dict) else {}
     verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
     task_artifacts = work.get("task_artifacts") if isinstance(work.get("task_artifacts"), list) else []

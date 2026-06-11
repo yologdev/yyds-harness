@@ -1160,6 +1160,63 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("token evidence was missing", html)
             self.assertIn("CacheMetricsRecorded events", html)
 
+    def test_cache_prose_ratio_is_marked_unverified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "deepseek_cache_hit_ratio": None,
+                        "deepseek_cache_hit_tokens": None,
+                        "deepseek_cache_miss_tokens": None,
+                        "deepseek_cache_prose_mention_count": 2,
+                    },
+                    "gnome_keys": [
+                        "deepseek_cache_hit_ratio",
+                        "deepseek_cache_hit_tokens",
+                        "deepseek_cache_miss_tokens",
+                        "deepseek_cache_prose_mention_count",
+                    ],
+                    "evals": [
+                        {
+                            "suite": "log-feedback",
+                            "status": "failed",
+                            "gnomes": {
+                                "deepseek_cache_hit_ratio": None,
+                                "deepseek_cache_hit_tokens": None,
+                                "deepseek_cache_miss_tokens": None,
+                                "deepseek_cache_prose_mention_count": 2,
+                            },
+                        }
+                    ],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+            latest = session_data["latest_gnomes"]
+
+            self.assertIsNone(latest["deepseek_cache_hit_ratio"])
+            self.assertEqual(latest["deepseek_cache_ratio_unverified_count"], 2)
+            self.assertEqual(
+                session_data["latest_eval"]["gnome_corrections"]["deepseek_cache_ratio_unverified_count"],
+                {"from": None, "to": 2},
+            )
+            self.assertEqual(data["gnome_history"][0]["values"]["deepseek_cache_ratio_unverified_count"], 2.0)
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            self.assertIn("DeepSeek cache ratio report(s) were withheld", html)
+
     def test_manifest_files_backfilled_from_task_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
