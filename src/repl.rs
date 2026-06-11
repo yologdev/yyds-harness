@@ -10,6 +10,7 @@ use crate::format::*;
 use crate::git::*;
 use crate::prompt::{run_prompt_auto_retry, run_prompt_auto_retry_with_content, PromptOutcome};
 use crate::session::{format_turn_changes, SessionChanges, TurnHistory, TurnSnapshot};
+use crate::state;
 use crate::watch::{get_watch_command, run_watch_after_prompt, set_watch_command};
 use crate::AgentConfig;
 
@@ -717,7 +718,14 @@ pub async fn run_repl(
         .completion_type(rustyline::config::CompletionType::List)
         .completion_prompt_limit(50)
         .build();
-    let mut rl = Editor::with_config(config).expect("Failed to initialize readline");
+    let mut rl = match Editor::with_config(config) {
+        Ok(editor) => editor,
+        Err(e) => {
+            state::stash_diagnostic_error(&format!("repl: readline_init_failed: {e}"));
+            eprintln!("Failed to initialize readline: {e}");
+            return;
+        }
+    };
     rl.set_helper(Some(YoyoHelper));
     if let Some(history_path) = history_file_path() {
         if rl.load_history(&history_path).is_err() {

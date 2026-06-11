@@ -1214,7 +1214,9 @@ mod tests {
     fn test_spawn_diagnostic_error_stashing() {
         // Verifies that spawn-prefixed diagnostic errors can be stashed
         // and retrieved, ensuring the crash reporter wire-up is testable.
-        crate::state::stash_diagnostic_error("spawn: run_prompt error (#1): test connection refused");
+        crate::state::stash_diagnostic_error(
+            "spawn: run_prompt error (#1): test connection refused",
+        );
         let taken = crate::state::take_diagnostic_error();
         assert!(taken.is_some());
         let msg = taken.unwrap();
