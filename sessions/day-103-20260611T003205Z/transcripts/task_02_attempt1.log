@@ -1,0 +1,523 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. I need to extract diagnostics sub-handlers from `src/commands_state.rs` into a new `src/commands_state_diagnostics.rs` module. Let me start by examining the current state of the file.
+
+Let me first check:
+1. The current line count of `src/commands_state.rs`
+2. The exact functions around lines 723-941
+3. What imports are needed
+4. How `lib.rs` is structured
+5. How the dispatch works in `handle_state_subcommand`
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ wc -l src/commands_state.rs  ▶ read src/commands_state.rs:1..31 ✓ (5ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the dispatch table in `handle_state_subcommand` to understand where failures/crashes are dispatched, and then look at the actual functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:27..127 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `handle_failures` and `handle_crashes` functions, plus their helpers.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_failures' in src/commands_state.rs  ▶ search 'fn handle_crashes' in src/commands_state.rs  ▶ search 'fn build_crashes_report' in src/commands_state.rs ✓ (17ms)
+ ✓ (17ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the exact lines for these functions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.9s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:720..770 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the rest of `build_crashes_report` and what other helpers it uses.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:767..1017 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand what helper functions are used by `handle_failures` and `handle_crashes`:
+
+1. `handle_failures` uses:
+   - `flag_value` - a helper somewhere
+   - `default_events_path` - at the top of the file
+   - `read_events` - somewhere
+   - `build_recent_failure_report` - somewhere
+
+2. `handle_crashes` uses:
+   - `flag_value`
+   - `default_events_path`
+   - `read_events`
+   - `build_crashes_report`
+
+3. `build_crashes_report` uses:
+   - `event_string`
+   - `event_timestamp_ms`
+   - `format_relative_ms` (defined at line 929)
+   - `format_timestamp_ms`
+   - `CrashEntry` (defined at line 758)
+
+The task says:
+- Move `handle_failures`, `handle_crashes`, `build_crashes_report`
+- Move `format_relative_ms` is used only by `build_crashes_report`? Let me check if it's used elsewhere.
+- Move `CrashEntry` - used only by `build_crashes_report`
+
+But `handle_failures` calls `build_recent_failure_report` which might be a completely different function (line 1789 according to the task notes). Let me check if `build_recent_failure_report` is also only used by `handle_failures`.
+
+Let me check what helpers are needed and what is shared.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn format_relative_ms' in src/commands_state.rs  ▶ search 'fn build_recent_failure_report' in src/commands_state.rs  ▶ search 'fn read_events' in src/commands_state.rs  ▶ search 'fn flag_value' in src/commands_state.rs  ▶ search 'fn event_string' in src/commands_state.rs  ▶ search 'fn event_timestamp_ms' in src/commands_state.rs  ▶ search 'fn format_timestamp_ms' in src/commands_state.rs ✓ (40ms)
+ ✓ (40ms)
+ ✓ (39ms)
+ ✓ (39ms)
+ ✓ (39ms)
+ ✓ (40ms)
+ ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The shared helper functions are spread throughout the file:
+
+- `read_events` at line 1093 — `pub(crate)` so it's already accessible across modules
+- `flag_value` at line 1461 — `pub(crate)` so already accessible
+- `event_timestamp_ms` at line 1373 — private, but let me check if it's used by other functions too
+- `event_string` at line 14067 — private, used by many functions
+- `format_timestamp_ms` at line 1425 — private, let me check usage
+- `build_recent_failure_report` at line 1789 — private, let me check if only used by handle_failures
+- `format_relative_ms` at line 929 — private, only 1 match
+
+The task strategy says to move only the tight cluster. Let me check what `build_recent_failure_report` uses and whether it's self-contained.
+
+Let me read `build_recent_failure_report` and its dependencies.
+────────────────────────────────────────────────────────────────────────────────
+  7 tools completed in 4.4s (7 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1789..1939 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is getting complex. The `build_recent_failure_report` function depends on a lot of helpers:
+- `event_string`
+- `is_failure_event_type`
+- `classify_failure_event` → `FailureTaxonomy`, `taxonomy`, `payload_mentions`, `payload_has_source`
+- `format_failure_event_value`
+
+Let me check where these helpers are and how widespread their usage is.
+
+The task says: "For this first extraction, only move the **tight cluster** that handles failures and crashes."
+
+Let me think about what's truly "tight". The function `handle_failures` at line 723 is small. It:
+1. Calls `flag_value` (pub(crate), accessible)
+2. Calls `default_events_path` (pub(crate), accessible) 
+3. Calls `read_events` (pub(crate), accessible)
+4. Calls `build_recent_failure_report` (private, at line 1789 — far away)
+
+The function `handle_crashes` at line 742 is small. It:
+1. Calls `flag_value`
+2. Calls `default_events_path`
+3. Calls `read_events`
+4. Calls `build_crashes_report` (private, at line 767 — nearby)
+
+And `build_crashes_report` uses:
+- `event_string` (private, at line 14067 — far away, used by many)
+- `event_timestamp_ms` (private, at line 1373)
+- `format_relative_ms` (private, at line 929 — used only here)
+- `format_timestamp_ms` (private, at line 1425)
+- `CrashEntry` (at line 758)
+
+So the issue is that `build_recent_failure_report` is far away and depends on a lot of shared infrastructure (event_string, etc.), while `build_crashes_report` is nearby and uses shared infrastructure + one unique helper (`format_relative_ms`).
+
+The task says: "If the cluster boundary is unclear, err on the side of moving LESS" and "Move ONLY the failures + crashes cluster (around lines 723-941)". So the task is suggesting we move lines roughly 723-941, which is:
+- `handle_failures` (723-740)
+- `handle_crashes` (742-756)
+- `CrashEntry` (758-765)
+- `build_crashes_report` (767-927)
+- `format_relative_ms` (929-940)
+
+But `handle_failures` calls `build_recent_failure_report` at line 1789. If we move `handle_failures` but leave `build_recent_failure_report` in place, we'd need to make `build_recent_failure_report` pub(crate) so it can be called from the new module.
+
+Actually, wait. Let me re-read the task:
+
+"For this first extraction, only move the **tight cluster** that handles failures and crashes."
+
+The approach would be:
+1. Move the functions in lines 723-940 to the new module
+2. Make `build_recent_failure_report` pub(crate) in commands_state.rs so the new module can call it
+3. Or also move `build_recent_failure_report` and its dependency chain
+
+Actually, the simplest approach that keeps things working:
+- Move `handle_failures`, `handle_crashes`, `CrashEntry`, `build_crashes_report`, `format_relative_ms` to the new module
+- These need: `flag_value` (pub(crate)), `default_events_path` (pub(crate)), `read_events` (pub(crate)), `event_string`, `event_timestamp_ms`, `format_timestamp_ms`, `build_recent_failure_report`
+- We'd need to make `event_string`, `event_timestamp_ms`, `format_timestamp_ms`, and `build_recent_failure_report` pub(crate) in commands_state.rs
+
+Let me check if `event_string` is used by many functions — if so, making it pub(crate) is fine.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'event_string\(' in src/commands_state.rs  ▶ search 'event_timestamp_ms\(' in src/commands_state.rs  ▶ search 'format_timestamp_ms\(' in src/commands_state.rs  ▶ search 'build_recent_failure_report\(' in src/commands_state.rs ✓ (24ms)
+ ✓ (24ms)
+ ✓ (24ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The regex search didn't find them. Let me try literal search.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.2s (4 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'event_string' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`event_string` is used extensively across the file (50 matches). Making it pub(crate) is necessary and appropriate — it's already a utility function used by many handlers.
+
+Let me also check `event_timestamp_ms` and `format_timestamp_ms` usage.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'event_timestamp_ms' in src/commands_state.rs  ▶ search 'format_timestamp_ms' in src/commands_state.rs  ▶ search 'build_recent_failure_report' in src/commands_state.rs ✓ (17ms)
+ ✓ (18ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `event_timestamp_ms` is used 7 times across the file, `format_timestamp_ms` is used 5 times, `build_recent_failure_report` is used 3 times. These all need to become `pub(crate)`.
+
+Now let me also check `is_failure_event_type`, `FailureTaxonomy`, `classify_failure_event`, `format_failure_event_value`, and related types since `build_recent_failure_report` uses them. But wait — `handle_failures` calls `build_recent_failure_report` which is at line 1789. If I move `handle_failures` to the new module, I need `build_recent_failure_report` to be accessible from there. But `build_recent_failure_report` is deep in the file and depends on many private helpers.
+
+Option A: Make `build_recent_failure_report` pub(crate) and leave all its helpers in commands_state.rs.
+Option B: Move the entire failure report cluster (build_recent_failure_report + all its helpers) to the new module too.
+Option C: Only move `handle_crashes`, `build_crashes_report`, `CrashEntry`, `format_relative_ms` — leave `handle_failures` in place.
+
+The task says "err on the side of moving LESS" and "Aim to extract ~200 lines".
+
+Let me look at what's around lines 723-941 more carefully. The failure-related functions are:
+- `handle_failures` (723-740) — depends on `build_recent_failure_report` at line 1789
+- `handle_crashes` (742-756) — depends on `build_crashes_report` at 767
+- `CrashEntry` (758-765) — used only by build_crashes_report
+- `build_crashes_report` (767-927) — depends on `event_string`, `event_timestamp_ms`, `format_relative_ms`, `format_timestamp_ms`
+- `format_relative_ms` (929-940) — used only by build_crashes_report
+
+If I move just the crash-related functions (handle_crashes, CrashEntry, build_crashes_report, format_relative_ms), that's about 200 lines. And I keep handle_failures in place since its dependency chain goes deep into the file.
+
+Actually, looking again: `handle_failures` is so small (18 lines), I could also move it. It just needs `flag_value` (pub(crate)), `default_events_path` (pub(crate)), `read_events` (pub(crate)), and `build_recent_failure_report` (need to make pub(crate)).
+
+Let me go with moving both `handle_failures` AND `handle_crashes` + their helpers. That means:
+1. Move `handle_failures` (723-740)
+2. Move `handle_crashes` (742-756) 
+3. Move `CrashEntry` (758-765)
+4. Move `build_crashes_report` (767-927)
+5. Move `format_relative_ms` (929-940)
+
+For dependencies, I need to make these pub(crate) in commands_state.rs:
+- `build_recent_failure_report` (already needed at line 14333 in tests too, but those use `super::`)
+- `event_string`
+- `event_timestamp_ms`
+- `format_timestamp_ms`
+
+Let me check: does `handle_failures` use `format_relative_ms`? No, only `build_crashes_report` uses it.
+
+Let me also check if there are any tests or other references I need to verify.
+
+Let me now look at lib.rs to see the module structure.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 10.4s (3 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'commands_state' in src/lib.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me also check how `commands_state_memory` module is structured as a reference for the modular pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_memory.rs:1..6  ▶ search 'handle_state_subcommand' in src/commands_state.rs ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that `commands_state_memory.rs` already imports from `crate::commands_state`. This is the pattern I need to follow. Now let me check what `build_state_memory_records` is and how it's imported back.
+
+Let me also check what happens around `read_events` in `commands_state.rs` since the new module will need it.
+
+Let me plan more carefully. Here's my strategy:
+
+1. Create `src/commands_state_diagnostics.rs` containing:
+   - `handle_failures(args: &[String])`
+   - `handle_crashes(args: &[String])`
+   - `CrashEntry` struct
+   - `build_crashes_report(...)`
+   - `format_relative_ms(...)`
+
+2. In `commands_state.rs`:
+   - Make `build_recent_failure_report`, `event_string`, `event_timestamp_ms`, `format_timestamp_ms` pub(crate)
+   - Remove the moved functions and struct
+   - Add `use crate::commands_state_diagnostics::{handle_failures, handle_crashes};`
+
+3. In `lib.rs`:
+   - Add `mod commands_state_diagnostics;`
+
+Let me verify what other things I need to check. Let me see the imports needed for the new module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.6s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1371..1374  ▶ read src/commands_state.rs:1423..1438  ▶ read src/commands_state.rs:14063..14078  ▶ read src/commands_state.rs:1459..1474 ✓ (16ms)
+ ✓ (44ms)
+ ✓ (40ms)
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also check if `is_failure_event_type` is referenced from within `build_recent_failure_report` and where it is:
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.8s (4 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn is_failure_event_type' in src/commands_state.rs  ▶ search 'struct FailureTaxonomy' in src/commands_state.rs ✓ (11ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, these are deep in the file. Making `build_recent_failure_report` pub(crate) will work since it's a single function that happens to use private helpers internally (which will stay in `commands_state.rs`). The new module just needs to call it.
+
+Now let me also check: does `build_recent_failure_report` need `BTreeMap`? Let me check the imports at the top:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1..11 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me plan the new module. It needs:
+
+```rust
+//! State diagnostics: failure and crash reporting sub-handlers.
+//!
+//! Extracted from commands_state.rs to reduce file size.
+//! These handlers are dispatched from handle_state_subcommand.
+
+use crate::commands_state::{
+    build_recent_failure_report, default_events_path, event_string, event_timestamp_ms,
+    flag_value, format_timestamp_ms, read_events,
+};
+use crate::format::*;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::collections::HashSet;
+```
+
+Wait, I need to check what imports `build_crashes_report` actually uses:
+- `serde_json::Value` — yes
+- `std::collections::HashMap` — yes (line 779)
+- `std::collections::HashSet` — yes (line 782)
+- `crate::format::*` — for color constants (RESET, YELLOW, etc. used in handle_failures/crashes)
+
+OK, let me now execute the plan:
+
+1. Create `src/commands_state_diagnostics.rs`
+2. Add `mod commands_state_diagnostics;` to `src/lib.rs`
+3. Make the needed functions pub(crate) in `commands_state.rs`
+4. Remove the moved code from `commands_state.rs`
+5. Add the use import in `commands_state.rs`
+6. Build and test
+
+Let me also check the test for `build_recent_failure_report` at line 14333 to make sure it still works.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the test reference:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14328..14343 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test is inside a `#[cfg(test)] mod tests { ... }` block. Let me check if there's a test block that references `handle_failures` or `build_crashes_report`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_failures' in src/commands_state.rs  ▶ search 'build_crashes_report' in src/commands_state.rs  ▶ search 'CrashEntry' in src/commands_state.rs ✓ (18ms)
+ ✓ (18ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — `CrashEntry` is only used within `build_crashes_report`, so it can be moved safely.
+
+Now let me also check if `format_relative_ms` is only used within `build_crashes_report`:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'format_relative_ms' in src/commands_state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `format_relative_ms` is only used within `build_crashes_report`. So the clean cluster is:
+
+Lines 723-940:
+- `handle_failures` (723-740)
+- `handle_crashes` (742-756)
+- `CrashEntry` struct (758-765)
+- `build_crashes_report` (767-927)
+- `format_relative_ms` (929-940)
+
+That's ~218 lines. Let me now execute.
+
+Let me also verify there are no other callers of these functions I might miss. And let me check the test module to see if there's a test for handle_failures or handle_crashes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test_' in src/commands_state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only one test function in the file. The tests are in a `#[cfg(test)] mod tests` block. Let me find the test module:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, now I have all the information I need. Let me create a todo list and start executing.
+
+Plan:
+1. Create `src/commands_state_diagnostics.rs` with the extracted functions
+2. Add `mod commands_state_diagnostics;` to `src/lib.rs`
+3. In `src/commands_state.rs`:
+   a. Make `build_recent_failure_report`, `event_string`, `event_timestamp_ms`, `format_timestamp_ms` pub(crate)
+   b. Remove the extracted functions (lines 723-940)
+   c. Add `use crate::commands_state_diagnostics::{handle_failures, handle_crashes};`
+4. Build and test
+
+Let me also check: does `event_string` need the lifetime annotation when made pub(crate)? Looking at the function: `fn event_string<'a>(event: &'a Value, key: &str) -> Option<&'a str>` — yes, it has a lifetime parameter. That's fine for pub(crate).
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the exact code I need to move. I already have lines 723-940. Let me create the new file.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 2.6s (6 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me create the new file. I need to be very careful about the exact code. Let me re-read the lines to ensure I have the exact content.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:722..942 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the exact code to extract. Let me also check if `crate::format::*` is needed - it is, since `YELLOW`, `RED`, `GREEN`, `RESET`, etc. are used. Let me check what format module exports:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me create the new module:
+  + //! State diagnostics: failure and crash reporting sub-handlers.
+  + //!
+  + //! Extracted from commands_state.rs to reduce file size.
+  + //! These handlers are dispatched from handle_state_subcommand.
+  + 
+  + use crate::commands_state::{
+  +     build_recent_failure_report, default_events_path, event_string, event_timestamp_ms,
+  +     flag_value, format_timestamp_ms, read_events,
+  + };
+  + use crate::format::*;
+  + use serde_json::Value;
+  + 
+  + pub(crate) fn handle_failures(args: &[String]) {
+  +     if !args.is_empty() && args.first().map(|arg| arg.as_str()) != Some("--recent") {
+  +         eprintln!("{YELLOW}  Usage: yoyo state failures --recent [--limit N]{RESET}");
+  +         return;
+  +     }
+  +     let limit = flag_value(args, "--limit")
+  ... (3 more lines)
+  ✓ Auto-approved: write: src/commands_state_diagnostics.rs (230 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ write src/commands_state_diagnostics.rs (230 lines) ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to:
+1. Add `mod commands_state_diagnostics;` to `src/lib.rs`
+2. Make the shared helpers pub(crate) in commands_state.rs
+3. Remove extracted code from commands_state.rs
+4. Add the use import
+
+Let me do steps 1 and 2 first, then step 3.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+    mod commands_state;
+  + mod commands_state_diagnostics;
+    mod commands_state_graph;
+    mod commands_state_memory;
+  ✓ Auto-approved: edit: src/lib.rs (3 → 4 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (3 → 4 lines)
+    mod commands_state;
+  + mod commands_state_diagnostics;
+    mod commands_state_graph;
+    mod commands_state_memory;
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me make the needed functions pub(crate) in commands_state.rs. I need to make:
+- `build_recent_failure_report` pub(crate) at line 1789
+- `event_string` pub(crate) at line 14067
+- `event_timestamp_ms` pub(crate) at line 1373
+- `format_timestamp_ms` pub(crate) at line 1425
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  2 tools completed in 16ms (2 ✓)
+
+
