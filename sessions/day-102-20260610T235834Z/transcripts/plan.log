@@ -1,0 +1,476 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The user is instructing me that I am yyds, a gen1 self-evolving coding agent, and I'm in Phase A2: PLANNING. I need to:
+
+1. Read ISSUES_TODAY.md for trusted owner issues
+2. Read journals/JOURNAL.md last 5 entries
+3. Read git log --oneline -10
+4. Read .rs files under src/ for module structure
+5. Create task files in session_plan/
+6. Create session_plan/issue_responses.md
+7. Commit and stop
+
+Let me start by gathering the necessary context. First, let me check if ISSUES_TODAY.md exists, read the journal, check git log, and get a quick overview of src/.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ ls ISSUES_TODAY.md 2>/dev/null && echo "EXISTS" || echo "NOT_FOUND"  ▶ $ git log --oneline -10  ▶ $ ls src/*.rs | sort ✓ (43ms)
+ ✓ (36ms)
+ ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read ISSUES_TODAY.md, the last 5 journal entries, and quickly scan the trajectory evidence for what tasks to plan.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read ISSUES_TODAY.md  ▶ $ head -200 journals/JOURNAL.md ✓ (18ms)
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good picture of the situation. Let me summarize:
+
+1. No trusted issues today.
+2. The journal shows a clear pattern: Day 102 has had multiple assessment-only sessions with no task implementation. The agent has been "looking" instead of "doing." The crash reporter was built but uncommitted previously, and successive sessions crashed without explanation.
+3. Current git log shows recent commits are mostly from Yuanhao (human) and session wrap-ups / assessments — no implementation tasks have shipped.
+4. The trajectory shows day-102 already had one session with 0/0 tasks attempted.
+
+Now I need to write a session plan. The trajectory and journal evidence both point to:
+
+- The agent has been stuck in assessment-only sessions
+- There have been multiple CI failure patterns around: test watch failures, test failures related to README checks with stale star-history URL
+- The state infrastructure needs actual flows through it
+
+Let me check current build/test status, and also look at the trajectory CI errors more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo build 2>&1 | tail -5  ▶ $ cargo test 2>&1 | tail -30 ✓ (245ms)
+ ✓ (2m 4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build and tests are green. All 89 tests pass, 1 ignored, 2 doc-tests ignored. Good baseline.
+
+Now let me think about what tasks to plan. Looking at the evidence:
+
+1. **Trajectory CI errors**: There are recurring CI errors:
+   - `test watch::tests::test_watch_result_failed_with_error ... ok` — wait, this says "ok"?
+   - `error: test failed, to rerun pass `--lib`` 
+   - `test 'release::tests::public_readme_metadata_uses_yoyo_ds_harness_identity'` failed
+   - `assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"` 
+
+   The star-history URL issue is interesting — it seems like a README check that has a stale URL.
+
+2. **Log feedback lessons**:
+   - Agent commands timed out during evolution -> prefer bounded diagnostics
+   - Max task turn count is high: 18 -> split broad tasks earlier
+   - `error: test failed, to rerun pass `--lib`` -> inspect failing phase
+
+3. **Journal themes**: 
+   - Crash reporter exists (`stash_diagnostic_error`, `/state crashes`) but might not be fully wired
+   - Agent has been assessment-only for multiple sessions
+   - `commands_state.rs` is too large at 23,848 lines
+   - Need to convert "looking" into "doing"
+
+4. **Harness policy**: Focus on DeepSeek harness improvements using state evidence, eval, reliability.
+
+Given that build and tests pass locally, the CI errors seem environment-specific. Let me check the README issue since it's a concrete, fixable problem.
+
+Let me plan 3 tasks:
+
+1. **Fix the README star-history URL** — This is a concrete CI failure that keeps recurring. Fix the assertion in the release test to match the actual README content.
+
+2. **Wire crash reporter into more doors** — The journal says the crash reporter is only wired into one place (`src/lib.rs`), but crashes come through other doors. Wire it into `src/state.rs` init, and maybe `src/deepseek.rs` transport failures.
+
+3. **Improve state/why bounded reads** — The log feedback says "prefer bounded diagnostics and targeted commands before broad cargo/state scans." Improve `state why` or related commands to be faster/bounded.
+
+Wait, let me re-read the CI errors more carefully. The trajectory says:
+```
+[3×] test watch::tests::test_watch_result_failed_with_error ... ok
+[3×] error: test failed, to rerun pass `--lib`
+[3×] ##[error]process completed with exit code 101.
+[2×] thread 'release::tests::public_readme_metadata_uses_yoyo_ds_harness_identity' (1
+[2×] assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"
+```
+
+The `test_watch_result_failed_with_error ... ok` seems like a passing test being misidentified. The actual failures seem to be:
+1. Release test with star-history URL assertion
+2. Some lib test failure
+
+Let me check the release test and the README.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2m 15s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'star-history'  ▶ search 'public_readme_metadata_uses_yoyo_ds_harness_identity' (*.rs) ✓ (8ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the release test to understand the assertion failure.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/release.rs:290..310  ▶ read README.md:345..355 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The README contains `www.star-history.com/?type=date&repos=yologdev%2Fyyds-harness` — the assertion on line 302 checks for this exact string. The README has it. And the test assertion on line 303 checks for `api.star-history.com/chart?repos=yologdev/yyds-harness&type=date` — the README has `yologdev/yyds-harness&type=date` (not URL-encoded). Let me check: the README has `api.star-history.com/chart?repos=yologdev/yyds-harness&type=date&theme=dark` and `api.star-history.com/chart?repos=yologdev/yyds-harness&type=date&legend=top-left`. Both contain `api.star-history.com/chart?repos=yologdev/yyds-harness&type=date`, so that assertion should pass.
+
+Wait, the CI error says `assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"`. But the test at line 302 checks for `www.star-history.com/?type=date&repos=yologdev%2Fyyds-harness`. That's a different URL pattern. The error mentions `star-history.com/#yologdev/yyds-harness&date` — this looks like a different URL format entirely (uses `/#` not `/?type=date`).
+
+This might be a different test or a different assertion that isn't in the code I'm reading. Let me search more carefully.
+
+Actually wait, the CI error fingerprint is:
+```
+[2×] thread 'release::tests::public_readme_metadata_uses_yoyo_ds_harness_identity' (1
+[2×] assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"
+```
+
+But the test assertions are:
+- `readme.contains("www.star-history.com/?type=date&repos=yologdev%2Fyyds-harness")`
+- `readme.contains("api.star-history.com/chart?repos=yologdev/yyds-harness&type=date")`
+
+Neither matches `star-history.com/#yologdev/yyds-harness&date`. This is confusing. The error fingerprint might be a mangled version from the CI output. Or there might be a different version of the test.
+
+Let me verify by running the specific test:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.7s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test release::tests::public_readme_metadata_uses_yoyo_ds_harness_identity … ✓ (146ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes locally. The CI failure might be a stale fingerprint or environment-specific. Let me check the trajectory CI errors more carefully.
+
+Actually, looking at the CI errors again:
+```
+[3×] test watch::tests::test_watch_result_failed_with_error ... ok
+[3×] ^[[1m^[[91merror^[[0m: test failed, to rerun pass `--lib`
+[3×] ##[error]process completed with exit code 101.
+[2×] thread 'release::tests::public_readme_metadata_uses_yoyo_ds_harness_identity' (1
+[2×] assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"
+```
+
+Wait, the fingerprint says `star-history.com/#yologdev/yyds-harness&date` — note the `/` before `#`, making it `star-history.com/#`. This is not in the test code. This might be a mangling of the fingerprint or a different version of the test from a past session that's now fixed. Given the test passes locally, I shouldn't spend time on this.
+
+Let me focus on what the evidence actually tells me:
+
+1. **Build and tests pass locally** — the CI failures might be stale fingerprints
+2. **The agent has been stuck in assessment-only mode** — journal says 4+ sessions of "looking without doing"
+3. **The crash reporter exists but might need broader wiring**
+4. **Log feedback says "prefer bounded diagnostics and targeted commands before broad cargo/state scans"**
+5. **commands_state.rs is too large**
+
+For the session plan, I should pick tasks that:
+- Improve DeepSeek harness reliability
+- Are completable in 20 minutes each
+- Touch at most 3 source files each
+- Are concrete and verifiable
+
+Given the trajectory and state evidence, here are good candidate tasks:
+
+**Task 1: Wire crash reporter into state init and transport failure paths**
+The journal mentions the crash reporter (`stash_diagnostic_error`) is only wired into one door (`src/lib.rs` line 1032). Wire it into additional failure paths so crash diagnoses are captured more broadly. This directly addresses the recurring failure pattern of sessions crashing without explanation.
+
+**Task 2: Add bounded read limit to state commands**
+The log feedback says "prefer bounded diagnostics and targeted commands before broad cargo/state scans." The journal mentions that `state why` now reads only the last N events — but let me verify this was committed and if more state commands need similar bounds. Actually the journal Day 100 entry says: "I also taught the state query commands to read only the last N events instead of sucking in the whole log."
+
+Let me check if this was actually committed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'stash_diagnostic_error' (*.rs)  ▶ search 'take_diagnostic_error' (*.rs) ✓ (16ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see where the crash reporter is actually called and where it could be wired:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:60..90  ▶ read src/lib.rs:1025..1045 ✓ (6ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `stash_diagnostic_error` is called in exactly one place: state init failure in `src/lib.rs`. The journal mentions it should be wired into more failure paths. Let me check what other places might benefit from diagnostic error stashing — places where the agent can crash before completing a run.
+
+Let me check the `exit_with_state` function and the panic hook:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'exit_with_state' (*.rs)  ▶ search 'install_panic_hook' (*.rs) ✓ (17ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the panic hook to see if it stashes diagnostic errors:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:30..70 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also look at exit_with_state to see if it uses diagnostic errors:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:360..410 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `exit_with_state` to see if it calls `mark_run_completed_with_error`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:965..995 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. So the flow is:
+1. `exit_with_state(N)` → calls `mark_run_completed_with_error` which calls `take_diagnostic_error()` → so any diagnostic error stashed before `exit_with_state` will be captured.
+2. But many `exit_with_state` calls in `lib.rs` don't have a `stash_diagnostic_error` before them — they just call `exit_with_state(1)` or `exit_with_state(2)` without any diagnostic context.
+
+Now I have a good picture. Let me plan the tasks.
+
+Given the evidence, here are my task candidates:
+
+**Task 1: Wire diagnostic error stashing into key failure paths in lib.rs**
+- The crash reporter functions exist (`stash_diagnostic_error`, `take_diagnostic_error`, `exit_with_state` integration)
+- But only one call site actually stashes a diagnostic error (line 1032: state init failure)
+- Wire it into other non-zero exit paths in `src/lib.rs` so session crashes have diagnostic context
+- Touch: `src/lib.rs` (only file)
+- Verification: `cargo build && cargo test`
+
+**Task 2: Add bounded context loading for large source trees to prevent tool timeout**
+- The log feedback says "agent commands timed out during evolution -> prefer bounded diagnostics and targeted commands before broad cargo/state scans"
+- The trajectory says sessions crash without explanation
+- Add a configurable cap on the file listing in `src/context.rs` to prevent context building from timing out on large repos
+- Touch: `src/context.rs`, maybe `src/cli_config.rs`
+- Verification: `cargo build && cargo test`
+
+**Task 3: Extract a focused module from commands_state.rs**
+- The journal mentions `commands_state.rs` is 23,848 lines / 17% of everything — this is concerning
+- But extracting from it is a bigger refactor that might take long
+- Better: instead of extraction, add a `/state crashes` command that was mentioned in the journal, or improve existing `/state` commands with bounded reads
+
+Wait, let me re-read the journal: "I also taught the state query commands to read only the last N events instead of sucking in the whole log, which makes everything from `why` to `summary` faster when the log is large."
+
+Let me check if this was committed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline --all --grep="bounded" 2>&1 | head -5  ▶ $ git log --oneline --all --grep="state" --since="2026-06-07" 2>&1 | head -10 ✓ (10ms)
+ ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now check if the crash reporter is actually fully wired by checking whether `stash_diagnostic_error` is called before any of the `exit_with_state` calls in lib.rs. Let me look at the specific calls in lib.rs:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "exit_with_state" src/lib.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at these exit_with_state calls to understand what failures they represent and which ones could benefit from stashing diagnostic errors.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:453..458  ▶ read src/lib.rs:473..478  ▶ read src/lib.rs:583..588  ▶ read src/lib.rs:637..642  ▶ read src/lib.rs:685..690  ▶ read src/lib.rs:715..720 ✓ (5ms)
+  ▶ read src/lib.rs:732..737  ▶ read src/lib.rs:748..753  ▶ read src/lib.rs:852..857 ✓ (5ms)
+ ✓ (59ms)
+ ✓ (27ms)
+ ✓ (115ms)
+ ✓ (110ms)
+ ✓ (104ms)
+ ✓ (100ms)
+ ✓ (67ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+These exit_with_state calls are mostly for standard error paths (API failures, stdin errors, etc.). The task of wiring more diagnostic errors would be beneficial, but it's nuanced — each failure path needs a meaningful diagnostic message.
+
+Let me now think about what tasks make the most sense given the constraints:
+- Build is green, tests pass
+- No trusted issues
+- The trajectory evidence shows no recent reverts
+- The log feedback suggests bounded diagnostics and split broad tasks
+- The agent has been assessment-only for multiple sessions — needs to ship something
+
+Given the policy priority:
+0. CI failures — tests pass locally, CI fingerprint might be stale
+1. DeepSeek feedback — no specific recurring DeepSeek failure in evidence right now
+2. Harness eval/replay quality — could improve
+3. Self-discovered bugs — crash reporter wiring
+4. Trusted owner issues — none
+5. Agent-self issues — none listed
+6. Capability gaps — could work on
+7. Release check — not applicable
+
+Best task candidates:
+
+**Task 1: Wire `stash_diagnostic_error` into key failure paths in src/lib.rs**
+- Currently only one call site (line 1032, state init failure)
+- Add diagnostic error stashing before `exit_with_state` in the most impactful failure paths
+- Touches: `src/lib.rs` only
+- This directly addresses the journal's concern about crashes without explanation
+
+**Task 2: Remove `#[allow(dead_code)]` from `stash_diagnostic_error` and add a real call site**
+- Wait, `stash_diagnostic_error` has `#[allow(dead_code)]` — let me check
+
+Actually, looking at line 70: `#[allow(dead_code)]` — this means the function IS used but the compiler thinks it isn't. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+  9 tools completed in 11.4s (9 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn "stash_diagnostic_error" src/ | grep -v "fn stash\|/// Stash\|// If a" ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting — `stash_diagnostic_error` is called in `src/lib.rs:1032` but the function is in `src/state.rs:71`. When compiling `lib.rs`, the function `stash_diagnostic_error` is in the same crate, so the compiler should see it. But maybe it's behind a cfg or there's an issue. Let me check if `#[allow(dead_code)]` is actually needed — if the function is called from lib.rs, it shouldn't be dead code.
+
+Wait, `stash_diagnostic_error` is in `src/state.rs` and called in `src/lib.rs`. They're in the same crate. The `#[allow(dead_code)]` should be unnecessary. Let me check if there's a cfg gate:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -B5 "pub fn stash_diagnostic_error" src/state.rs ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `#[allow(dead_code)]` is on the function itself. Since it's `pub` and called from `lib.rs`, the compiler should see the call. But maybe `stash_diagnostic_error` is in a module that isn't always compiled? No, `state.rs` is always part of the crate.
+
+Actually, the `#[allow(dead_code)]` might be there because the call site at lib.rs:1032 is behind some condition, or the compiler considers it dead code in certain configurations. Let me just try removing it and building:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -i 's/#\[allow(dead_code)\… ✓ (7.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, I didn't actually remove the `#[allow(dead_code)]`. Let me try again properly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git checkout -- src/state.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, let me not get sidetracked debugging the `#[allow(dead_code)]` — it's not important for planning.
+
+Now, let me think about the actual tasks. I need to plan 3 tasks that:
+1. Are concrete and verifiable
+2. Touch at most 3 files each
+3. Can be completed in ~20 minutes
+4. Address DeepSeek harness evidence
+
+Given the evidence I've gathered, here's what I'll plan:
+
+**Task 1: Stash diagnostic errors before selected `exit_with_state` calls in lib.rs**
+- The crash reporter exists but only fires from state init failure
+- Add `state::stash_diagnostic_error()` calls before several non-zero exit paths in `run_cli()` and other key functions in `src/lib.rs`
+- Files: `src/lib.rs` only
+- This addresses the journal's concern: "the crash reporter I begged for across seven journal entries exists now... but it's wired into only one door"
+
+**Task 2: Fix the `#[allow(dead_code)]` on `stash_diagnostic_error` and add a test**
+- The `#[allow(dead_code)]` on `stash_diagnostic_error` is a smell — it suggests the function was thought to be unused
+- Remove the attribute, add a test that verifies the stash/take roundtrip
+- Files: `src/state.rs` only (test module exists)
+
+Wait, actually let me verify it compiles without the attribute:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - #[allow(dead_code)]
+    pub fn stash_diagnostic_error(msg: &str) {
+  ✓ Auto-approved: edit: src/state.rs (2 → 1 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (2 → 1 lines)
+  - #[allow(dead_code)]
+    pub fn stash_diagnostic_error(msg: &str) {
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 | tail -15 ✓ (7.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It compiles without `#[allow(dead_code)]`. Let me restore it since this task isn't yet part of a plan — I'll include it as a task. But first, let me revert and plan properly, then the implementation agent will do the work.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git checkout -- src/state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me plan the 3 tasks. Let me look at a few more things to ensure I'm choosing well:
+
+1. The log feedback says "max task turn count is high: 18 -> split broad tasks earlier or add task-specific context so implementation converges in fewer turns" — this is for the evolve loop itself, not for my planning.
+
+2. The CI fingerprint errors — let me check if any are actually real and current. The `test_watch_result_failed_with_error ... ok` pattern looks like it's from test output (the "ok" at end means it passes), and the star-history URL assertion seems to pass locally. These might be stale fingerprints.
+
+Let me now look at the commands_state.rs to see if there's a "/state crashes" command already:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "crashes" src/commands_state.rs | head -10 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `/state crashes` already exists! Let me read it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:742..872 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. `/state crashes` already exists and works. The issue is that `error_detail` is almost always empty because `stash_diagnostic_error` is only called from one place. So wiring it more broadly would directly improve the output quality of `/state crashes`.
+
+Now let me finalize my 3 tasks:
+
+**Task 1: Wire `stash_diagnostic_error` into key failure paths in `src/lib.rs`**
+- Add diagnostic error stashing before selected `exit_with_state` calls with non-zero exit codes
+- This makes `/state crashes` show actual error details instead of just "exit code 1"
+- Touches: `src/lib.rs` only
+- Verification: `cargo build && cargo test`
+
+**Task 2: Remove `#[allow(dead_code)]` and add stash/take roundtrip test to `src/state.rs`**
+- The `#[allow(dead_code)]` attribute on `stash_diagnostic_error` is unnecessary (it IS called from lib.rs) and suppresses lint warnings that could catch real issues
+- Add a test verifying the stash/take/exit_with_state pipeline
+- Touches: `src/state.rs` only
+- Verification: `cargo build && cargo test`
+
+**Task 3: Bounded file listing in context.rs to prevent tool timeout in large repos**
+- The log feedback says "agent commands timed out during evolution -> prefer bounded diagnostics and targeted commands before broad cargo/state scans"
+- Add a cap on context file listing to prevent timeout on very large source trees
+- Touches: `src/context.rs`, `src/cli_config.rs`
+- Verification: `cargo build && cargo test`
+
+Wait, actually let me think more carefully about Task 3. The log feedback is about the evolution loop's own commands timing out, not about the context loading. And the cap is already there: `MAX_PROJECT_FILES` and `MAX_RECENT_FILES` in context.rs. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "MAX_PROJECT_FILES\|MAX_RECENT_FILES" src/context.rs ✓ (17ms)
+
+
