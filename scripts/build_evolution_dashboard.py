@@ -1176,6 +1176,8 @@ def work_summary(
     causal_chains = annotate_task_lineage_verification(causal_chains, task_verification)
     suggestions = augment_evolution_suggestions(suggestions, task_verification)
     source_patch_count = len(source_commits)
+    assessment_artifact_present = bool(task_manifest.get("assessment_present")) if task_manifest else None
+    assessment_transcript_present = bool((transcript_data.get("phase_counts") or {}).get("assess"))
     labels: list[str] = []
     if attempted:
         verified = int(task_verification.get("verified_task_count") or 0)
@@ -1191,8 +1193,11 @@ def work_summary(
             labels.append(f"{strict_total - attempted} selected task(s) not attempted")
     elif task_manifest.get("planning_failed"):
         labels.append("planning produced no task files")
-    if task_manifest and not task_manifest.get("assessment_present"):
-        labels.append("assessment missing")
+    if task_manifest and assessment_artifact_present is False:
+        if assessment_transcript_present:
+            labels.append("assessment artifact missing (assess transcript present)")
+        else:
+            labels.append("assessment artifact missing")
     if source_files:
         labels.append(f"{len(source_files)} source file(s) changed")
     elif touched_source_files:
@@ -1214,6 +1219,8 @@ def work_summary(
     return {
         "headline": "; ".join(labels[:4]),
         "labels": labels,
+        "assessment_artifact_present": assessment_artifact_present,
+        "assessment_transcript_present": assessment_transcript_present,
         "transcripts": transcript_data,
         "state_pipeline": state_pipeline,
         "task_manifest": task_manifest,
@@ -3230,7 +3237,7 @@ HTML = r"""<!doctype html>
               <div class="fact"><strong>${text(sourceFiles.length || 0)}</strong>source files</div>
               <div class="fact"><strong>${text(evidenceFiles.length || 0)}</strong>evidence edits</div>
               <div class="fact"><strong>${text(work.eval_count || 0)}</strong>evals</div>
-              <div class="fact"><strong>${hasManifest ? text(manifest.assessment_present ? "yes" : "no") : "-"}</strong>assess</div>
+              <div class="fact"><strong>${hasManifest ? text(manifest.assessment_present ? "yes" : "no") : "-"}</strong>assessment artifact</div>
               <div class="fact"><strong>${text(work.source_commit_count || 0)}</strong>source commits</div>
               <div class="fact"><strong>${text(failedTools.length || 0)}</strong>tool fails</div>
               <div class="fact"><strong>${text(work.decision_count || 0)}</strong>decisions</div>

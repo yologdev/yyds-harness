@@ -1448,6 +1448,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
             (session / "tasks/task_01").mkdir(parents=True)
             (session / "tasks/task_01/task.md").write_text("Title: Fallback task\n", encoding="utf-8")
+            (session / "transcripts").mkdir()
+            (session / "transcripts/assess.log").write_text("assessment phase ran\n", encoding="utf-8")
             write_json(
                 session / "tasks/task_01/outcome.json",
                 {
@@ -1465,7 +1467,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             work = data["sessions"][0]["work_summary"]
             html = (root / "out/index.html").read_text(encoding="utf-8")
 
-            self.assertIn("assessment missing", work["headline"])
+            self.assertIn("assessment artifact missing (assess transcript present)", work["headline"])
+            self.assertFalse(work["assessment_artifact_present"])
+            self.assertTrue(work["assessment_transcript_present"])
             self.assertFalse(work["task_manifest"]["assessment_present"])
             self.assertEqual(
                 work["task_artifacts"][0]["revert_reason"],
@@ -1479,7 +1483,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 work["task_lineage"][0]["revert_reason"],
                 "Task scope mismatch: task produced no git-visible file changes",
             )
-            self.assertIn("assess", html)
+            self.assertIn("assessment artifact", html)
             self.assertIn("revert_reason", html)
 
     def test_transcript_actions_fill_work_evidence_when_state_events_are_sparse(self):
