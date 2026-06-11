@@ -760,6 +760,9 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             evaluator_timeout_with_verdict += 1
         if outcome.get("status") == "completed" and has_pass and touched and not landed:
             unlanded_source += 1
+    verification_denominator = selected_count or len(task_dirs)
+    if verification_denominator:
+        evaluator_unverified = max(evaluator_unverified, verification_denominator - strict_verified)
     replay = replay_check_session(session_dir)
     return {
         "task_manifest_available": bool(manifest),
@@ -1516,6 +1519,27 @@ def run_self_tests() -> int:
         check("timed-out verdict counted", artifacts["evaluator_timeout_with_verdict_count"] == 1, artifacts)
         check("timed-out verdict is not strict verified", artifacts["task_strict_verified_count"] == 0, artifacts)
         check("timed-out verdict is evaluator-unverified", artifacts["evaluator_unverified_count"] == 1, artifacts)
+
+        (task_dir / "eval_attempt_1.json").unlink()
+        (task_dir / "outcome.json").write_text(
+            json.dumps(
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "planned_files": ["src/state.rs"],
+                    "source_files": [],
+                    "commit_shas": [],
+                    "revert_reason": "Task scope mismatch: task produced no git-visible file changes",
+                }
+            ),
+            encoding="utf-8",
+        )
+        reverted_artifacts = task_artifact_metrics(session, attempted=1)
+        check(
+            "reverted selected task without eval is evaluator-unverified",
+            reverted_artifacts["evaluator_unverified_count"] == 1,
+            reverted_artifacts,
+        )
 
         (session / "state").mkdir(exist_ok=True)
         (session / "state" / "merge_state_delta.json").write_text(
