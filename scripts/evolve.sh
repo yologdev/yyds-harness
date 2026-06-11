@@ -1491,6 +1491,9 @@ $TASK_DESC
 ${CHECKPOINT_SECTION:+
 $CHECKPOINT_SECTION
 }
+First read and follow `skills/evolve/SKILL.md`. That skill is the canonical
+implementation contract for yyds self-evolution.
+
 Follow the evolve skill rules:
 - Write a test first if possible
 - Use edit_file for surgical changes

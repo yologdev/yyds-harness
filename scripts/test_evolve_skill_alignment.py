@@ -30,6 +30,8 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn("YOYO_SKILL_FLAGS=(--skills ./skills)", script)
+        self.assertIn("First read and follow `skills/evolve/SKILL.md`", script)
+        self.assertIn("canonical\nimplementation contract for yyds self-evolution", script)
         self.assertIn("Follow the evolve skill rules", script)
 
     def test_assessment_phase_uses_self_assess_skill(self):

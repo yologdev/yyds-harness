@@ -1167,6 +1167,31 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["source_commits"][0]["subject"], "Day 1 (00:00): implement source")
             self.assertEqual(work["bookkeeping_commits"][0]["subject"], "Day 1 (00:00): session wrap-up")
 
+    def test_non_source_edits_are_labeled_as_bookkeeping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {"day": 1, "tasks_attempted": 1, "tasks_succeeded": 0},
+            )
+            write_json(session / "state/summary.json", {})
+            write_events(
+                session / "state/events.jsonl",
+                [
+                    {"kind": "FileEdited", "payload": {"path": "journals/JOURNAL.md"}},
+                    {"kind": "FileEdited", "payload": {"path": "session_plan/task_01.md"}},
+                ],
+            )
+
+            data = build(root / "sessions", root / "out")
+            work = data["sessions"][0]["work_summary"]
+
+            self.assertEqual(work["edited_files"], ["journals/JOURNAL.md", "session_plan/task_01.md"])
+            self.assertEqual(work["touched_source_files"], [])
+            self.assertIn("2 evidence/bookkeeping file(s) edited", work["headline"])
+            self.assertNotIn("2 file(s) edited", work["headline"])
+
     def test_feedback_only_trace_is_explicit(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1330,7 +1355,15 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 {
                     "event_count": 2,
                     "event_counts": {"RunStarted": 1, "RunCompleted": 1},
-                    "task_lineage": [],
+                    "task_lineage": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "task_title": "Fallback task",
+                            "status": "started",
+                            "planned_files": ["src/lib.rs"],
+                        }
+                    ],
                 },
             )
             write_json(
@@ -1361,6 +1394,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "task_id": "task_01",
                     "task_title": "Fallback task",
                     "status": "reverted",
+                    "revert_reason": "Task scope mismatch: task produced no git-visible file changes",
                     "planned_files": ["src/lib.rs"],
                     "touched_files": [],
                     "source_files": [],
@@ -1373,7 +1407,20 @@ class BuildEvolutionDashboard(unittest.TestCase):
 
             self.assertIn("assessment missing", work["headline"])
             self.assertFalse(work["task_manifest"]["assessment_present"])
+            self.assertEqual(
+                work["task_artifacts"][0]["revert_reason"],
+                "Task scope mismatch: task produced no git-visible file changes",
+            )
+            self.assertEqual(
+                work["task_verification"]["rows"][0]["revert_reason"],
+                "Task scope mismatch: task produced no git-visible file changes",
+            )
+            self.assertEqual(
+                work["task_lineage"][0]["revert_reason"],
+                "Task scope mismatch: task produced no git-visible file changes",
+            )
             self.assertIn("assess", html)
+            self.assertIn("revert_reason", html)
 
     def test_transcript_actions_fill_work_evidence_when_state_events_are_sparse(self):
         with tempfile.TemporaryDirectory() as tmp:

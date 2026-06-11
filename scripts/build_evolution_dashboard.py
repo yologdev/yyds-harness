@@ -656,6 +656,7 @@ def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
                 "has_outcome": bool(outcome),
                 "task_title": outcome.get("task_title") if isinstance(outcome, dict) else None,
                 "status": outcome.get("status") if isinstance(outcome, dict) else None,
+                "revert_reason": outcome.get("revert_reason") if isinstance(outcome, dict) else None,
                 "source_files": outcome.get("source_files") if isinstance(outcome.get("source_files"), list) else [],
                 "touched_files": outcome.get("touched_files") if isinstance(outcome.get("touched_files"), list) else [],
                 "commit_shas": outcome.get("commit_shas") if isinstance(outcome.get("commit_shas"), list) else [],
@@ -775,7 +776,7 @@ def enrich_task_lineage_with_artifacts(
                 eval_summary = eval_summary_from_artifacts(artifact.get("evals") or [])
                 if eval_summary:
                     next_row["eval"] = eval_summary
-            for field in ("status", "source_files", "touched_files", "commit_shas"):
+            for field in ("status", "revert_reason", "source_files", "touched_files", "commit_shas"):
                 if not next_row.get(field) and artifact.get(field):
                     next_row[field] = artifact.get(field)
         enriched.append(next_row)
@@ -854,6 +855,7 @@ def task_verification_summary(
         )
         verified = eval_passed(artifact_evals, lineage.get("eval"))
         outcome_status = str(artifact.get("status") or lineage.get("status") or "")
+        revert_reason = str(artifact.get("revert_reason") or lineage.get("revert_reason") or "").strip()
         problems: list[str] = []
         if not planned:
             problems.append("missing_planned_files")
@@ -876,6 +878,7 @@ def task_verification_summary(
                 "overlap": overlap,
                 "verified": verified,
                 "outcome_status": outcome_status or None,
+                "revert_reason": revert_reason or None,
                 "landed_commit_shas": landed_commits,
                 "eval_statuses": artifact.get("eval_statuses") or [],
                 "problems": problems,
@@ -921,6 +924,8 @@ def annotate_task_lineage_verification(
             next_task["verification_planned_files"] = verification.get("planned_files") or []
             next_task["verification_touched_files"] = verification.get("touched_files") or []
             next_task["landed_commit_shas"] = verification.get("landed_commit_shas") or []
+            if verification.get("revert_reason") and not next_task.get("revert_reason"):
+                next_task["revert_reason"] = verification.get("revert_reason")
         annotated.append(next_task)
     return annotated
 
@@ -1189,7 +1194,7 @@ def work_summary(
     elif touched_source_files:
         labels.append(f"{len(touched_source_files)} source file(s) touched")
     elif edited_files:
-        labels.append(f"{len(edited_files)} file(s) edited")
+        labels.append(f"{len(edited_files)} evidence/bookkeeping file(s) edited")
     if failed_tools:
         labels.append(f"{len(failed_tools)} failed tool action(s)")
     command_count = len(commands)
@@ -3071,7 +3076,8 @@ HTML = r"""<!doctype html>
         const klass = row.strict_success ? "good" : "warn";
         const planned = text((row.planned_files || []).slice(0, 2).join(", ") || "none");
         const touched = text((row.touched_files || []).slice(0, 2).join(", ") || "none");
-        return `<li><span class="${klass}">${text(row.task_id || "")}</span> ${text(row.title || "")}<br><span class="muted">planned ${planned} → touched ${touched} → ${text(problems)}</span></li>`;
+        const reason = row.revert_reason ? `; ${text(row.revert_reason)}` : "";
+        return `<li><span class="${klass}">${text(row.task_id || "")}</span> ${text(row.title || "")}<br><span class="muted">planned ${planned} → touched ${touched} → ${text(problems)}${reason}</span></li>`;
       }).join("");
       const manifestBlock = manifest.task_count !== undefined ? `<div class="task-evidence">
           <strong>Plan decision ${manifest.planning_failed ? "(planning failed)" : ""}</strong>
@@ -3102,6 +3108,7 @@ HTML = r"""<!doctype html>
         ).join("</li><li>");
         return `<div class="task-evidence">
           <strong>${text(task.task_id || "")} ${text(task.status || "")}: ${text(task.task_title || "")}</strong>
+          ${task.revert_reason ? `<p class="warn">${text(task.revert_reason)}</p>` : ""}
           <p class="muted">${text(task.attempt_count || 0)} attempt artifact(s); max ${text(task.max_turn_count || 0)} turns; eval ${text(statuses)}; task file ${text(task.task_line_count || 0)} lines</p>
           ${attempts ? `<ul class="mini-list"><li>${attempts}</li></ul>` : ""}
           ${evalRows ? `<ul class="mini-list"><li>${evalRows}</li></ul>` : ""}
