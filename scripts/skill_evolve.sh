@@ -243,6 +243,7 @@ fi
 
 # ── Snapshot HEAD (for revert on build break) ──────────────────────────
 HEAD_BEFORE=$(git rev-parse HEAD)
+JOURNAL_EVENTS_BEFORE=$(grep -Ec '^## (.* )?evt-[0-9]+ ' skills/_journal.md 2>/dev/null || echo 0)
 
 # ── Invoke yoyo ────────────────────────────────────────────────────────
 echo "skill-evolve: invoking agent (timeout=${TIMEOUT}s)..."
@@ -274,13 +275,98 @@ revert_agent_work() {
     git clean -fd skills/skill-evolve-* 2>/dev/null || true
 }
 
-if [ "$HEAD_BEFORE" != "$HEAD_AFTER" ]; then
-    echo "skill-evolve: agent committed (${HEAD_BEFORE:0:7} → ${HEAD_AFTER:0:7})"
+journal_event_count() {
+    grep -Ec '^## (.* )?evt-[0-9]+ ' skills/_journal.md 2>/dev/null || echo 0
+}
+
+next_skill_event_id() {
+    python3 - <<'PY'
+import re
+from pathlib import Path
+
+text = Path("skills/_journal.md").read_text(encoding="utf-8", errors="replace")
+nums = [int(match.group(1)) for match in re.finditer(r"evt-(\d+)", text)]
+print(f"evt-{(max(nums) + 1 if nums else 1):04d}")
+PY
+}
+
+last_skill_event_id() {
+    python3 - <<'PY'
+import re
+from pathlib import Path
+
+text = Path("skills/_journal.md").read_text(encoding="utf-8", errors="replace")
+matches = re.findall(r"evt-\d+", text)
+print(matches[-1] if matches else "evt-0000")
+PY
+}
+
+append_harness_journal_event() {
+    local event_type="$1"
+    local note="$2"
+    local ts event_id parent_id
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    parent_id=$(last_skill_event_id)
+    event_id=$(next_skill_event_id)
+    {
+        echo
+        echo "## $ts $event_id $event_type"
+        echo "- ts: $ts"
+        echo "- type: $event_type"
+        echo "- parent-event: $parent_id"
+        echo "- note: $note"
+    } >> skills/_journal.md
+}
+
+changed_files_since_cycle_start() {
+    {
+        git diff --name-only "$HEAD_BEFORE" 2>/dev/null || true
+        git ls-files --others --exclude-standard 2>/dev/null || true
+    } | sed '/^$/d' | sort -u
+}
+
+commit_uncommitted_cycle_changes() {
+    local changed_files="$1"
+    if git diff --quiet HEAD -- 2>/dev/null && [ -z "$(git ls-files --others --exclude-standard 2>/dev/null)" ]; then
+        return 0
+    fi
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        git add -- "$f" 2>/dev/null || true
+    done <<< "$changed_files"
+    if ! git diff --cached --quiet 2>/dev/null; then
+        git commit -m "skill-evolve: record cycle event ($(date -u +%Y-%m-%dT%H:%MZ))" 2>/dev/null || \
+            echo "  WARNING: skill-evolve event commit failed" >&2
+    fi
+}
+
+CHANGED_FILES_BEFORE_FALLBACK=$(changed_files_since_cycle_start)
+JOURNAL_EVENTS_AFTER=$(journal_event_count)
+if [ "$JOURNAL_EVENTS_AFTER" -le "$JOURNAL_EVENTS_BEFORE" ]; then
+    if [ -n "$CHANGED_FILES_BEFORE_FALLBACK" ]; then
+        echo "skill-evolve: agent changed files but wrote no journal event — reverting agent changes"
+        revert_agent_work
+        append_harness_journal_event "refused" "agent changed files but did not append the required skills/_journal.md event; harness reverted the changes"
+    elif [ "$exit_code" -ne 0 ]; then
+        echo "skill-evolve: agent failed without journal event — recording refused event"
+        append_harness_journal_event "refused" "agent exited with code $exit_code before recording a skill-evolve outcome"
+    else
+        echo "skill-evolve: agent produced no journal event or diff — recording NO-OP event"
+        append_harness_journal_event "NO-OP" "agent completed without a diff or journal event; harness recorded this cycle so the counter reset is auditable"
+    fi
+fi
+
+CHANGED_FILES=$(changed_files_since_cycle_start)
+if [ -n "$CHANGED_FILES" ]; then
+    if [ "$HEAD_BEFORE" != "$HEAD_AFTER" ]; then
+        echo "skill-evolve: agent committed (${HEAD_BEFORE:0:7} → ${HEAD_AFTER:0:7})"
+    else
+        echo "skill-evolve: cycle changed files without an agent commit"
+    fi
 
     # ── Diff-scope guard: enforce HARD RULES from skills/skill-evolve/SKILL.md ──
     # The meta-skill's three hard rules are LLM-compliance only; this is the
     # harness-side belt that turns them into actual constraints.
-    CHANGED_FILES=$(git diff --name-only "$HEAD_BEFORE..$HEAD_AFTER")
     VIOLATIONS=""
 
     while IFS= read -r f; do
@@ -318,6 +404,8 @@ if [ "$HEAD_BEFORE" != "$HEAD_AFTER" ]; then
         echo "skill-evolve: DIFF SCOPE VIOLATION — reverting agent commits"
         printf '%b' "$VIOLATIONS"
         revert_agent_work
+        append_harness_journal_event "refused" "agent modified files outside the skill-evolve allow-list; harness reverted the changes"
+        commit_uncommitted_cycle_changes "$(changed_files_since_cycle_start)"
         exit 1
     fi
     echo "skill-evolve: diff scope OK ($(echo "$CHANGED_FILES" | wc -l | tr -d ' ') files changed, all in allow-list)"
@@ -327,15 +415,21 @@ if [ "$HEAD_BEFORE" != "$HEAD_AFTER" ]; then
     if [ "${PIPESTATUS[0]}" -ne 0 ]; then
         echo "skill-evolve: build broken after agent commit — reverting"
         revert_agent_work
+        append_harness_journal_event "refused" "agent changes broke cargo build; harness reverted the changes"
+        commit_uncommitted_cycle_changes "$(changed_files_since_cycle_start)"
         exit 1
     fi
     cargo test --quiet 2>&1 | tail -10
     if [ "${PIPESTATUS[0]}" -ne 0 ]; then
         echo "skill-evolve: tests broken after agent commit — reverting"
         revert_agent_work
+        append_harness_journal_event "refused" "agent changes broke cargo test; harness reverted the changes"
+        commit_uncommitted_cycle_changes "$(changed_files_since_cycle_start)"
         exit 1
     fi
     echo "skill-evolve: build/test still green"
+
+    commit_uncommitted_cycle_changes "$CHANGED_FILES"
 fi
 
 # Cycle complete. Gate state reset, push, and temp cleanup all happen in the
