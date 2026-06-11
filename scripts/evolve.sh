@@ -1098,13 +1098,21 @@ if [ -n "$ASSESSMENT" ]; then
     ASSESSMENT_SECTION="=== ASSESSMENT (from Phase A1) ===
 $ASSESSMENT"
 else
-    # Fallback: if assessment is empty, tell planning agent to read source directly
+    # Fallback: if assessment is empty, keep planning artifact-first. Previous
+    # runs showed that broad source/test exploration can consume the whole
+    # planning budget and leave no task files.
     ASSESSMENT_SECTION="=== NO ASSESSMENT AVAILABLE ===
-The assessment agent did not produce output. Before writing tasks, quickly read:
-1. All .rs files under src/ — note module structure and recent changes
-2. journals/JOURNAL.md — last 5 entries for recent context
-3. git log --oneline -10 — recent commit history
-Keep this investigation brief — focus on gathering enough context to write good tasks."
+The assessment agent did not produce output. Treat that as evidence, not as a
+reason to redo the whole assessment.
+
+Fallback planning rule:
+- First create session_plan/task_01.md from the trajectory, recent CI, journals,
+  state/gnome feedback, or the assessment-missing failure itself.
+- Do NOT read all source files.
+- Do NOT run cargo build, cargo test, clippy, broad grep/search, or long GitHub
+  log commands during planning.
+- After task_01.md exists, you may run at most 3 short context-gathering reads or
+  commands to refine task_02.md/task_03.md."
 fi
 
 cat > "$PLAN_PROMPT" <<PLANEOF
@@ -1211,9 +1219,20 @@ Implementation agents will execute each task in separate sessions.
 Writing or committing session_plan/assessment.md during this phase is a planning
 failure unless valid session_plan/task_*.md files also exist.
 
-IMPORTANT: Do NOT read source code files. The assessment above already contains the source
-architecture, build status, bugs, and capability gaps. Plan from the assessment.
-(Exception: if the assessment section says "NO ASSESSMENT AVAILABLE", you must read source yourself.)
+ARTIFACT-FIRST REQUIREMENT:
+- Your first file-producing action in this phase must create session_plan/task_01.md.
+- Do not run cargo build, cargo test, clippy, broad source scans, or GitHub log
+  archaeology before session_plan/task_01.md exists.
+- If task_01.md is not written by your third tool turn, stop exploration and
+  write it immediately from the trajectory/state evidence you already have.
+- A draft task file is allowed. You may refine it later in the same planning
+  phase, but an empty planning phase is not allowed.
+
+IMPORTANT: Do NOT read source code files when an assessment is available. The
+assessment above already contains the source architecture, build status, bugs,
+and capability gaps. Plan from the assessment. If the assessment section says
+"NO ASSESSMENT AVAILABLE", follow the fallback planning rule above instead of
+redoing assessment.
 
 First: mkdir -p session_plan && rm -f session_plan/task_*.md
 
