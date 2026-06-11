@@ -528,9 +528,13 @@ pub async fn handle_spawn(
     let mut sub_agent = sub_config.build_agent();
 
     // Run the task
-    let response = run_prompt(&mut sub_agent, &args.task, session_total, effective_model)
-        .await
-        .text;
+    let outcome = run_prompt(&mut sub_agent, &args.task, session_total, effective_model).await;
+    if let Some(ref api_err) = outcome.last_api_error {
+        crate::state::stash_diagnostic_error(&format!(
+            "spawn: run_prompt error (#{spawn_id}): {api_err}"
+        ));
+    }
+    let response = outcome.text;
 
     // Write output to file if -o was specified
     if let Some(ref output_path) = args.output_path {
@@ -614,9 +618,13 @@ fn handle_spawn_bg(
         let mut sub_agent = sub_config.build_agent();
         let mut bg_usage = Usage::default();
 
-        let response = run_prompt(&mut sub_agent, &task_text, &mut bg_usage, &model)
-            .await
-            .text;
+        let outcome = run_prompt(&mut sub_agent, &task_text, &mut bg_usage, &model).await;
+        if let Some(ref api_err) = outcome.last_api_error {
+            crate::state::stash_diagnostic_error(&format!(
+                "spawn: bg run_prompt error (#{spawn_id}): {api_err}"
+            ));
+        }
+        let response = outcome.text;
 
         // Write output to file if -o was specified
         if let Some(ref out_path) = output_path {
@@ -1200,5 +1208,27 @@ mod tests {
         let args = args.unwrap();
         assert!(args.system_prompt.is_none());
         assert_eq!(args.task, "--system");
+    }
+
+    #[test]
+    fn test_spawn_diagnostic_error_stashing() {
+        // Verifies that spawn-prefixed diagnostic errors can be stashed
+        // and retrieved, ensuring the crash reporter wire-up is testable.
+        crate::state::stash_diagnostic_error("spawn: run_prompt error (#1): test connection refused");
+        let taken = crate::state::take_diagnostic_error();
+        assert!(taken.is_some());
+        let msg = taken.unwrap();
+        assert!(msg.starts_with("spawn:"));
+        assert!(msg.contains("run_prompt error"));
+        assert!(msg.contains("#1"));
+
+        // Verify that after taking, the error is cleared
+        assert!(crate::state::take_diagnostic_error().is_none());
+
+        // Test background spawn variant
+        crate::state::stash_diagnostic_error("spawn: bg run_prompt error (#3): test timeout");
+        let taken = crate::state::take_diagnostic_error();
+        assert!(taken.is_some());
+        assert!(taken.unwrap().starts_with("spawn: bg"));
     }
 }
