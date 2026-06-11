@@ -109,8 +109,17 @@ def compact_list(values: list[str], limit: int) -> list[str]:
     return out
 
 
+def evidence_text(value: Any, max_len: int = 220) -> str:
+    text = " ".join(str(value or "").split())
+    text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", text)
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]{4,}\b", "sk-[REDACTED]", text)
+    if len(text) > max_len:
+        return text[: max_len - 1].rstrip() + "…"
+    return text
+
+
 def clean_transcript_action(value: str) -> str:
-    text = TRANSCRIPT_STATUS_RE.sub("", str(value)).strip()
+    text = TRANSCRIPT_STATUS_RE.sub("", evidence_text(value, 500)).strip()
     text = WORKSPACE_PREFIX_RE.sub(".", text)
     for root in PSEUDO_ROOT_NAMES:
         text = text.replace(f".{root}/", f"{root}/")
@@ -178,6 +187,48 @@ def transcript_tool_label(action: str) -> str:
             target = transcript_path_token(action.removeprefix(prefix))
             return f"{prefix.strip()} {target}" if target else action
     return action
+
+
+def exit_code_failure(value: Any) -> bool:
+    match = re.search(r"\bExit code:\s*(-?\d+)\b", str(value or ""))
+    if not match:
+        return False
+    try:
+        return int(match.group(1)) != 0
+    except ValueError:
+        return False
+
+
+def tool_context(tool: str, args: Any) -> str:
+    if not isinstance(args, dict):
+        return tool
+    if tool == "bash":
+        command = args.get("command")
+        if isinstance(command, str) and command.strip():
+            return f"bash {clean_transcript_action(command)}"
+        description = args.get("description")
+        if isinstance(description, str) and description.strip():
+            return f"bash description: {clean_transcript_action(description)}"
+        return "bash"
+    if tool == "search":
+        pattern = args.get("pattern")
+        path = args.get("path")
+        if isinstance(pattern, str) and isinstance(path, str):
+            return f"search {pattern!r} in {normalize_transcript_path(path)}"
+    for key in ("path", "file", "target_path"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return f"{tool} {normalize_transcript_path(value)}"
+    return tool
+
+
+def tool_failure_label(tool: str, args: Any, data: dict[str, Any]) -> str:
+    context = tool_context(tool, args)
+    message = data.get("error") or data.get("message") or data.get("result_preview")
+    message_text = evidence_text(message)
+    if message_text:
+        return f"{context}: {message_text}"
+    return context
 
 
 def normalize_transcript_path(path: str) -> str:
@@ -1010,6 +1061,8 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     failed_commands: list[str] = []
     failed_tools: list[str] = []
     tool_names: dict[str, int] = {}
+    tool_starts: dict[str, dict[str, Any]] = {}
+    command_starts: dict[str, str] = {}
 
     for event in events:
         kind = event_kind(event)
@@ -1025,23 +1078,38 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         elif kind == "CommandStarted":
             command = data.get("command")
             if isinstance(command, str):
-                commands.append(command)
+                commands.append(clean_transcript_action(command))
+                call_id = data.get("tool_call_id")
+                if isinstance(call_id, str):
+                    command_starts[call_id] = command
         elif kind == "CommandCompleted":
+            call_id = data.get("tool_call_id")
             command = data.get("command")
+            if not isinstance(command, str) and isinstance(call_id, str):
+                command = command_starts.get(call_id)
+            if not isinstance(command, str) and isinstance(call_id, str):
+                started = tool_starts.get(call_id) or {}
+                args = started.get("args") if isinstance(started.get("args"), dict) else {}
+                command = args.get("command") if isinstance(args.get("command"), str) else None
             if isinstance(command, str):
-                commands.append(command)
-            if data.get("is_error") is True and isinstance(command, str):
-                failed_commands.append(command)
+                commands.append(clean_transcript_action(command))
+            if (data.get("is_error") is True or exit_code_failure(data.get("result_preview"))) and isinstance(command, str):
+                failed_commands.append(clean_transcript_action(command))
         if kind in {"ToolCallStarted", "ToolCallCompleted"}:
             tool = data.get("tool_name")
+            call_id = data.get("tool_call_id")
             if isinstance(tool, str) and kind == "ToolCallStarted":
                 tool_names[tool] = tool_names.get(tool, 0) + 1
-            if kind == "ToolCallCompleted" and data.get("is_error") is True and isinstance(tool, str):
-                message = data.get("error") or data.get("message")
-                if isinstance(message, str) and message.strip():
-                    failed_tools.append(f"{tool}: {message.strip()}")
-                else:
-                    failed_tools.append(tool)
+                if isinstance(call_id, str):
+                    tool_starts[call_id] = data
+            if (
+                kind == "ToolCallCompleted"
+                and isinstance(tool, str)
+                and (data.get("is_error") is True or exit_code_failure(data.get("result_preview")))
+            ):
+                started = tool_starts.get(call_id) if isinstance(call_id, str) else None
+                args = started.get("args") if isinstance(started, dict) else None
+                failed_tools.append(tool_failure_label(tool, args, data))
 
     return {
         "edited_files": compact_list(edited_files, 12),

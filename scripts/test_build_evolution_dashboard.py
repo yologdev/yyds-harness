@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from build_evolution_dashboard import build, summarize_transcript_actions  # noqa: E402
+from build_evolution_dashboard import build, summarize_events_for_work, summarize_transcript_actions  # noqa: E402
 
 
 def write_json(path: Path, value: object) -> None:
@@ -104,6 +104,94 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "edit src/prompt.rs: old_text matches 2 locations in src/prompt.rs. Include more surrounding context to make the match unique."
                 ],
             )
+
+    def test_state_event_failures_join_started_tool_args(self):
+        events = [
+            {
+                "kind": "ToolCallStarted",
+                "payload": {
+                    "tool_call_id": "call_1",
+                    "tool_name": "bash",
+                    "args": {"description": "cd repo && git diff HEAD --stat"},
+                },
+            },
+            {
+                "kind": "CommandCompleted",
+                "payload": {
+                    "tool_call_id": "call_1",
+                    "is_error": True,
+                    "result_preview": "Invalid arguments: missing 'command' parameter",
+                },
+            },
+            {
+                "kind": "ToolCallCompleted",
+                "payload": {
+                    "tool_call_id": "call_1",
+                    "tool_name": "bash",
+                    "is_error": True,
+                    "result_preview": "Invalid arguments: missing 'command' parameter",
+                },
+            },
+            {
+                "kind": "ToolCallStarted",
+                "payload": {
+                    "tool_call_id": "call_2",
+                    "tool_name": "bash",
+                    "args": {"command": "DEEPSEEK_API_KEY=sk-secret123456 ./target/debug/yyds --prompt hi"},
+                },
+            },
+            {
+                "kind": "ToolCallCompleted",
+                "payload": {
+                    "tool_call_id": "call_2",
+                    "tool_name": "bash",
+                    "is_error": True,
+                    "result_preview": "Command timed out after 60s",
+                },
+            },
+            {
+                "kind": "ToolCallStarted",
+                "payload": {
+                    "tool_call_id": "call_3",
+                    "tool_name": "bash",
+                    "args": {"command": "git show missing-sha --no-stat -p"},
+                },
+            },
+            {
+                "kind": "CommandCompleted",
+                "payload": {
+                    "tool_call_id": "call_3",
+                    "is_error": False,
+                    "result_preview": "Exit code: 128",
+                },
+            },
+            {
+                "kind": "ToolCallCompleted",
+                "payload": {
+                    "tool_call_id": "call_3",
+                    "tool_name": "bash",
+                    "is_error": False,
+                    "result_preview": "Exit code: 128",
+                },
+            },
+        ]
+
+        work = summarize_events_for_work(events)
+
+        self.assertIn(
+            "bash description: cd repo && git diff HEAD --stat: Invalid arguments: missing 'command' parameter",
+            work["failed_tools"],
+        )
+        self.assertIn(
+            "bash DEEPSEEK_API_KEY=sk-[REDACTED] ./target/debug/yyds --prompt hi: Command timed out after 60s",
+            work["failed_tools"],
+        )
+        self.assertIn(
+            "bash git show missing-sha --no-stat -p: Exit code: 128",
+            work["failed_tools"],
+        )
+        self.assertNotIn("bash", work["failed_tools"])
+        self.assertIn("git show missing-sha --no-stat -p", work["failed_commands"])
 
     def test_data_contract_reports_generated_at_and_latest_session(self):
         with tempfile.TemporaryDirectory() as tmp:
