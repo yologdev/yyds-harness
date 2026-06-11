@@ -1,0 +1,252 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task. I need to verify that the implementation matches what was requested. Let me:
+
+1. Check the git diff to see what was actually changed
+2. Run cargo test
+3. Inspect the relevant code in src/lib.rs
+4. Write my evaluation
+
+Let me start by checking the git status and diff, and reading the relevant parts of src/lib.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 --stat 2>/dev/…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 2>/dev/null ||… ✓ (10ms)
+ ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full diff more completely and also read the relevant section of src/lib.rs to verify the implementation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- src/lib.rs  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | tail -30 ✓ (19ms)
+ ✓ (1m 37s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Tests pass (89 passed, 0 failed). Let me see the full diff more completely and verify the relevant section of src/lib.rs to confirm the changes are correct.
+
+Let me read the exact changed lines.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1m 41s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:985..1045  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:1085..1140 ✓ (16ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify all the parts of the task:
+
+**Part A: Move record_session_started() earlier**
+- The task says to move it after `install_panic_hook()` (line 1038) but after `agent_config` is constructed.
+- Looking at the diff: `record_session_started()` was moved from after line 1126 (the old location) to line 1099, which is AFTER `apply_bedrock_credentials()` (line 1094) and BEFORE `build_agent()` (line 1106).
+- This is correct: it fires before `build_agent()` but after `agent_config` is fully built.
+
+Wait, the task says:
+> "The correct insertion point is between line 1088 (after run_setup_wizard_if_needed) and line 1094 (build_agent())."
+
+Looking at the actual placement: it's between `apply_bedrock_credentials(&mut agent_config);` (line 1094) and `let mut agent = agent_config.build_agent();` (line 1106). That's exactly where the task says it should go. ✓
+
+**Part B: stash_diagnostic_error() on apply_config_flags failure**
+Line 991: `state::stash_diagnostic_error("config: apply_config_flags returned false");` ✓
+
+**Part C: Audit other early exits**
+The task specifically mentions `run_setup_wizard_if_needed` returning false. Line 1090: `state::stash_diagnostic_error("setup wizard cancelled");` ✓
+
+**Part D: connect_external_servers failure path**
+Let me check if `connect_external_servers` can fail silently. The task says "If it can fail silently, add stash_diagnostic_error before the exit." Let me look at this function.
+
+Actually, the task says to check this, not necessarily to implement it. Let me look at what happens when `connect_external_servers` fails.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.2s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn connect_external_servers' in /home/runner/work/yyds-harness/yyds-harness/src ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the connect_external_servers function to see if it can fail silently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/agent_builder.rs:100..160 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how `connect_external_servers` handles failures for the agent side. It seems like on error it rebuilds the agent. But does it ever cause a fatal exit? Looking at the call site in `src/lib.rs`:
+
+```rust
+let (updated_agent, mc, oa) = connect_external_servers(
+    &agent_config,
+    agent,
+    &mcp_servers,
+    &mcp_server_configs,
+    &openapi_specs,
+)
+.await;
+agent = updated_agent;
+```
+
+This function returns normally even on failure — it just rebuilds the agent and continues. So it doesn't cause a crash/exit. The task says to check "If it can fail silently, add stash_diagnostic_error before the exit." Since it doesn't exit but gracefully degrades, this doesn't need a diagnostic stash. The MCP connection failures are printed to stderr but don't crash the agent. That's fine.
+
+Now let me verify Part A more carefully. The task says:
+
+> "The correct insertion point is between line 1088 (after run_setup_wizard_if_needed) and line 1094 (build_agent())."
+
+Wait, the task description's line numbers are based on the OLD code. Let me re-read:
+
+The task says:
+- `build_agent()` is at line ~1094
+- `run_setup_wizard_if_needed` at line 1088
+
+In the current code, `record_session_started()` is now at line 1099, which is AFTER `apply_bedrock_credentials(&mut agent_config);` and BEFORE `let mut agent = agent_config.build_agent();`. This satisfies "between line 1088 and line 1094" (in the old numbering) — it's after `agent_config` is fully built and before `build_agent()`.
+
+Actually wait, let me re-check. The task says the insertion point should be "between line 1088 (after run_setup_wizard_if_needed) and line 1094 (build_agent())". In the old code, that's exactly where `apply_bedrock_credentials` is. The new code places `record_session_started` after `apply_bedrock_credentials` and before `build_agent`. This is correct — the session started event now includes bedrock-credential-applied config and fires before `build_agent()`.
+
+Now let me also check: is `apply_bedrock_credentials` fallible? If it can fail/panic, we might want the session started event before it too... But the task says between setup wizard and build_agent, which is where it is. Let me look at `apply_bedrock_credentials`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn apply_bedrock_credentials' in /home/runner/work/yyds-harness/yyds-harness/src ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if `apply_bedrock_credentials` can panic/exit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:943..973 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`apply_bedrock_credentials` is infallible — it only mutates `agent_config.api_key` if needed. It doesn't panic or exit. So placing `record_session_started()` after it is fine.
+
+Now, let me also verify: the task mentions checking `state::RunCompletionGuard` behavior. Let me check if there's anything that could cause issues with RunCompletionGuard being dropped before record_session_started. But the task doesn't flag this as an issue, and `RunCompletionGuard` is on `_run_completion` which lives for the rest of `run_cli()`, so it's fine.
+
+Let me now also verify that `record_session_started()` receives the right arguments. Looking at line 1099-1104:
+```rust
+state::record_session_started(
+    &agent_config.model,
+    std::env::var("DEEPSEEK_API_KEY").is_ok(),
+    crate::cli::effective_context_tokens(),
+    agent_config.skills.len(),
+);
+```
+
+This matches what the task describes. `agent_config.model`, `agent_config.skills.len()`, `effective_context_tokens()`, and `DEEPSEEK_API_KEY` env var check are all available at this point. ✓
+
+Now let me verify that `record_session_started` has actually been moved FROM its old location. The diff shows the old location (around line 1114-1126) was removed. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "record_session_starte… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. `record_session_started` appears exactly once (line 1099), and it's before `build_agent()` (line 1106). It was removed from the old location (previously around line 1120). ✓
+
+Now let me also verify `build` passes (the task report says it does, but let me confirm):
+
+Actually, the BUILD STATUS says "Build: PASS, Tests: PASS", and I already ran `cargo test` which succeeded (89 passed, 0 failed). Both conditions are met.
+
+Let me also check if there are any other early `return` or `exit_with_state(1)` calls between state init and agent build that might need `stash_diagnostic_error`. The task says to audit these.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -n '1030,1110p' src/lib.rs… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me map these to actual line numbers. The sed range 1030-1110 in the file corresponds to these offsets:
+- Line 5 of the capture = line 1034: `exit_with_state(1);` — this is within the `state::init_global` error handling block, which already has `state::stash_diagnostic_error` before it (line 1033). ✓
+- Line 62 of the capture = line 1091: `return;` — this is the `run_setup_wizard_if_needed` failure path, which already has `state::stash_diagnostic_error("setup wizard cancelled");` before it (line 1090). ✓
+
+So all early exits between state init and agent build are now covered with diagnostic stashing. ✓
+
+Now let me also verify that there are no other early exits between state init and agent build that I might be missing. Let me look at lines from the `_run_completion` guard to `build_agent()`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:1036..1111 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code looks good. Let me trace through everything:
+
+**Between state init (line 1035) and agent build (line 1106), the only exit paths are:**
+1. `state::init_global` failure (line 1031-1034): ✓ Already has `stash_diagnostic_error` and `exit_with_state(1)`
+2. `apply_config_flags` failure (line 990-992): ✓ Now has `stash_diagnostic_error("config: apply_config_flags returned false")` and `return`
+3. `run_setup_wizard_if_needed` failure (line 1089-1091): ✓ Now has `stash_diagnostic_error("setup wizard cancelled")` and `return`
+
+There are no other `return` or `exit_with_state` calls in this range. ✓
+
+**`record_session_started` placement:**
+- Now at line 1099, AFTER `apply_bedrock_credentials` (line 1094) and BEFORE `build_agent()` (line 1106) ✓
+- Called with correct arguments: `&agent_config.model`, `std::env::var("DEEPSEEK_API_KEY").is_ok()`, `effective_context_tokens()`, `agent_config.skills.len()` ✓
+
+**`connect_external_servers` failure path (Part D):**
+- The function handles errors gracefully by rebuilding the agent and continuing. It doesn't cause a crash/exit, so no diagnostic stash needed. ✓
+
+Now, one thing I should check: the `RunCompleted` event. Let me verify that `stash_diagnostic_error` messages are included in the `RunCompleted` event.
+
+Let me look at how `RunCompletionGuard` works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct RunCompletionGuard' in /home/runner/work/yyds-harness/yyds-harness/src ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:330..390 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how `exit_with_state` uses `mark_run_completed_with_error` so I understand the full flow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/lib.rs:971..991 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the flow:
+
+1. `stash_diagnostic_error(msg)` stores a diagnostic message
+2. When `exit_with_state(1)` is called, it calls `mark_run_completed_with_error()` which calls `take_diagnostic_error()` to retrieve and include it in the `RunCompleted` event payload as `error_detail`
+
+But what about the `return;` paths (for `apply_config_flags` and `setup_wizard`)? These don't call `exit_with_state`, they just `return` from `run_cli`. In that case, the `_run_completion` guard (which is a `RunCompletionGuard`) will drop, calling `mark_run_completed("completed")` with status "completed". 
+
+Wait — that's a problem. When `apply_config_flags` fails and we `return`, the `RunCompletionGuard` drops with status "completed", not "error". The `stash_diagnostic_error` message is stored but never used because `mark_run_completed("completed")` doesn't call `take_diagnostic_error()`.
+
+Let me check `mark_run_completed`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:352..364 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `mark_run_completed("completed")` sends `None` for both `error` and `error_detail`. This means **the stashed diagnostic error is lost** when the function just returns (instead of calling `exit_with_state`). 
+
+Wait... but the `RunCompletionGuard` is created with `status: "completed"` and on drop it calls `mark_run_completed("completed")`. When `apply_config_flags` fails and we `return` early, the guard drops and records a "completed" RunCompleted event without the diagnostic detail.
+
+But wait — `_run_completion` is on the stack. When `return` is called, the stack unwinds and `_run_completion` drops. But `_run_completion` is a `RunCompletionGuard` with `status: "completed"`. So it calls `mark_run_completed("completed")` without the error detail.
+
+HOWEVER — the task's `exit_with_state(1)` paths DO call `mark_run_completed_with_error`, which DOES pick up the stashed diagnostic. And the `return` paths... hmm.
+
+Wait, but is this really a problem? Let me think again about what happens:
+
+1. `apply_config_flags` fails → we call `stash_diagnostic_error(...)` then `return`
+2. The `_run_completion` guard drops, calling `mark_run_completed("completed")`
+3. The diagnostic is stashed but never retrieved
+
+But the task says:
+> "The `stash_diagnostic_error()` mechanism is already wired into state init failure (line 1032) and transport failures (deepseek.rs:1022), but bootstrap paths between `

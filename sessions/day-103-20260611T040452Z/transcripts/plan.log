@@ -1,0 +1,585 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation and plan tasks for this session.
+
+## Situation Analysis
+
+**Day 103** - I'm in Phase A2 (planning). The assessment is rich with evidence. Let me extract the key findings:
+
+1. **No CI failures** - Tests pass (89 passed, 0 failed). No blocker.
+
+2. **Only code change in the assessment loop**: 9 lines in `src/deepseek.rs` wiring `record_deepseek_transport_failure()` to also call `stash_diagnostic_error()`. Good but incomplete.
+
+3. **Key gap #1: Pre-agent crashes invisible to crash reporter** - 10+ crashes in last minute, all `key? no`. The diagnostic error system is wired into post-startup paths only. Crashes during agent bootstrap leave no trace.
+
+4. **Key gap #2: Assessment-loop pattern** - Days 100-102 (and even Day 99) had sessions producing assessments but no code. This is a planning execution barrier.
+
+5. **No open issues** - No external pressure. The backlog is empty.
+
+6. **Trajectory feedback**: score 0.9219, recurring CI errors about `public_readme_metadata_uses_yoyo_ds_harness_identity` (star-history URL)
+
+## Task Selection
+
+Looking at the priority list:
+- Priority 0 (CI failures): None active
+- Priority 1 (yoagent-state DeepSeek feedback): The crash reporter coverage gap is the most actionable state evidence
+- Priority 2 (eval/replay quality): Could add an eval fixture for the pre-agent crash path
+- Priority 3 (self-discovered bugs): The star-history URL test failure from trajectory
+
+Let me pick 3 tasks:
+
+### Task 1: Wire crash reporter into pre-agent bootstrap path
+The assessment clearly identifies: "Pre-agent crashes invisible to crash reporter." This is a harness reliability issue that directly improves state observability. The crash reporter (`stash_diagnostic_error`) is wired in `lib.rs` state init and `deepseek.rs` transport failures, but not in the earlier bootstrap path (API key detection, config parsing, agent construction).
+
+### Task 2: Fix the star-history URL in README test
+The trajectory shows a recurring CI failure: `public_readme_metadata_uses_yoyo_ds_harness_identity` test fails because the README still references `star-history.com/#yologdev/yyds-harness&date` instead of the correct URL. This is a CI fix (priority 0).
+
+### Task 3: Add a pre-agent crash diagnostic eval fixture
+To make crash detection testable and prevent regression, add an eval fixture for the pre-agent crash path. This pairs with task 1.
+
+Wait, but these are small tasks. Let me reconsider.
+
+Actually, let me look more carefully. The assessment mentions `state why last-failure` returns "no data" because state recording needs completed sessions. This is a chicken-and-egg problem I should address.
+
+Let me prioritize:
+
+1. **Task 1: Fix the star-history README URL** - This is a recurring CI failure. Priority 0. Tiny fix, probably just a URL string in the README or a test.
+
+2. **Task 2: Wire crash reporter into pre-agent bootstrap path** - The pre-agent crashes (API key missing) are invisible to the diagnostic system. This is the highest-value state observability gap. Need to add `stash_diagnostic_error()` calls in the early bootstrap path - likely in `main.rs` or `agent_builder.rs`.
+
+3. **Task 3: Add eval fixture for pre-agent crash detection** - Once task 2 is done, we need a test fixture to verify the crash reporter catches pre-agent crashes.
+
+Let me first create the session_plan directory, then write the task files.
+
+Actually wait - I need to follow the ARTIFACT-FIRST requirement. My first file-producing action must create session_plan/task_01.md. Let me do that now.
+
+Let me first check what the star-history URL issue is about.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && rm -f session_plan/task_*.md ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, directory created and old task files removed. Now let me check the star-history URL issue quickly, then write task_01.md as my first file-producing action.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'star-history' (*.rs)  ▶ search 'star-history' (*.md) ✓ (7ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test in `release.rs` (line 302) asserts:
+```rust
+assert!(readme.contains("www.star-history.com/?type=date&repos=yologdev%2Fyyds-harness"));
+```
+
+But the actual README at line 347 has:
+```html
+<a href="https://www.star-history.com/?type=date&repos=yologdev%2Fyyds-harness">
+```
+
+Wait, the README contains the text from the assertion. So the test should pass. But the trajectory says it's failing:
+
+```
+assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"
+```
+
+Hmm, the failing assertion mentions `star-history.com/#yologdev/yyds-harness&date` which is a different URL format. Let me look at the actual test file more carefully.
+
+Actually wait - the trajectory error says:
+```
+thread 'release::tests::public_readme_metadata_uses_yoyo_ds_harness_identity' (1
+assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"
+```
+
+This looks like the test expects the URL format `star-history.com/#yologdev/yyds-harness&date` but the README has `star-history.com/?type=date&repos=yologdev%2Fyyds-harness`. So the test assertion is wrong - it's checking for the old URL format. Let me look at the test.
+
+Let me read the test to understand what it's actually checking.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.2s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'public_readme_metadata' (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/release.rs:290..320 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test looks correct - it's checking for the correct URL format. But the trajectory error shows:
+
+```
+assertion failed: readme.contains("star-history.com/#yologdev/yyds-harness&date"
+```
+
+Wait, the trajectory error might be from a previous run where the assertion was different. Let me check the current test assertions:
+
+Line 302: `assert!(readme.contains("www.star-history.com/?type=date&repos=yologdev%2Fyyds-harness"));`
+Line 303: `assert!(readme.contains("api.star-history.com/chart?repos=yologdev/yyds-harness&type=date"));`
+
+And the README at line 347: `https://www.star-history.com/?type=date&repos=yologdev%2Fyyds-harness`
+
+So the URL in the README and the assertion match. Let me run the test to verify it passes now.
+
+Actually, let me just run the specific test to check.
+
+Wait, let me also verify the README contains what the test expects. The test expects:
+- `repos=yologdev/yyds-harness` ✓ (line 303 checks this, and README has it)
+- `www.star-history.com/?type=date&repos=yologdev%2Fyyds-harness` ✓ (line 302 checks this, and README has it)
+- `api.star-history.com/chart?repos=yologdev/yyds-harness&type=date` ✓ (line 303 checks this, and README has it)
+
+These all look correct. Let me run the test to confirm.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test public_readme_metad… ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes now. The trajectory's recurring CI error might be from a previous state. But since the test passes now, this is no longer a CI failure. Good.
+
+Now let me plan the tasks. Based on the assessment:
+
+1. **Crash reporter coverage gap**: Pre-agent crashes (API key missing) are invisible. This is the most actionable state evidence.
+
+2. **No other clear, high-impact work from the assessment**. The assessment-loop pattern is a meta problem - it's about the planning agent's behavior, not a code issue I can fix in implementation. The star-history test passes now.
+
+Let me focus on what matters most for the DeepSeek harness:
+
+**Task 1: Wire crash reporter into pre-agent bootstrap** - Add `stash_diagnostic_error()` calls in the early bootstrap path (before `Agent` is constructed) so crashes during API key detection, config loading, and agent construction leave diagnostic traces.
+
+**Task 2: Add eval fixture for pre-agent crash detection** - Create an eval fixture that verifies crash detection works end-to-end, from bootstrap failure to state recording.
+
+**Task 3: Add state capture for pre-agent bootstrap events** - Currently `RunStarted` and `SessionStarted` events are recorded, but if the crash happens between them, there's no event trail. Add a `BootstrapStarted` or similar event that's recorded before any fallible operation.
+
+Actually, let me think more carefully. The assessment shows that the crash reporter already calls `stash_diagnostic_error()` in `lib.rs` state init and `deepseek.rs` transport failures. The gap is crashes that happen before either of those are set up.
+
+Let me look at where the crash reporter is initialized.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'stash_diagnostic_error' ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the crash reporter architecture:
+
+1. `stash_diagnostic_error()` is defined in `src/state.rs:71`
+2. It's called from `src/lib.rs:1032` (state init failure) and `src/deepseek.rs:1022` (transport failures)
+3. The `/state crashes` command reads diagnostic errors via `take_diagnostic_error()` (in `src/state.rs:364`)
+
+The gap is: crashes that happen before state init succeeds and before any transport call is made. These are:
+- API key missing/not found
+- Config parsing failures
+- Agent construction failures
+
+Let me look at where the agent is built to understand where to add crash reporting.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:60..110 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the main.rs flow - where does the agent get constructed and where might crashes happen before state init?
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn main' in src/main.rs ✗ (13ms)
+    │ Search error: grep: src/main.rs: No such file or directory
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn main' in src ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the actual main entry point. It's likely `src/bin/yyds.rs` based on the test output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ ls src/bin ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the first ~50 lines of the binary entry point to understand the bootstrap flow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/bin/yyds.rs (60 lines) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So it delegates to `run_cli()` in `lib.rs`. Let me look at that.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub async fn run_cli' in src/lib.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the run_cli function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:978..1058 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the flow. Let me continue reading to see what happens after state init.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1057..1137 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the flow clearly:
+
+1. `run_cli()` starts
+2. `parse_args()` - parses CLI args (can fail, but returns None for --help)
+3. `apply_config_flags()` - applies config (can fail)
+4. `state::init_global()` - initializes state recorder (has crash reporter)
+5. `state::RunCompletionGuard` - sets up completion guard
+6. `state::install_panic_hook()` - installs panic hook
+7. `agent_config.build_agent()` - builds the agent (can fail! LLM21)
+8. `connect_external_servers()` - connects MCP/OpenAPI servers
+9. `state::record_session_started()` - records session start
+
+The gap is between steps 7-8 and step 9. If `build_agent()` panics or `connect_external_servers()` fails, the session crashes without `record_session_started()` being called AND no diagnostic error is stashed.
+
+Also, the `SessionStarted` event is recorded too late - it's after agent construction and MCP connection. If the agent construction fails, no SessionStarted event is recorded.
+
+Now, the assessment also mentions that crashes show `api_key_present:false`. Let me check - `record_session_started()` checks `std::env::var("DEEPSEEK_API_KEY").is_ok()` which would be `false` if the key is missing. But if the crash happens before `record_session_started()` is called, then there's no `SessionStarted` event at all - only `RunStarted` and `RunCompleted(status=error)`.
+
+So the fix should:
+1. Move `record_session_started()` earlier - before `build_agent()` - so that pre-agent crashes still have a session context
+2. Add `stash_diagnostic_error()` before any exit/panic in the bootstrap path
+
+But wait, the state recorder needs to be initialized before `record_session_started()` can be called. And `state::init_global()` is already called early (step 4). So we can move `record_session_started()` up to right after state init.
+
+Let me now plan the 3 tasks:
+
+**Task 1**: Move `record_session_started()` earlier in the bootstrap path (before `build_agent()`) so pre-agent crashes are visible. Also add `stash_diagnostic_error()` calls in the bootstrap error paths between `parse_args()` and `build_agent()`.
+
+**Task 2**: Add eval fixture for pre-agent crash detection - verify that a crash before agent construction is recorded in state.
+
+**Task 3**: This is harder. Let me think about what else is high-value...
+
+Actually, looking at the assessment more carefully, the three biggest actionable items are:
+1. Fix pre-agent crash visibility (Tasks 1+2 above)
+2. The assessment-only loop pattern is a meta-problem, not code
+3. No other clear gaps
+
+Let me look at whether there are other harness improvements from the state/trajectory evidence.
+
+The trajectory says:
+- "max task turn count is high: 18" → this is about splitting tasks smaller, which is a planning concern not code
+- "agent commands timed out during evolution" → preference for bounded diagnostics
+- Recurring CI errors about star-history URL → but test passes now
+
+The trajectory feedback score is 0.9219 which is good. No recurring failures.
+
+Let me also think about the `state why last-failure` returning "no data" - this is a chicken-and-egg problem. The state tool needs completed sessions but sessions don't complete because they crash pre-agent. Fixing task 1 will help with this.
+
+For Task 3, I could:
+- Add state capture for the bootstrap phase itself (a `BootstrapCompleted` event)
+- Or improve the crash report to include more context about where in the bootstrap the crash happened
+
+Let me go with: Add a `BootstrapPhase` event or improve the `RunCompleted` error payload to include whether the session ever reached `SessionStarted`.
+
+Actually, let me keep it simple. The three tasks:
+
+**Task 1**: Wire crash reporter into pre-agent bootstrap (move record_session_started earlier + stash errors on early exits)
+- Files: src/lib.rs (main target), maybe src/state.rs (if helper needed)
+
+**Task 2**: Add eval fixture for pre-agent crash detection  
+- Files: eval/fixtures/local-smoke/ (new JSON file), possibly src/commands_eval.rs (if eval format changes needed)
+
+**Task 3**: Improve state graph hotspots to surface bootstrap failures
+- Files: scripts/state_graph_tools.py
+
+Wait, but Task 3 doesn't touch Rust source files. Let me reconsider - the task sizing rules say "Each task MUST touch at most 3 source files". Let me look at what would be most impactful.
+
+Actually, let me reconsider. Let me make task 3 about something more directly useful:
+
+**Task 3**: Add `DiagnosticError` state event recording to `exit_with_state()` so that ALL error exits (including early bootstrap failures) leave diagnostic traces. Currently `exit_with_state()` just calls `record_run_completed()`. If we add the stashed diagnostic error to the RunCompleted payload, early exits will at least carry their reason.
+
+Let me look at `exit_with_state()`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn exit_with_state' in src/lib.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read exit_with_state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:960..990 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see that `exit_with_state()` calls `mark_run_completed_with_error()` but doesn't include the diagnostic error. Let me check `mark_run_completed_with_error`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn mark_run_completed_with_error' in src/state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:360..380 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Excellent! So `mark_run_completed_with_error()` already takes the diagnostic error via `take_diagnostic_error()` and includes it in the payload. So the mechanism is already there - the problem is simply that nothing calls `stash_diagnostic_error()` before `exit_with_state()` is called for pre-agent failures.
+
+Now I have a clear picture. Let me plan the tasks:
+
+### Task 1: Move record_session_started() earlier and add diagnostic error stashing for bootstrap failures
+
+**What**: Move `record_session_started()` to right after `state::init_global()` succeeds, so it fires before `build_agent()`. Also add `stash_diagnostic_error()` calls before each `exit_with_state(1)` in the bootstrap path, and before any early returns that bypass the crash reporter.
+
+**Files**: `src/lib.rs`
+
+**Why**: The 10+ crashes in the last minute all show `key? no` with no diagnostic error. By moving `record_session_started()` earlier and adding `stash_diagnostic_error()` to early exit paths, these crashes will carry their actual reason instead of just a generic exit code.
+
+### Task 2: Add eval fixture for pre-agent crash detection
+
+**What**: Create an eval fixture that verifies a crash during agent construction (e.g., missing API key) produces a `RunCompleted` event with the diagnostic error included.
+
+**Files**: `eval/fixtures/local-smoke/` (new file)
+
+**Why**: Once task 1 is done, we need a regression test to ensure pre-agent crashes remain visible. The eval system already has fixtures for transport errors and bash policy - this adds bootstrap coverage.
+
+### Task 3: Add BootstrapPhase state events
+
+**What**: Record a `BootstrapPhase` event (or similar) at key milestones in the startup path so the state graph can distinguish between "crashed during parsing", "crashed during state init", "crashed during agent build", etc.
+
+**Files**: `src/state.rs`, `src/lib.rs`
+
+**Why**: The trajectory shows many runs with only `RunStarted → RunCompleted(status=error)` and no intermediate events. Without knowing which phase crashed, diagnostics are blind. Bootstrap phase events provide granularity.
+
+Wait, but tasks 1 and 3 both touch `src/lib.rs`. That's fine - each task touches at most 2 source files.
+
+Let me also think about whether task 3 is valuable. The state graph already shows these as crash sessions. Adding a `BootstrapPhase` event type would add a new event between `RunStarted` and `SessionStarted`. But it's extra complexity. Let me simplify task 3.
+
+Actually, let me reconsider task 3. Instead of adding a new event type, let me make it something more practical:
+
+**Task 3 alternative**: Fix the `state why last-failure` command to handle the case where no completed sessions exist by showing the most recent crash instead of returning "no data".
+
+This would be a change in `src/commands_state.rs` and would make the diagnostic tool more useful immediately, even before we have completed sessions.
+
+Hmm, but that touches a 23,848-line file. Let me check what the exact function looks like.
+
+Actually, let me step back and think about what's most impactful given limited time:
+
+1. **Task 1** is the highest priority - it directly addresses the crash reporter coverage gap.
+2. **Task 2** adds test coverage for task 1.
+3. For task 3, I could do either:
+   a. Improve `state why last-failure` fallback behavior
+   b. Add BootstrapPhase events
+
+Let me go with a simple task 3 that's clearly scoped. Let me do: "Add `stash_diagnostic_error` before every exit_with_state(1) call in run_cli() that doesn't already have one."
+
+Actually wait, looking at the code again, I see that in `run_cli()`:
+- Line 987: `return;` - --help, no error
+- Line 991: `return;` - config error, but `apply_config_flags` might have already printed something
+- Line 1033: `exit_with_state(1)` - state init failure, already has `stash_diagnostic_error`
+- The rest of the function uses `exit_with_state(1)` in various places
+
+After `build_agent()` (line 1094), there must be more error paths. Let me read further.
+
+Actually, let me focus on writing the task files now. I have enough understanding.
+
+Here's my plan:
+
+**Task 1: Move session recording before agent construction and add bootstrap error diagnostics**
+- Files: `src/lib.rs`
+- Objective: Make pre-agent crashes leave diagnostic traces in state
+- Move `record_session_started()` to right after state init (before `build_agent()`)
+- Add `stash_diagnostic_error()` before `return;` at line 991 (config flag failure)
+- Add `stash_diagnostic_error()` before any other `exit_with_state(1)` calls in the bootstrap path
+
+**Task 2: Add eval fixture for bootstrap crash detection**
+- Files: `eval/fixtures/local-smoke/` (new file)
+- Objective: Regression test that bootstrap failures are captured in state
+
+**Task 3: Wire diagnostic errors into apply_config_flags failure path**
+- Files: `src/lib.rs` (different area from task 1, but let me check)
+
+Actually, let me reconsider. The assessment says "each task MUST touch at most 3 source files." Tasks 1 and 3 would both touch `src/lib.rs`. That's fine, they're different areas. But they might conflict. Let me combine them into one bigger task and add something else for task 3.
+
+No wait, let me re-read the instructions: "Each task must be completable in 20 minutes by a focused agent. If you're unsure, make it smaller."
+
+OK, let me keep them separate but with clear boundaries:
+
+**Task 1**: Move `record_session_started()` earlier + add `stash_diagnostic_error` for the `apply_config_flags` failure path
+- Files: `src/lib.rs`
+- Lines: ~20-30 lines changed/added
+
+**Task 2**: Add eval fixture for pre-agent/bootstrap crash detection
+- Files: `eval/fixtures/local-smoke/` (1 new file)
+- Lines: ~30-50 lines JSON
+
+**Task 3**: Add `stash_diagnostic_error()` to remaining early-exit paths in `run_cli()` that don't have one yet (e.g., setup wizard failure, other early returns)
+- Files: `src/lib.rs`
+- Lines: ~10-20 lines changed
+
+Hmm, these are all very similar and all touch `src/lib.rs`. Let me think about a better third task.
+
+Looking at the assessment again: the `commands_state.rs` file at 23,848 lines is "the clearest structural debt signal." But splitting it is a massive refactor - too big for a 20-minute task. 
+
+What about: the `state why last-failure` chicken-and-egg problem? Let me look at what that command does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'last.failure' in src/commands_state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'last-failure' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me focus on writing the task files now. I've spent enough time analyzing.
+
+My task plan:
+
+**Task 1**: Move `record_session_started()` before `build_agent()` in `src/lib.rs`, and add `stash_diagnostic_error()` calls to the bootstrap error paths that currently exit without diagnostic info.
+- Files: `src/lib.rs`
+- This directly addresses the #1 state-evidence gap: pre-agent crashes invisible to crash reporter
+
+**Task 2**: Add an eval fixture for pre-agent/bootstrap crash detection
+- Files: `eval/fixtures/local-smoke/` (new JSON file)
+- Regression test for task 1
+
+**Task 3**: Move the `record_session_started()` API key check to use a more reliable method, and add the API key status to `RunStarted` payload so we can distinguish "no key" from "key present but crashes during build"
+- Files: `src/lib.rs`, `src/state.rs`
+- Wait, this overlaps too much with task 1.
+
+Let me think about a better task 3 that's clearly distinct...
+
+Actually, looking at the assessment more carefully, there's another action item: "Crash reporter only covers 2 of N crash paths — pre-harness crashes are invisible." The crash reporter is wired in `lib.rs` (state init failure) and `deepseek.rs` (transport failures). But panic hooks are installed via `state::install_panic_hook()`. Let me check if the panic hook also stashes diagnostic errors.
+
+Actually, let me just pick a simpler task 3. Looking at the assessment: "No open issues: The repo has zero open issues."
+
+What about: "Extend the `state crashes` command to show diagnostic errors inline rather than requiring `state why <run-id>` for each crash." This would be an improvement to `src/commands_state.rs` that makes crash investigation faster.
+
+But that touches a 23,848-line file. Let me check the exact function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_crash_report' in src/commands_state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the crashes command implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search '"crashes"' in src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read handle_crashes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:65..105 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I have enough context. Let me now write the three task files. I need to be disciplined about getting task_01.md written first, then refine.
+
+Let me finalize my task plan:
+
+**Task 1**: Wire crash reporter into pre-agent bootstrap path
+- Move `record_session_started()` to before `build_agent()` in `src/lib.rs`
+- Add `stash_diagnostic_error()` call before the early `return` at line 991 (config flag failure)
+- Add `stash_diagnostic_error()` before any other exit_with_state(1) in bootstrap path
+- Files: `src/lib.rs`
+
+**Task 2**: Add eval fixture for bootstrap crash detection
+- Create a new eval fixture that verifies pre-agent crashes are captured with diagnostic info
+- Files: `eval/fixtures/local-smoke/` (1 new JSON file)
+
+**Task 3**: Wire `stash_diagnostic_error()` into the panic hook
+- Currently `state::install_panic_hook()` is installed at line 1037 but might not stash diagnostic errors
+- Check if panic hook already calls stash_diagnostic_error
+- If not, add it so panics during agent construction or later also leave traces
+- Files: `src/state.rs` (panic hook install), `src/lib.rs` (verify wiring)
+
+Let me now write task_01.md first, then the others.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me write the task files. First, the highest-priority task:
+  + # Task 01: Wire crash reporter into pre-agent bootstrap path
+  + 
+  + Title: Wire crash reporter into pre-agent bootstrap path
+  + Files: src/lib.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + ## Objective
+  + 
+  + Move `record_session_started()` to fire BEFORE `build_agent()` so that pre-agent crashes (API key missing, config errors, agent construction failures) leave a `SessionStarted` diagnostic breadcrumb. Add `stash_diagnostic_error()` calls to early-exit paths in the bootstrap that currently exit without diagnostic info, so the `RunCompleted(status=error)` event carries the actual failure reason instead of just "exit code 1".
+  + 
+  + ## Why this matters
+  + 
+  + The state crash report shows 10+ crashes in the last 49 seconds, all `key? no` — meaning the crash reporter never fired. These are pre-agent crashes happening in the harness bootstrap layer before `state::record_session_started()` is called (currently at line ~1120, AFTER `build_agent()` at ~1094). The `stash_diagnostic_error()` mechanism is already wired into state init failure (line 1032) and transport failures (deepseek.rs:1022), but bootstrap paths between `parse_args()` and `build_agent()` exit silently.
+  + 
+  + This is the #1 state-observability gap from the Day 103 assessment.
+  + 
+  + ## Success Criteria
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (92 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (92 lines) ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, task_01.md written. Now task_02.md - the eval fixture.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ ls eval/fixtures/local-smoke ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at an existing eval fixture to understand the format.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/036-deepseek-transport-error-policy.json ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the eval fixture format better. Let me look at a few more examples.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/198-critical-file-operation-approval.json ✓ (5ms)
+
+

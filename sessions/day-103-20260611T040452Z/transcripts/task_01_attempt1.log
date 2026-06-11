@@ -1,0 +1,517 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully:
+
+1. Move `record_session_started()` to fire before `build_agent()` in `src/lib.rs`
+2. Add `stash_diagnostic_error()` calls to early-exit paths in the bootstrap
+3. Audit all early exits between state init and agent construction
+
+Let me start by reading the relevant sections of `src/lib.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant sections of src/lib.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to read the bootstrap flow section - specifically around lines 960-1130 where `main()` or `run()` is. Let me find the exact location.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn main()' in src/lib.rs  ▶ search 'record_session_started' in src/lib.rs  ▶ search 'stash_diagnostic_error' in src/lib.rs ✓ (15ms)
+ ✓ (16ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the key sections. The file doesn't have a `fn main()` - it might be a `pub fn run()` or similar. Let me read around those found lines.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:960..1160 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full picture. Let me also check the `run_setup_wizard_if_needed` function to see its return semantics, and `connect_external_servers` to see if it has error paths.
+
+Let me also search for any other `exit_with_state(1)` calls in the bootstrap path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'exit_with_state' in src/lib.rs  ▶ search 'fn run_setup_wizard_if_needed' in src/lib.rs  ▶ search 'fn connect_external_servers' in src/lib.rs ✓ (15ms)
+ ✓ (15ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`connect_external_servers` is probably defined elsewhere. Let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn connect_external_servers'  ▶ read src/lib.rs:913..953 ✓ (5ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `connect_external_servers` to see if it has error paths that could exit silently:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:100..150 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of this function to see how errors are handled:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:149..199 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`connect_external_servers` doesn't exit the process - it returns `(Agent, u32, u32)`. It handles errors internally. So there's no exit path there.
+
+Now let me also check if `build_agent()` can panic and exit:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_agent' in src/agent_builder.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the build_agent function to see if it can panic or fail:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:551..591 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check if there's a `stash_diagnostic_error` function already defined in state.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn stash_diagnostic_error'  ▶ search 'fn record_session_started'  ▶ search 'fn mark_run_completed_with_error' ✓ (24ms)
+ ✓ (23ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the `stash_diagnostic_error` and `record_session_started` functions to understand their signatures and what they need:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.7s (3 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:65..95  ▶ read src/state.rs:360..390  ▶ read src/state.rs:400..440 ✓ (25ms)
+ ✓ (20ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also look at the `exit_with_state` function and see the full flow of `run_cli`:
+
+Current order:
+1. `state::init_global()` — line 994 (failure path at 1030-1033 calls `stash_diagnostic_error` before `exit_with_state(1)`)
+2. `state::RunCompletionGuard` — line 1035
+3. `state::install_panic_hook()` — line 1037
+4. Config extraction and agent building — lines 1047-1094
+5. `connect_external_servers()` — line 1101
+6. `state::record_session_started()` — line 1120 ← TOO LATE
+
+Task says:
+- Move `record_session_started()` to fire BEFORE `build_agent()` (line ~1094)
+- Add `stash_diagnostic_error()` calls to early-exit paths
+
+But the task also says: "The correct insertion point is between line 1088 (after `run_setup_wizard_if_needed`) and line 1094 (`build_agent()`)."
+
+This is because `record_session_started()` needs `agent_config.model` and `agent_config.skills.len()`, and `agent_config` is built at lines 1061-1086. The `run_setup_wizard_if_needed` can modify `agent_config.model`, so we need to call `record_session_started()` after the setup wizard.
+
+Wait, but `record_session_started` also needs `effective_context_tokens()`, which is fine at any point.
+
+So the plan is:
+1. Move `record_session_started()` to between line 1088 (after `run_setup_wizard_if_needed`) and line 1094 (`build_agent()`)
+2. Add `stash_diagnostic_error("config: apply_config_flags returned false")` at line 990-992
+3. Add `stash_diagnostic_error("setup wizard cancelled")` at line 1088-1090
+
+Wait, actually the task says to check "run_setup_wizard_if_needed returning false." The setup wizard print its own error message and returns false. Let me re-read... The task says:
+- `run_setup_wizard_if_needed` returning false (line 1088-1090) — does it need diagnostic stashing? It prints its own error message and returns. Add `stash_diagnostic_error` for consistency.
+
+So yes, add diagnostic stashing there too.
+
+Now for `connect_external_servers` — it doesn't exit, it just returns `(Agent, u32, u32)`. It handles errors internally. So no exit path there to worry about.
+
+The `build_agent()` itself — if it panics, the panic hook handles it. If it doesn't panic, it always succeeds.
+
+Now, there's one more thing to note. The task says to also check other `exit_with_state(1)` calls between state init and agent construction. But after inspecting the code, the only exit before build_agent (other than init failure) is:
+- 990-992: `apply_config_flags` returns false
+- 1088-1090: `run_setup_wizard_if_needed` returns false (but this is AFTER agent_config is built)
+
+Wait, but we also need to handle: what about after `record_session_started()` is moved but before the actual prompt/tool call? Let me list the exit paths after `record_session_started()`:
+
+1. `build_agent()` at line 1094 — panics captured by panic hook, but no explicit `stash_diagnostic_error` for pre-build_agent setup. But we're moving `record_session_started` before it, so crashes during `build_agent` will at least leave a SessionStarted event.
+
+Actually wait - `build_agent()` builds the agent. If `create_model_config` panics, the panic hook fires. If it doesn't panic, it always returns an agent. So it's fine.
+
+Let me now also check: is `api_key_present` correctly captured? Currently at line 1122 it uses `std::env::var("DEEPSEEK_API_KEY").is_ok()`. But the task says "After this change, crashed runs with missing API keys show `key? yes` in the session started event (because the event fires before the agent tries to connect)". Wait, but the task wants `api_key_present: true` even when the agent can't connect? That's about the API key being present in the env, not about it being valid. The env var check should be fine.
+
+Now let me also check the `RunCompleted` error payload — does it include the diagnostic message? Let me read lines 389-399:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 17.0s (3 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:389..404 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - the `error_detail` field is included in `RunCompleted` when `stash_diagnostic_error` was called before `exit_with_state`. This confirms the mechanism works.
+
+Now let me also check where `exit_with_state(0)` is called (success path) to ensure SessionStarted is properly recorded before success too. Let me look at lines around 1150 onward to see how the function ends.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1150..1350 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a full picture. Let me also check the `mark_run_completed_with_error` function again to see if it reads `LAST_DIAGNOSTIC_ERROR`:
+
+Looking at line 367-375:
+```rust
+pub fn mark_run_completed_with_error(msg: &str) {
+    store_run_error(msg);
+    let error_detail = take_diagnostic_error();
+    record(
+        EventType::RunCompleted,
+        Actor::Harness,
+        run_completed_payload("error", Some(msg), error_detail.as_deref()),
+    );
+}
+```
+
+And `exit_with_state` at line 971-978:
+```rust
+fn exit_with_state(code: i32) -> ! {
+    let status = if code == 0 { "completed" } else { "error" };
+    if code != 0 {
+        state::mark_run_completed_with_error(&format!("exit code {}", code));
+    } else {
+        state::mark_run_completed(status);
+    }
+    std::process::exit(code);
+}
+```
+
+So when exit_with_state(1) is called:
+1. It calls mark_run_completed_with_error("exit code 1")
+2. mark_run_completed_with_error calls take_diagnostic_error() to get the stashed error
+3. The error_detail is included in the RunCompleted payload
+
+Now my plan:
+
+### Part A: Move record_session_started()
+Move from line 1117-1125 to between line 1092 (`apply_bedrock_credentials`) and line 1094 (`agent_config.build_agent()`). Wait, the task says to put it after `run_setup_wizard_if_needed` (line 1088-1090) and before `build_agent()` (line 1094).
+
+Actually, looking more carefully at the code flow:
+- Lines 1061-1086: `agent_config` is built
+- Lines 1088-1090: `run_setup_wizard_if_needed` - can modify agent_config.model
+- Line 1092: `apply_bedrock_credentials` - modifies agent_config.api_key
+- Line 1094: `agent_config.build_agent()`
+
+The task says the correct insertion point is "between line 1088 (after `run_setup_wizard_if_needed`) and line 1094 (`build_agent()`)." 
+
+But wait - `apply_bedrock_credentials` at line 1092 modifies `agent_config.api_key`. Does `record_session_started` need `api_key`? Let me check... `record_session_started` takes:
+- `model: &str` — from `agent_config.model`
+- `api_key_present: bool` — uses `std::env::var("DEEPSEEK_API_KEY").is_ok()`, NOT agent_config.api_key
+- `context_tokens: u64` — from `effective_context_tokens()`
+- `skills_count: usize` — from `agent_config.skills.len()`
+
+So `apply_bedrock_credentials` doesn't affect what we need. We can insert `record_session_started()` after it.
+
+Actually, looking at the task again: "The correct insertion point is between line 1088 (after run_setup_wizard_if_needed) and line 1094 (build_agent())."
+
+But we also need to handle the case where `run_setup_wizard_if_needed` returns false - we want `stash_diagnostic_error` there. So:
+
+```rust
+if !run_setup_wizard_if_needed(is_interactive, &mut agent_config) {
+    state::stash_diagnostic_error("setup wizard cancelled");
+    return;
+}
+
+apply_bedrock_credentials(&mut agent_config);
+
+// Record SessionStarted BEFORE build_agent so pre-agent crashes leave a breadcrumb
+state::record_session_started(
+    &agent_config.model,
+    std::env::var("DEEPSEEK_API_KEY").is_ok(),
+    crate::cli::effective_context_tokens(),
+    agent_config.skills.len(),
+);
+
+let mut agent = agent_config.build_agent();
+```
+
+And we remove it from the old location (lines 1117-1125).
+
+### Part B: Add stash_diagnostic_error to apply_config_flags failure
+
+```rust
+if !apply_config_flags(&config) {
+    state::stash_diagnostic_error("config: apply_config_flags returned false");
+    return;
+}
+```
+
+Now let me think about whether there are other early exits I need to handle. Looking at the code between state init (line 994) and agent construction (line 1094), the only exits are:
+1. Line 990-992: `apply_config_flags` returns false → `return;`
+2. Line 1088-1090: `run_setup_wizard_if_needed` returns false → `return;`
+
+That's it. The `build_agent()` itself doesn't have early return paths in this function.
+
+Now let me also verify `stash_diagnostic_error` is public (it is, based on line 71).
+
+Let me now implement the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the changes. I'll start with Part B (simpler), then Part C, then Part A.
+
+Let me do them all as separate edit_file calls.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 2.4s (6 ✓)
+
+Part B first — add `stash_diagnostic_error` to `apply_config_flags` failure:
+        if !apply_config_flags(&config) {
+  +         state::stash_diagnostic_error("config: apply_config_flags returned false");
+            return;
+        }
+  ✓ Auto-approved: edit: src/lib.rs (3 → 4 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ edit src/lib.rs (3 → 4 lines)
+        if !apply_config_flags(&config) {
+  +         state::stash_diagnostic_error("config: apply_config_flags returned false");
+            return;
+        }
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Part B done. Now Part C — add stash_diagnostic_error to setup wizard cancellation path:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+        if !run_setup_wizard_if_needed(is_interactive, &mut agent_config) {
+  +         state::stash_diagnostic_error("setup wizard cancelled");
+            return;
+        }
+  ✓ Auto-approved: edit: src/lib.rs (3 → 4 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (4ms)
+  ▶ edit src/lib.rs (3 → 4 lines)
+        if !run_setup_wizard_if_needed(is_interactive, &mut agent_config) {
+  +         state::stash_diagnostic_error("setup wizard cancelled");
+            return;
+        }
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now Part A — move `record_session_started()` to before `build_agent()`. I need to:
+1. Insert it after `apply_bedrock_credentials` (line 1092) and before `build_agent()` (line 1094)
+2. Remove it from the old location (lines 1117-1125, which are now shifted by +2 lines from the edits above)
+
+Let me read the current state around those lines to be precise:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.0s (3 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ read src/lib.rs:1088..1108  ▶ read src/lib.rs:1115..1135 ✓ (21ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll:
+1. Insert `record_session_started()` after line 1094 (`apply_bedrock_credentials`) and before line 1096 (`build_agent()`)
+2. Remove it from lines 1119-1127
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.2s (4 ✓)
+
+First, insert `record_session_started()` before `build_agent()`:
+        apply_bedrock_credentials(&mut agent_config);
+  + 
+  +     // Record SessionStarted BEFORE build_agent so pre-agent crashes
+  +     // (API key missing, config errors, agent construction failures)
+  +     // leave a diagnostic breadcrumb before the agent tries to connect.
+  +     state::record_session_started(
+  +         &agent_config.model,
+  +         std::env::var("DEEPSEEK_API_KEY").is_ok(),
+  +         crate::cli::effective_context_tokens(),
+  +         agent_config.skills.len(),
+  +     );
+    
+        let mut agent = agent_config.build_agent();
+  ✓ Auto-approved: edit: src/lib.rs (3 → 13 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (3 → 13 lines)
+        apply_bedrock_credentials(&mut agent_config);
+  + 
+  +     // Record SessionStarted BEFORE build_agent so pre-agent crashes
+  +     // (API key missing, config errors, agent construction failures)
+  +     // leave a diagnostic breadcrumb before the agent tries to connect.
+  +     state::record_session_started(
+  +         &agent_config.model,
+  +         std::env::var("DEEPSEEK_API_KEY").is_ok(),
+  +         crate::cli::effective_context_tokens(),
+  +         agent_config.skills.len(),
+  +     );
+    
+        let mut agent = agent_config.build_agent();
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now remove the old `record_session_started()` call. The old lines have shifted due to the earlier edits. Let me re-read to find the old location.
+────────────────────────────────────────────────────────────────────────────────
+
+Now remove the old `record_session_started()` block. Let me find its current location:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1123..1143 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Remove the old block (lines 1129-1137):
+────────────────────────────────────────────────────────────────────────────────
+
+
+        if continue_session {
+            restore_session(&mut agent);
+        }
+  - 
+  -     // Record SessionStarted event for pre-tool-call crash visibility.
+  -     // Must fire before the first prompt/tool call so sessions that crash
+  -     // silently have at least one diagnostic breadcrumb.
+  -     state::record_session_started(
+  -         &agent_config.model,
+  -         std::env::var("DEEPSEEK_API_KEY").is_ok(),
+  -         crate::cli::effective_context_tokens(),
+  -         agent_config.skills.len(),
+  -     );
+    
+        // --prompt / -p: single-shot mode
+  ✓ Auto-approved: edit: src/lib.rs (15 → 5 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (15 → 5 lines)
+        if continue_session {
+            restore_session(&mut agent);
+        }
+  - 
+  -     // Record SessionStarted event for pre-tool-call crash visibility.
+  -     // Must fire before the first prompt/tool call so sessions that crash
+  -     // silently have at least one diagnostic breadcrumb.
+  -     state::record_session_started(
+  -         &agent_config.model,
+  -         std::env::var("DEEPSEEK_API_KEY").is_ok(),
+  -         crate::cli::effective_context_tokens(),
+  -         agent_config.skills.len(),
+  -     );
+    
+        // --prompt / -p: single-shot mode
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the final state looks correct by reading the bootstrap section:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the final state looks correct.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the final state of the bootstrap flow:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:983..1033 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1080..1130 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The flow now looks correct:
+
+1. `apply_cli_flags` — line 984
+2. `parse_args` — line 986
+3. `apply_config_flags` with `stash_diagnostic_error` on failure — lines 990-993
+4. `state::init_global` with `stash_diagnostic_error` on failure — lines 995-1034
+5. `RunCompletionGuard` — line 1036
+6. `install_panic_hook` — line 1038
+7. `agent_config` built — lines 1062-1087
+8. `run_setup_wizard_if_needed` with `stash_diagnostic_error` on failure — lines 1089-1092
+9. `apply_bedrock_credentials` — line 1094
+10. **`record_session_started()` — lines 1099-1104** ← Now before `build_agent()`
+11. `agent_config.build_agent()` — line 1106
+12. `connect_external_servers` — lines 1110-1123
+13. `restore_session` — lines 1125-1127
+
+Now let me build and test.
+────────────────────────────────────────────────────────────────────────────────
+
+Bootstrap flow looks correct. Now build and test:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+fmt passes. Now clippy:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo clippy --all-targets -- … ✓ (24.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clippy passes. Now build:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (14.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now run tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✗ (3m 0s)
+    │ Command timed out after 180s
+
+
