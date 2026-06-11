@@ -1,46 +1,76 @@
 ---
 name: self-assess
-description: Analyze your own source code and capabilities to find bugs, gaps, and improvement opportunities
+description: Assess yyds source, DeepSeek harness behavior, state evidence, and evolution quality to find focused improvements
 tools: [bash, read_file, write_file]
 core: true
 origin: creator
 ---
 
-# Self-Assessment
+# yyds Self-Assessment
 
-You are assessing yourself. Your source code is your body. Read it critically.
+You are assessing **yyds**, the generation 1 DeepSeek-native harness branch of
+gen0 yoyo. Your source code is part of you, but your behavior is also visible in
+audit logs, transcripts, state events, gnome metrics, dashboard projections, and
+GitHub Actions runs. Read all of that critically.
+
+The assessment is not a task implementation phase. Its job is to produce
+evidence that lets the planner choose small, useful, verifiable work.
 
 ## Process
 
-1. **Read your source code** completely (all files under `src/`)
-2. **Read memory/active_learnings.md.** Check your accumulated lessons — patterns that worked, mistakes to avoid, insights from past sessions. Build on what you already know.
-3. **Try using yourself.** Pick a small real task and attempt it:
-   - Edit a file and check the result
-   - Run a shell command that might fail
-   - Try an edge case (empty input, long input, special characters)
-4. **Note what went wrong.** Be specific:
-   - Did you crash? Where?
-   - Did you give a bad error message? What should it say?
-   - Was something slow or clunky?
-   - Is there a feature you needed but didn't have?
-5. **Check journals/JOURNAL.md.** Have you tried something before that failed? Don't repeat the same mistake.
+1. **Read the relevant source map.** Inspect `src/`, `scripts/`, workflow files,
+   and skill/docs surfaces that relate to current harness behavior. Do not
+   assume old gen0 behavior still applies.
+2. **Read recent memory.** Check `journals/JOURNAL.md`,
+   `memory/active_learnings.md`, `memory/active_social_learnings.md`, and recent
+   commits for repeated failures, reverted work, or unfinished promises.
+3. **Check build and basic behavior.** Run the configured build/test checks and
+   try a small yyds command or diagnostic command when useful.
+4. **Inspect evolution evidence.** Use recent GitHub Actions runs, audit-log
+   session artifacts, transcripts, task manifests, outcomes, and dashboard JSON
+   to see what actually happened.
+5. **Read yoagent-state feedback.** Prefer concrete state evidence:
+   `state tail`, `state why`, graph hotspots, replay integrity, cache reports,
+   model/tool events, task lineage, and `PatchEvaluated` gnome values.
+6. **Compare intent to evidence.** Ask whether task artifacts, action logs,
+   transcripts, states, and gnomes really prove what the dashboard says.
+7. **Identify the next smallest improvement.** Favor fixes that improve
+   DeepSeek protocol reliability, prompt/context quality, evidence capture,
+   verifier honesty, cache observability, dashboard readability, or autonomous
+   planning/execution reliability.
 
-## What to look for
+## What To Look For
 
-- `unwrap()` calls — these are potential panics. Every one is a bug waiting to happen.
-- Missing error messages — if something fails silently, that's a problem.
-- Hard-coded values — magic numbers, hard-coded paths, assumptions about the environment.
-- Missing edge cases — what happens with empty input? Unicode? Very long strings?
-- User experience gaps — is anything confusing, unclear, or annoying?
+- Planner failures: no `session_plan/task_*.md`, assessment text treated as
+  planning instructions, or selected tasks that cannot be attempted.
+- Fake completion: task success without evaluator verdict, touched files that do
+  not overlap planned files, or source commits not linked to task lineage.
+- Thin evidence: missing `state/events.jsonl`, missing operational events,
+  feedback-only traces where full state traces were expected, or dashboard
+  claims that cannot be replayed.
+- DeepSeek friction: schema/tool-call errors, thinking/protocol mismatches,
+  context misses, prompt-cache regressions, retry churn, provider failures, or
+  model route mistakes.
+- Verification gaps: tests that do not cover the changed behavior, evaluator
+  timeouts counted as success, stale gnome corrections, or untrusted log values.
+- User-work safety: accidental protected-file edits, destructive commands,
+  overwritten local changes, or secrets leaking into audit artifacts.
+- Product gaps: anything that prevents yyds from being useful for real
+  DeepSeek-backed coding and general-purpose terminal tasks.
 
 ## Output
 
-Write your findings as a prioritized list. The most impactful issue goes first. Format:
+Write findings as prioritized evidence, not guesses:
 
-```
+```markdown
 SELF-ASSESSMENT Day [N]:
-1. [CRITICAL/HIGH/MEDIUM/LOW] Description of issue
+1. [CRITICAL/HIGH/MEDIUM/LOW] [issue]
+   Evidence: [file, session id, metric, transcript, command, or dashboard field]
+   Impact: [why this matters for yyds as a DeepSeek coding agent]
+   Candidate task: [smallest verifiable improvement]
 2. ...
 ```
 
-Then prioritize which ones to tackle this session. Fix as many as you can.
+Then summarize which findings should become this session's task candidates.
+Do not implement during assessment unless the active prompt explicitly changes
+phase.

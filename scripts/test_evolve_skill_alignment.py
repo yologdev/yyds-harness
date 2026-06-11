@@ -4,6 +4,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 EVOLVE_SKILL = ROOT / "skills" / "evolve" / "SKILL.md"
+SELF_ASSESS_SKILL = ROOT / "skills" / "self-assess" / "SKILL.md"
 EVOLVE_SCRIPT = ROOT / "scripts" / "evolve.sh"
 
 
@@ -30,6 +31,24 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
 
         self.assertIn("YOYO_SKILL_FLAGS=(--skills ./skills)", script)
         self.assertIn("Follow the evolve skill rules", script)
+
+    def test_self_assess_skill_is_yyds_deepseek_native(self):
+        text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("name: self-assess", text)
+        self.assertIn("generation 1 DeepSeek-native harness branch", text)
+        self.assertIn("yoagent-state feedback", text)
+        self.assertIn("gnome values", text)
+        self.assertIn("DeepSeek-backed coding", text)
+
+    def test_self_assess_skill_uses_evolution_evidence(self):
+        text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("audit-log", text)
+        self.assertIn("task manifests", text)
+        self.assertIn("dashboard JSON", text)
+        self.assertIn("state/events.jsonl", text)
+        self.assertIn("prompt-cache regressions", text)
 
 
 if __name__ == "__main__":
