@@ -1129,22 +1129,32 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     model_call_started_runs: dict[str, dict[str, Any]] = {}
     model_call_completed_runs: set[str] = set()
     model_call_run_errors: dict[str, dict[str, Any]] = {}
+    run_last_events: dict[str, dict[str, Any]] = {}
     unkeyed_model_call_starts = 0
     unkeyed_model_call_completions = 0
 
     for event in events:
         kind = event_kind(event)
         data = event_payload(event)
+        run_id = event_run_id(data)
+        if run_id:
+            run_last_events[run_id] = {
+                "kind": kind,
+                "tool_name": data.get("tool_name"),
+                "path": normalize_evidence_path(data.get("path")) if isinstance(data.get("path"), str) else None,
+                "command": clean_transcript_action(data.get("command")) if isinstance(data.get("command"), str) else None,
+                "status": data.get("status"),
+                "error": data.get("error"),
+                "error_detail": data.get("error_detail"),
+            }
         if kind == "ModelCallStarted" and deepseek_model_payload(data):
             deepseek_model_call_started += 1
-            run_id = event_run_id(data)
             if run_id:
                 model_call_started_runs[run_id] = data
             else:
                 unkeyed_model_call_starts += 1
         elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
             deepseek_model_call_completed += 1
-            run_id = event_run_id(data)
             if run_id:
                 model_call_completed_runs.add(run_id)
             else:
@@ -1210,6 +1220,7 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
             "error": model_call_run_errors.get(run_id, {}).get("error"),
             "error_detail": model_call_run_errors.get(run_id, {}).get("error_detail"),
             "status": model_call_run_errors.get(run_id, {}).get("status"),
+            "last_event": run_last_events.get(run_id),
         }
         for run_id in incomplete_run_ids[:8]
     ]

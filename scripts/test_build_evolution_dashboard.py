@@ -1311,7 +1311,14 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 [
                     {
                         "kind": "ModelCallStarted",
-                        "payload": {"model": "deepseek-v4-pro"},
+                        "payload": {"_yoyo": {"run_id": "run-incomplete"}, "model": "deepseek-v4-pro"},
+                    },
+                    {
+                        "kind": "FileEdited",
+                        "payload": {
+                            "_yoyo": {"run_id": "run-incomplete"},
+                            "path": "/home/runner/work/yyds-harness/yyds-harness/journals/JOURNAL.md",
+                        },
                     }
                 ],
             )
@@ -1341,7 +1348,12 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(model_claim["actual"]["completed"], 0)
             self.assertEqual(model_claim["actual"]["incomplete"], 1)
             self.assertEqual(model_claim["actual"]["unmatched_completed"], 0)
-            self.assertEqual(model_claim["actual"]["incomplete_runs"], [])
+            self.assertEqual(model_claim["actual"]["incomplete_runs"][0]["run_id"], "run-incomplete")
+            self.assertEqual(model_claim["actual"]["incomplete_runs"][0]["last_event"]["kind"], "FileEdited")
+            self.assertEqual(
+                model_claim["actual"]["incomplete_runs"][0]["last_event"]["path"],
+                "journals/JOURNAL.md",
+            )
             self.assertIn("do not pair by run_id", model_claim["detail"])
             self.assertEqual(cache_claim["actual"]["expected_metric_events"], 0)
             self.assertIn("Incomplete DeepSeek model calls", html)
@@ -1393,6 +1405,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["deepseek_model_call_unmatched_completed_count"], 1)
             self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["run_id"], "run-a")
             self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["error_detail"], "empty_input")
+            self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["last_event"]["kind"], "RunCompleted")
+            self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["last_event"]["error_detail"], "empty_input")
             self.assertEqual(model_claim["status"], "missing")
             self.assertEqual(model_claim["actual"]["started"], 1)
             self.assertEqual(model_claim["actual"]["completed"], 1)
