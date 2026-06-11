@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Diagnostic error stashing is correctly wired into both foreground and background `run_prompt()` error paths with `spawn:`-prefixed messages, a unit test validates the mechanism, and no existing behavior is altered. The `build_agent()` and bg-spawn-setup failure wrappers from the task spec were correctly omitted since those call sites don't return fallible results in the current code.

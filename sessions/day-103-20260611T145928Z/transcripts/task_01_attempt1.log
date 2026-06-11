@@ -1,0 +1,577 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task: I need to wire `stash_diagnostic_error` calls into `src/commands_spawn.rs` for sub-agent dispatch failures. Let me first read the relevant files to understand the current code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/commands_spawn.rs  ▶ search 'stash_diagnostic_error' (*.rs) ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the relevant sections of `commands_spawn.rs` - specifically `handle_spawn_fg()` around line 528 and `handle_spawn_bg()` around line 561.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_spawn.rs:500..650  ▶ read src/state.rs:65..85 ✓ (22ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me look at what `build_agent()` returns and what `run_prompt()` returns to understand the error shapes.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+Let me check what `build_agent()` returns and how `run_prompt()` handles errors:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_agent' in src/agent_builder.rs (*.rs)  ▶ search 'pub async fn run_prompt' in src/prompt.rs (*.rs) ✓ (18ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`build_agent()` returns `Agent` - it doesn't return a Result. Let me check what `build_agent` does - maybe it can panic or handle errors internally.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:560..620  ▶ read src/prompt.rs:1107..1137 ✓ (20ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So:
+1. `build_agent()` returns `Agent` — it doesn't return a `Result`. It's infallible at this level. However, the task description says to emit a diagnostic when `build_agent()` fails. But it seems like `build_agent()` can't fail at this level — it just constructs the agent. The actual build errors would come from inside `build_agent`, like `create_model_config` or provider setup. Since the task says to add diagnostics for `build_agent()` failures, maybe I should look at whether there are fallible paths inside `build_agent`. Let me re-read the task more carefully...
+
+Actually, looking at the task: "handle_spawn_fg() emits a diagnostic when sub_config.build_agent() fails". But `build_agent()` doesn't return a `Result`. Let me check what `create_model_config` returns...
+
+Wait, the task also says "Existing pattern from agent_builder.rs: `crate::state::stash_diagnostic_error(&format!("mcp_preflight: {command}: {e}"));`" — let me find where that is in agent_builder and see what pattern they use for build failures.
+
+Let me look more carefully. The task says the crash reporter function is in `src/state.rs` and is `stash_diagnostic_error(msg: &str)`. The task also says `handle_spawn_fg()` at ~line 528 calls `sub_config.build_agent()` and then `run_prompt()`. Both have failure paths.
+
+But `build_agent()` doesn't return a Result. Let me look at whether `build_agent` has internal failure handling... maybe in the `configure_agent` method?
+
+Actually wait, let me look more carefully at `run_prompt` — it returns `PromptOutcome`, not `Result`. Let me check what `PromptOutcome` looks like.
+
+OK, I think the task might be slightly off about `build_agent()` having a failure path. But `run_prompt()` can fail internally (API errors, etc.) and might report errors through `PromptOutcome`. Let me check what PromptOutcome looks like.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct PromptOutcome' in src/prompt.rs (*.rs) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the PromptOutcome struct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:231..291 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. Let me look at the `run_prompt` implementation to find where it handles errors (specifically where `last_api_error` is set) since that's the closest thing to a "failure" that we can hook into. But actually, looking at the task more carefully:
+
+1. `build_agent()` doesn't really have a failure path — it returns an `Agent` directly, it doesn't return `Result<Agent>`. So I can't really add diagnostic for it failing.
+
+2. `run_prompt()` returns `PromptOutcome` which has `last_api_error: Option<String>`. After calling `run_prompt()`, we can check if `last_api_error` is set and emit a diagnostic.
+
+But wait — the task says "build_agent fails" as one of the criteria. Let me look at what happens when `build_agent` runs — it calls `create_model_config` which might have failure paths inside. Let me look.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn create_model_config' in src/agent_builder.rs (*.rs) ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `create_model_config` — it returns `ModelConfig` not `Result<ModelConfig>`, so it's infallible. Let me also check `configure_agent` to see if that could fail.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:277..327 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `build_agent()` and `create_model_config()` are both infallible — they don't return `Result`. The task description says to "emit a diagnostic when `build_agent()` fails", but `build_agent()` doesn't have a failure path at the call site. It's a constructor that doesn't return a `Result`.
+
+However, `run_prompt()` returns `PromptOutcome` which has `last_api_error: Option<String>`. So I should:
+
+1. After `run_prompt()` in `handle_spawn_fg()`, check `response.last_api_error` and emit a diagnostic if set.
+2. In the background spawn path `handle_spawn_bg()`, similarly check after `run_prompt()`.
+
+Wait, let me re-read the current code in `handle_spawn_fg()` more carefully:
+
+```rust
+let response = run_prompt(&mut sub_agent, &args.task, session_total, effective_model)
+    .await
+    .text;
+```
+
+It only takes `.text` from the `PromptOutcome`. I should capture the full `PromptOutcome` and check `last_api_error`.
+
+And in `handle_spawn_bg()`:
+```rust
+let response = run_prompt(&mut sub_agent, &task_text, &mut bg_usage, &model)
+    .await
+    .text;
+```
+
+Same pattern.
+
+Now, for `build_agent()` failures — the task is asking me to emit diagnostics there. Even though `build_agent()` doesn't return a Result directly, maybe I should look at whether it can panic. Actually, I don't think it panics either. So maybe I should just do what makes sense: add diagnostics after `run_prompt()` calls where errors can actually occur, and skip the `build_agent()` diagnostic since there's no error path to catch there.
+
+Wait, let me re-read the task requirements:
+
+- `handle_spawn_fg()` emits a diagnostic when `sub_config.build_agent()` fails
+- `handle_spawn_fg()` emits a diagnostic when the sub-agent's `run_prompt()` returns an error
+- `handle_spawn_bg()` emits a diagnostic when background spawn setup fails
+
+For `build_agent()` — I could wrap it in a `std::panic::catch_unwind` but that's heavy and not the pattern used elsewhere. Let me look at whether other places handle this differently...
+
+Actually, let me just focus on what's practically doable and useful:
+1. For `handle_spawn_fg()`: after `run_prompt()`, check `last_api_error` and stash diagnostic
+2. For `handle_spawn_bg()`: after `run_prompt()`, check `last_api_error` and stash diagnostic. Also, if the `tokio::spawn` itself fails somehow, or `build_agent()` panics inside the async block, we can't really catch that at the spawn site.
+
+Let me look at what `run_prompt` returns — I need to capture the `PromptOutcome` not just `.text`. Let me also check if there's a `last_tool_error` that could be useful.
+
+Looking at the existing patterns:
+```rust
+crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+crate::state::stash_diagnostic_error(&format!("agent run: {e}"));
+```
+
+So the pattern is to format a descriptive message and stash it.
+
+Let me look at the `lib.rs` calls to `stash_diagnostic_error` for the "agent run" pattern to see exactly how they do it:
+
+From the search results:
+```rust
+// src/lib.rs:459
+state::stash_diagnostic_error(&format!("agent run: {e}"));
+```
+
+So they capture the error `e` from something. Let me look at those patterns more closely.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:454..474  ▶ read src/lib.rs:589..604 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the patterns. Let me also check how `run_prompt_auto_retry` works vs `run_prompt` — in `handle_spawn_fg()` they call `run_prompt` directly, not `run_prompt_auto_retry`. The `run_prompt` function returns a `PromptOutcome` which may have `last_api_error`.
+
+Let me now look at `run_prompt` more carefully to understand what errors it can report.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1107..1277 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture:
+
+1. `build_agent()` is infallible — returns `Agent` directly, no `Result`. I can't really "catch" a failure here.
+2. `run_prompt()` returns `PromptOutcome` which has `last_api_error: Option<String>`. This IS the failure path.
+
+So my plan is:
+- In `handle_spawn_fg()`: Capture the `PromptOutcome` instead of just `.text`. If `last_api_error` is set, stash a diagnostic. Also check if `text` is empty (which could indicate a failure even without an explicit API error).
+- In `handle_spawn_bg()`: Same — capture `PromptOutcome` and check `last_api_error`.
+
+For the background spawn, the async block can also potentially fail if `tokio::spawn` somehow fails, but that's unlikely. The main failure path is `run_prompt` returning an error.
+
+Let me now also check if `run_prompt` in the background spawn has a different signature. Looking at line 617:
+```rust
+let response = run_prompt(&mut sub_agent, &task_text, &mut bg_usage, &model)
+    .await
+    .text;
+```
+
+This is the same `run_prompt` so it returns `PromptOutcome`.
+
+Now, what about `build_agent()` — the task says to add diagnostics for it. Since it can't fail at the call site, but the task explicitly asks for it, I could wrap it in logic that would catch a panic. But in Rust, panics from `build_agent()` would unwind the stack. We can use `std::panic::catch_unwind` but that requires `UnwindSafe`. That's pretty heavy.
+
+Alternative: I could check if there's something after `build_agent()` that indicates failure (for example, maybe the agent config is invalid and `build_agent` produces an agent that will fail later). But that's speculative.
+
+Actually, let me re-read the task description: "handle_spawn_fg() emits a diagnostic when sub_config.build_agent() fails". Given that `build_agent()` returns `Agent` (infallible), maybe the intent is to catch panics? But the task also says "Do not change logic — just add diagnostic calls before existing error returns". And there are no existing error returns from `build_agent()`.
+
+I think the practical approach is:
+1. For `build_agent()` — Since it's infallible, I'll add a diagnostic check BEFORE calling it if there's something obviously wrong (like missing API key), or I'll just skip this since there's nothing to catch.
+2. For `run_prompt()` — This is the real failure path. I'll capture `PromptOutcome` and check `last_api_error`.
+
+Actually, let me re-read the task one more time: "handle_spawn_fg() at ~line 528 calls sub_config.build_agent() and then run_prompt(). Both have failure paths."
+
+The task author seems to believe build_agent() has failure paths. Maybe they're thinking of `rebuild_preserving_messages()` which has error handling, or maybe build_agent internally can have issues.
+
+OK, I'll take the pragmatic approach:
+1. For `run_prompt()`: clearly has `last_api_error` in `PromptOutcome`. I'll add diagnostic calls.
+2. For `build_agent()`: I'll note that it's infallible in the current code and can't fail, but I can still add a basic safety net. Actually, since I can't really detect a build_agent failure at the call site (it returns `Agent`, not `Result<Agent, E>`), I'll focus on what I can actually detect.
+
+Wait - I just realized something. Let me look at `build_agent` again more carefully. Maybe it CAN panic internally? If `create_model_config` panics, that would be caught by `std::panic::catch_unwind`. But using `catch_unwind` for normal error handling is not idiomatic Rust.
+
+Let me just focus on the `run_prompt()` failure path and the background spawn error path. For `build_agent()`, I'll add a diagnostic hook after `build_agent()` that's essentially a no-op — the task says to do it but there's simply no error to catch. OR I could try to make `build_agent()` return `Result` — but that's a bigger change and the task says "Do not change logic."
+
+Let me go with: add diagnostics after `run_prompt()` in both `handle_spawn_fg()` and `handle_spawn_bg()` for `last_api_error`. And in `handle_spawn_fg()`, I'll also add a diagnostic for when `run_prompt()` returns an empty response (which could indicate a silent failure). For `build_agent()`, I'll note in my commit that `build_agent()` is infallible and can't fail at the call site, so the diagnostic will be on `run_prompt()` only.
+
+Wait, actually I just want to double check — could there be a case where `build_agent()` fails? Let me look at whether `configure_agent` can fail.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn configure_agent' in src/agent_builder.rs (*.rs) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see `configure_agent`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:434..514 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, `configure_agent` also returns `Agent` and is infallible. And `build_sub_agent_tool` also doesn't return a `Result`. So `build_agent()` truly is infallible at the Rust level.
+
+Now, let me focus on the actual implementation. I'll:
+
+1. In `handle_spawn_fg()`: capture the full `PromptOutcome`, check `last_api_error`, and emit diagnostic. Also keep the existing `.text` behavior.
+2. In `handle_spawn_bg()`: same — capture `PromptOutcome`, check `last_api_error`, and emit diagnostic.
+
+For `build_agent()` — since it's infallible, I cannot add a diagnostic for a failure that doesn't exist. I'll note this in the task but won't add dead code.
+
+Wait, actually, let me re-read the task's suggested prefixes: "spawn: build_agent failed: {e}", "spawn: run_prompt error: {e}", "spawn: bg dispatch failed: {e}". The task implicitly assumes there IS a failure mode for build_agent. Perhaps in the future `build_agent()` will return `Result`, or perhaps the task author thought it already does.
+
+I'm going to take the practical approach:
+1. Add diagnostics for `run_prompt()` failures in both `handle_spawn_fg()` and `handle_spawn_bg()` — this is the real value.
+2. For `build_agent()`, I'll add a simple check — maybe check if the built agent has a valid model name or something. But that's really stretching it. Let me just focus on what adds real value.
+
+Actually, one more thought: maybe the task means to catch failures during the BUILD process, not at the call site. For example, if `build_agent()` internally encounters an error (like `create_model_config` panics), that would be caught by `catch_unwind`. But that's unusual.
+
+Let me just implement what makes sense:
+1. In `handle_spawn_fg()`, capture `PromptOutcome`, check `last_api_error`
+2. In `handle_spawn_bg()`, capture `PromptOutcome`, check `last_api_error`
+
+These are the real failure paths that exist today.
+
+Now let me also check whether there's a `Response` type being used for `run_prompt`... No, it's `PromptOutcome`.
+
+Let me now implement the changes. I need to modify:
+
+In `handle_spawn_fg()` (around line 528-533):
+```rust
+// Current:
+let mut sub_agent = sub_config.build_agent();
+
+// Run the task
+let response = run_prompt(&mut sub_agent, &args.task, session_total, effective_model)
+    .await
+    .text;
+```
+
+Change to:
+```rust
+let mut sub_agent = sub_config.build_agent();
+
+// Run the task
+let outcome = run_prompt(&mut sub_agent, &args.task, session_total, effective_model).await;
+if let Some(ref api_err) = outcome.last_api_error {
+    crate::state::stash_diagnostic_error(&format!("spawn: run_prompt error: {api_err}"));
+}
+let response = outcome.text;
+```
+
+In `handle_spawn_bg()` (around line 614-619):
+```rust
+// Current:
+let mut sub_agent = sub_config.build_agent();
+let mut bg_usage = Usage::default();
+
+let response = run_prompt(&mut sub_agent, &task_text, &mut bg_usage, &model)
+    .await
+    .text;
+```
+
+Change to:
+```rust
+let mut sub_agent = sub_config.build_agent();
+let mut bg_usage = Usage::default();
+
+let outcome = run_prompt(&mut sub_agent, &task_text, &mut bg_usage, &model).await;
+if let Some(ref api_err) = outcome.last_api_error {
+    crate::state::stash_diagnostic_error(&format!("spawn: bg run_prompt error: {api_err}"));
+}
+let response = outcome.text;
+```
+
+Wait, but in the background task, there's no `use crate::state;` import. Let me check the imports at the top... The file has `use crate::format::*;` and `use crate::prompt::run_prompt;` etc. But not `crate::state`. I need to use the full path `crate::state::stash_diagnostic_error` which should work since `stash_diagnostic_error` is `pub`.
+
+Let me now also check for a test I can add. The task says "Write a test first if possible". Let me look at existing tests in commands_spawn.rs to see what patterns they follow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_spawn.rs:1050..1130 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Testing `handle_spawn_fg` and `handle_spawn_bg` directly would be complex since they require a live agent, API keys, etc. The tests in this file are mostly unit tests for the parser and tracker. Adding a test that actually exercises the diagnostic stashing would be hard without a mock agent.
+
+But I can test that `stash_diagnostic_error` + `take_diagnostic_error` works. Let me write a simple unit test that verifies the diagnostic is stashed when `PromptOutcome` has `last_api_error`. But since the actual `handle_spawn_fg` and `handle_spawn_bg` are async and need real infrastructure, I can't easily unit test them.
+
+Alternatively, I can write a test that verifies the `stash_diagnostic_error` / `take_diagnostic_error` roundtrip works, but that's already tested implicitly by other tests. The task says "Write a test first if possible" — I think a unit test for the diagnostic roundtrip would be appropriate.
+
+Let me just go ahead with the implementation and add a simple test. Let me now make the changes.
+
+Actually, let me think about what tests I can practically write:
+
+1. A test for `stash_diagnostic_error` + `take_diagnostic_error` — would verify the state module works
+2. A mock test with fake `PromptOutcome` — but I can't easily create a fake `PromptOutcome` without making fields `pub` or being in the same crate
+
+Let me just go ahead with the implementation and add a simple state-level test.
+
+Let me now implement the changes:
+
+1. In `handle_spawn_fg()`: change to capture `PromptOutcome` and check `last_api_error`
+2. In `handle_spawn_bg()`: same in the async block
+
+Let me make the edits now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding. Let me implement the changes:
+
+1. `build_agent()` is infallible (returns `Agent`, not `Result`), so I can't catch failures there
+2. `run_prompt()` returns `PromptOutcome` with `last_api_error: Option<String>` — this is the actual failure path
+
+I'll modify both `handle_spawn_fg()` and `handle_spawn_bg()` to capture the full `PromptOutcome` and emit diagnostics on API errors.
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the edits. First, `handle_spawn_fg()`.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.5s (4 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me make the edit to handle_spawn_fg. The current code at lines 528-533:
+
+```rust
+    let mut sub_agent = sub_config.build_agent();
+
+    // Run the task
+    let response = run_prompt(&mut sub_agent, &args.task, session_total, effective_model)
+        .await
+        .text;
+```
+
+I need to capture the full `PromptOutcome`, check `last_api_error`, and then use `.text`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        let mut sub_agent = sub_config.build_agent();
+    
+        // Run the task
+  -     let response = run_prompt(&mut sub_agent, &args.task, session_total, effective_model)
+  -         .await
+  -         .text;
+  +     let outcome = run_prompt(&mut sub_agent, &args.task, session_total, effective_model).await;
+  +     if let Some(ref api_err) = outcome.last_api_error {
+  +         crate::state::stash_diagnostic_error(&format!(
+  +             "spawn: run_prompt error (#{spawn_id}): {api_err}"
+  +         ));
+  +     }
+  +     let response = outcome.text;
+  ✓ Auto-approved: edit: src/commands_spawn.rs (6 → 10 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_spawn.rs (6 → 10 lines)
+        let mut sub_agent = sub_config.build_agent();
+    
+        // Run the task
+  -     let response = run_prompt(&mut sub_agent, &args.task, session_total, effective_model)
+  -         .await
+  -         .text;
+  +     let outcome = run_prompt(&mut sub_agent, &args.task, session_total, effective_model).await;
+  +     if let Some(ref api_err) = outcome.last_api_error {
+  +         crate::state::stash_diagnostic_error(&format!(
+  +             "spawn: run_prompt error (#{spawn_id}): {api_err}"
+  +         ));
+  +     }
+  +     let response = outcome.text;
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me do the background spawn in `handle_spawn_bg`. The current code at lines 613-619 in the async block:
+
+```rust
+    let handle = tokio::spawn(async move {
+        let mut sub_agent = sub_config.build_agent();
+        let mut bg_usage = Usage::default();
+
+        let response = run_prompt(&mut sub_agent, &task_text, &mut bg_usage, &model)
+            .await
+            .text;
+```
+
+I need to change this to capture `PromptOutcome` and check `last_api_error`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the current state of the file around the background spawn to make sure I have accurate line numbers.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_spawn.rs:617..647 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me edit the background spawn path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         let response = run_prompt(&mut sub_agent, &task_text, &mut bg_usage, &model)
+  -             .await
+  -             .text;
+  +         let outcome = run_prompt(&mut sub_agent, &task_text, &mut bg_usage, &model).await;
+  +         if let Some(ref api_err) = outcome.last_api_error {
+  +             crate::state::stash_diagnostic_error(&format!(
+  +                 "spawn: bg run_prompt error (#{spawn_id}): {api_err}"
+  +             ));
+  +         }
+  +         let response = outcome.text;
+  ✓ Auto-approved: edit: src/commands_spawn.rs (3 → 7 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_spawn.rs (3 → 7 lines)
+  -         let response = run_prompt(&mut sub_agent, &task_text, &mut bg_usage, &model)
+  -             .await
+  -             .text;
+  +         let outcome = run_prompt(&mut sub_agent, &task_text, &mut bg_usage, &model).await;
+  +         if let Some(ref api_err) = outcome.last_api_error {
+  +             crate::state::stash_diagnostic_error(&format!(
+  +                 "spawn: bg run_prompt error (#{spawn_id}): {api_err}"
+  +             ));
+  +         }
+  +         let response = outcome.text;
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add a unit test. Let me look at how tests are organized at the bottom of the file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_spawn.rs:1198..1218 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll add a test that verifies the `stash_diagnostic_error` / `take_diagnostic_error` roundtrip for spawn-related diagnostic messages. This tests that the state infrastructure works correctly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            let args = args.unwrap();
+            assert!(args.system_prompt.is_none());
+            assert_eq!(args.task, "--system");
+  +     }
+  + 
+  +     #[test]
+  +     fn test_spawn_diagnostic_error_stashing() {
+  +         // Verifies that spawn-prefixed diagnostic errors can be stashed
+  +         // and retrieved, ensuring the crash reporter wire-up is testable.
+  +         crate::state::stash_diagnostic_error("spawn: run_prompt error (#1): test connection refused");
+  +         let taken = crate::state::take_diagnostic_error();
+  +         assert!(taken.is_some());
+  +         let msg = taken.unwrap();
+  +         assert!(msg.starts_with("spawn:"));
+  +         assert!(msg.contains("run_prompt error"));
+  +         assert!(msg.contains("#1"));
+  + 
+  +         // Verify that after taking, the error is cleared
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_spawn.rs (11 → 33 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_spawn.rs (11 → 33 lines)
+            let args = args.unwrap();
+            assert!(args.system_prompt.is_none());
+            assert_eq!(args.task, "--system");
+  +     }
+  + 
+  +     #[test]
+  +     fn test_spawn_diagnostic_error_stashing() {
+  +         // Verifies that spawn-prefixed diagnostic errors can be stashed
+  +         // and retrieved, ensuring the crash reporter wire-up is testable.
+  +         crate::state::stash_diagnostic_error("spawn: run_prompt error (#1): test connection refused");
+  +         let taken = crate::state::take_diagnostic_error();
+  +         assert!(taken.is_some());
+  +         let msg = taken.unwrap();
+  +         assert!(msg.starts_with("spawn:"));
+  +         assert!(msg.contains("run_prompt error"));
+  +         assert!(msg.contains("#1"));
+  + 
+  +         // Verify that after taking, the error is cleared
+  +         assert!(crate::state::take_diagnostic_error().is_none());
+  + 
+  ... (7 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run cargo check to see if everything compiles.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run cargo check first.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (7.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, cargo check passes. Now let me run the specific test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test test_spawn -- --tes… ✓ (31.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 17 spawn tests pass, including the new one. Now let me run the full test suite.
+────────────────────────────────────────────────────────────────────────────────
+
+All spawn tests pass. Now let me run the full test suite:
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✓ (4m 48s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output is truncated. Let me get the final test results.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✓ (4m 17s)
+
+

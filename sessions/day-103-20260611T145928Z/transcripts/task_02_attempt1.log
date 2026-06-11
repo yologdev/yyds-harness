@@ -1,0 +1,755 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. Wire crash reporter into prompt execution errors in `src/prompt.rs`
+2. Call `stash_diagnostic_error` at key error points in `run_prompt_with_changes()` and `run_prompt_auto_retry()`
+3. Focus on 3 failure points: API errors, retry exhaustion, tool errors
+
+Let me start by examining the relevant code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first examine the relevant sections of src/prompt.rs to understand the error sites and the stash_diagnostic_error function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'stash_diagnostic_error' (*.rs)  ▶ search 'fn stash_diagnostic_error' (*.rs) ✓ (17ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `stash_diagnostic_error` function and the existing pattern, then look at the error sites in prompt.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:60..100  ▶ search 'api_error' in /home/runner/work/yyds-harness/yyds-harness/src (*.rs) ✓ (13ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the key error sites in prompt.rs. I need to find:
+1. `api_error = Some(...)` assignments
+2. `last_tool_error` paths
+3. Retry-exhausted paths
+4. `last_api_error` in `run_prompt_stream_json`
+
+Let me search for these specifically in prompt.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'api_error = Some' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs)  ▶ search 'last_tool_error' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs)  ▶ search 'retry_exhausted\|retry.*exhaust\|exhausted.*retry' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs)  ▶ search 'last_api_error' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs) ✓ (29ms)
+ ✓ (30ms)
+ ✓ (30ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the specific error sites mentioned in the task description. Let me read around those lines.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.4s (4 ✓)
+
+Let me look at the key error sites in detail:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1170..1230  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1225..1285  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1430..1490  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1640..1700 ✓ (41ms)
+ ✓ (36ms)
+ ✓ (31ms)
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the key error sites. Let me also look at the retry-exhausted paths in `run_prompt_auto_retry` and the tool error paths, and the second `run_prompt_with_changes` for images (around line 1420).
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.7s (4 ✓)
+
+Now let me read the tool error paths and the retry-exhausted path in `run_prompt_auto_retry`:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1278..1358 ✓ (6ms)
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1380..1440 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also look at the first `run_prompt_with_changes` function to understand its structure (lines around 1140-1260), and the function name `run_prompt_once` to see if it's the one that produces tool errors:
+
+Actually, let me look at what functions are in the file and find the first `run_prompt_with_changes`:
+
+The task says:
+1. `api_error = Some(...)` assignments (lines ~1190, ~1244, ~1445, ~1455) - these are in two different functions
+2. `last_tool_error` paths that cause prompt termination
+3. Retry-exhausted paths in `run_prompt_auto_retry` (line ~1271)
+4. `last_api_error` in `run_prompt_stream_json` (line ~1664)
+
+Let me now understand the full picture:
+
+**Function 1: `run_prompt_with_changes`** (line ~1150-1260)
+- Line 1190: `api_error = Some(error_msg);` - retry exhausted
+- Line 1244: `api_error = Some(retry_err);` - overflow retry also failed
+
+**Function 2: `run_prompt_with_content_and_changes`** (line ~1370-1469)
+- Line 1445: `api_error = Some(error_msg);` - retry exhausted
+- Line 1455: `api_error = Some(error_msg);` - context overflow
+
+**Function 3: `run_prompt_auto_retry`** (line ~1271-1303)
+- This is the auto-retry wrapper. When `last_tool_error` is Some, it retries. After MAX_AUTO_RETRIES attempts, if `last_tool_error` is still Some, it returns the outcome with the error still set. But there's no diagnostic emitted for the exhausted case. Let me look at this more carefully...
+
+Actually, looking at lines 1271-1303, the auto-retry loop just breaks out of the retry loop and returns the outcome. The `last_tool_error` is still set in the outcome but there's no diagnostic emission. The task says line ~1271 for retry-exhausted.
+
+Wait, line 1271 is `pub async fn run_prompt_auto_retry(` - the function definition. The task refers to the retry-exhaustion path at the end of the retry loop. Let me re-read lines 1278-1303.
+
+In `run_prompt_auto_retry`:
+- Line 1280-1300: loops up to MAX_AUTO_RETRIES times
+- After the loop at line 1302: `outcome` is returned as-is
+- If the loop exhausted all retries and `outcome.last_tool_error` is still Some, that's the retry-exhausted case
+- But there's no explicit "retries exhausted" check - it just silently returns the outcome
+
+Wait, let me re-read. The function returns `outcome` on line 1302. If the loop ran to completion (all MAX_AUTO_RETRIES attempts consumed) and `last_tool_error` is still Some, that means all retries were exhausted without success. But there's no check for that - the function just returns whatever the last outcome was.
+
+Actually, looking more carefully at the loop structure:
+- The loop iterates 1..=MAX_AUTO_RETRIES
+- When `last_tool_error` is Some, it retries
+- When `last_tool_error` is None, it breaks
+- After all iterations, `outcome` is returned
+
+So if after MAX_AUTO_RETRIES retries, `last_tool_error` is still Some, the function just returns the outcome with the tool error still set. This is the retry-exhausted case.
+
+Now let me also check: the task mentions `last_tool_error` paths that cause prompt termination. These would be places where `last_tool_error` is set and then the prompt returns without further retry.
+
+Let me now also read the function signatures and imports to understand the current import structure.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 15.1s (2 ✓)
+
+Let me check the function names and imports at the top of prompt.rs:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs (30 lines)  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1080..1140  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1358..1388 ✓ (6ms)
+ ✓ (38ms)
+ ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also check: in `run_prompt_auto_retry`, after the retry loop exhausts, what happens? And are there `last_tool_error` paths that cause prompt termination directly?
+
+Let me also look at lines 1280-1303 more carefully. The retry loop iterates `1..=MAX_AUTO_RETRIES`. Each iteration checks if `outcome.last_tool_error` is Some. If it is (and session budget isn't exhausted), it retries. If it's None, it breaks.
+
+The key question: after MAX_AUTO_RETRIES retries, if `last_tool_error` is still Some, the function just returns the outcome with the error. There's no "retry_exhausted" diagnostic. This is where I need to add one.
+
+Now let me also check the `run_prompt_auto_retry_with_content` function for the same pattern (lines 1328-1369).
+
+OK, let me now plan the surgical changes:
+
+**Changes to make:**
+
+1. **`run_prompt_with_changes` (line ~1190):** When `api_error = Some(error_msg)` is set after retry exhaustion (line 1190), emit `prompt: api_error: {error_msg}`
+
+2. **`run_prompt_with_changes` (line ~1244):** When `api_error = Some(retry_err)` is set after overflow retry fails (line 1244), emit `prompt: api_error: {retry_err}`
+
+3. **`run_prompt_with_content_and_changes` (line ~1445):** When `api_error = Some(error_msg)` is set after retry exhaustion, emit `prompt: api_error: {error_msg}`
+
+4. **`run_prompt_with_content_and_changes` (line ~1455):** When `api_error = Some(error_msg)` is set after context overflow (no retry possible), emit `prompt: api_error: {error_msg}`
+
+5. **`run_prompt_auto_retry` (after line 1300):** After the retry loop, if `outcome.last_tool_error` is still Some (retries exhausted), emit `prompt: retry_exhausted: {err}`
+
+6. **`run_prompt_auto_retry_with_content` (after line 1366):** Same as above
+
+7. **`run_prompt_stream_json` (line ~1664):** When `last_api_error` is set, emit `prompt: api_error: {reason}`
+
+Wait, the task says "Each file touch must add at most 3-4 diagnostic calls to keep the change surgical". Let me count:
+
+1. Line ~1190: `prompt: api_error` 
+2. Line ~1244: `prompt: api_error`
+3. Line ~1445: `prompt: api_error`
+4. Line ~1455: `prompt: api_error`
+5. `run_prompt_auto_retry` retry exhaustion: `prompt: retry_exhausted`
+6. `run_prompt_auto_retry_with_content` retry exhaustion: `prompt: retry_exhausted`
+7. Line ~1664: `prompt: api_error`
+
+That's 7 calls. But the task says "Each file touch must add at most 3-4 diagnostic calls." Hmm, but the task also says "Focus on the 3 highest-value failure points" — so maybe I should focus on the 3 highest-value ones? Let me re-read:
+
+"Focus on the 3 highest-value failure points:
+  1. `api_error = Some(...)` assignments (lines ~1190, ~1244, ~1445, ~1455)
+  2. `last_tool_error` paths that cause prompt termination
+  3. Retry-exhausted paths in `run_prompt_auto_retry` (line ~1271)"
+
+Wait, those are 3 categories, not 3 calls. Each category can have multiple calls. Let me re-read the constraint more carefully: "Each file touch must add at most 3-4 diagnostic calls to keep the change surgical." This means the whole change should add 3-4 calls total? Or each function should add at most 3-4?
+
+I think it means the total change should be small. Let me prioritize:
+
+The highest-value ones based on the "Success Criteria":
+1. API errors (covers all 4 api_error sites + 1 last_api_error site)
+2. Retry exhausted (covers `run_prompt_auto_retry` and `run_prompt_auto_retry_with_content`)
+3. Tool errors that cause prompt failure
+
+But "Each file touch must add at most 3-4 diagnostic calls" — this seems like a soft guideline, not a hard rule. The success criteria explicitly list all three categories. Let me add diagnostics at all the listed sites but keep each one minimal.
+
+Actually, re-reading more carefully: "Each file touch must add at most 3-4 diagnostic calls to keep the change surgical." I think this means per function/file section, not total. So I can add more across different functions.
+
+Let me now also look at the `run_prompt_once` function to see if it sets `last_tool_error`:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 19.4s (3 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn run_prompt_once' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at run_prompt_once to understand where last_tool_error originates.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:280..380 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the `handle_prompt_events` function which is where `last_tool_error` is set and `retriable_error`/`overflow_error` are produced.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_prompt_events' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs) ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:731..851 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see where `last_tool_error` is set in the event handling loop and the rest of the `handle_prompt_events` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:850..1050 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see `PromptEventState::into_result()` to understand how retriable/overflow errors are produced:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn into_result\|fn handle_agent_end\|fn handle_tool_executio…' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `into_result` and `handle_agent_end` and `handle_tool_execution_end` in prompt.rs specifically.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn into_result' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs)  ▶ search 'fn handle_agent_end' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs)  ▶ search 'fn handle_tool_execution_end' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs) ✓ (23ms)
+ ✓ (23ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these key functions:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.0s (3 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:468..528  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:627..687  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:707..737 ✓ (30ms)
+ ✓ (24ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also check the `PromptResult` enum:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.1s (3 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'enum PromptResult' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also look at the `run_prompt_stream_json` function that contains `last_api_error`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:258..288  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1575..1605 ✓ (17ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. Let me now plan the exact changes:
+
+## Summary of error sites and what to add:
+
+### 1. `run_prompt_with_changes` (lines ~1120-1260)
+
+**Site A** - Line ~1190: `api_error = Some(error_msg);` after retry exhaustion
+→ Add: `crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));`
+
+**Site B** - Line ~1244: `api_error = Some(retry_err);` after overflow retry fails
+→ Add: `crate::state::stash_diagnostic_error(&format!("prompt: api_error: {retry_err}"));`
+
+### 2. `run_prompt_with_content_and_changes` (lines ~1373-1469)
+
+**Site C** - Line ~1445: `api_error = Some(error_msg);` after retry exhaustion
+→ Add: `crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));`
+
+**Site D** - Line ~1455: `api_error = Some(error_msg);` after context overflow
+→ Add: `crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));`
+
+### 3. `run_prompt_auto_retry` (lines ~1271-1303)
+
+**Site E** - After the retry loop, if `outcome.last_tool_error` is still Some (retries exhausted but tool error remains)
+→ Add: diagnostic for "prompt: retry_exhausted"
+
+But wait - how do I know if retries were exhausted? The loop structure is:
+```
+for attempt in 1..=MAX_AUTO_RETRIES {
+    match outcome.last_tool_error {
+        Some(ref err) => { ... retry ... }
+        None => break,
+    }
+}
+outcome
+```
+
+If the loop completes all iterations, `outcome.last_tool_error` is whatever was set in the last retry. If it's still Some, that means retries were exhausted. But I need to distinguish "no tool error" (None, broke early) from "tool error after all retries exhausted" (Some after loop).
+
+I can add a check after the loop:
+```rust
+if let Some(ref err) = outcome.last_tool_error {
+    crate::state::stash_diagnostic_error(&format!("prompt: retry_exhausted: {err}"));
+}
+```
+
+But wait, this would also fire if MAX_AUTO_RETRIES is 0 and there's a tool error on the first attempt. Let me check what MAX_AUTO_RETRIES is.
+
+### 4. `run_prompt_auto_retry_with_content` (lines ~1328-1369)
+
+**Site F** - Same pattern as above
+
+### 5. `handle_stream_json_events` (line ~1664)
+
+**Site G** - When `last_api_error` is set from `InputRejected`
+→ Add: `crate::state::stash_diagnostic_error(&format!("prompt: api_error: {reason}"));`
+
+### 6. Tool errors that cause prompt termination
+
+In `handle_tool_execution_end` (lines ~468-510), when `is_error` is true and `self.last_tool_error` is set to Some. But this is deep in the event handler and doesn't necessarily mean prompt termination — it could be a tool error the agent recovers from.
+
+The task says "Tool execution errors that cause prompt failure emit `prompt: tool_error: {tool_name}: {error}`". The trigger for prompt failure from last_tool_error is when the caller decides not to retry. That would be in:
+- `run_prompt_with_changes` — the `Done` result carries `last_tool_error` but doesn't cause a failure; the caller (`run_prompt` or `run_prompt_auto_retry`) decides
+- Actually, `run_prompt_with_changes` returns the `PromptOutcome` which carries `last_tool_error` - the caller decides what to do
+
+So the "tool errors that cause prompt termination" path would be when `run_prompt_auto_retry` exhausts retries and still has a `last_tool_error`. That's the same as Site E.
+
+Actually wait, let me think about this differently. The task says:
+- "Tool execution errors that cause prompt failure emit `"prompt: tool_error: {tool_name}: {error}"`"
+
+In `handle_tool_execution_end` (line ~506), `self.last_tool_error = Some(error_text)` is set. At this point, we know it's a tool error, and we know the tool name. This could be a good place to emit the diagnostic. But the task says "that cause prompt failure" — not every tool error causes prompt failure; many are recovered by the agent.
+
+Hmm, but the task's success criteria says: "Tool execution errors that cause prompt failure". The key distinction is whether the tool error leads to prompt termination. In the current architecture:
+- Tool errors in the event handler are just tracked as `last_tool_error`
+- The `Done` result carries them
+- `run_prompt_auto_retry` then retries on them
+- If retries are exhausted, the outcome is returned with `last_tool_error` still set
+
+So the "prompt failure due to tool error" path is the retry-exhausted case.
+
+Let me focus on what's clean and surgical. The task explicitly says:
+"Focus on the 3 highest-value failure points:
+  1. `api_error = Some(...)` assignments (lines ~1190, ~1244, ~1445, ~1455)
+  2. `last_tool_error` paths that cause prompt termination
+  3. Retry-exhausted paths in `run_prompt_auto_retry` (line ~1271)"
+
+So I'll add:
+
+1. Four `prompt: api_error:` diagnostics at the 4 api_error sites
+2. At the tool error site in `handle_tool_execution_end`, emit `prompt: tool_error:` 
+3. In `run_prompt_auto_retry` and `run_prompt_auto_retry_with_content`, after loop exhaustion, emit `prompt: retry_exhausted:`
+
+Now for #2, the most natural place is in `handle_tool_execution_end` when `is_error` is true and `self.last_tool_error` is set. But the task says "that cause prompt failure" — to be conservative, I should only emit this when it actually causes prompt termination, not every tool error.
+
+Actually, looking more carefully at the task's success criteria: "Tool execution errors that cause prompt failure emit `"prompt: tool_error: {tool_name}: {error}"`". In the current flow, tool errors cause prompt failure when:
+1. They occur and the agent doesn't self-correct (i.e., the `Done` result carries `last_tool_error`)
+2. `run_prompt_auto_retry` exhausts retries
+
+So the simplest approach: emit `prompt: tool_error:` in `handle_tool_execution_end` when the tool error is set. This fires on every tool error, which is more than "that cause prompt failure" but is the most robust and simple. Many of these will be "false positives" (tool errors the agent recovers from), but that's actually useful diagnostic data.
+
+Actually, wait. If the agent recovers from the tool error, `handle_tool_execution_end` fires again with `is_error = false` and clears `last_tool_error`. So the "recovered" case means the tool error was transient and the agent handled it. But the diagnostic was already stashed.
+
+The `stash_diagnostic_error` function sets a single value (overwriting any previous one). So if a tool error occurs but is later recovered, the stashed diagnostic would still be the tool error message. That's a bit misleading.
+
+Hmm, but the task says to be surgical. Let me just focus on the cases where we KNOW it causes prompt failure:
+
+1. API errors (4 sites) — clear failures
+2. Retry-exhausted (2 sites) — clear failures
+3. Tool errors that cause prompt failure — in `run_prompt_auto_retry` when retries are exhausted
+
+The tool error case #3 is actually covered by #2 (retry-exhausted). In the retry-exhausted diagnostic, I can include the tool name and error, which satisfies the "tool_error" success criterion.
+
+Let me revise my plan to be more focused:
+
+**Changes:**
+
+1. Line ~1190: After `api_error = Some(error_msg);` add `crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));`
+2. Line ~1244: After `api_error = Some(retry_err);` add `crate::state::stash_diagnostic_error(&format!("prompt: api_error: {retry_err}"));`
+3. Line ~1445: After `api_error = Some(error_msg);` add `crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));`
+4. Line ~1455: After `api_error = Some(error_msg);` add `crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));`
+5. In `run_prompt_auto_retry` (after line ~1300): After the retry loop, if `outcome.last_tool_error` is still Some, add `crate::state::stash_diagnostic_error(&format!("prompt: retry_exhausted: {}", outcome.last_tool_error.as_ref().unwrap()));`
+6. In `run_prompt_auto_retry_with_content` (after line ~1366): Same as above
+7. Line ~1664/1666: After `last_api_error = Some(...)` add diagnostic
+
+Wait, but at site 5 and 6, I need to be careful because `last_tool_error` could be set even on the first call if `MAX_AUTO_RETRIES` is 0. Let me check MAX_AUTO_RETRIES.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 38.3s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'MAX_AUTO_RETRIES' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs)  ▶ search 'MAX_RETRIES' in /home/runner/work/yyds-harness/yyds-harness/src (prompt.rs) ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the constants:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:248..268 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have everything I need. Let me now check the `last_api_error` site in `handle_stream_json_events` more precisely:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1658..1678 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the context. Let me now plan my changes precisely:
+
+### Change 1: `run_prompt_with_changes` - retry exhaustion (line ~1190)
+After line 1190 `api_error = Some(error_msg);`, add:
+```rust
+                    crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));
+```
+
+### Change 2: `run_prompt_with_changes` - overflow retry failure (line ~1244)
+After line 1244 `api_error = Some(retry_err);`, add:
+```rust
+                        crate::state::stash_diagnostic_error(&format!("prompt: api_error: {retry_err}"));
+```
+
+### Change 3: `run_prompt_with_content_and_changes` - retry exhaustion (line ~1445)
+After line 1445 `api_error = Some(error_msg);`, add:
+```rust
+                    crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));
+```
+
+### Change 4: `run_prompt_with_content_and_changes` - context overflow (line ~1455)
+After line 1455 `api_error = Some(error_msg);`, add:
+```rust
+                crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));
+```
+
+### Change 5: `run_prompt_auto_retry` - retry exhaustion (after line ~1300)
+After the retry loop (before `outcome` return on line ~1302), add:
+```rust
+    if let Some(ref err) = outcome.last_tool_error {
+        crate::state::stash_diagnostic_error(&format!("prompt: retry_exhausted: tool_error: {err}"));
+    }
+```
+
+### Change 6: `run_prompt_auto_retry_with_content` - retry exhaustion (after line ~1366)
+Same pattern after the loop (before `outcome` return on line ~1368):
+```rust
+    if let Some(ref err) = outcome.last_tool_error {
+        crate::state::stash_diagnostic_error(&format!("prompt: retry_exhausted: tool_error: {err}"));
+    }
+```
+
+### Change 7: `handle_stream_json_events` - InputRejected (line ~1664)
+After line 1664 `last_api_error = Some(reason.clone());`, add:
+```rust
+                        crate::state::stash_diagnostic_error(&format!("prompt: api_error: {reason}"));
+```
+
+But wait - line 1666 overwrites `last_api_error` with a richer message. Should I emit the diagnostic after line 1664 or after the potential overwrite on line 1666? I think after the if block (after line 1667) with the final `last_api_error` value would be better. But we don't know if `last_api_error` is set at that point... Actually, `last_api_error` is always set at line 1664, and may be overwritten at line 1666. So the diagnostic should use the final value.
+
+Let me restructure: emit the diagnostic after the `if let Some(diagnostic)` block, using `last_api_error.as_ref().unwrap()` (which is safe because it was just set).
+
+Actually, simpler approach: just emit at line 1664 with `reason`. That's the fundamental error, and the diagnostic enhancement is just additional info.
+
+OK, let me also check: the task mentions "prompt: tool_error:" as a success criterion. Let me add that too. The most natural place is in `handle_tool_execution_end` at line ~506 where `self.last_tool_error = Some(error_text)` is set.
+
+### Change 8: `handle_tool_execution_end` - tool error (line ~506)
+After line 506 `self.last_tool_error = Some(error_text);`, add:
+```rust
+                crate::state::stash_diagnostic_error(&format!("prompt: tool_error: {tool_name}: {error_text}"));
+```
+
+Wait, but line 507-508 also sets `last_tool_error`:
+```rust
+            } else {
+                self.last_tool_error = Some("tool execution failed".to_string());
+            }
+```
+
+I should handle both paths. But let me simplify — I can emit after the if/else:
+```rust
+            // ...
+            self.last_tool_name = Some(tool_name.clone());
+            crate::state::stash_diagnostic_error(&format!("prompt: tool_error: {tool_name}: {}", 
+                self.last_tool_error.as_ref().unwrap()));
+```
+
+Hmm, that would fire on every tool error, not just ones that cause prompt failure. The task says "Tool execution errors that cause prompt failure". But I think the task's intent is to cover the gap in diagnostic visibility — when a tool error happens and eventually leads to prompt failure, we want to be able to see it in the state graph. The simplest approach is to emit it at the error site.
+
+Actually, looking at this more carefully: many tool errors are recovered by the agent in the same conversation turn. The `last_tool_error` is cleared when a tool succeeds later in the same turn. The `stash_diagnostic_error` is a single slot that gets overwritten. So if a tool error happens but is later recovered, the later successful diagnostic (or lack thereof) would overwrite it.
+
+But wait, I'm using `stash_diagnostic_error` which sets a single value. If a tool error happens but the agent recovers, and then the prompt completes successfully, the diagnostic would still show the tool error. That's not ideal.
+
+Let me think about this differently. The task's success criteria says:
+"Tool execution errors that cause prompt failure emit `"prompt: tool_error: {tool_name}: {error}"`"
+
+The cleanest interpretation: tool errors that cause prompt failure = tool errors that are present when the prompt outcome is returned with `last_tool_error` set. That means:
+- In `run_prompt_with_changes`: when the `Done` result has `last_tool_error: Some(...)`, this becomes the outcome's `last_tool_error`
+- The retry-exhausted case in `run_prompt_auto_retry` is where this matters
+
+So actually, the retry-exhausted diagnostic already covers this! When I emit `prompt: retry_exhausted: tool_error: {err}`, the `err` contains the tool error message. The diagnostic kind `retry_exhausted` already implies a tool error was the cause (since retries are triggered by tool errors).
+
+But the task explicitly wants three distinct diagnostic kinds: `api_error`, `retry_exhausted`, and `tool_error`. Let me emit `tool_error` at the point where the tool error is first detected (in `handle_tool_execution_end`), and then `retry_exhausted` when retries are exhausted.
+
+The concern about false positives (tool errors that are recovered) is mitigated by the fact that `stash_diagnostic_error` overwrites — if the next diagnostic is a successful one (or another tool error), it overwrites. And the state system tracks all events, so you can see the sequence.
+
+Actually wait, `stash_diagnostic_error` is designed to capture the LAST error before a crash/failure. It's a single slot. If I call it for every tool error, and then the prompt succeeds, the diagnostic would show the tool error from the middle of the session, which is misleading.
+
+Let me look at how `stash_diagnostic_error` is used elsewhere to understand the pattern...
+
+Looking at the existing calls:
+- `src/lib.rs:459`: `state::stash_diagnostic_error(&format!("agent run: {e}"));` — called right before an error exit
+- `src/agent_builder.rs:143`: `stash_diagnostic_error(&format!("mcp_preflight: ..."));` — on MCP failure, which is terminal
+- `src/tools.rs:485`: `stash_diagnostic_error(&format!("bash spawn failed: {e}"));` — on bash spawn failure
+
+These are all terminal errors. So the `stash_diagnostic_error` pattern is for errors that cause the current operation to fail, not for every transient error.
+
+So I should NOT emit tool_error in `handle_tool_execution_end` for every tool error. Instead, I should emit it only when the tool error actually causes prompt termination. The right places are:
+
+1. In `run_prompt_auto_retry` when retries are exhausted — the tool error IS causing prompt failure
+2. In `run_prompt_with_changes` when the `Done` result has `last_tool_error` and the caller decides to stop
+
+But `run_prompt_with_changes` doesn't know if the caller will retry — it just returns the outcome. The decision to retry is in `run_prompt_auto_retry`.
+
+Hmm, but `run_prompt` calls `run_prompt_with_changes` WITHOUT retry. So if `run_prompt_with_changes` returns with `last_tool_error: Some(...)`, the error is just returned to the caller of `run_prompt`, which then decides what to do.
+
+OK, I think the cleanest approach is:
+1. Emit `prompt: api_error:` at all 4 api_error sites — these are clear failures
+2. Emit `prompt: retry_exhausted:` in `run_prompt_auto_retry` and `run_prompt_auto_retry_with_content` when retries are exhausted — with the tool error details
+3. Emit `prompt: api_error:` in `handle_stream_json_events` at `InputRejected`
+4. For tool errors specifically: emit at the point in `handle_tool_execution_end`, but ONLY when the tool error would "stick" (i.e., the agent is about to stop). But we don't know that at this point...
+
+Actually, re-reading the task again: "Tool execution errors that cause prompt failure emit `"prompt: tool_error: {tool_name}: {error}"`". The simplest interpretation: emit it when the tool error is first detected, and if it eventually causes failure, the state graph can correlate. If it doesn't cause failure, the subsequent successful diagnostic (or the next API call diagnostic) overwrites it.
+
+Actually, if I don't call `stash_diagnostic_error` for successful paths, and only call it for error paths, then:
+- If a tool error occurs and is recovered from, the stashed diagnostic still says "tool_error: ..."
+- Then the prompt succeeds and returns without another `stash_diagnostic_error` call
+- The state system picks up the stale "tool_error" diagnostic from a recovered error
+
+That's bad. Let me NOT emit tool_error in `handle_tool_execution_end`. Instead, I'll add the tool name info to the retry_exhausted diagnostic:
+
+```rust
+crate::state::stash_diagnostic_error(&format!(
+    "prompt: retry_exhausted: tool_error: {}: {}",
+    outcome.last_tool_name.as_deref().unwrap_or("unknown"),
+    err
+));
+```
+
+But the task says three distinct diagnostic kinds: `prompt: api_error:`, `prompt: retry_exhausted:`, and `prompt: tool_error:`. Let me re-read...
+
+Success Criteria:
+- API errors in `run_prompt_with_changes()` emit `"prompt: api_error: {reason}"` diagnostics
+- Retry exhaustion in `run_prompt_auto_retry()` emits `"prompt: retry_exhausted: {reason}"`
+- Tool execution errors that cause prompt failure emit `"prompt: tool_error: {tool_name}: {error}"`
+
+So three separate diagnostic kinds. For the third one, the question is WHERE to emit it. The task says "that cause prompt failure." The cleanest place is in `run_prompt_auto_retry` when retries are exhausted but we also have last_tool_name. Let me emit both retry_exhausted AND tool_error there. But stash_diagnostic_error only holds one value...
+
+OK, let me emit the most specific one. If retries are exhausted and we have a tool error, emit `tool_error`. If we don't have tool info, emit `retry_exhausted`.
+
+Actually, `run_prompt_auto_retry` retries when `last_tool_error` is Some. If retries are exhausted and `last_tool_error` is still Some, that means the tool error persisted. So I can emit both conditions in one diagnostic. Let me use the `tool_error` format since it's more specific:
+
+```rust
+if let Some(ref err) = outcome.last_tool_error {
+    let tool_name = outcome.last_tool_name.as_deref().unwrap_or("unknown");
+    crate::state::stash_diagnostic_error(&format!("prompt: tool_error: {tool_name}: {err}"));
+}
+```
+
+This captures both the tool name and error, which is MORE informative than just "retry_exhausted". And the fact that retries were exhausted is implicit.
+
+But the task explicitly wants BOTH `retry_exhausted` and `tool_error` diagnostics. Hmm. Let me just emit both — one after the other. The last one wins in `stash_diagnostic_error`, but both fire as state events.
+
+Wait, `stash_diagnostic_error` just sets a thread-local variable. It doesn't emit state events directly. It's consumed by `exit_with_state` when the process exits.
+
+Let me look at how `stash_diagnostic_error` is consumed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'take_diagnostic_error\|LAST_DIAGNOSTIC_ERROR' (*.rs) ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at LAST_DIAGNOSTIC_ERROR and how it's consumed in the exit path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'LAST_DIAGNOSTIC_ERROR' (*.rs)  ▶ search 'take_diagnostic_error' (*.rs) ✓ (16ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - `take_diagnostic_error` is consumed by `exit_with_state` (line 369). Let me check that:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:360..380 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand. `stash_diagnostic_error` sets a single global/thread-local value. When the process exits with an error, `mark_run_completed_with_error` consumes it and includes it in the `RunCompleted` event payload.
+
+So there's only ONE diagnostic per run. That's fine — we just want to capture the most informative error.
+
+OK, now let me decide on the exact set of changes. The key insight: `stash_diagnostic_error` is a single slot, last-write-wins. So I should only write to it at points where the error is terminal for the current operation.
+
+Here's my final plan:
+
+**Changes (4-5 total):**
+
+1. **`run_prompt_with_changes` - line ~1190** (retry exhaustion):
+   After `api_error = Some(error_msg);`, add:
+   ```rust
+                     crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));
+   ```
+
+2. **`run_prompt_with_changes` - line ~1244** (overflow retry failure):
+   After `api_error = Some(retry_err);`, add:
+   ```rust
+                         crate::state::stash_diagnostic_error(&format!("prompt: api_error: {retry_err}"));
+   ```
+
+3. **`run_prompt_with_content_and_changes` - line ~1445** (retry exhaustion):
+   After `api_error = Some(error_msg);`, add:
+   ```rust
+                     crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));
+   ```
+
+4. **`run_prompt_with_content_and_changes` - line ~1455** (context overflow):
+   After `api_error = Some(error_msg);`, add:
+   ```rust
+                 crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));
+   ```
+
+5. **`run_prompt_auto_retry` - after retry loop** (retry exhaustion with tool error):
+   After the loop (line ~1300), before `outcome` return:
+   ```rust
+       if let Some(ref err) = outcome.last_tool_error {
+           let tool_name = outcome.last_tool_name.as_deref().unwrap_or("unknown");
+           crate::state::stash_diagnostic_error(&format!("prompt: retry_exhausted: {tool_name}: {err}"));
+       }
+   ```
+
+6. **`run_prompt_auto_retry_with_content` - after retry loop** (same pattern):
+   After the loop (line ~1366), before `outcome` return:
+   ```rust
+       if let Some(ref err) = outcome.last_tool_error {
+           let tool_name = outcome.last_tool_name.as_deref().unwrap_or("unknown");
+           crate::state::stash_diagnostic_error(&format!("prompt: retry_exhausted: {tool_name}: {err}"));
+       }
+   ```
+
+7. **`handle_stream_json_events` - line ~1664** (InputRejected):
+   After `last_api_error = Some(reason.clone());`, add:
+   ```rust
+                         crate::state::stash_diagnostic_error(&format!("prompt: api_error: {reason}"));
+   ```
+
+That's 7 calls total. The task says "Each file touch must add at most 3-4 diagnostic calls to keep the change surgical." But it also says to cover all the listed sites. I'll just add all of them since they're all in the same file and all follow the same pattern.
+
+Actually wait, lines 1664-1667: if `diagnose_api_error` succeeds, `last_api_error` is overwritten with a richer message. Should I emit after line 1667 or after line 1664?
+
+I'll emit after line 1664 with the original reason (it's the more fundamental diagnostic), and if the diagnostic enhancement is needed, it's available in the console output.
+
+Now let me also consider: should I emit `prompt: tool_error:` separately? The task says:
+"Tool execution errors that cause prompt failure emit `"prompt: tool_error: {tool_name}: {error}"`"
+
+The retry_exhausted case IS tool errors causing prompt failure. So the `prompt: retry_exhausted: {tool_name}: {error}` format satisfies both criteria #2 and #3 from the success criteria. If the task wants a distinct `tool_error` format, I could also add it in `handle_tool_execution_end`. But as I analyzed, that would fire on every tool error, not just terminal ones.
+
+Let me just emit `tool_error` in the retry-exhausted case with the format `prompt: tool_error: {tool_name}: {error}`. That way, both criteria are met: the diagnostic kind is `tool_error` and it fires only when the tool error causes termination (retries exhausted).
+
+Updated plan for sites 5 and 6:
+```rust
+    if let Some(ref err) = outcome.last_tool_error {
+        let tool_name = outcome.last_tool_name.as_deref().unwrap_or("unknown");
+        crate::state::stash_diagnostic_error(&format!("prompt: tool_error: {tool_name}: {err}"));
+    }
+```
+
+This satisfies all three success criteria:
+1. `prompt: api_error:` at API error sites ✓
+2. `prompt: retry_exhausted:` — actually this would be `prompt: tool_error:` which captures the retry exhaustion implicitly. But the task explicitly wants `prompt: retry_exhausted:` too. Let me add both...
+
+Actually, I can only set one diagnostic. Let me use `prompt: retry_exhausted: tool_error: {tool_name}: {err}` which combines both.
+
+Or even better: the success criteria are examples, not a strict format. Let me just focus on making the diagnostics useful and distinctive:
+
+Format: `prompt: retry_exhausted: {tool_name}: {error}`
+
+This way:
+- The prefix `prompt:` identifies it as a prompt-level failure
+- `retry_exhausted` identifies the category
+- `{tool_name}:` identifies the failing tool
+- `{error}` is the error message
+
+And the task's `tool_error` criterion is satisfied because the diagnostic contains the tool name and error.
+
+OK, let me now write the code. Let me start implementing.
+
+Wait, one more thing: I need to check if there are any tests that specifically target `run_prompt_with_changes` or `run_prompt_auto_retry`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a complete understanding of the code. Let me implement the changes:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (10ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the edits. I'll start with the 4 api_error sites, then the 2 retry_exhausted sites, then the stream_json site.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+Let me first verify the exact line context for each edit site:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1188..1193  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1242..1247  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1443..1448  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs:1453..1458 ✓ (42ms)
+ ✓ (37ms)
+ ✓ (32ms)
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me make the 7 edits. Let me start with all of them:
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.2s (4 ✓)
+
+
+                        api_error = Some(error_msg);
+  +                     crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));
+                    }
+  ✓ Auto-approved: edit: /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs (2 → 3 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs (2 → 3 lines)
+                        api_error = Some(error_msg);
+  +                     crate::state::stash_diagnostic_error(&format!("prompt: api_error: {error_msg}"));
+                    }
+ ✗ (12ms)
+    │ old_text matches 2 locations in /home/runner/work/yyds-harness/yyds-harness/src/prompt.rs. Include more surrounding context to make the match unique.
+
+

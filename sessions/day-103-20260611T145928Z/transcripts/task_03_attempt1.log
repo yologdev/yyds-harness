@@ -1,0 +1,188 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task: I need to convert a `panic!` (via `.expect()`) in `src/repl.rs` into a graceful error that emits a diagnostic event via `stash_diagnostic_error`. Let me first look at the current state of the code and check if `stash_diagnostic_error` exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/repl.rs:710..740  ▶ search 'stash_diagnostic_error' (*.rs) ✓ (13ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`stash_diagnostic_error` is in `src/state.rs` at line 71. The function signature is `pub fn stash_diagnostic_error(msg: &str)`. The REPL code in `src/repl.rs` uses `crate::state::stash_diagnostic_error` in some places already — let me check. But looking at the search results, there are no matches in `src/repl.rs` currently. Let me look at what's imported in `src/repl.rs`.
+
+Now let me check if `state` is already imported in `repl.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'use crate::state' in src/repl.rs  ▶ search '^use ' in src/repl.rs ✓ (13ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the top of the file to see imports.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/repl.rs (30 lines) ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that there's no `use crate::state` import. I need to add it. Let me also check the exact function signature in `src/state.rs`:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the `stash_diagnostic_error` function signature and check the `run_repl` function signature:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:65..85  ▶ search 'pub fn run_repl' in src/repl.rs ✓ (16ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The function isn't named `run_repl`, let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn run_' in src/repl.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The function is `run_repl` at line 704. Let me look at the function signature to confirm it returns `()` (or some Result):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/repl.rs:704..724 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The function returns `()` (the async function returns nothing). So `return;` works fine as the task says. Let me now make the edit:
+
+1. Add `use crate::state;` to the imports
+2. Convert lines 720-721 from `.expect()` to a `match` with `stash_diagnostic_error`
+
+Let me now make the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. I have the full picture. The function returns `()` so `return;` works. Let me make the two changes:
+
+1. Add `use crate::state;` import
+2. Convert the `.expect()` to a `match` with diagnostic
+    use crate::session::{format_turn_changes, SessionChanges, TurnHistory, TurnSnapshot};
+  + use crate::state;
+    use crate::watch::{get_watch_command, run_watch_after_prompt, set_watch_command};
+  ✓ Auto-approved: edit: src/repl.rs (2 → 3 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/repl.rs (2 → 3 lines)
+    use crate::session::{format_turn_changes, SessionChanges, TurnHistory, TurnSnapshot};
+  + use crate::state;
+    use crate::watch::{get_watch_command, run_watch_after_prompt, set_watch_command};
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now convert the .expect() to a match:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -     let mut rl = Editor::with_config(config).expect("Failed to initialize readline");
+  +     let mut rl = match Editor::with_config(config) {
+  +         Ok(editor) => editor,
+  +         Err(e) => {
+  +             crate::state::stash_diagnostic_error(&format!("repl: readline_init_failed: {e}"));
+  +             eprintln!("Failed to initialize readline: {e}");
+  +             return;
+  +         }
+  +     };
+  ✓ Auto-approved: edit: src/repl.rs (1 → 8 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/repl.rs (1 → 8 lines)
+  -     let mut rl = Editor::with_config(config).expect("Failed to initialize readline");
+  +     let mut rl = match Editor::with_config(config) {
+  +         Ok(editor) => editor,
+  +         Err(e) => {
+  +             crate::state::stash_diagnostic_error(&format!("repl: readline_init_failed: {e}"));
+  +             eprintln!("Failed to initialize readline: {e}");
+  +             return;
+  +         }
+  +     };
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the edit looks right by reading the surrounding lines:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the edit looks correct in context:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/repl.rs:709..734 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edit looks correct. Since I added `use crate::state;` in the imports, I can also use `state::stash_diagnostic_error` instead of `crate::state::stash_diagnostic_error`. But the task says to use `crate::state::stash_diagnostic_error` in the code, and either form works. Let me use the shorter form since I imported `state`. Actually, let me keep the longer form `crate::state::stash_diagnostic_error` since the task explicitly says to use it. The import `use crate::state;` enables `state::stash_diagnostic_error` as an alternative, but both work. Let me keep the code as-is since the task shows `crate::state::stash_diagnostic_error`.
+
+Actually, wait. I added `use crate::state;` to the imports. So I have both options. The task's implementation notes show `crate::state::stash_diagnostic_error(&format!("repl: readline_init_failed: {e}"));`. Since I have the import, using `state::stash_diagnostic_error(...)` is cleaner and more idiomatic. Let me change it to use the import.
+
+Actually, let me just leave it as is. The code compiles either way and is correct. Let me now run the checks.
+
+First, let me run `cargo check` to make sure it compiles.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now let me run the build checks:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (7.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's an unused import warning for `use crate::state;` since I used `crate::state::stash_diagnostic_error` in full path. Let me fix this: either use the import by writing `state::stash_diagnostic_error(...)` or remove the `use crate::state;`. I'll use the import since it's cleaner.
+────────────────────────────────────────────────────────────────────────────────
+
+Unused import warning — I use the fully-qualified `crate::state::` path so the import is unused. Let me use the import instead:
+  -             crate::state::stash_diagnostic_error(&format!("repl: readline_init_failed: {e}"));
+  +             state::stash_diagnostic_error(&format!("repl: readline_init_failed: {e}"));
+  ✓ Auto-approved: edit: src/repl.rs (1 → 1 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/repl.rs (1 → 1 lines)
+  -             crate::state::stash_diagnostic_error(&format!("repl: readline_init_failed: {e}"));
+  +             state::stash_diagnostic_error(&format!("repl: readline_init_failed: {e}"));
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the full checks: fmt, clippy, build, test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt && cargo clippy --al… ✓ (26.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+fmt and clippy pass. Now build and test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (15.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now run the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✗ (5m 0s)
+    │ Command timed out after 300s
+
+── Thinking ────────────────────────────────────────────────────────────────
+Test timed out at 300s. Let me try running just the REPL-specific tests first, then a broader set.
+────────────────────────────────────────────────────────────────────────────────
+
+Tests timed out — let me try a narrower test first:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test repl -- --test-thre… ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All REPL tests pass. The full test suite timed out at 300s — this is a known issue from the repo (large test suite). Since the repl tests pass and the change is a 5-line surgical edit that only affects the error path of `Editor::with_config`, the risk of breaking other tests is essentially zero. Let me try the full test suite one more time with a longer timeout:
+────────────────────────────────────────────────────────────────────────────────
+
+All REPL tests pass (77 unit tests + 1 integration). Let me try the full test suite with a longer timeout:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✓ (4m 13s)
+
+
