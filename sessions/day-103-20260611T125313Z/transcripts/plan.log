@@ -1,0 +1,427 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. The assessment is available and comprehensive
+2. Build status: PASS, all gates green
+3. No CI failures to fix
+4. Trajectory shows strong recent performance (8/10 success, 0 reverts)
+5. Key evidence from state:
+   - Sub-agent spawn failures (rapid-fire RunStarted→error sequences with `api_key_present: false`)
+   - `commands_state.rs` still at 23,216 lines despite recent extractions
+   - Cache metrics absent - no cache data recorded yet
+   - `why last-failure` thin for fresh state
+
+6. No open issues (neither trusted owner nor agent-self)
+
+Task slots: 3. At least 2 should come from state/trajectory/eval evidence.
+
+Priority ordering:
+0. No CI failures
+1. State evidence: sub-agent spawn failures are the biggest signal
+2. State diagnostic depth / cache metrics
+3. No trusted owner issues
+4. No agent-self issues
+
+Let me plan 3 tasks from the evidence:
+
+**Task 1: Fix sub-agent spawn failures** — The state shows rapid-fire RunStarted→error with `api_key_present: false`. The crash reporter is wired into bash/MCP/agent-build/DeepSeek-transport but sub-agent spawn may be unguarded. This needs investigation.
+
+**Task 2: Record DeepSeek cache metrics** — The caching infrastructure exists but hasn't been used in production. Wire cache metric recording into the prompt execution path so `deepseek cache-report` returns real data.
+
+**Task 3: Extract another module from commands_state.rs** — The file is still 23,216 lines (16.1% of codebase). Further extraction targets exist.
+
+Let me write the task files. First, create the directory and clear old tasks.
+
+Let me think more carefully about what's most impactful:
+
+1. **Sub-agent spawn failures** — This is the strongest state signal. Multiple runs fail in milliseconds with no API key. If sub-agents can't spawn, it degrades assessment/planning/implementation quality. High impact.
+
+2. **Cache metrics recording** — The cache system is built but untested. Recording cache metrics would make `deepseek cache-report` functional and provide cost/performance observability. Medium impact but quick win.
+
+3. **commands_state.rs extraction** — Already extracted 793 lines in two extractions. Further extraction could target eval reporting, graph visualization, or state delta merge. But this is structural cleanup, not a harness reliability improvement.
+
+Actually, looking more carefully at the trajectory:
+- "Capture DeepSeek transport failures as diagnostic errors" was already done (Day 103)
+- "Wire crash reporter into StreamingBashTool" was done
+- "Wire crash diagnostics into MCP connection and agent build failures" was done
+- "Wire crash diagnostics into agent-run exit paths in lib.rs" was done
+- "Extract crashes subcommand handler from commands_state.rs" was done
+- "Extract state memory synthesis from commands_state.rs" was done
+
+So the crash diagnostics door is well-covered now. The remaining gap is specifically sub-agent spawn.
+
+Let me think about what tasks make sense:
+
+**Task 1**: Fix sub-agent spawn failure (api_key_present: false). This involves tracing the sub-agent spawn path to see why API keys aren't being inherited. Likely files: `agent_builder.rs` (build_sub_agent, build_side_agent), maybe `lib.rs`.
+
+**Task 2**: Record DeepSeek cache metrics during prompt execution. Wire cache hit/miss recording so `deepseek cache-report` returns data. Likely files: `deepseek.rs` (cache policy, usage recording), `prompt.rs` (prompt execution path).
+
+**Task 3**: I could do another commands_state.rs extraction, but looking at the gap list, "Sub-agent spawn reliability" is #3 and "State diagnostic depth" is #4 (cold-start for `why last-failure`). Let me think about whether I can improve state diagnostics for the cold-start case.
+
+Actually, looking at the "Sub-agent spawn failures" more carefully - this is about sub-agents not getting the API key. Let me check if this is actually a bug or just how sub-agents work (spawned with fresh config). The state evidence says `api_key_present: false` which means the sub-agents can't make API calls at all.
+
+Let me write the three tasks:
+
+1. **Investigate and fix sub-agent API key inheritance** — state evidence shows sub-agents spawn without API keys
+2. **Wire DeepSeek cache metrics into prompt execution** — make `deepseek cache-report` functional
+3. **Improve state diagnostics cold-start** — make `why last-failure` more helpful when no sessions exist yet
+
+Actually wait - let me re-read the assessment more carefully for task ideas. The assessment mentions:
+
+"State diagnostic depth — `why last-failure` returns empty because the system needs completed sessions to analyze"
+
+"Cache metrics absent: `deepseek cache-report` shows nothing because cache metrics haven't been recorded for any session yet"
+
+"Sub-agent spawn reliability — state logs show rapid-fire RunStarted→error sequences suggesting worker agents die immediately"
+
+These are all good candidates. Let me also consider: the trajectory mentions "Recurring CI errors" with test assertions that pass now - those seem like log-parsing artifacts, not real issues.
+
+Let me write the plan now. First, create task files. I need to be careful about task sizing - each must touch at most 3 source files and be completable in 20 minutes.
+
+For Task 1 (sub-agent spawn), I should trace through the sub-agent spawn path. Let me check what files are involved. The sub-agent spawn path goes through:
+- `agent_builder.rs` — `build_sub_agent_tool` in `tools.rs` uses `build_side_agent` from `agent_builder.rs`
+- `tools.rs` — `build_sub_agent_tool` creates the SubAgentTool
+- The API key configuration is in `create_model_config` in `agent_builder.rs`
+
+For Task 2 (cache metrics), this would touch:
+- `deepseek.rs` — where cache policies and usage recording live
+- `prompt.rs` — where prompt execution happens and where metrics should be recorded
+
+For Task 3, let me pick something impactful. The assessment mentions `commands_state.rs` is still 23,216 lines. But maybe I should focus on something else that improves the harness directly.
+
+Actually, I think the best three tasks are:
+1. Sub-agent API key fix (harness reliability)
+2. Cache metrics recording (DeepSeek observability)  
+3. Something from state evidence
+
+Let me write them now. I'll start with creating the directory and task files.
+
+Actually, let me reconsider task 3. The assessment mentions that `commands_state.rs` has further extraction targets: "eval reporting, graph visualization, state delta merge." But extraction tasks are cleanup, not harness improvement. 
+
+Maybe instead of extraction, I could:
+- Improve `why last-failure` to handle cold-start better
+- Or fix the CI log-parsing artifact that shows test passes as errors
+- Or add state event recording for completed sessions
+
+Let me go with:
+1. Fix sub-agent API key inheritance 
+2. Wire DeepSeek cache metrics into prompt execution
+3. Improve state diagnostics cold-start (`why last-failure` helpful when no sessions)
+
+These are all harness-reliability and observability improvements.
+
+Now let me write the task files. I need to be specific and action-oriented.
+
+First: mkdir -p session_plan && rm -f session_plan/task_*.md
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && rm -f session_plan/task_*.md ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, directory created and old tasks cleared. Now let me write the three task files. Let me also check if there are any existing task files or issue_responses.md to clean up.
+
+Let me write task_01.md first (the highest priority - sub-agent API key fix), then task_02.md (cache metrics), then task_03.md (cold-start diagnostics), then issue_responses.md.
+
+Let me also quickly check the sub-agent spawn path to make the task more specific.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_sub_agent_tool' (*.rs)  ▶ search 'api_key_present' (*.rs) ✓ (16ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the sub-agent spawn path more carefully to understand how the API key might not be inherited.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1387..1487  ▶ read src/agent_builder.rs:480..540 ✓ (15ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Looking at line 1427: `.with_api_key(&config.api_key)` — the sub-agent tool IS configured with the API key from the parent config. So the `api_key_present: false` in the state events might not be from the sub-agent spawn itself but from something else.
+
+Let me look at where `api_key_present` is recorded in state events. I saw it in `state.rs` line 411. Let me check the RunStarted event recording.
+
+Actually, looking at the rapid-fire error runs more carefully, the state evidence said these have `api_key_present: false` and fail within milliseconds. Let me check what records these events.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.5s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'api_key_present' in src/state.rs (*.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the context around where RunStarted is recorded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:395..445 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me search for where `record_session_started` is called to understand the api_key_present flow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_session_started' (*.rs) ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the lib.rs context where record_session_started is called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1125..1155 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the SessionStarted event is recorded in `lib.rs` at line 1133, and it checks `std::env::var("DEEPSEEK_API_KEY").is_ok()`. This is the main session, not the sub-agent. The rapid-fire RunStarted→error events with `api_key_present: false` might be from something else entirely. Let me check where RunStarted events are recorded.
+
+Wait, looking at the state evidence more carefully: "State tail (last 20 events): Shows a burst of rapid-fire RunStarted→SessionStarted→RunCompleted(error) sequences, all within milliseconds of each other. Each run has `api_key_present: false`."
+
+These could be the harness's own sub-process spawns (like the evolve.sh script spawning side agents). Let me search for `RunStarted`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RunStarted' (*.rs) ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see where RunStarted is actually recorded (the init flow in state.rs around line 302).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:280..340 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check where `init_global` is called, to understand what startup_payload carries the `api_key_present` field.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'init_global' (*.rs) ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how init_global is called in lib.rs to see what's in the startup_payload.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1000..1060 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — the RunStarted event's startup_payload does NOT include `api_key_present`. The `api_key_present` field is in `SessionStarted` events, not `RunStarted`. The assessment says "Each run has `api_key_present: false`" which might be a misinterpretation — the `api_key_present` would be in `SessionStarted` events within each run, not in the `RunStarted` event itself.
+
+Hmm, but the assessment says these are rapid-fire runs that fail within milliseconds. Let me look at the state tail output more carefully. The assessment says:
+
+"State tail (last 20 events): Shows a burst of rapid-fire RunStarted→SessionStarted→RunCompleted(error) sequences, all within milliseconds of each other. Each run has `api_key_present: false`. These look like worker sub-agent spawns that fail immediately — possibly the harness trying to launch side agents for planning/implementation that die before doing work."
+
+So the SessionStarted events within those runs show `api_key_present: false`. That means when those sessions started, DEEPSEEK_API_KEY was not in the environment. This could happen if:
+
+1. Sub-process spawns don't inherit the parent's environment variables
+2. The evolve.sh script spawns worker agents with a different environment
+
+Actually wait, looking at the assessment timing — these rapid-fire events are all within milliseconds. Let me think... The evolve.sh script spawns multiple worker agents (planning, implementation, evaluation). Each one runs the yyds binary. If the API key env var isn't being passed, that would explain the failures.
+
+But actually, this is in the CI/GitHub Actions environment. The DEEPSEEK_API_KEY should be set as a secret in the environment. If worker sub-processes are failing to get it, that's either:
+1. The script doesn't export the variable properly
+2. GitHub Actions secrets aren't available to sub-shells
+3. Something else
+
+However, the last 8/10 runs succeeded, so worker agents generally work. The rapid-fire failures might be from a specific scenario.
+
+Let me re-read the state evidence: "The one active run (run-1781182631733-13784) shows normal tool-call activity (bash, read_file, search, todo) with successful completions."
+
+So there ARE successful runs too. The rapid-fire failures might be from something like the `build_sub_agent_tool` path, where yoagent spawns sub-agents internally using the `SubAgentTool`. But looking at line 1427, the API key IS passed: `.with_api_key(&config.api_key)`.
+
+Unless the config's api_key field is empty string! Let me check where AgentConfig is built.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'api_key:' in src/agent_builder.rs (*.rs) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how AgentConfig is constructed and where the api_key field is set from the actual environment.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:395..455 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find where the api_key is actually set from the environment. It should be in the CLI parsing or somewhere where AgentConfig is constructed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'api_key.*DEEPSEEK' (*.rs) ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly for where api_key is set from the environment.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'api_key' in src/agent_builder.rs (*.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read lines 650-770 of agent_builder.rs to see how the api_key is set from environment.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:650..780 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at where AgentConfig is first constructed from CLI args to see how api_key gets set.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'create_model_config' in src/agent_builder.rs (*.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how AgentConfig is constructed (not create_model_config - that's for ModelConfig). Let me search for where AgentConfig is instantiated with actual values.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'AgentConfig \{' in src/agent_builder.rs (*.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Maybe it's constructed with AgentConfig { (without the backslash escape). Let me search with a literal.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && rg "AgentConfig \{" src/ --no-… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me use search instead.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'AgentConfig {' (*.rs) ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the main one in lib.rs where the real AgentConfig is built during normal execution.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1070..1130 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so AgentConfig gets `api_key: config.api_key`. The `config` is the CLI Config struct. The API key comes from CLI parsing. Let me check how the API key is resolved in the CLI.
+
+Actually, I think I've spent enough time investigating the sub-agent spawn issue. Let me now focus on writing the task files. The assessment clearly identifies the key gaps. Let me write the three tasks:
+
+1. **Sub-agent API key fix**: The state shows rapid-fire failures with `api_key_present: false`. The `build_sub_agent_tool` passes the API key at line 1427, but the issue might be that when `config.api_key` is empty string (not set), the sub-agent spawns with no key. The fix would be to ensure the sub-agent builder check for an empty API key and either inherit from env or log a diagnostic error.
+
+2. **Cache metrics recording**: The `record_cache_metrics` function exists in `state.rs` but isn't being called from the prompt execution path. Wire it up so sessions record cache hit/miss data.
+
+3. **State cold-start diagnostics**: `why last-failure` returns empty when no sessions exist. Improve the diagnostic to be helpful even with no history.
+
+Now let me write these task files.
+
+Actually, I want to reconsider. The most impactful task might be something else. Let me re-read the assessment's capability gaps:
+
+1. Parallel sub-agent dispatch - architectural, too large for one task
+2. Automated memory curation - large feature
+3. Sub-agent spawn reliability - THIS is the actionable one
+4. State diagnostic depth - cold-start problem
+
+And the bugs:
+1. Sub-agent spawn failures - `api_key_present: false`
+2. No API key in sub-agent runs - same as above
+3. commands_state.rs still at 23K lines
+4. why last-failure thin for fresh state
+5. Cache metrics absent
+
+For three tasks, I'd pick:
+1. **Fix sub-agent API key inheritance** (bug #1, #2) - harness reliability
+2. **Wire cache metrics into prompt execution** (bug #5) - DeepSeek observability
+3. **Improve state cold-start diagnostics** (bug #4) - harness self-diagnosis
+
+These are all within DeepSeek harness scope. Let me now write the files.
+
+Wait, I need to be more precise about what to fix. Let me think about each task carefully.
+
+**Task 1: Sub-agent API key inheritance**
+
+Looking at the code flow:
+- `build_sub_agent_tool` at line 1387 passes `config.api_key` to the sub-agent
+- `config.api_key` comes from `AgentConfig` which gets it from `config.api_key` (CLI Config)
+- If the CLI Config's api_key is empty string (user didn't provide one via --api-key flag), the sub-agent gets empty string
+
+But wait - the main agent still works because yoagent might resolve the API key from environment in the provider layer. For OpenAI-compatible providers, the `OpenAiCompatProvider` might look up the env var. But the `SubAgentTool` creates its own provider instance (line 1406-1411) with the API key passed explicitly - if it's empty, the sub-agent fails.
+
+The fix: In `build_sub_agent_tool`, if `config.api_key` is empty, try to resolve it from the environment (using `provider_api_key_env`) before passing it to the sub-agent.
+
+**Task 2: Cache metrics recording**
+
+The `record_cache_metrics` function at `state.rs:399` exists but needs to be called after prompt execution. Looking at how prompt execution works, I need to find where usage data is available after a prompt completes and add a call to `state::record_cache_metrics`.
+
+**Task 3: State cold-start diagnostics**
+
+The `why last-failure` command in `commands_state.rs` returns "no state event found" when there are no completed sessions. The diagnostic could be improved to:
+- Check for partial/failed sessions (RunStarted without RunCompleted)
+- Report on diagnostic errors even without completed sessions
+- Provide actionable guidance ("run a session first", "check if API key is set")
+
+Let me now create the task files. I'll be specific about what to change.
+
+For task 1, let me check `provider_api_key_env` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn provider_api_key_env' (*.rs) ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have enough context. Let me write the three task files.
+
+One more thing - let me check the prompt execution path to see where to wire cache metrics.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'usage|finish|total_tokens' in src/prompt.rs (*.rs) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the prompt file more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "usage\|Usage\|finish\… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `finish_prompt_epilogue` which seems like the right place to add cache metrics recording.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:195..245 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The `finish_prompt_epilogue` is where `total_usage` (a `Usage` struct) is available. This would be the right place to call `state::record_cache_metrics(model, total_usage)`.
+
+Now let me also check where `finish_prompt_epilogue` is called:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "finish_prompt_epilogu… ✓ (9ms)
+
+
