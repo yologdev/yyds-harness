@@ -1322,6 +1322,10 @@ def corrected_gnomes(
             int(gnomes.get("deepseek_cache_ratio_unverified_count") or 0),
             cache_prose_mentions,
         )
+    failed_tool_count = len(work.get("failed_tools") or []) if isinstance(work.get("failed_tools"), list) else 0
+    if failed_tool_count > int(gnomes.get("tool_error_count") or 0):
+        gnomes["tool_error_count"] = failed_tool_count
+        recalc_score = True
     manifest = work.get("task_manifest") if isinstance(work.get("task_manifest"), dict) else {}
     verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
     task_artifacts = work.get("task_artifacts") if isinstance(work.get("task_artifacts"), list) else []

@@ -1678,7 +1678,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
 
             data = build(root / "sessions", root / "out")
-            work = data["sessions"][0]["work_summary"]
+            session_data = data["sessions"][0]
+            work = session_data["work_summary"]
 
             self.assertEqual(work["read_files"], ["src/state.rs", "src/commands_state.rs"])
             self.assertEqual(work["edited_files"], ["src/state.rs"])
@@ -1701,6 +1702,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("1 source file(s) touched", work["headline"])
             self.assertIn("1 failed tool action(s)", work["headline"])
             self.assertIn("2 command/check signal(s)", work["labels"])
+            self.assertEqual(session_data["latest_gnomes"]["tool_error_count"], 1)
             self.assertEqual(work["transcript_actions"]["edited_files"], ["src/state.rs"])
             html = (root / "out/index.html").read_text(encoding="utf-8")
             self.assertIn("tool fails", html)
