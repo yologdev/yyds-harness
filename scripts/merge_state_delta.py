@@ -36,14 +36,21 @@ def event_key(event: dict[str, Any], raw: str) -> str:
     return "raw:" + hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()
 
 
-def merge_delta(live_path: Path, session_path: Path, base_lines: int) -> dict[str, int]:
+def merge_delta(
+    live_path: Path,
+    session_path: Path,
+    base_lines: int,
+    allow_baseline_reset: bool = False,
+) -> dict[str, int]:
     base_lines = max(base_lines, 0)
     session_rows = load_jsonl(session_path)
     seen = {event_key(event, raw) for event, raw in session_rows}
 
     live_rows = load_jsonl(live_path)
-    baseline_shrunk = len(live_rows) < base_lines
-    effective_base_lines = 0 if baseline_shrunk else base_lines
+    live_below_baseline = len(live_rows) < base_lines
+    baseline_reset = live_below_baseline and allow_baseline_reset
+    baseline_shrunk = live_below_baseline and not baseline_reset
+    effective_base_lines = 0 if live_below_baseline else base_lines
     delta_rows = live_rows[effective_base_lines:]
     merged_rows = list(session_rows)
     added = 0
@@ -73,6 +80,7 @@ def merge_delta(live_path: Path, session_path: Path, base_lines: int) -> dict[st
         "live_events": len(live_rows),
         "base_lines": base_lines,
         "effective_base_lines": effective_base_lines,
+        "baseline_reset": int(baseline_reset),
         "baseline_shrunk": int(baseline_shrunk),
         "delta_events": len(delta_rows),
         "session_events_before": len(session_rows),
@@ -161,10 +169,29 @@ def run_self_tests() -> int:
         stats = merge_delta(live, session, 10)
         rows = [json.loads(line) for line in session.read_text(encoding="utf-8").splitlines()]
         assert stats["baseline_shrunk"] == 1, stats
+        assert stats["baseline_reset"] == 0, stats
         assert stats["effective_base_lines"] == 0, stats
         assert stats["delta_events"] == 2, stats
         assert stats["added"] == 2, stats
         assert [row["id"] for row in rows] == ["harness-start", "current-run", "current-tool"]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        live = root / "live.jsonl"
+        session = root / "session.jsonl"
+        live.write_text(
+            json.dumps({"id": "current-run", "kind": "RunStarted"}) + "\n",
+            encoding="utf-8",
+        )
+        session.write_text(json.dumps({"id": "harness-start", "kind": "RunStarted"}) + "\n", encoding="utf-8")
+        stats = merge_delta(live, session, 10, allow_baseline_reset=True)
+        rows = [json.loads(line) for line in session.read_text(encoding="utf-8").splitlines()]
+        assert stats["baseline_shrunk"] == 0, stats
+        assert stats["baseline_reset"] == 1, stats
+        assert stats["effective_base_lines"] == 0, stats
+        assert stats["delta_events"] == 1, stats
+        assert stats["added"] == 1, stats
+        assert [row["id"] for row in rows] == ["harness-start", "current-run"]
     print("merge_state_delta self-tests passed")
     return 0
 
@@ -174,6 +201,11 @@ def main() -> int:
     parser.add_argument("--live", type=Path)
     parser.add_argument("--session", type=Path)
     parser.add_argument("--base-lines", type=int, default=0)
+    parser.add_argument(
+        "--allow-baseline-reset",
+        action="store_true",
+        help="Treat live logs shorter than the replay baseline as an expected projection reset, not corruption.",
+    )
     parser.add_argument("--test", action="store_true")
     args = parser.parse_args()
     if args.test:
@@ -182,7 +214,7 @@ def main() -> int:
         parser.error("--live is required unless --test is set")
     if args.session is None:
         parser.error("--session is required unless --test is set")
-    stats = merge_delta(args.live, args.session, args.base_lines)
+    stats = merge_delta(args.live, args.session, args.base_lines, args.allow_baseline_reset)
     print(json.dumps(stats, sort_keys=True, separators=(",", ":")))
     return 0
 

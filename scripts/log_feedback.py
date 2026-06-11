@@ -225,7 +225,7 @@ def is_noise_failure_message(message: str) -> bool:
     if lower.startswith(('"', "'", "`")):
         return True
     if re.match(
-        r"^(let me|actually\b|but wait\b|wait\b|so\b|ok,?\s+so\b|unless\b|i need\b|i can\b|i should\b|looking at\b|these are\b|that [\"']|the task\b|the implementation\b|now\b|good\b|that's expected\b|the evaluator agent needs\b)",
+        r"^(let me|interesting!?|actually\b|but wait\b|wait\b|so\b|ok,?\s+so\b|unless\b|i need\b|i can\b|i should\b|looking at\b|there are\b|there's\b|these are\b|that [\"']|the task\b|the implementation\b|the crashes?\b|the key issue\b|the most common path\b|the grep showed\b|now\b|good\b|that's expected\b|the evaluator agent needs\b)",
         lower,
     ):
         return True
@@ -238,6 +238,11 @@ def is_noise_failure_message(message: str) -> bool:
     if re.match(r"^\d+\.\s", lower):
         return True
     if "format!(" in lower or re.match(r"^[a-z_][\w:<>]*\s*=", lower):
+        return True
+    if re.match(
+        r"^(?:[a-z_][\w:<>]*!?\s*\(|[a-z_][\w:<>]*::|crate::|self\.|return\b|let\b|if\b|match\b|for\b|while\b|fn\b|pub\b|use\b)",
+        lower,
+    ):
         return True
     if "|| echo" in lower or "continue-on-error" in lower or "non-fatal" in lower or "fail-soft" in lower:
         return True
@@ -386,18 +391,19 @@ def parse_log(log_text: str) -> dict[str, Any]:
             continue
         message = log_message(line)
         lower = message.lower()
-        if COMMAND_TIMEOUT_RE.search(message):
+        noise = is_noise_failure_message(message)
+        if not noise and COMMAND_TIMEOUT_RE.search(message):
             command_timeouts += 1
-        if EVALUATOR_TIMEOUT_RE.search(message):
+        if not noise and EVALUATOR_TIMEOUT_RE.search(message):
             evaluator_timeouts += 1
-        if EVALUATOR_UNVERIFIED_RE.search(message):
+        if not noise and EVALUATOR_UNVERIFIED_RE.search(message):
             evaluator_unverified += 1
             current_task_eval_infra_failed = True
         if PLANNER_NO_TASK_RE.search(message):
             planner_no_tasks += 1
-        if SEARCH_ERROR_RE.search(message):
+        if not noise and SEARCH_ERROR_RE.search(message):
             search_errors += 1
-        if PROTECTED_FILE_RE.search(message):
+        if not noise and PROTECTED_FILE_RE.search(message):
             protected_file_reverts += 1
         if TASK_STARTED_RE.search(message):
             task_started += 1
@@ -446,9 +452,9 @@ def parse_log(log_text: str) -> dict[str, Any]:
             cache_prose_mentions += 1
         if "retry after" in lower or "waiting 15 minutes before retry" in lower:
             retry_markers += 1
-        if "repair loop" in lower or "retrying after failure" in lower:
+        if not noise and ("repair loop" in lower or "retrying after failure" in lower):
             repair_loop_count += 1
-        if is_noise_failure_message(message):
+        if noise:
             continue
         is_failure = bool(ERROR_LINE_RE.search(message))
         if is_failure and (PROVIDER_ERROR_RE.search(message) or EXPLICIT_PROVIDER_SIGNAL_RE.search(message)):
@@ -1312,13 +1318,24 @@ def run_self_tests() -> int:
                 "evolve\tRun evolution session\t2026-06-11T08:23:53Z **Edit 1: Spawn failure (line 484-486)** — Wrap the `map_err` closure to stash before constructing the error:",
                 "evolve\tRun evolution session\t2026-06-11T08:23:59Z **Edit 2: Timeout (lines ~600-606)** — Stash before returning timeout error:",
                 "evolve\tRun evolution session\t2026-06-11T08:23:59Z                         \"Command timed out after {}s\",",
+                "evolve\tRun evolution session\t2026-06-11T09:49:37Z Interesting! The `state crashes` command shows that this assessment session had 10 crash attempts before it successfully started.",
+                "evolve\tRun evolution session\t2026-06-11T09:52:38Z The crashes have exit code 1 or 2, and no diagnostic - meaning they happened in paths not covered by `stash_diagnostic_error`.",
+                "evolve\tRun evolution session\t2026-06-11T09:53:43Z The key issue is that these failure paths exit without telling us WHY.",
+                "evolve\tRun evolution session\t2026-06-11T09:54:16Z The most common path: API call fails → `eprintln!(\"error: {e}\")` → `exit_with_state(1)` without stashing the error.",
+                "evolve\tRun evolution session\t2026-06-11T09:53:40Z There are many `exit_with_state` calls without prior `stash_diagnostic_error`. The crashes with exit code 1 or 2 could come from any of these.",
+                "evolve\tRun evolution session\t2026-06-11T10:26:21Z There's one more error: `build_state_memory_candidates` is used at line 14305 in `commands_state.rs`, but it's private.",
+                "evolve\tRun evolution session\t2026-06-11T09:56:16Z                     eprintln!(\"{RED}  error: {e}{RESET}\");",
+                "evolve\tRun evolution session\t2026-06-11T10:32:36Z The grep showed 0 for commands_state.rs and the second grep returned exit code 1 which happens with `grep -c` returning 0.",
             ]
         )
     )
     check("benign action log lines are not failures", noisy["distinct_failure_count"] == 0, noisy["failure_fingerprints"])
+    check("benign action log lines do not count command timeouts", noisy["command_timeout_count"] == 0, noisy)
     check("timestamps and retry counts are not provider errors", noisy["provider_error_count"] == 0, noisy["provider_error_count"])
     real_panic = parse_log("evolve\tRun evolution session\t2026-06-09T11:52:59Z thread 'main' panicked at src/state.rs:42:9:")
     check("real rust panic lines are still failures", real_panic["distinct_failure_count"] == 1, real_panic)
+    real_compile_error = parse_log("evolve\tRun evolution session\t2026-06-11T10:17:45Z       error[E0277]: the size for values of type `str` cannot be known at compilation time")
+    check("real rust compiler errors are still failures", real_compile_error["distinct_failure_count"] == 1, real_compile_error)
     operational = parse_log(
         "\n".join(
             [
@@ -1489,6 +1506,14 @@ def run_self_tests() -> int:
         check("state baseline shrink counted", pipeline["state_live_baseline_shrink_count"] == 1, pipeline)
         shrink_lessons = [lesson["kind"] for lesson in top_lessons(pipeline)]
         check("state baseline shrink lesson emitted", "state_baseline_shrink" in shrink_lessons, shrink_lessons)
+        (session / "state" / "merge_state_delta.json").write_text(
+            json.dumps({"baseline_shrunk": 0, "baseline_reset": 1}),
+            encoding="utf-8",
+        )
+        reset_pipeline = state_pipeline_metrics(session)
+        reset_lessons = [lesson["kind"] for lesson in top_lessons(reset_pipeline)]
+        check("state baseline reset not counted as shrink", reset_pipeline["state_live_baseline_shrink_count"] == 0, reset_pipeline)
+        check("state baseline reset emits no shrink lesson", "state_baseline_shrink" not in reset_lessons, reset_lessons)
 
         attempt1 = root / "attempt-1"
         attempt2 = root / "attempt-2"

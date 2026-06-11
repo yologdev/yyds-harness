@@ -2607,6 +2607,7 @@ if [ -d "$SESSION_STAGING" ]; then
             --live "$STATE_EVENTS" \
             --session "$SESSION_STATE_EVENTS" \
             --base-lines "$STATE_BASE_LINES" \
+            --allow-baseline-reset \
             >"$SESSION_STAGING/state/merge_state_delta.json"; then
             echo "  WARNING: live state delta merge failed — session state may miss yyds tool events" >&2
         fi
