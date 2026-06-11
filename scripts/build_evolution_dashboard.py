@@ -98,16 +98,36 @@ def event_payload(event: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
-def cache_metrics_expected(payload: dict[str, Any]) -> bool:
-    genome = payload.get("harness_genome") if isinstance(payload.get("harness_genome"), dict) else {}
-    cache_policy = genome.get("cache_policy") if isinstance(genome.get("cache_policy"), dict) else {}
-    record_metrics = cache_policy.get("record_metrics") is True
+def payload_int(payload: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value.replace(",", ""))
+            except ValueError:
+                continue
+    return None
+
+
+def deepseek_model_payload(payload: dict[str, Any]) -> bool:
     model = payload.get("model")
     provider = payload.get("provider")
     deepseek_native = payload.get("deepseek_native") is True
     deepseek_model = isinstance(model, str) and model.startswith("deepseek")
     deepseek_provider = provider == "deepseek"
-    return record_metrics and (deepseek_native or deepseek_model or deepseek_provider)
+    return deepseek_native or deepseek_model or deepseek_provider
+
+
+def cache_metrics_expected_from_completion(payload: dict[str, Any]) -> bool:
+    if not deepseek_model_payload(payload):
+        return False
+    input_tokens = payload_int(payload, "input_tokens")
+    cache_read_tokens = payload_int(payload, "cache_read_tokens", "prompt_cache_hit_tokens", "cache_hit_tokens")
+    return bool((input_tokens or 0) > 0 or (cache_read_tokens or 0) > 0)
 
 
 def compact_list(values: list[str], limit: int) -> list[str]:
@@ -1093,12 +1113,18 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     command_starts: dict[str, str] = {}
     expected_cache_metrics = 0
     cache_metric_events = 0
+    deepseek_model_call_started = 0
+    deepseek_model_call_completed = 0
 
     for event in events:
         kind = event_kind(event)
         data = event_payload(event)
-        if kind == "RunStarted" and cache_metrics_expected(data):
-            expected_cache_metrics += 1
+        if kind == "ModelCallStarted" and deepseek_model_payload(data):
+            deepseek_model_call_started += 1
+        elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+            deepseek_model_call_completed += 1
+            if cache_metrics_expected_from_completion(data):
+                expected_cache_metrics += 1
         elif kind == "CacheMetricsRecorded":
             cache_metric_events += 1
         if kind == "FileEdited":
@@ -1156,6 +1182,9 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         "deepseek_cache_metric_expected_count": expected_cache_metrics,
         "deepseek_cache_metric_event_count": cache_metric_events,
         "deepseek_cache_metric_missing_count": max(expected_cache_metrics - cache_metric_events, 0),
+        "deepseek_model_call_started_count": deepseek_model_call_started,
+        "deepseek_model_call_completed_count": deepseek_model_call_completed,
+        "deepseek_model_call_incomplete_count": max(deepseek_model_call_started - deepseek_model_call_completed, 0),
     }
 
 
@@ -1285,6 +1314,9 @@ def work_summary(
         "deepseek_cache_metric_expected_count": event_data["deepseek_cache_metric_expected_count"],
         "deepseek_cache_metric_event_count": event_data["deepseek_cache_metric_event_count"],
         "deepseek_cache_metric_missing_count": event_data["deepseek_cache_metric_missing_count"],
+        "deepseek_model_call_started_count": event_data["deepseek_model_call_started_count"],
+        "deepseek_model_call_completed_count": event_data["deepseek_model_call_completed_count"],
+        "deepseek_model_call_incomplete_count": event_data["deepseek_model_call_incomplete_count"],
         "patch_count": len(patches),
         "state_patch_count": len(patches),
         "source_patch_count": source_patch_count,
@@ -1353,6 +1385,9 @@ def corrected_gnomes(
             "deepseek_cache_metric_expected_count",
             "deepseek_cache_metric_event_count",
             "deepseek_cache_metric_missing_count",
+            "deepseek_model_call_started_count",
+            "deepseek_model_call_completed_count",
+            "deepseek_model_call_incomplete_count",
         )
     )
     if cache_metric_signal:
@@ -1360,6 +1395,9 @@ def corrected_gnomes(
             "deepseek_cache_metric_expected_count",
             "deepseek_cache_metric_event_count",
             "deepseek_cache_metric_missing_count",
+            "deepseek_model_call_started_count",
+            "deepseek_model_call_completed_count",
+            "deepseek_model_call_incomplete_count",
         ):
             value = work.get(key)
             if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -1994,7 +2032,7 @@ def cache_claim(gnomes: dict[str, Any]) -> dict[str, Any]:
         detail = "Prose-only cache ratio claims exist but are not counted as unverified."
     elif expected_events and missing_events:
         status = "missing"
-        detail = "DeepSeek runs advertised cache metric recording but no CacheMetricsRecorded token evidence was captured."
+        detail = "Completed DeepSeek model calls have token usage but no CacheMetricsRecorded token evidence was captured."
     else:
         status = "missing"
         detail = "No DeepSeek cache ratio evidence was captured."
@@ -2026,6 +2064,36 @@ def cache_claim(gnomes: dict[str, Any]) -> dict[str, Any]:
         ],
         detail,
         ["latest_gnomes", "log_feedback"],
+    )
+
+
+def model_call_lifecycle_claim(gnomes: dict[str, Any]) -> dict[str, Any]:
+    started = int(gnomes.get("deepseek_model_call_started_count") or 0)
+    completed = int(gnomes.get("deepseek_model_call_completed_count") or 0)
+    incomplete = int(gnomes.get("deepseek_model_call_incomplete_count") or 0)
+    if started == 0 and completed == 0:
+        status = "missing"
+        detail = "No DeepSeek model call lifecycle events were captured."
+    elif started != completed:
+        status = "missing"
+        detail = "DeepSeek model call start/completion counts differ."
+    else:
+        status = "proven"
+        detail = "DeepSeek model call starts and completions are balanced."
+    return claim_row(
+        "deepseek_model_call_lifecycle_balanced",
+        status,
+        {"started_equals_completed": True},
+        {"started": started, "completed": completed, "incomplete": incomplete},
+        [
+            "ModelCallStarted",
+            "ModelCallCompleted",
+            "deepseek_model_call_started_count",
+            "deepseek_model_call_completed_count",
+            "deepseek_model_call_incomplete_count",
+        ],
+        detail,
+        ["state.events", "latest_gnomes"],
     )
 
 
@@ -2063,6 +2131,7 @@ def session_claims(session: dict[str, Any]) -> list[dict[str, Any]]:
         ),
         task_verification_count_claim(work),
         assessment_claim(work),
+        model_call_lifecycle_claim(gnomes),
         cache_claim(gnomes),
     ]
 
@@ -2859,6 +2928,9 @@ HTML = r"""<!doctype html>
       deepseek_cache_metric_event_count: "Cache metric events",
       deepseek_cache_metric_expected_count: "Cache metric expected runs",
       deepseek_cache_metric_missing_count: "Missing cache metric events",
+      deepseek_model_call_started_count: "DeepSeek model calls started",
+      deepseek_model_call_completed_count: "DeepSeek model calls completed",
+      deepseek_model_call_incomplete_count: "Incomplete DeepSeek model calls",
       deepseek_cache_ratio_unverified_count: "Unverified cache ratio reports"
     };
     const priorityGnomes = [
@@ -3220,7 +3292,15 @@ HTML = r"""<!doctype html>
         notes.push({
           kind: "Cache metrics",
           className: "warn",
-          text: `${text(missingCacheMetrics)} DeepSeek run(s) advertised cache metric recording but did not emit CacheMetricsRecorded events. Cache ratio remains untrusted until hit/miss token events are present.`
+          text: `${text(missingCacheMetrics)} completed DeepSeek model call(s) had token usage but did not emit CacheMetricsRecorded events. Cache ratio remains untrusted until hit/miss token events are present.`
+        });
+      }
+      const incompleteModelCalls = Number(gnomes.deepseek_model_call_incomplete_count || 0);
+      if (incompleteModelCalls > 0) {
+        notes.push({
+          kind: "Model calls",
+          className: "warn",
+          text: `${text(incompleteModelCalls)} DeepSeek model call(s) started without a matching ModelCallCompleted event. Cache metrics are not expected until a model call completes with token usage.`
         });
       }
       const stateCoverage = Number(gnomes.state_capture_coverage ?? NaN);
@@ -3506,6 +3586,7 @@ HTML = r"""<!doctype html>
         "state_operational_capture_coverage",
         "task_lineage_capture_coverage",
         "deepseek_cache_hit_ratio",
+        "deepseek_model_call_incomplete_count",
         "deepseek_cache_metric_missing_count",
         "deepseek_cache_ratio_unverified_count",
         "coding_log_score"

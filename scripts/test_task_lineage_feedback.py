@@ -887,18 +887,12 @@ class TaskLineageFeedback(unittest.TestCase):
             )
             append_event(
                 session / "state/events.jsonl",
-                "RunStarted",
+                "ModelCallCompleted",
                 {
                     "model": "deepseek-v4-pro",
-                    "provider": "deepseek",
-                    "deepseek_native": True,
-                    "harness_genome": {
-                        "cache_policy": {
-                            "record_metrics": True,
-                            "stable_prefix": True,
-                            "optimize_prompt_order": True,
-                        }
-                    },
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "cache_read_tokens": 50,
                 },
             )
 
@@ -919,6 +913,47 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["deepseek_cache_metric_expected_count"], 1)
             self.assertEqual(metrics["deepseek_cache_metric_event_count"], 0)
             self.assertEqual(metrics["deepseek_cache_metric_missing_count"], 1)
+            self.assertEqual(metrics["deepseek_model_call_started_count"], 0)
+            self.assertEqual(metrics["deepseek_model_call_completed_count"], 1)
+            self.assertEqual(metrics["deepseek_model_call_incomplete_count"], 0)
+
+    def test_log_feedback_counts_incomplete_deepseek_model_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            append_event(
+                session / "state/events.jsonl",
+                "ModelCallStarted",
+                {"model": "deepseek-v4-pro"},
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["deepseek_cache_metric_expected_count"], 0)
+            self.assertEqual(metrics["deepseek_cache_metric_event_count"], 0)
+            self.assertEqual(metrics["deepseek_cache_metric_missing_count"], 0)
+            self.assertEqual(metrics["deepseek_model_call_started_count"], 1)
+            self.assertEqual(metrics["deepseek_model_call_completed_count"], 0)
+            self.assertEqual(metrics["deepseek_model_call_incomplete_count"], 1)
 
     def test_state_summary_keeps_new_log_feedback_gnomes(self):
         with tempfile.TemporaryDirectory() as tmp:

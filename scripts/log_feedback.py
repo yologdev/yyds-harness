@@ -133,6 +133,9 @@ GNOME_KEYS = [
     "deepseek_cache_metric_event_count",
     "deepseek_cache_metric_expected_count",
     "deepseek_cache_metric_missing_count",
+    "deepseek_model_call_started_count",
+    "deepseek_model_call_completed_count",
+    "deepseek_model_call_incomplete_count",
 ]
 
 
@@ -689,16 +692,21 @@ def payload_int(payload: dict[str, Any], *keys: str) -> int | None:
     return None
 
 
-def cache_metrics_expected(payload: dict[str, Any]) -> bool:
-    genome = payload.get("harness_genome") if isinstance(payload.get("harness_genome"), dict) else {}
-    cache_policy = genome.get("cache_policy") if isinstance(genome.get("cache_policy"), dict) else {}
-    record_metrics = cache_policy.get("record_metrics") is True
+def deepseek_model_payload(payload: dict[str, Any]) -> bool:
     model = payload.get("model")
     provider = payload.get("provider")
     deepseek_native = payload.get("deepseek_native") is True
     deepseek_model = isinstance(model, str) and model.startswith("deepseek")
     deepseek_provider = provider == "deepseek"
-    return record_metrics and (deepseek_native or deepseek_model or deepseek_provider)
+    return deepseek_native or deepseek_model or deepseek_provider
+
+
+def cache_metrics_expected_from_completion(payload: dict[str, Any]) -> bool:
+    if not deepseek_model_payload(payload):
+        return False
+    input_tokens = payload_int(payload, "input_tokens")
+    cache_read_tokens = payload_int(payload, "cache_read_tokens", "prompt_cache_hit_tokens", "cache_hit_tokens")
+    return bool((input_tokens or 0) > 0 or (cache_read_tokens or 0) > 0)
 
 
 def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
@@ -706,11 +714,17 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
     miss_tokens = 0
     event_count = 0
     expected_count = 0
+    started_count = 0
+    completed_count = 0
     for event in load_events(session_dir / "state" / "events.jsonl"):
         kind = event_kind(event)
         payload = event_payload(event)
-        if kind == "RunStarted" and cache_metrics_expected(payload):
-            expected_count += 1
+        if kind == "ModelCallStarted" and deepseek_model_payload(payload):
+            started_count += 1
+        elif kind == "ModelCallCompleted" and deepseek_model_payload(payload):
+            completed_count += 1
+            if cache_metrics_expected_from_completion(payload):
+                expected_count += 1
         if kind != "CacheMetricsRecorded":
             continue
         hit = payload_int(payload, "prompt_cache_hit_tokens", "cache_hit_tokens")
@@ -720,7 +734,8 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
         hit_tokens += hit or 0
         miss_tokens += miss or 0
         event_count += 1
-    if event_count == 0 and expected_count == 0:
+    incomplete_count = max(started_count - completed_count, 0)
+    if event_count == 0 and expected_count == 0 and started_count == 0 and completed_count == 0:
         return {}
     total = hit_tokens + miss_tokens
     metrics: dict[str, Any] = {
@@ -728,6 +743,9 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
         "deepseek_cache_metric_event_count": event_count,
         "deepseek_cache_metric_expected_count": expected_count,
         "deepseek_cache_metric_missing_count": max(expected_count - event_count, 0),
+        "deepseek_model_call_started_count": started_count,
+        "deepseek_model_call_completed_count": completed_count,
+        "deepseek_model_call_incomplete_count": incomplete_count,
     }
     if event_count:
         metrics.update(
