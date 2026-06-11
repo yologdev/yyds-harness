@@ -140,6 +140,7 @@ pub(crate) async fn connect_external_servers(
                 eprintln!(
                     "{DIM}  mcp: pre-flight tool listing failed ({e}); proceeding to yoagent connect for diagnostics{RESET}"
                 );
+                crate::state::stash_diagnostic_error(&format!("mcp_preflight: {command}: {e}"));
             }
         }
 
@@ -155,6 +156,7 @@ pub(crate) async fn connect_external_servers(
             }
             Err(e) => {
                 eprintln!("{RED}  ✗ mcp: failed to connect to '{mcp_cmd}': {e}{RESET}");
+                crate::state::stash_diagnostic_error(&format!("mcp_connect: {mcp_cmd}: {e}"));
                 // Agent was consumed on error — rebuild it with previous MCP connections lost
                 agent = agent_config.build_agent();
                 eprintln!("{DIM}  mcp: agent rebuilt (previous MCP connections lost){RESET}");
@@ -198,6 +200,10 @@ pub(crate) async fn connect_external_servers(
                 eprintln!(
                     "{DIM}  mcp: pre-flight tool listing failed ({e}); proceeding to yoagent connect for diagnostics{RESET}"
                 );
+                crate::state::stash_diagnostic_error(&format!(
+                    "mcp_preflight: {}: {e}",
+                    server_cfg.name
+                ));
             }
         }
 
@@ -215,6 +221,10 @@ pub(crate) async fn connect_external_servers(
                     "{RED}  ✗ mcp: failed to connect to '{}': {e}{RESET}",
                     server_cfg.name
                 );
+                crate::state::stash_diagnostic_error(&format!(
+                    "mcp_connect: {}: {e}",
+                    server_cfg.name
+                ));
                 agent = agent_config.build_agent();
                 eprintln!("{DIM}  mcp: agent rebuilt (previous MCP connections lost){RESET}");
             }
@@ -236,6 +246,7 @@ pub(crate) async fn connect_external_servers(
             }
             Err(e) => {
                 eprintln!("{RED}  ✗ openapi: failed to load '{spec_path}': {e}{RESET}");
+                crate::state::stash_diagnostic_error(&format!("openapi_connect: {spec_path}: {e}"));
                 // Agent was consumed on error — rebuild it
                 agent = agent_config.build_agent();
                 eprintln!("{DIM}  openapi: agent rebuilt (previous connections lost){RESET}");

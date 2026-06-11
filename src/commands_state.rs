@@ -1,7 +1,7 @@
 //! Shell subcommands for the yoagent-state-backed shadow log.
 
 use crate::format::*;
-use crate::state::{Actor, EvalResult, EventType, HarnessPatch, StateConfig, StateRecorder};
+use crate::state::{EvalResult, HarnessPatch};
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::collections::VecDeque;
