@@ -45,6 +45,7 @@ pub fn handle_state_subcommand(args: &[String]) {
             };
             handle_trace(id);
         }
+        "lifecycle" => handle_lifecycle(&args[3..]),
         "project" => handle_project(&args[3..]),
         "migrate" => handle_migrate(),
         "recover" => handle_recover(&args[3..]),
@@ -438,6 +439,27 @@ fn handle_trace(id: &str) {
     match build_trace_report(&events, id) {
         Ok(report) => println!("{report}"),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+    }
+}
+
+fn handle_lifecycle(args: &[String]) {
+    let limit = flag_value(args, "--limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let json_output = args.iter().any(|arg| arg == "--json");
+    let path = default_events_path();
+    let Ok(events) = read_limited_events(&path, limit) else {
+        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+        return;
+    };
+    let payload = build_state_lifecycle_json(&events);
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
+        );
+    } else {
+        println!("{}", format_state_lifecycle_report(&payload));
     }
 }
 
@@ -892,6 +914,15 @@ fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
 
 pub(crate) fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
     crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
+}
+
+fn read_limited_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+    let mut events = read_events(path)?;
+    if limit > 0 && events.len() > limit {
+        let keep_from = events.len() - limit;
+        events = events.split_off(keep_from);
+    }
+    Ok(events)
 }
 
 /// Read only the last `limit` events from the state log.
@@ -2321,6 +2352,204 @@ fn build_state_summary(events: &[Value]) -> String {
     }
 
     out.trim_end().to_string()
+}
+
+#[derive(Debug, Clone)]
+struct OpenModelCall {
+    run_id: String,
+    started_event_id: String,
+    model: String,
+}
+
+fn build_state_lifecycle_json(events: &[Value]) -> Value {
+    let mut run_started = BTreeSet::<String>::new();
+    let mut run_completed = BTreeSet::<String>::new();
+    let mut model_started = 0usize;
+    let mut model_completed = 0usize;
+    let mut open_model_calls = BTreeMap::<String, OpenModelCall>::new();
+    let mut unmatched_model_completions = Vec::<Value>::new();
+    let mut last_event_by_run = BTreeMap::<String, Value>::new();
+
+    for event in events {
+        let event_type = event_string(event, "event_type").unwrap_or("Unknown");
+        let run_id = event_string(event, "run_id").unwrap_or("").to_string();
+        match event_type {
+            "RunStarted" if !run_id.is_empty() => {
+                run_started.insert(run_id.clone());
+            }
+            "RunCompleted" if !run_id.is_empty() => {
+                run_completed.insert(run_id.clone());
+            }
+            "ModelCallStarted" => {
+                model_started += 1;
+                let event_id = event_string(event, "event_id").unwrap_or("").to_string();
+                let key = model_lifecycle_key(event);
+                let payload = event.get("payload").unwrap_or(&Value::Null);
+                open_model_calls.insert(
+                    key,
+                    OpenModelCall {
+                        run_id: run_id.clone(),
+                        started_event_id: event_id,
+                        model: payload_str(payload, "model").unwrap_or("-").to_string(),
+                    },
+                );
+            }
+            "ModelCallCompleted" => {
+                model_completed += 1;
+                let key = model_lifecycle_key(event);
+                if open_model_calls.remove(&key).is_none() {
+                    unmatched_model_completions.push(model_completion_summary(event));
+                }
+            }
+            _ => {}
+        }
+        if !run_id.is_empty() {
+            last_event_by_run.insert(run_id, event_summary_json(event));
+        }
+    }
+
+    let incomplete_runs = run_started
+        .difference(&run_completed)
+        .map(|run_id| {
+            serde_json::json!({
+                "run_id": run_id,
+                "last_event": last_event_by_run.get(run_id).cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    let incomplete_model_calls = open_model_calls
+        .values()
+        .map(|open| {
+            serde_json::json!({
+                "run_id": if open.run_id.is_empty() { Value::Null } else { Value::String(open.run_id.clone()) },
+                "started_event_id": open.started_event_id,
+                "model": open.model,
+                "last_event": last_event_by_run.get(&open.run_id).cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    let incomplete_run_count = incomplete_runs.len();
+    let incomplete_model_call_count = incomplete_model_calls.len();
+    let unmatched_model_completion_count = unmatched_model_completions.len();
+    let balanced = incomplete_run_count == 0
+        && incomplete_model_call_count == 0
+        && unmatched_model_completion_count == 0;
+
+    serde_json::json!({
+        "schema_version": 1,
+        "source": "state_lifecycle",
+        "events_considered": events.len(),
+        "runs": {
+            "started": run_started.len(),
+            "completed": run_completed.len(),
+            "incomplete": incomplete_run_count,
+            "incomplete_runs": incomplete_runs,
+        },
+        "model_calls": {
+            "started": model_started,
+            "completed": model_completed,
+            "incomplete": incomplete_model_call_count,
+            "incomplete_runs": incomplete_model_calls,
+            "unmatched_completed": unmatched_model_completion_count,
+            "unmatched_completed_runs": unmatched_model_completions,
+        },
+        "balanced": balanced,
+    })
+}
+
+fn format_state_lifecycle_report(payload: &Value) -> String {
+    let runs = payload.get("runs").unwrap_or(&Value::Null);
+    let model_calls = payload.get("model_calls").unwrap_or(&Value::Null);
+    let mut out = String::new();
+    out.push_str("State lifecycle:\n");
+    out.push_str(&format!(
+        "  events considered: {}\n",
+        payload_u64(payload, "events_considered").unwrap_or(0)
+    ));
+    out.push_str(&format!(
+        "  runs: {} started, {} completed, {} incomplete\n",
+        payload_u64(runs, "started").unwrap_or(0),
+        payload_u64(runs, "completed").unwrap_or(0),
+        payload_u64(runs, "incomplete").unwrap_or(0)
+    ));
+    out.push_str(&format!(
+        "  model calls: {} started, {} completed, {} incomplete, {} unmatched completed\n",
+        payload_u64(model_calls, "started").unwrap_or(0),
+        payload_u64(model_calls, "completed").unwrap_or(0),
+        payload_u64(model_calls, "incomplete").unwrap_or(0),
+        payload_u64(model_calls, "unmatched_completed").unwrap_or(0)
+    ));
+    if let Some(items) = model_calls
+        .get("incomplete_runs")
+        .and_then(|value| value.as_array())
+        .filter(|items| !items.is_empty())
+    {
+        out.push_str("  incomplete model calls:\n");
+        for item in items.iter().take(10) {
+            let run_id = payload_str(item, "run_id").unwrap_or("-");
+            let model = payload_str(item, "model").unwrap_or("-");
+            let last = item
+                .get("last_event")
+                .map(compact_lifecycle_event)
+                .unwrap_or_else(|| "last_event=-".to_string());
+            out.push_str(&format!("    run={run_id} model={model} {last}\n"));
+        }
+    }
+    out.trim_end().to_string()
+}
+
+fn model_lifecycle_key(event: &Value) -> String {
+    event_string(event, "run_id")
+        .filter(|run_id| !run_id.is_empty())
+        .or_else(|| event_string(event, "event_id"))
+        .unwrap_or("-")
+        .to_string()
+}
+
+fn model_completion_summary(event: &Value) -> Value {
+    let payload = event.get("payload").unwrap_or(&Value::Null);
+    serde_json::json!({
+        "run_id": event_string(event, "run_id"),
+        "event_id": event_string(event, "event_id"),
+        "model": payload_str(payload, "model"),
+        "status": payload_str(payload, "status").unwrap_or("completed"),
+        "error_detail": payload_str(payload, "error_detail"),
+    })
+}
+
+fn event_summary_json(event: &Value) -> Value {
+    let payload = event.get("payload").unwrap_or(&Value::Null);
+    serde_json::json!({
+        "event_id": event_string(event, "event_id"),
+        "event_type": event_string(event, "event_type").unwrap_or("Unknown"),
+        "timestamp_ms": event_timestamp_ms(event),
+        "tool_name": payload_str(payload, "tool_name"),
+        "path": payload_str(payload, "path").or_else(|| payload_str(payload, "file_path")),
+        "command": payload_str(payload, "command"),
+        "status": payload_str(payload, "status"),
+        "error_detail": payload_str(payload, "error_detail").or_else(|| payload_str(payload, "error")),
+    })
+}
+
+fn compact_lifecycle_event(event: &Value) -> String {
+    let kind = payload_str(event, "event_type").unwrap_or("Unknown");
+    let mut parts = vec![format!("last_event={kind}")];
+    if let Some(path) = payload_str(event, "path") {
+        parts.push(format!("path={path}"));
+    }
+    if let Some(tool_name) = payload_str(event, "tool_name") {
+        parts.push(format!("tool={tool_name}"));
+    }
+    if let Some(command) = payload_str(event, "command") {
+        parts.push(format!("command={}", preview_line(command, 80)));
+    }
+    if let Some(status) = payload_str(event, "status") {
+        parts.push(format!("status={status}"));
+    }
+    if let Some(error_detail) = payload_str(event, "error_detail") {
+        parts.push(format!("error={}", preview_line(error_detail, 80)));
+    }
+    parts.join(" ")
 }
 
 fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
@@ -13491,7 +13720,7 @@ fn extract_patch_id(payload: &Value) -> Option<&str> {
 
 fn print_usage() {
     println!(
-        "Usage: yoyo state <command>\n\n  init\n  tail [--limit N]\n  trace <run-id|trace-id>\n  project --rebuild\n  migrate\n  recover [--output PATH] [--replace]\n  retention [--days N] [--archive PATH] [--prune]\n  memory synthesize [--output PATH] [--record]\n  memory list [--status proposed|promoted|rejected]\n  memory promote <candidate-id> [--reason TEXT]\n  memory reject <candidate-id> [--reason TEXT]\n  journal generate [--output PATH]\n  export <path>\n  import <path> [--replace]\n  graph <event-id|patch-id|eval-id|commit> [--depth N] [--to TARGET]\n  graph summary <event-id|patch-id|eval-id|commit> [--depth N]\n  graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph hotspots [--limit N] [--json]\n  policies --recent [--limit N]\n  fixes --recent [--class CLASS] [--limit N]\n  rollbacks --recent [--limit N] [--json]\n  evals [--harness-version VERSION] [--patch-id PATCH]\n  patches [--status STATUS]\n  patches show <patch-id>\n  why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]\n  lineage <event-id|patch-id|commit>\n  failures --recent\n  crashes [--limit N] [--json]\n  cache --recent"
+        "Usage: yoyo state <command>\n\n  init\n  tail [--limit N]\n  trace <run-id|trace-id>\n  lifecycle [--limit N] [--json]\n  project --rebuild\n  migrate\n  recover [--output PATH] [--replace]\n  retention [--days N] [--archive PATH] [--prune]\n  memory synthesize [--output PATH] [--record]\n  memory list [--status proposed|promoted|rejected]\n  memory promote <candidate-id> [--reason TEXT]\n  memory reject <candidate-id> [--reason TEXT]\n  journal generate [--output PATH]\n  export <path>\n  import <path> [--replace]\n  graph <event-id|patch-id|eval-id|commit> [--depth N] [--to TARGET]\n  graph summary <event-id|patch-id|eval-id|commit> [--depth N]\n  graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n  graph hotspots [--limit N] [--json]\n  policies --recent [--limit N]\n  fixes --recent [--class CLASS] [--limit N]\n  rollbacks --recent [--limit N] [--json]\n  evals [--harness-version VERSION] [--patch-id PATCH]\n  patches [--status STATUS]\n  patches show <patch-id>\n  why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]\n  lineage <event-id|patch-id|commit>\n  failures --recent\n  crashes [--limit N] [--json]\n  cache --recent"
     );
     println!("  graph summary accepts --json for machine-readable output");
     println!("  graph clusters accepts --json for machine-readable output");
@@ -23212,5 +23441,92 @@ mod tests {
             .collect();
         assert_eq!(parsed[0]["event_id"], "evt-b");
         assert_eq!(parsed[1]["event_id"], "evt-c");
+    }
+
+    #[test]
+    fn state_lifecycle_json_reports_dangling_model_call_last_event() {
+        let events = vec![
+            event_at(
+                "evt-run",
+                "RunStarted",
+                "run-1",
+                100,
+                json!({"task": "debug state"}),
+            ),
+            event_at(
+                "evt-model-start",
+                "ModelCallStarted",
+                "run-1",
+                110,
+                json!({"model": "deepseek-v4-pro"}),
+            ),
+            event_at(
+                "evt-edit",
+                "FileEdited",
+                "run-1",
+                120,
+                json!({"path": "journals/JOURNAL.md"}),
+            ),
+        ];
+
+        let payload = build_state_lifecycle_json(&events);
+
+        assert_eq!(payload["balanced"], false);
+        assert_eq!(payload["runs"]["incomplete"], 1);
+        assert_eq!(payload["model_calls"]["started"], 1);
+        assert_eq!(payload["model_calls"]["completed"], 0);
+        assert_eq!(payload["model_calls"]["incomplete"], 1);
+        let incomplete = &payload["model_calls"]["incomplete_runs"][0];
+        assert_eq!(incomplete["run_id"], "run-1");
+        assert_eq!(incomplete["model"], "deepseek-v4-pro");
+        assert_eq!(incomplete["last_event"]["event_type"], "FileEdited");
+        assert_eq!(incomplete["last_event"]["path"], "journals/JOURNAL.md");
+    }
+
+    #[test]
+    fn state_lifecycle_json_pairs_stream_closed_terminal_model_call() {
+        let events = vec![
+            event_at(
+                "evt-run",
+                "RunStarted",
+                "run-1",
+                100,
+                json!({"task": "debug state"}),
+            ),
+            event_at(
+                "evt-model-start",
+                "ModelCallStarted",
+                "run-1",
+                110,
+                json!({"model": "deepseek-v4-pro"}),
+            ),
+            event_at(
+                "evt-model-end",
+                "ModelCallCompleted",
+                "run-1",
+                130,
+                json!({
+                    "model": "deepseek-v4-pro",
+                    "status": "stream_closed_without_agent_end",
+                    "error_detail": "event_channel_closed_before_agent_end"
+                }),
+            ),
+            event_at(
+                "evt-run-end",
+                "RunCompleted",
+                "run-1",
+                140,
+                json!({"status": "success"}),
+            ),
+        ];
+
+        let payload = build_state_lifecycle_json(&events);
+
+        assert_eq!(payload["balanced"], true);
+        assert_eq!(payload["runs"]["incomplete"], 0);
+        assert_eq!(payload["model_calls"]["started"], 1);
+        assert_eq!(payload["model_calls"]["completed"], 1);
+        assert_eq!(payload["model_calls"]["incomplete"], 0);
+        assert_eq!(payload["model_calls"]["unmatched_completed"], 0);
     }
 }
