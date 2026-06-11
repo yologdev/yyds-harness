@@ -225,7 +225,7 @@ def is_noise_failure_message(message: str) -> bool:
     if lower.startswith(('"', "'", "`")):
         return True
     if re.match(
-        r"^(let me|interesting!?|actually\b|but wait\b|wait\b|so\b|ok,?\s+so\b|unless\b|i need\b|i can\b|i should\b|looking at\b|there are\b|there's\b|these are\b|that [\"']|the task\b|the implementation\b|the crashes?\b|the key issue\b|the most common path\b|the grep showed\b|now\b|good\b|that's expected\b|the evaluator agent needs\b)",
+        r"^(let me|interesting!?|actually\b|but wait\b|wait\b|so\b|ok,?\s+so\b|unless\b|i need\b|i can\b|i should\b|looking at\b|there are\b|there's\b|these are\b|that [\"']|the task\b|the test\b|the implementation\b|the crashes?\b|the key issue\b|the most common path\b|the grep showed\b|now\b|good\b|that's expected\b|the evaluator agent needs\b)",
         lower,
     ):
         return True
@@ -324,6 +324,22 @@ def state_trace_metrics(session_dir: Path) -> dict[str, Any]:
 def state_pipeline_metrics(session_dir: Path) -> dict[str, Any]:
     merge = load_json(session_dir / "state" / "merge_state_delta.json")
     baseline_shrunk = bool(merge.get("baseline_shrunk")) if merge else False
+    baseline_reset = bool(merge.get("baseline_reset")) if merge else False
+    if baseline_shrunk and not baseline_reset:
+        # Legacy artifacts written before baseline_reset existed have this
+        # exact shape when yyds rebuilt the live state projection from replayed
+        # audit evidence, then appended only current-session live events.
+        try:
+            legacy_projection_reset = (
+                int(merge.get("effective_base_lines") or 0) == 0
+                and int(merge.get("base_lines") or 0) > int(merge.get("live_events") or 0)
+                and int(merge.get("added") or 0) == int(merge.get("live_events") or 0)
+                and int(merge.get("session_events_before") or 0) <= 10
+            )
+        except (TypeError, ValueError):
+            legacy_projection_reset = False
+        if legacy_projection_reset:
+            baseline_shrunk = False
     return {
         "state_live_baseline_shrink_count": 1 if baseline_shrunk else 0,
     }
@@ -714,12 +730,14 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             quality_scores.append(float(score))
     planned_count = int(planner.get("task_count") or len(tasks) or len(task_dirs) or 0)
     selected_count = int(planner.get("selected_task_count") or len(tasks) or len(task_dirs) or 0)
+    planning_failed = bool(planner.get("planning_failed"))
     artifact_denominator = selected_count or attempted
-    artifact_coverage = (
-        min(1.0, ratio(len(task_dirs), artifact_denominator))
-        if artifact_denominator
-        else (1.0 if not task_dirs else None)
-    )
+    if planning_failed:
+        artifact_coverage = 0.0
+    elif artifact_denominator:
+        artifact_coverage = min(1.0, ratio(len(task_dirs), artifact_denominator))
+    else:
+        artifact_coverage = None if not task_dirs else 0.0
     task_unattempted = max(selected_count - attempted, 0) if selected_count else 0
     strict_verified = 0
     evaluator_unverified = 0
@@ -745,7 +763,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     replay = replay_check_session(session_dir)
     return {
         "task_manifest_available": bool(manifest),
-        "planner_no_task_count": 1 if planner.get("planning_failed") else 0,
+        "planner_no_task_count": 1 if planning_failed else 0,
         "planned_task_count": planned_count,
         "selected_task_count": selected_count,
         "task_unattempted_count": task_unattempted,
@@ -1326,6 +1344,7 @@ def run_self_tests() -> int:
                 "evolve\tRun evolution session\t2026-06-11T10:26:21Z There's one more error: `build_state_memory_candidates` is used at line 14305 in `commands_state.rs`, but it's private.",
                 "evolve\tRun evolution session\t2026-06-11T09:56:16Z                     eprintln!(\"{RED}  error: {e}{RESET}\");",
                 "evolve\tRun evolution session\t2026-06-11T10:32:36Z The grep showed 0 for commands_state.rs and the second grep returned exit code 1 which happens with `grep -c` returning 0.",
+                "evolve\tRun evolution session\t2026-06-11T12:27:42Z The test timed out. Let me try a narrower test or check the specific failing tests from the trajectory.",
             ]
         )
     )
@@ -1514,6 +1533,35 @@ def run_self_tests() -> int:
         reset_lessons = [lesson["kind"] for lesson in top_lessons(reset_pipeline)]
         check("state baseline reset not counted as shrink", reset_pipeline["state_live_baseline_shrink_count"] == 0, reset_pipeline)
         check("state baseline reset emits no shrink lesson", "state_baseline_shrink" not in reset_lessons, reset_lessons)
+        (session / "state" / "merge_state_delta.json").write_text(
+            json.dumps(
+                {
+                    "baseline_shrunk": 1,
+                    "base_lines": 1885,
+                    "effective_base_lines": 0,
+                    "live_events": 64,
+                    "session_events_before": 4,
+                    "added": 64,
+                }
+            ),
+            encoding="utf-8",
+        )
+        legacy_reset_pipeline = state_pipeline_metrics(session)
+        check(
+            "legacy projection reset not counted as shrink",
+            legacy_reset_pipeline["state_live_baseline_shrink_count"] == 0,
+            legacy_reset_pipeline,
+        )
+
+        planning_session = root / "planning-session"
+        (planning_session / "tasks").mkdir(parents=True)
+        (planning_session / "tasks" / "manifest.json").write_text(
+            json.dumps({"planner": {"planning_failed": True, "task_count": 0, "selected_task_count": 0}}),
+            encoding="utf-8",
+        )
+        planning_artifacts = task_artifact_metrics(planning_session, attempted=0)
+        check("planning failure artifact coverage is zero", planning_artifacts["task_artifact_coverage"] == 0.0, planning_artifacts)
+        check("planning failure count comes from manifest", planning_artifacts["planner_no_task_count"] == 1, planning_artifacts)
 
         attempt1 = root / "attempt-1"
         attempt2 = root / "attempt-2"

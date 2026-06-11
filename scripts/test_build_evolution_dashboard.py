@@ -1391,6 +1391,114 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("state_live_baseline_shrink_count", data["aggregate"]["gnome_keys"])
             self.assertEqual(data["sessions"][0]["latest_eval"]["gnomes"]["state_live_baseline_shrink_count"], 1)
 
+    def test_dashboard_suppresses_legacy_projection_reset_as_state_shrink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "coding_log_score": 0.8,
+                        "state_live_baseline_shrink_count": 1,
+                    },
+                    "gnome_keys": ["coding_log_score", "state_live_baseline_shrink_count"],
+                    "evals": [
+                        {
+                            "suite": "log-feedback",
+                            "gnomes": {
+                                "coding_log_score": 0.8,
+                                "state_live_baseline_shrink_count": 1,
+                            },
+                        }
+                    ],
+                },
+            )
+            write_json(
+                session / "state/merge_state_delta.json",
+                {
+                    "baseline_shrunk": 1,
+                    "base_lines": 1885,
+                    "effective_base_lines": 0,
+                    "live_events": 64,
+                    "added": 64,
+                    "session_events_before": 4,
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            latest = data["sessions"][0]["latest_gnomes"]
+
+            self.assertEqual(latest["state_live_baseline_shrink_count"], 0)
+            self.assertEqual(data["sessions"][0]["latest_eval"]["gnomes"]["state_live_baseline_shrink_count"], 0)
+
+    def test_dashboard_planning_failure_artifact_coverage_is_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "coding_log_score": 0.7,
+                        "session_success_rate": 1.0,
+                        "task_artifact_coverage": 1.0,
+                    },
+                    "gnome_keys": ["coding_log_score", "session_success_rate", "task_artifact_coverage"],
+                    "evals": [
+                        {
+                            "suite": "log-feedback",
+                            "gnomes": {
+                                "coding_log_score": 0.7,
+                                "session_success_rate": 1.0,
+                                "task_artifact_coverage": 1.0,
+                            },
+                        }
+                    ],
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": True, "task_count": 0, "selected_task_count": 0},
+                    "selected_tasks": [],
+                    "warnings": ["planner_produced_no_task_files"],
+                    "artifacts": {"manifest": "tasks/manifest.json", "planning_failure": "tasks/planning_failure.md"},
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            latest = data["sessions"][0]["latest_gnomes"]
+
+            self.assertEqual(latest["planner_no_task_count"], 1)
+            self.assertEqual(latest["session_success_rate"], 0.0)
+            self.assertEqual(latest["task_artifact_coverage"], 0.0)
+            self.assertEqual(data["sessions"][0]["health"], "attention")
+
     def test_raw_outcome_tasks_without_strict_evidence_are_not_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

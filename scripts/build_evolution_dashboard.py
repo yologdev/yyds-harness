@@ -452,6 +452,7 @@ def state_pipeline_summary(session_dir: Path) -> dict[str, Any]:
         "merge_live_events": merge.get("live_events") if isinstance(merge, dict) else None,
         "merge_base_lines": merge.get("base_lines") if isinstance(merge, dict) else None,
         "merge_effective_base_lines": merge.get("effective_base_lines") if isinstance(merge, dict) else None,
+        "merge_baseline_reset": bool(merge.get("baseline_reset")) if isinstance(merge, dict) else False,
         "merge_baseline_shrunk": bool(merge.get("baseline_shrunk")) if isinstance(merge, dict) else False,
         "merge_delta_events": merge.get("delta_events") if isinstance(merge, dict) else None,
         "merge_added_events": merge.get("added") if isinstance(merge, dict) else None,
@@ -1178,7 +1179,24 @@ def corrected_gnomes(
     if manifest.get("planning_failed"):
         gnomes["planner_no_task_count"] = max(int(gnomes.get("planner_no_task_count") or 0), 1)
         gnomes["session_success_rate"] = 0.0
+        gnomes["task_artifact_coverage"] = 0.0
         recalc_score = True
+    merge = work.get("state_pipeline") if isinstance(work.get("state_pipeline"), dict) else {}
+    if int(gnomes.get("state_live_baseline_shrink_count") or 0) > 0 and merge:
+        try:
+            legacy_projection_reset = (
+                int(merge.get("merge_baseline_reset") or 0) == 1
+                or (
+                    int(merge.get("merge_effective_base_lines") or 0) == 0
+                    and int(merge.get("merge_base_lines") or 0) > int(merge.get("merge_live_events") or 0)
+                    and int(merge.get("merge_added_events") or 0) == int(merge.get("merge_live_events") or 0)
+                )
+            )
+        except (TypeError, ValueError):
+            legacy_projection_reset = False
+        if legacy_projection_reset:
+            gnomes["state_live_baseline_shrink_count"] = 0
+            recalc_score = True
     if recalc_score:
         score = corrected_coding_log_score(gnomes)
         if score is not None:
