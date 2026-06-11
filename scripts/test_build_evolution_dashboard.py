@@ -1191,6 +1191,11 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["touched_source_files"], [])
             self.assertIn("2 evidence/bookkeeping file(s) edited", work["headline"])
             self.assertNotIn("2 file(s) edited", work["headline"])
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            self.assertIn("const evidenceFiles = work.edited_files || []", html)
+            self.assertIn("Evidence/bookkeeping edits", html)
+            self.assertIn("No source changes recorded.", html)
+            self.assertNotIn("work.edited_files);", html)
 
     def test_feedback_only_trace_is_explicit(self):
         with tempfile.TemporaryDirectory() as tmp:

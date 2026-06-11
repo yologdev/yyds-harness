@@ -3198,7 +3198,8 @@ HTML = r"""<!doctype html>
         const verification = work.task_verification || {};
         const manifest = work.task_manifest || {};
         const hasManifest = Object.keys(manifest).length > 0;
-        const sourceFiles = (work.source_changed_files || []).length ? work.source_changed_files : ((work.touched_source_files || []).length ? work.touched_source_files : work.edited_files);
+        const sourceFiles = (work.source_changed_files || []).length ? work.source_changed_files : (work.touched_source_files || []);
+        const evidenceFiles = work.edited_files || [];
         const failedTools = work.failed_tools || [];
         const phaseText = Object.entries(transcripts.phase_counts || {}).map(([phase, count]) => `${phase} ${count}`).join(", ");
         return `<article class="item work-row">
@@ -3213,6 +3214,7 @@ HTML = r"""<!doctype html>
               <div class="fact"><strong>${text(session.tasks_succeeded || 0)}/${text(session.tasks_attempted || 0)}</strong>tasks</div>
               <div class="fact"><strong>${text(verification.verified_task_count || 0)}/${text(verification.task_count || 0)}</strong>verified</div>
               <div class="fact"><strong>${text(sourceFiles.length || 0)}</strong>source files</div>
+              <div class="fact"><strong>${text(evidenceFiles.length || 0)}</strong>evidence edits</div>
               <div class="fact"><strong>${text(work.eval_count || 0)}</strong>evals</div>
               <div class="fact"><strong>${hasManifest ? text(manifest.assessment_present ? "yes" : "no") : "-"}</strong>assess</div>
               <div class="fact"><strong>${text(work.source_commit_count || 0)}</strong>source commits</div>
@@ -3223,7 +3225,7 @@ HTML = r"""<!doctype html>
             <details class="work-details">
               <summary>Open audit evidence</summary>
               <div class="detail-grid">
-                <div><strong>Changed</strong>${listItems(sourceFiles, "No repo changes recorded.")}</div>
+                <div><strong>Source changes</strong>${listItems(sourceFiles, "No source changes recorded.")}</div>
                 <div><strong>Source commits</strong>${sourceCommitItems(work)}</div>
                 <div><strong>Bookkeeping commits</strong>${bookkeepingCommitItems(work)}</div>
                 <div><strong>Task lineage</strong>${renderTaskLineage(work)}</div>
@@ -3234,7 +3236,7 @@ HTML = r"""<!doctype html>
                 <div><strong>State pipeline</strong>${renderStatePipeline(work)}</div>
                 <div><strong>Validated</strong>${listItems(work.commands, "No command events recorded.")}</div>
                 <div><strong>Read</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
-                <div><strong>State edits</strong>${listItems(work.edited_files, "No FileEdited events recorded.")}</div>
+                <div><strong>Evidence/bookkeeping edits</strong>${listItems(evidenceFiles, "No evidence or bookkeeping edits recorded.")}</div>
                 <div><strong>Failures</strong>${listItems(work.failed_commands, "No failed commands recorded.")}</div>
                 <div><strong>Tool failures</strong>${listItems(work.failed_tools, "No failed tool calls recorded.")}</div>
               </div>
