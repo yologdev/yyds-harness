@@ -1707,6 +1707,70 @@ class BuildEvolutionDashboard(unittest.TestCase):
             html = (root / "out/index.html").read_text(encoding="utf-8")
             self.assertIn("tool fails", html)
 
+    def test_build_writes_structured_claims_projection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "tool_error_count": 0,
+                        "deepseek_cache_hit_ratio": None,
+                        "deepseek_cache_prose_mention_count": 1,
+                    },
+                    "gnome_keys": [
+                        "tool_error_count",
+                        "deepseek_cache_hit_ratio",
+                        "deepseek_cache_prose_mention_count",
+                    ],
+                },
+            )
+            (session / "transcripts").mkdir(parents=True)
+            (session / "transcripts/task_01_attempt1.log").write_text(
+                "  ▶ search 'missing symbol' in src/lib.rs ✗ (17ms)\n",
+                encoding="utf-8",
+            )
+
+            build(root / "sessions", root / "out")
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            session_claims = {
+                row["name"]: row
+                for row in claims["sessions"][0]["claims"]
+            }
+
+            self.assertEqual(claims["schema_version"], 1)
+            self.assertEqual(claims["summary"]["session_count"], 1)
+            self.assertEqual(
+                session_claims["failed_tool_actions_match_tool_error_gnome"]["status"],
+                "proven",
+            )
+            self.assertEqual(
+                session_claims["failed_tool_actions_match_tool_error_gnome"]["expected"],
+                1,
+            )
+            self.assertEqual(
+                session_claims["failed_tool_actions_match_tool_error_gnome"]["actual"],
+                1,
+            )
+            self.assertEqual(
+                session_claims["deepseek_cache_ratio_is_token_backed_or_marked_unverified"]["status"],
+                "proven",
+            )
+            self.assertEqual(
+                session_claims["deepseek_cache_ratio_is_token_backed_or_marked_unverified"]["actual"]["unverified_count"],
+                1,
+            )
+
     def test_session_sort_is_natural_by_day_and_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

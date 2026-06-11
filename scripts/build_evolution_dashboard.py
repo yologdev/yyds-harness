@@ -1802,6 +1802,234 @@ def build_gnome_history(sessions: list[dict[str, Any]]) -> tuple[list[dict[str, 
     return history, keys
 
 
+def int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
+def claim_row(
+    name: str,
+    status: str,
+    expected: Any,
+    actual: Any,
+    evidence: list[str],
+    detail: str,
+    provenance: list[str],
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "status": status,
+        "expected": expected,
+        "actual": actual,
+        "evidence": evidence,
+        "detail": detail,
+        "provenance": provenance,
+    }
+
+
+def count_claim(name: str, expected: int, actual: Any, evidence: list[str], detail: str) -> dict[str, Any]:
+    actual_int = int_or_none(actual)
+    if actual_int is not None and actual_int >= expected:
+        status = "proven"
+    elif expected == 0 and actual_int is None:
+        status = "missing"
+    else:
+        status = "conflict"
+    return claim_row(
+        name,
+        status,
+        expected,
+        actual,
+        evidence,
+        detail,
+        ["work_summary", "latest_gnomes"],
+    )
+
+
+def task_verification_count_claim(work: dict[str, Any]) -> dict[str, Any]:
+    verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
+    rows = verification.get("rows") if isinstance(verification.get("rows"), list) else []
+    expected_verified = sum(1 for row in rows if isinstance(row, dict) and row.get("strict_success") is True)
+    expected_unverified = len([row for row in rows if isinstance(row, dict)]) - expected_verified
+    actual = {
+        "verified": verification.get("verified_task_count"),
+        "unverified": verification.get("unverified_task_count"),
+        "task_count": verification.get("task_count"),
+    }
+    status = "proven"
+    if (
+        int_or_none(actual["verified"]) != expected_verified
+        or int_or_none(actual["unverified"]) != expected_unverified
+        or int_or_none(actual["task_count"]) != len([row for row in rows if isinstance(row, dict)])
+    ):
+        status = "conflict"
+    return claim_row(
+        "task_verification_counts_match_rows",
+        status,
+        {
+            "verified": expected_verified,
+            "unverified": expected_unverified,
+            "task_count": len([row for row in rows if isinstance(row, dict)]),
+        },
+        actual,
+        [str(row.get("task_id")) for row in rows if isinstance(row, dict) and row.get("task_id")][:8],
+        "Task verification summary counts should be derived from strict_success rows.",
+        ["work_summary.task_verification.rows", "work_summary.task_verification"],
+    )
+
+
+def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
+    manifest = work.get("task_manifest") if isinstance(work.get("task_manifest"), dict) else {}
+    artifact_present = work.get("assessment_artifact_present")
+    transcript_present = work.get("assessment_transcript_present")
+    if not manifest:
+        status = "missing"
+        detail = "No task manifest is available, so assessment artifact state is unknown."
+    elif artifact_present is True:
+        status = "proven"
+        detail = "Assessment artifact is present."
+    elif transcript_present:
+        status = "observed"
+        detail = "Assessment phase transcript exists but the assessment artifact is missing."
+    else:
+        status = "missing"
+        detail = "Task manifest exists but no assessment artifact or assessment transcript was found."
+    return claim_row(
+        "assessment_artifact_and_transcript_state",
+        status,
+        {"artifact_present": True},
+        {"artifact_present": artifact_present, "transcript_present": transcript_present},
+        ["tasks/assessment.md", "transcripts/assess.log"],
+        detail,
+        ["work_summary.task_manifest", "work_summary.transcripts"],
+    )
+
+
+def cache_claim(gnomes: dict[str, Any]) -> dict[str, Any]:
+    ratio = gnomes.get("deepseek_cache_hit_ratio")
+    hit_tokens = gnomes.get("deepseek_cache_hit_tokens")
+    miss_tokens = gnomes.get("deepseek_cache_miss_tokens")
+    prose_mentions = int(gnomes.get("deepseek_cache_prose_mention_count") or 0)
+    unverified = int(gnomes.get("deepseek_cache_ratio_unverified_count") or 0)
+    token_backed = (
+        isinstance(hit_tokens, (int, float))
+        and not isinstance(hit_tokens, bool)
+        and isinstance(miss_tokens, (int, float))
+        and not isinstance(miss_tokens, bool)
+    )
+    if ratio is not None and token_backed:
+        status = "proven"
+        detail = "Trusted cache ratio is backed by hit/miss token counts."
+    elif ratio is not None:
+        status = "conflict"
+        detail = "Trusted cache ratio is present without token evidence."
+    elif prose_mentions and unverified >= prose_mentions:
+        status = "proven"
+        detail = "Prose-only cache ratio claims are withheld from trusted KPI and counted as unverified."
+    elif prose_mentions:
+        status = "conflict"
+        detail = "Prose-only cache ratio claims exist but are not counted as unverified."
+    else:
+        status = "missing"
+        detail = "No DeepSeek cache ratio evidence was captured."
+    return claim_row(
+        "deepseek_cache_ratio_is_token_backed_or_marked_unverified",
+        status,
+        {"trusted_ratio_requires_tokens": True, "unverified_count_at_least_prose_mentions": prose_mentions},
+        {
+            "ratio": ratio,
+            "hit_tokens": hit_tokens,
+            "miss_tokens": miss_tokens,
+            "prose_mentions": prose_mentions,
+            "unverified_count": unverified,
+        },
+        ["deepseek_cache_hit_ratio", "deepseek_cache_hit_tokens", "deepseek_cache_miss_tokens"],
+        detail,
+        ["latest_gnomes", "log_feedback"],
+    )
+
+
+def session_claims(session: dict[str, Any]) -> list[dict[str, Any]]:
+    work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
+    gnomes = session.get("latest_gnomes") if isinstance(session.get("latest_gnomes"), dict) else {}
+    failed_tools = work.get("failed_tools") if isinstance(work.get("failed_tools"), list) else []
+    unlanded = int(work.get("unlanded_source_task_count") or 0)
+    return [
+        count_claim(
+            "failed_tool_actions_match_tool_error_gnome",
+            len(failed_tools),
+            gnomes.get("tool_error_count"),
+            failed_tools[:8],
+            "Structured failed tool actions should be reflected in tool_error_count.",
+        ),
+        count_claim(
+            "unlanded_source_tasks_match_gnome",
+            unlanded,
+            gnomes.get("task_unlanded_source_count"),
+            [
+                str(row.get("task_id"))
+                for row in (
+                    (work.get("task_verification") or {}).get("rows")
+                    if isinstance(work.get("task_verification"), dict)
+                    else []
+                )
+                if isinstance(row, dict)
+                and (
+                    "source_edits_not_landed" in (row.get("problems") or [])
+                    or "no_landed_source_commit" in (row.get("problems") or [])
+                )
+            ][:8],
+            "Tasks with source edits and no landed source commit should be reflected in task_unlanded_source_count.",
+        ),
+        task_verification_count_claim(work),
+        assessment_claim(work),
+        cache_claim(gnomes),
+    ]
+
+
+def build_claims_projection(
+    sessions: list[dict[str, Any]],
+    generated_at: str,
+    audit_sessions: Path,
+) -> dict[str, Any]:
+    session_rows = []
+    status_counts: dict[str, int] = {}
+    claim_count = 0
+    for session in sessions:
+        claims = session_claims(session)
+        claim_count += len(claims)
+        for row in claims:
+            status = str(row.get("status") or "unknown")
+            status_counts[status] = status_counts.get(status, 0) + 1
+        session_rows.append(
+            {
+                "id": session.get("id"),
+                "ts": session.get("ts"),
+                "health": session.get("health"),
+                "headline": (session.get("work_summary") or {}).get("headline")
+                if isinstance(session.get("work_summary"), dict)
+                else None,
+                "claims": claims,
+            }
+        )
+    return {
+        "schema_version": 1,
+        "generated_at": generated_at,
+        "source": str(audit_sessions),
+        "summary": {
+            "session_count": len(sessions),
+            "claim_count": claim_count,
+            "status_counts": dict(sorted(status_counts.items())),
+        },
+        "sessions": session_rows,
+    }
+
+
 HTML = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -3518,17 +3746,20 @@ HTML = r"""<!doctype html>
 def build(audit_sessions: Path, output_dir: Path, repo_root: Path | None = None) -> dict[str, Any]:
     sessions = load_sessions(audit_sessions, repo_root or Path.cwd())
     gnome_history, gnome_numeric_keys = build_gnome_history(sessions)
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     data = {
         "schema_version": 2,
-        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "generated_at": generated_at,
         "source": str(audit_sessions),
         "aggregate": aggregate(sessions),
         "gnome_history": gnome_history,
         "gnome_numeric_keys": gnome_numeric_keys,
         "sessions": sessions,
     }
+    claims = build_claims_projection(sessions, generated_at, audit_sessions)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "data.json").write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "claims.json").write_text(json.dumps(claims, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (output_dir / "index.html").write_text(HTML, encoding="utf-8")
     return data
 
