@@ -1182,12 +1182,16 @@ def work_summary(
             labels.append(f"{strict_total - attempted} selected task(s) not attempted")
     elif task_manifest.get("planning_failed"):
         labels.append("planning produced no task files")
+    if task_manifest and not task_manifest.get("assessment_present"):
+        labels.append("assessment missing")
     if source_files:
         labels.append(f"{len(source_files)} source file(s) changed")
     elif touched_source_files:
         labels.append(f"{len(touched_source_files)} source file(s) touched")
     elif edited_files:
         labels.append(f"{len(edited_files)} file(s) edited")
+    if failed_tools:
+        labels.append(f"{len(failed_tools)} failed tool action(s)")
     command_count = len(commands)
     if command_count:
         labels.append(f"{command_count} command/check signal(s)")
@@ -1195,8 +1199,6 @@ def work_summary(
         labels.append(f"{len(evals)} eval record(s)")
     if blockers:
         labels.append(f"{len(blockers)} blocker(s)")
-    if failed_tools:
-        labels.append(f"{len(failed_tools)} failed tool action(s)")
     if not labels:
         labels.append("No detailed work signals captured")
 
@@ -3187,7 +3189,10 @@ HTML = r"""<!doctype html>
         const trace = session.trace_quality || {};
         const transcripts = work.transcripts || {};
         const verification = work.task_verification || {};
+        const manifest = work.task_manifest || {};
+        const hasManifest = Object.keys(manifest).length > 0;
         const sourceFiles = (work.source_changed_files || []).length ? work.source_changed_files : ((work.touched_source_files || []).length ? work.touched_source_files : work.edited_files);
+        const failedTools = work.failed_tools || [];
         const phaseText = Object.entries(transcripts.phase_counts || {}).map(([phase, count]) => `${phase} ${count}`).join(", ");
         return `<article class="item work-row">
           <div class="work-meta">
@@ -3202,7 +3207,9 @@ HTML = r"""<!doctype html>
               <div class="fact"><strong>${text(verification.verified_task_count || 0)}/${text(verification.task_count || 0)}</strong>verified</div>
               <div class="fact"><strong>${text(sourceFiles.length || 0)}</strong>source files</div>
               <div class="fact"><strong>${text(work.eval_count || 0)}</strong>evals</div>
+              <div class="fact"><strong>${hasManifest ? text(manifest.assessment_present ? "yes" : "no") : "-"}</strong>assess</div>
               <div class="fact"><strong>${text(work.source_commit_count || 0)}</strong>source commits</div>
+              <div class="fact"><strong>${text(failedTools.length || 0)}</strong>tool fails</div>
               <div class="fact"><strong>${text(work.decision_count || 0)}</strong>decisions</div>
               <div class="fact"><strong>${text(trace.trace_event_count || 0)}</strong>trace events</div>
             </div>

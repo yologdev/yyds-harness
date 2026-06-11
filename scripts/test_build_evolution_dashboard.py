@@ -1317,6 +1317,64 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(verification["verified_task_count"], 0)
             self.assertIn("no_passing_verifier", verification["rows"][0]["problems"])
 
+    def test_missing_assessment_is_visible_in_session_work_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {"day": 1, "tasks_attempted": 1, "tasks_succeeded": 0, "build_ok": True, "test_ok": True},
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 2,
+                    "event_counts": {"RunStarted": 1, "RunCompleted": 1},
+                    "task_lineage": [],
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {
+                        "planning_failed": False,
+                        "task_count": 1,
+                        "selected_task_count": 1,
+                        "assessment_present": False,
+                    },
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Fallback task",
+                            "files": ["src/lib.rs"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            (session / "tasks/task_01/task.md").write_text("Title: Fallback task\n", encoding="utf-8")
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Fallback task",
+                    "status": "reverted",
+                    "planned_files": ["src/lib.rs"],
+                    "touched_files": [],
+                    "source_files": [],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            work = data["sessions"][0]["work_summary"]
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+
+            self.assertIn("assessment missing", work["headline"])
+            self.assertFalse(work["task_manifest"]["assessment_present"])
+            self.assertIn("assess", html)
+
     def test_transcript_actions_fill_work_evidence_when_state_events_are_sparse(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1375,8 +1433,11 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 work["failed_tools"],
             )
             self.assertIn("1 source file(s) touched", work["headline"])
-            self.assertIn("2 command/check signal(s)", work["headline"])
+            self.assertIn("1 failed tool action(s)", work["headline"])
+            self.assertIn("2 command/check signal(s)", work["labels"])
             self.assertEqual(work["transcript_actions"]["edited_files"], ["src/state.rs"])
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            self.assertIn("tool fails", html)
 
     def test_session_sort_is_natural_by_day_and_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:
