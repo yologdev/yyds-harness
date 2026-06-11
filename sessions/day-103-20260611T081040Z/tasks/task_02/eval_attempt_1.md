@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: New module `commands_state_crashes.rs` (209 lines) contains all four required items (handle_crashes, CrashEntry, build_crashes_report, format_relative_ms). `lib.rs` registers the module, `commands_state.rs` dispatches via the re-export, shared utilities are pub(crate), `commands_state.rs` reduced by 204 lines. Build, all 151 commands_state tests, `cargo fmt --check`, and both human-readable/JSON crash output modes all pass.

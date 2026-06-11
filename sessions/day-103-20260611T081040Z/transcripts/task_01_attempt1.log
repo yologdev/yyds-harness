@@ -1,0 +1,326 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. I need to wire `crate::state::stash_diagnostic_error()` into the `StreamingBashTool::execute()` method's error return paths in `src/tools.rs`.
+
+Let me start by reading the relevant section of `src/tools.rs` to understand the current code structure, then look at how `stash_diagnostic_error` is used in `src/deepseek.rs` for the pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read both files to understand the code.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.5s (5 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:400..620  ▶ read src/deepseek.rs:1010..1040 ✓ (16ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I have a clear picture. Let me also check where `stash_diagnostic_error` is defined in `src/state.rs` to make sure I understand the function signature.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn stash_diagnostic_error' in src ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the function signature is `pub fn stash_diagnostic_error(msg: &str)`. Now I can proceed with the implementation.
+
+Let me identify the exact lines I need to modify:
+
+1. **Spawn failure** (line 486): `cmd.spawn().map_err(|e| ToolError::Failed(format!("Failed to spawn: {e}")))?;`
+   - Need to change to call `stash_diagnostic_error` before the `map_err`.
+
+2. **Timeout** (lines 600-606): `return Err(ToolError::Failed(format!(...)));`
+   - Need to add a `stash_diagnostic_error` call before the return.
+
+3. **Wait failure** (line 609): `status.map_err(|e| ToolError::Failed(format!("Failed to wait: {e}")))?`
+   - Need to change to call `stash_diagnostic_error` before the `map_err`.
+
+For the spawn failure (line 486), the pattern is:
+```rust
+cmd.spawn()
+    .map_err(|e| ToolError::Failed(format!("Failed to spawn: {e}")))?;
+```
+
+I need to change it to something like:
+```rust
+cmd.spawn()
+    .map_err(|e| {
+        crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+        ToolError::Failed(format!("Failed to spawn: {e}"))
+    })?;
+```
+
+Wait, but `stash_diagnostic_error` is not async. In `map_err`, the closure is synchronous and the `?` propagates immediately, so this should work fine.
+
+For the timeout, I need to add before the return:
+```rust
+crate::state::stash_diagnostic_error(&format!(
+    "bash timeout: {} after {}s",
+    command, timeout.as_secs()
+));
+```
+
+For the wait failure:
+```rust
+status.map_err(|e| {
+    crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+    ToolError::Failed(format!("Failed to wait: {e}"))
+})?
+```
+
+Let me now make the edits.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the three surgical edits. I'll read the exact lines around each to make sure my edits are precise.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+Good, I have the pattern from `src/deepseek.rs:1022` and the error paths identified. Now let me make three surgical edits.
+
+**Edit 1: Spawn failure (line 484-486)** — Wrap the `map_err` closure to stash before constructing the error:
+            let mut child = cmd
+                .spawn()
+  -             .map_err(|e| ToolError::Failed(format!("Failed to spawn: {e}")))?;
+  +             .map_err(|e| {
+  +                 crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+  +                 ToolError::Failed(format!("Failed to spawn: {e}"))
+  +             })?;
+  ✓ Auto-approved: edit: src/tools.rs (3 → 6 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (3 → 6 lines)
+            let mut child = cmd
+                .spawn()
+  -             .map_err(|e| ToolError::Failed(format!("Failed to spawn: {e}")))?;
+  +             .map_err(|e| {
+  +                 crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+  +                 ToolError::Failed(format!("Failed to spawn: {e}"))
+  +             })?;
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now edit 2: Timeout (lines 600-606).
+────────────────────────────────────────────────────────────────────────────────
+
+**Edit 2: Timeout (lines ~600-606)** — Stash before returning timeout error:
+                _ = tokio::time::sleep(timeout) => {
+                    let _ = child.kill().await;
+                    reader_handle.abort();
+  +                 crate::state::stash_diagnostic_error(&format!(
+  +                     "bash timeout: {} after {}s",
+  +                     command,
+  +                     timeout.as_secs()
+  +                 ));
+                    return Err(ToolError::Failed(format!(
+                        "Command timed out after {}s",
+                        timeout.as_secs()
+  ✓ Auto-approved: edit: src/tools.rs (7 → 12 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (7 → 12 lines)
+                _ = tokio::time::sleep(timeout) => {
+                    let _ = child.kill().await;
+                    reader_handle.abort();
+  +                 crate::state::stash_diagnostic_error(&format!(
+  +                     "bash timeout: {} after {}s",
+  +                     command,
+  +                     timeout.as_secs()
+  +                 ));
+                    return Err(ToolError::Failed(format!(
+                        "Command timed out after {}s",
+                        timeout.as_secs()
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now edit 3: Wait failure (line ~612-614).
+────────────────────────────────────────────────────────────────────────────────
+
+**Edit 3: Wait failure** — Wrap the `map_err` closure:
+                status = child.wait() => {
+  -                 status.map_err(|e| ToolError::Failed(format!("Failed to wait: {e}")))?
+  +                 status.map_err(|e| {
+  +                     crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+  +                     ToolError::Failed(format!("Failed to wait: {e}"))
+  +                 })?
+                }
+  ✓ Auto-approved: edit: src/tools.rs (3 → 6 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (3 → 6 lines)
+                status = child.wait() => {
+  -                 status.map_err(|e| ToolError::Failed(format!("Failed to wait: {e}")))?
+  +                 status.map_err(|e| {
+  +                     crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+  +                     ToolError::Failed(format!("Failed to wait: {e}"))
+  +                 })?
+                }
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All three edits are done. Now let me verify the changes look right, then build and test.
+────────────────────────────────────────────────────────────────────────────────
+
+All three edits applied. Let me verify the changes look correct:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:484..499  ▶ read src/tools.rs:599..619 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the wait failure path is complete:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:616..624 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All three edits look correct. Now let me build and test.
+────────────────────────────────────────────────────────────────────────────────
+
+All three edits look good. Now let me build and test.
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run the build and tests.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (15.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now run tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now run tests:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- tools 2>&1 ✓ (42.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+186 tests pass. Now run fmt and clippy.
+────────────────────────────────────────────────────────────────────────────────
+
+All 186 tests pass. Now fmt and clippy:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The formatter wants a different style. Let me run `cargo fmt` and then check the result.
+────────────────────────────────────────────────────────────────────────────────
+
+Needs formatting. Let me apply it:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the formatted version:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, formatting passes now. Let me check what the formatted code looks like to make sure it's fine:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:484..494 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, formatting looks clean. Now clippy:
+────────────────────────────────────────────────────────────────────────────────
+
+Now clippy:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo clippy --all-targets -- … ✓ (25.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All checks pass. Now let me do the full test suite, then commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All checks pass: build ✓, tests ✓ (186), fmt ✓, clippy ✓. Now run the full test suite as required:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 ✓ (2m 30s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 4202 tests pass. Now let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All 4202 tests pass. Now let me commit:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me commit with the proper message format.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Commit successful. Let me verify the commit looks right.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git --no-pager log -1 --stat ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+Done. Here's what changed:
+
+**`src/tools.rs` — 3 diagnostic stash points in `StreamingBashTool::execute()`**
+
+| Error path | Location | Stash message |
+|---|---|---|
+| Spawn failure | cmd.spawn().map_err(…) (line 484) | "bash spawn failed: {e}" |
+| Timeout | tokio::time::sleep(timeout) arm (line 603) | "bash timeout: {command} after {N}s" |
+| Wait failure | status.map_err(…) (line 617) | "bash wait failed: {e}" |
+
+The cancellation path (line 601) is deliberately left unwired — cancellation is normal operation, not a crash.
+
+**Verification:**
+• `cargo build` ✓
+• `cargo test` (4202 tests) ✓
+• `cargo fmt -- --check` ✓
+• `cargo clippy --all-targets -- -D warnings` ✓
+
+**Evidence:** Future sessions will now emit `CrashDiagnosticStashed` state events when bash commands fail to spawn, time out, or fail on wait — making tool-execution crashes visible via `/state crashes`. The crash-reporter door count increases from 2 (transport, state-init) to 3 (tool-execution).
+
+
