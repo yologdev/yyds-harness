@@ -565,6 +565,7 @@ def transcript_summary(session_dir: Path) -> dict[str, Any]:
         "assess": 0,
         "plan": 0,
         "task": 0,
+        "build_fix": 0,
         "fix": 0,
         "eval": 0,
         "other": 0,
@@ -578,6 +579,8 @@ def transcript_summary(session_dir: Path) -> dict[str, Any]:
             phase = "plan"
         elif name.startswith("task_"):
             phase = "task"
+        elif name.startswith("bfix_"):
+            phase = "build_fix"
         elif name.startswith("fix_"):
             phase = "fix"
         elif name.startswith("eval_"):
@@ -1514,6 +1517,22 @@ def corrected_gnomes(
     manifest = work.get("task_manifest") if isinstance(work.get("task_manifest"), dict) else {}
     verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
     task_artifacts = work.get("task_artifacts") if isinstance(work.get("task_artifacts"), list) else []
+    task_turn_counts = [
+        int(row.get("max_turn_count"))
+        for row in task_artifacts
+        if isinstance(row, dict) and isinstance(row.get("max_turn_count"), int) and int(row.get("max_turn_count")) > 0
+    ]
+    if task_turn_counts:
+        turn_gnomes = {
+            "max_task_turn_count": max(task_turn_counts),
+            "avg_task_turn_count": round(sum(task_turn_counts) / len(task_turn_counts), 4),
+            "total_task_turn_count": sum(task_turn_counts),
+        }
+        for key, value in turn_gnomes.items():
+            current = gnomes.get(key)
+            if current is None or (isinstance(current, (int, float)) and not isinstance(current, bool) and value > current):
+                gnomes[key] = value
+                recalc_score = True
     attempted = int(outcome.get("tasks_attempted") or 0)
     selected_count = int(manifest.get("selected_task_count") or 0)
     if selected_count:

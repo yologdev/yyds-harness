@@ -64,7 +64,7 @@ YOYO_USAGE_CACHE_RE = re.compile(
 )
 PROMPT_CACHE_HIT_RE = re.compile(r"\bprompt_cache_hit_tokens\b['\"]?\s*[:=]\s*([\d,]+)", re.IGNORECASE)
 PROMPT_CACHE_MISS_RE = re.compile(r"\bprompt_cache_miss_tokens\b['\"]?\s*[:=]\s*([\d,]+)", re.IGNORECASE)
-TASK_TRANSCRIPT_RE = re.compile(r"task_(\d+)_attempt(\d+)\.log$")
+TASK_TRANSCRIPT_RE = re.compile(r"(?:(task)|(fix)|(bfix))_(?:task)?(\d+)_attempt(\d+)\.log$")
 TURN_MARKER_RE = re.compile(r"\bTurn\s+(\d+)\b")
 ACTION_LINE_RE = re.compile(r"^\s*▶\s+", re.MULTILINE)
 AUTHORIZATION_RE = re.compile(r"(?i)\bauthorization\s*[:=]\s*bearer\s+[^'\"\s]+")
@@ -682,12 +682,13 @@ def task_turn_metrics(session_dir: Path) -> dict[str, Any]:
         }
     per_task: dict[str, int] = {}
     attempts: list[dict[str, Any]] = []
-    for path in sorted(transcript_dir.glob("task_*_attempt*.log")):
+    for path in sorted(transcript_dir.glob("*_attempt*.log")):
         match = TASK_TRANSCRIPT_RE.match(path.name)
         if not match:
             continue
-        task_number = int(match.group(1))
-        attempt = int(match.group(2))
+        phase = "implementation" if match.group(1) else "eval_fix" if match.group(2) else "build_fix"
+        task_number = int(match.group(4))
+        attempt = int(match.group(5))
         task_id = f"task_{task_number:02d}"
         turns = transcript_turn_count(read_text(path))
         per_task[task_id] = max(per_task.get(task_id, 0), turns)
@@ -696,6 +697,7 @@ def task_turn_metrics(session_dir: Path) -> dict[str, Any]:
                 "task_id": task_id,
                 "task_number": task_number,
                 "attempt": attempt,
+                "phase": phase,
                 "turn_count": turns,
                 "transcript": str(path.relative_to(session_dir)),
             }
@@ -1590,11 +1592,20 @@ def run_self_tests() -> int:
             "╭─ Turn 4 ─╮\n▶ edit\n",
             encoding="utf-8",
         )
+        (transcript_dir / "fix_task1_attempt1.log").write_text(
+            "╭─ Turn 18 ─╮\n▶ edit\n",
+            encoding="utf-8",
+        )
+        (transcript_dir / "bfix_task2_attempt1.log").write_text(
+            "╭─ Turn 8 ─╮\n▶ cargo test\n",
+            encoding="utf-8",
+        )
         turns = task_turn_metrics(session)
-        check("task turn max per task counted", turns["task_turn_counts"] == {"task_01": 15, "task_02": 4}, turns)
-        check("max task turn gnome counted", turns["max_task_turn_count"] == 15, turns)
-        check("avg task turn gnome counted", turns["avg_task_turn_count"] == 9.5, turns)
-        check("total task turn gnome counted", turns["total_task_turn_count"] == 19, turns)
+        check("task turn max per task counted", turns["task_turn_counts"] == {"task_01": 18, "task_02": 8}, turns)
+        check("repair transcript phase is preserved", any(row["phase"] == "build_fix" for row in turns["task_turn_attempts"]), turns)
+        check("max task turn gnome counted", turns["max_task_turn_count"] == 18, turns)
+        check("avg task turn gnome counted", turns["avg_task_turn_count"] == 13.0, turns)
+        check("total task turn gnome counted", turns["total_task_turn_count"] == 26, turns)
 
         task_dir = session / "tasks" / "task_01"
         task_dir.mkdir(parents=True)

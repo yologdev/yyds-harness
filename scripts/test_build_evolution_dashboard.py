@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from build_evolution_dashboard import build, summarize_events_for_work, summarize_transcript_actions  # noqa: E402
+from build_evolution_dashboard import build, summarize_events_for_work, summarize_transcript_actions, transcript_summary  # noqa: E402
 
 
 def write_json(path: Path, value: object) -> None:
@@ -125,6 +125,94 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "edit src/prompt.rs: old_text matches 2 locations in src/prompt.rs. Include more surrounding context to make the match unique."
                 ],
             )
+
+    def test_build_fix_transcripts_are_not_classified_as_other(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp)
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("bfix_task2_attempt1.log").write_text(
+                "╭─ Turn 1 ─╮\n▶ edit src/lib.rs\n",
+                encoding="utf-8",
+            )
+            transcript_dir.joinpath("fix_task2_attempt1.log").write_text(
+                "╭─ Turn 1 ─╮\n▶ edit src/lib.rs\n",
+                encoding="utf-8",
+            )
+
+            summary = transcript_summary(session)
+
+            self.assertEqual(summary["phase_counts"]["build_fix"], 1)
+            self.assertEqual(summary["phase_counts"]["fix"], 1)
+            self.assertNotIn("other", summary["phase_counts"])
+            phases = {row["name"]: row["phase"] for row in summary["files"]}
+            self.assertEqual(phases["bfix_task2_attempt1.log"], "build_fix")
+            self.assertEqual(phases["fix_task2_attempt1.log"], "fix")
+
+    def test_task_turn_gnomes_are_corrected_from_repair_attempt_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"day": 1, "tasks_attempted": 1, "tasks_succeeded": 0})
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "max_task_turn_count": 5,
+                        "avg_task_turn_count": 5,
+                        "total_task_turn_count": 5,
+                    },
+                    "gnome_keys": ["max_task_turn_count", "avg_task_turn_count", "total_task_turn_count"],
+                },
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "╭─ Turn 5 ─╮\n▶ edit src/lib.rs\n",
+                encoding="utf-8",
+            )
+            transcript_dir.joinpath("bfix_task1_attempt1.log").write_text(
+                "╭─ Turn 18 ─╮\n▶ cargo test\n",
+                encoding="utf-8",
+            )
+            task_dir = session / "tasks/task_01"
+            task_dir.mkdir(parents=True)
+            task_dir.joinpath("attempts.jsonl").write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "task_id": "task_01",
+                                "phase": "implementation",
+                                "attempt": 1,
+                                "stage_name": "task_01_attempt1",
+                                "transcript_path": "transcripts/task_01_attempt1.log",
+                            },
+                            separators=(",", ":"),
+                        ),
+                        json.dumps(
+                            {
+                                "task_id": "task_01",
+                                "phase": "build_fix",
+                                "attempt": 1,
+                                "stage_name": "bfix_task1_attempt1",
+                                "transcript_path": "transcripts/bfix_task1_attempt1.log",
+                            },
+                            separators=(",", ":"),
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            data = build(root / "sessions", root / "out", repo_root=root)
+
+            latest = data["sessions"][0]["latest_gnomes"]
+            self.assertEqual(latest["max_task_turn_count"], 18)
+            self.assertEqual(latest["avg_task_turn_count"], 18)
+            self.assertEqual(latest["total_task_turn_count"], 18)
+            self.assertEqual(data["sessions"][0]["work_summary"]["task_artifacts"][0]["max_turn_count"], 18)
 
     def test_state_event_failures_join_started_tool_args(self):
         events = [
@@ -518,27 +606,33 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(
                 data["gnome_numeric_keys"],
                 [
+                    "avg_task_turn_count",
                     "coding_log_score",
                     "evaluator_timeout_with_verdict_count",
                     "evaluator_unverified_count",
                     "evolution_friction_count",
+                    "max_task_turn_count",
                     "session_success_rate",
                     "task_artifact_coverage",
                     "task_success_rate",
                     "task_unlanded_source_count",
+                    "total_task_turn_count",
                 ],
             )
             self.assertEqual(
                 data["gnome_history"][0]["values"],
                 {
+                    "avg_task_turn_count": 4.0,
                     "coding_log_score": 0.8,
                     "evaluator_timeout_with_verdict_count": 0.0,
                     "evaluator_unverified_count": 0.0,
                     "evolution_friction_count": 2.0,
+                    "max_task_turn_count": 4.0,
                     "session_success_rate": 1.0,
                     "task_artifact_coverage": 1.0,
                     "task_success_rate": 1.0,
                     "task_unlanded_source_count": 0.0,
+                    "total_task_turn_count": 4.0,
                 },
             )
 
