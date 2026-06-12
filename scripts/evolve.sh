@@ -207,6 +207,35 @@ record_state_event() {
     append_state_event_checked "$SESSION_STATE_EVENTS" "session" "$event_type" "$payload_json" || true
 }
 
+record_agent_terminal_events() {
+    local after_line="$1"
+    local stage="$2"
+    local run_status="$3"
+    local model_status="$4"
+    local reason="$5"
+    local error="${6:-}"
+    local error_detail="${7:-}"
+    local args=(
+        --events "$STATE_EVENTS"
+        --after-line "$after_line"
+        --session-id "$STATE_SESSION_ID"
+        --trace-id "$STATE_TRACE_ID"
+        --stage "$stage"
+        --run-status "$run_status"
+        --model-status "$model_status"
+        --reason "$reason"
+    )
+    if [ -n "$error" ]; then
+        args+=(--error "$error")
+    fi
+    if [ -n "$error_detail" ]; then
+        args+=(--error-detail "$error_detail")
+    fi
+    if ! python3 scripts/append_terminal_state_events.py "${args[@]}" >>"$STATE_APPEND_LOG" 2>&1; then
+        echo "  WARNING: failed to append terminal state events for ${stage:-agent}" >&2
+    fi
+}
+
 task_lineage_payload() {
     local status="$1"
     local base_sha="$2"
@@ -576,6 +605,9 @@ run_agent_with_fallback() {
     fi
 
     local exit_code=0
+    local state_before_lines=0
+    state_before_lines=$(wc -l < "$STATE_EVENTS" 2>/dev/null | tr -d '[:space:]' || echo 0)
+    state_before_lines="${state_before_lines:-0}"
     # shellcheck disable=SC2086
     if [ -n "$stage_path" ]; then
         ${TIMEOUT_CMD:+$TIMEOUT_CMD "$timeout_val"} "$YOYO_BIN" \
@@ -591,6 +623,12 @@ run_agent_with_fallback() {
             $fallback_flag \
             $extra_flags \
             < "$prompt_file" 2>&1 | tee "$log_file" || exit_code=$?
+    fi
+
+    if [ "$exit_code" -eq 124 ]; then
+        record_agent_terminal_events \
+            "$state_before_lines" "${STAGE_NAME:-agent}" "error" "timeout" \
+            "timeout_after_seconds" "timeout" "agent timed out after ${timeout_val}s"
     fi
 
     return "$exit_code"
@@ -621,11 +659,17 @@ run_agent_with_completion_watch() {
     if [ -n "${STAGE_NAME:-}" ] && [ -d "${SESSION_STAGING:-}/transcripts" ]; then
         stage_path="${SESSION_STAGING}/transcripts/${STAGE_NAME}.log"
     fi
+    local state_before_lines=0
+    state_before_lines=$(wc -l < "$STATE_EVENTS" 2>/dev/null | tr -d '[:space:]' || echo 0)
+    state_before_lines="${state_before_lines:-0}"
+    local completion_marker="$SESSION_STAGING/state/completion_watch_${STAGE_NAME:-agent}_$$.marker"
+    rm -f "$completion_marker"
 
+    local exit_code=0
     python3 - "$timeout_val" "$prompt_file" "$log_file" "$stage_path" \
-        "$completion_file" "$completion_pattern" -- \
+        "$completion_file" "$completion_pattern" "$completion_marker" -- \
         "$YOYO_BIN" --model "$MODEL" "${YOYO_SKILL_FLAGS[@]}" \
-        "${fallback_args[@]}" "${extra_args[@]}" <<'PY'
+        "${fallback_args[@]}" "${extra_args[@]}" <<'PY' || exit_code=$?
 import os
 import re
 import selectors
@@ -641,6 +685,7 @@ log_file = Path(sys.argv[3])
 stage_path = Path(sys.argv[4]) if sys.argv[4] else None
 completion_file = Path(sys.argv[5])
 completion_re = re.compile(sys.argv[6], re.IGNORECASE)
+completion_marker = Path(sys.argv[7])
 sep = sys.argv.index("--")
 cmd = sys.argv[sep + 1:]
 
@@ -717,6 +762,8 @@ with prompt_file.open("rb") as stdin, log_file.open("wb") as log_handle:
                     stage_handle.write(chunk)
                     stage_handle.flush()
         if completion_seen:
+            completion_marker.parent.mkdir(parents=True, exist_ok=True)
+            completion_marker.write_text("completion_file_matched\n", encoding="utf-8")
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -728,6 +775,17 @@ with prompt_file.open("rb") as stdin, log_file.open("wb") as log_handle:
         if stage_handle:
             stage_handle.close()
 PY
+    if [ -f "$completion_marker" ]; then
+        record_agent_terminal_events \
+            "$state_before_lines" "${STAGE_NAME:-agent}" "completed" "stopped_after_completion_file" \
+            "completion_file_matched" "" "agent stopped after completion evidence was written"
+        rm -f "$completion_marker"
+    elif [ "$exit_code" -eq 124 ]; then
+        record_agent_terminal_events \
+            "$state_before_lines" "${STAGE_NAME:-agent}" "error" "timeout" \
+            "timeout_after_seconds" "timeout" "agent timed out after ${timeout_val}s"
+    fi
+    return "$exit_code"
 }
 
 # ── Ensure fresh token (retries start with a stale token from job start) ──
