@@ -1981,6 +1981,20 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
     return sessions
 
 
+def harness_attention(work: dict[str, Any]) -> bool:
+    failed_tools = work.get("failed_tools") if isinstance(work.get("failed_tools"), list) else []
+    lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
+    lifecycle_unhealthy = lifecycle.get("observed") is True and lifecycle.get("healthy") is False
+    assessment_missing = (
+        work.get("assessment_artifact_present") is False
+        and (
+            work.get("assessment_transcript_present") is True
+            or work.get("assessment_diagnostic_present") is True
+        )
+    )
+    return bool(failed_tools or lifecycle_unhealthy or assessment_missing)
+
+
 def run_health(session: dict[str, Any]) -> str:
     attempted = session.get("tasks_attempted") or 0
     succeeded = session.get("tasks_succeeded") or 0
@@ -1997,7 +2011,7 @@ def run_health(session: dict[str, Any]) -> str:
         return "partial" if verified_count else "attention"
     if verified_total and verified_count == verified_total:
         if session.get("build_ok") is True and session.get("test_ok") is True:
-            return "passed"
+            return "partial" if harness_attention(work) else "passed"
         return "partial"
     if attempted:
         return "attention"
@@ -3365,11 +3379,18 @@ HTML = r"""<!doctype html>
       const verification = work.task_verification || {};
       const strictTotal = Number(verification.task_count || 0);
       const strictVerified = Number(verification.verified_task_count || 0);
+      const failedTools = Array.isArray(work.failed_tools) ? work.failed_tools : [];
+      const lifecycle = work.state_lifecycle || {};
+      const lifecycleUnhealthy = lifecycle.observed === true && lifecycle.healthy === false;
+      const assessmentMissing = work.assessment_artifact_present === false
+        && (work.assessment_transcript_present === true || work.assessment_diagnostic_present === true);
+      const harnessAttention = failedTools.length > 0 || lifecycleUnhealthy || assessmentMissing;
       if (session.reverted) return "reverted";
       if (manifest.planning_failed) return "attention";
       if (strictTotal && strictVerified < strictTotal) return strictVerified ? "partial" : "attention";
       if (strictTotal && strictVerified === strictTotal) {
-        return session.build_ok === true && session.test_ok === true ? "passed" : "partial";
+        if (session.build_ok !== true || session.test_ok !== true) return "partial";
+        return harnessAttention ? "partial" : "passed";
       }
       if (attempted) return "attention";
       if (session.build_ok === true && session.test_ok === true && attempted === succeeded) return "passed";

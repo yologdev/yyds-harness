@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_evolution_dashboard import (  # noqa: E402
     build,
     count_claim,
+    run_health,
     summarize_events_for_work,
     summarize_transcript_actions,
     task_verification_summary,
@@ -758,8 +759,35 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["task_lineage"][0]["verification_problems"], [])
             self.assertEqual(data["sessions"][0]["trace_quality"]["status"], "full")
             self.assertEqual(data["sessions"][0]["health"], "passed")
+            self.assertIn("const harnessAttention = failedTools.length > 0 || lifecycleUnhealthy || assessmentMissing", html)
             self.assertIn("const evalRows = (task.evals || [])", html)
             self.assertIn("evalRow.reason", html)
+
+    def test_run_health_demotes_verified_sessions_with_harness_attention(self):
+        base = {
+            "tasks_attempted": 1,
+            "tasks_succeeded": 1,
+            "build_ok": True,
+            "test_ok": True,
+            "work_summary": {
+                "task_manifest": {"planning_failed": False},
+                "task_verification": {"task_count": 1, "verified_task_count": 1},
+            },
+        }
+
+        self.assertEqual(run_health(base), "passed")
+
+        cases = [
+            {"failed_tools": ["edit src/lib.rs: old_text did not match"]},
+            {"state_lifecycle": {"observed": True, "healthy": False}},
+            {"assessment_artifact_present": False, "assessment_transcript_present": True},
+            {"assessment_artifact_present": False, "assessment_diagnostic_present": True},
+        ]
+        for work_update in cases:
+            with self.subTest(work_update=work_update):
+                session = json.loads(json.dumps(base))
+                session["work_summary"].update(work_update)
+                self.assertEqual(run_health(session), "partial")
 
     def test_state_pipeline_diagnostics_are_visible(self):
         with tempfile.TemporaryDirectory() as tmp:
