@@ -1608,6 +1608,7 @@ Follow the evolve skill rules:
 - Use edit_file for surgical changes
 - Verify guessed file paths with \`rg --files\` before reading/searching them; if a path is absent, search for the owning module, binary entrypoint, or symbol instead of retrying the missing path.
 - Use \`rg\` for code discovery and literal/fixed-string search for snippets with regex punctuation; keep searches scoped away from .git, target, and generated state files.
+- Do not send escaped regex snippets like \`fn handle_run\\(\` to the search tool. Search for a simple identifier such as \`handle_run\`, or run \`rg --fixed-strings 'fn handle_run(' src/commands_eval.rs\`.
 - Treat yoagent as upstream foundation code. If this task reveals that yoagent itself must change, do not patch around it in this repo. $YOAGENT_UPSTREAM_TARGET When you cannot safely make an upstream PR, create an agent-help-wanted issue in $REPO with the evidence and proposed upstream change, then stop this task or choose a harness-only mitigation that stays honest about the upstream dependency.
 - Run cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test after changes
 - If any check fails, read the error and fix it. Keep trying until it passes.
@@ -1978,6 +1979,7 @@ Tests: PASS
 5. If a command would be broad or slow, skip it and explain the verifier reason from the diff and task criteria.
 6. If the task added a user-facing feature, try one bounded invocation if practical.
 7. Check if docs were updated (if the task changed behavior).
+8. If you need to search, avoid regex-punctuation failures: search a simple identifier, or use \`rg --fixed-strings\` for snippets such as \`fn handle_run(\`. Do not send escaped regex snippets like \`fn handle_run\\(\` to the search tool.
 
 Write your verdict to session_plan/eval_task_${TASK_NUM}.md with exactly this format (no code fences):
 
@@ -2042,6 +2044,11 @@ $EVAL_FEEDBACK
 
 === WHAT TO DO ===
 Fix the issues the evaluator identified. The build and tests already pass ��� focus on completing the missing functionality, not on refactoring what works.
+
+Search discipline:
+- Verify guessed paths with \`rg --files\` before reading them.
+- Search simple identifiers, or use \`rg --fixed-strings\` for snippets with regex punctuation.
+- Do not send escaped regex snippets like \`fn handle_run\\(\` to the search tool.
 
 After fixing, run: cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test
 FIXEOF

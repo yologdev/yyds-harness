@@ -52,6 +52,9 @@ exactly.
 7. Use `rg` for code discovery. Use fixed-string/literal searches for snippets
    that contain regex punctuation such as `(`, `[`, `{`, `|`, or `\`, and keep
    searches scoped away from `.git`, `target`, and generated state files.
+8. Do not send escaped regex snippets such as `fn handle_run\(` to the search
+   tool. Search for a simple identifier like `handle_run`, or run
+   `rg --fixed-strings 'fn handle_run(' src/commands_eval.rs`.
 
 ## Making Changes
 
