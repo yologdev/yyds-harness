@@ -13,7 +13,13 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from build_evolution_dashboard import build, summarize_events_for_work, summarize_transcript_actions, transcript_summary  # noqa: E402
+from build_evolution_dashboard import (  # noqa: E402
+    build,
+    summarize_events_for_work,
+    summarize_transcript_actions,
+    task_verification_summary,
+    transcript_summary,
+)
 
 
 def write_json(path: Path, value: object) -> None:
@@ -213,6 +219,36 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(latest["avg_task_turn_count"], 18)
             self.assertEqual(latest["total_task_turn_count"], 18)
             self.assertEqual(data["sessions"][0]["work_summary"]["task_artifacts"][0]["max_turn_count"], 18)
+
+    def test_task_verification_surfaces_lineage_eval_statuses(self):
+        verification = task_verification_summary(
+            {
+                "tasks": [
+                    {
+                        "task_id": "task_01",
+                        "title": "Add state diagnostics",
+                        "files": ["src/state.rs"],
+                    }
+                ]
+            },
+            [],
+            [
+                {
+                    "task_id": "task_01",
+                    "task_title": "Add state diagnostics",
+                    "status": "completed",
+                    "planned_files": ["src/state.rs"],
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": ["abc123"],
+                    "eval": {"verdict": "PASS", "reason": "Verifier passed from state lineage."},
+                }
+            ],
+        )
+
+        row = verification["rows"][0]
+        self.assertTrue(row["strict_success"])
+        self.assertEqual(row["eval_statuses"], ["pass"])
+        self.assertEqual(row["eval_evidence_source"], "state_lineage")
 
     def test_state_event_failures_join_started_tool_args(self):
         events = [

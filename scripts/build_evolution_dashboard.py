@@ -823,6 +823,20 @@ def eval_summary_from_artifacts(evals: list[dict[str, Any]]) -> dict[str, Any] |
     return {key: value for key, value in summary.items() if value is not None}
 
 
+def eval_statuses_from_lineage(lineage_eval: Any) -> list[str]:
+    if not isinstance(lineage_eval, dict):
+        return []
+    status = str(lineage_eval.get("status") or "").strip().lower()
+    verdict = str(lineage_eval.get("verdict") or "").removeprefix("Verdict:").strip()
+    if status:
+        return [status]
+    if explicit_pass(verdict):
+        return ["pass"]
+    if explicit_fail(verdict):
+        return ["fail"]
+    return [verdict.lower()] if verdict else []
+
+
 def enrich_task_lineage_with_artifacts(
     task_lineage: list[dict[str, Any]],
     task_artifacts: list[dict[str, Any]],
@@ -920,6 +934,10 @@ def task_verification_summary(
             isinstance(eval_data, dict) and eval_timed_out_after_verdict(eval_data)
             for eval_data in artifact_evals
         )
+        artifact_eval_statuses = artifact.get("eval_statuses") or []
+        lineage_eval_statuses = eval_statuses_from_lineage(lineage.get("eval"))
+        eval_statuses = artifact_eval_statuses or lineage_eval_statuses
+        eval_evidence_source = "task_artifact" if artifact_eval_statuses else "state_lineage" if lineage_eval_statuses else None
         verified = eval_passed(artifact_evals, lineage.get("eval"))
         outcome_status = str(artifact.get("status") or lineage.get("status") or "")
         revert_reason = str(artifact.get("revert_reason") or lineage.get("revert_reason") or "").strip()
@@ -949,7 +967,8 @@ def task_verification_summary(
                 "outcome_status": outcome_status or None,
                 "revert_reason": revert_reason or None,
                 "landed_commit_shas": landed_commits,
-                "eval_statuses": artifact.get("eval_statuses") or [],
+                "eval_statuses": eval_statuses,
+                "eval_evidence_source": eval_evidence_source,
                 "problems": problems,
                 "strict_success": outcome_status == "completed" and overlap and verified and not problems,
             }
