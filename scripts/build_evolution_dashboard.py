@@ -1977,14 +1977,35 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
             "audit_url": f"{REPO_URL}/tree/audit-log/sessions/{session_dir.name}",
         }
         session["health"] = run_health(session)
+        session["health_reasons"] = run_health_reasons(session)
         sessions.append(session)
     return sessions
 
 
-def harness_attention(work: dict[str, Any]) -> bool:
+def reason_count(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def harness_attention_reasons(work: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
     failed_tools = work.get("failed_tools") if isinstance(work.get("failed_tools"), list) else []
+    if failed_tools:
+        reasons.append(f"{len(failed_tools)} failed tool action(s)")
     lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
     lifecycle_unhealthy = lifecycle.get("observed") is True and lifecycle.get("healthy") is False
+    if lifecycle_unhealthy:
+        runs = lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {}
+        model_calls = lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {}
+        parts = [
+            f"runs incomplete {reason_count(runs.get('incomplete'))}",
+            f"runs unmatched {reason_count(runs.get('unmatched_completed'))}",
+            f"model calls incomplete {reason_count(model_calls.get('incomplete'))}",
+            f"model calls unmatched {reason_count(model_calls.get('unmatched_completed'))}",
+        ]
+        reasons.append(f"state lifecycle unhealthy ({'; '.join(parts)})")
     assessment_missing = (
         work.get("assessment_artifact_present") is False
         and (
@@ -1992,7 +2013,41 @@ def harness_attention(work: dict[str, Any]) -> bool:
             or work.get("assessment_diagnostic_present") is True
         )
     )
-    return bool(failed_tools or lifecycle_unhealthy or assessment_missing)
+    if assessment_missing:
+        reasons.append("assessment artifact missing")
+    return reasons
+
+
+def harness_attention(work: dict[str, Any]) -> bool:
+    return bool(harness_attention_reasons(work))
+
+
+def run_health_reasons(session: dict[str, Any]) -> list[str]:
+    attempted = session.get("tasks_attempted") or 0
+    succeeded = session.get("tasks_succeeded") or 0
+    work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
+    manifest = work.get("task_manifest") if isinstance(work.get("task_manifest"), dict) else {}
+    verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
+    verified_total = int(verification.get("task_count") or 0)
+    verified_count = int(verification.get("verified_task_count") or 0)
+    if session.get("reverted"):
+        return ["session reverted"]
+    if manifest.get("planning_failed"):
+        return ["planning produced no task files"] + harness_attention_reasons(work)
+    if verified_total and verified_count < verified_total:
+        return [f"{verified_count}/{verified_total} verified tasks"] + harness_attention_reasons(work)
+    if verified_total and verified_count == verified_total:
+        if session.get("build_ok") is not True or session.get("test_ok") is not True:
+            return ["build/test did not both pass"]
+        reasons = harness_attention_reasons(work)
+        return reasons or ["verified tasks and clean harness evidence"]
+    if attempted:
+        return ["raw outcome tasks lack strict verification"] + harness_attention_reasons(work)
+    if session.get("build_ok") is True and session.get("test_ok") is True and attempted == succeeded:
+        return ["build/test passed with no attempted tasks"]
+    if succeeded:
+        return [f"{succeeded}/{attempted} raw outcome tasks succeeded"]
+    return ["no success evidence captured"]
 
 
 def run_health(session: dict[str, Any]) -> str:
@@ -3398,6 +3453,27 @@ HTML = r"""<!doctype html>
       return "attention";
     }
 
+    function healthReasonsOf(session) {
+      if (Array.isArray(session.health_reasons) && session.health_reasons.length) {
+        return session.health_reasons;
+      }
+      const work = session.work_summary || {};
+      const verification = work.task_verification || {};
+      const strictTotal = Number(verification.task_count || 0);
+      const strictVerified = Number(verification.verified_task_count || 0);
+      const failedTools = Array.isArray(work.failed_tools) ? work.failed_tools : [];
+      const lifecycle = work.state_lifecycle || {};
+      const lifecycleUnhealthy = lifecycle.observed === true && lifecycle.healthy === false;
+      const assessmentMissing = work.assessment_artifact_present === false
+        && (work.assessment_transcript_present === true || work.assessment_diagnostic_present === true);
+      const reasons = [];
+      if (strictTotal && strictVerified < strictTotal) reasons.push(`${strictVerified}/${strictTotal} verified tasks`);
+      if (failedTools.length) reasons.push(`${failedTools.length} failed tool action(s)`);
+      if (lifecycleUnhealthy) reasons.push("state lifecycle unhealthy");
+      if (assessmentMissing) reasons.push("assessment artifact missing");
+      return reasons.length ? reasons : ["no success evidence captured"];
+    }
+
     function healthClass(health) {
       if (health === "passed") return "good";
       if (health === "partial") return "warn";
@@ -3559,6 +3635,7 @@ HTML = r"""<!doctype html>
       const heroCopy = session
         ? text(work.headline || "No detailed work signals captured")
         : "Run an evolution session and push audit evidence to populate this report.";
+      const healthReasons = session ? healthReasonsOf(session).map(text).join("; ") : "";
       document.getElementById("heroSummary").innerHTML = `
         <div>
           <span class="pill ${healthClass(health)}">${text(health)}</span>
@@ -3566,6 +3643,7 @@ HTML = r"""<!doctype html>
           <h2 class="hero-title">${heroTitle}</h2>
           <div class="hero-kicker">${heroMeta}</div>
           <p class="hero-copy">${heroCopy}</p>
+          ${healthReasons ? `<p class="muted">Health reason: ${healthReasons}</p>` : ""}
         </div>
         <aside class="hero-side">
           <div>
@@ -4037,12 +4115,13 @@ HTML = r"""<!doctype html>
         const evidenceFiles = work.edited_files || [];
         const failedTools = work.failed_tools || [];
         const phaseText = Object.entries(transcripts.phase_counts || {}).map(([phase, count]) => `${phase} ${count}`).join(", ");
+        const healthReasons = healthReasonsOf(session).map(text).join("; ");
         return `<article class="item work-row">
           <div class="work-meta">
             <span class="pill ${healthClass(healthOf(session))}">${text(healthOf(session))}</span>
             <span class="pill soft">${text(trace.label || "unknown trace")}</span>
             <strong class="work-title">${text(session.id)}</strong>
-            <p class="muted">${text(sessionSourceLine(session))}<br>${text(work.headline || "No detailed work signals captured")}</p>
+            <p class="muted">${text(sessionSourceLine(session))}<br>${text(work.headline || "No detailed work signals captured")}<br>Health reason: ${healthReasons}</p>
           </div>
           <div>
             <div class="work-facts">
@@ -4166,9 +4245,10 @@ HTML = r"""<!doctype html>
         const trace = session.trace_quality || {};
         const verification = work.task_verification || {};
         const verifiedText = verification.task_count ? `<br>verified ${text(verification.verified_task_count || 0)}/${text(verification.task_count || 0)}` : "";
+        const healthReasonText = healthReasonsOf(session).map(text).join("; ");
         return `<tr>
           <td><strong>${text(session.id)}</strong><div class="muted">Day ${text(session.day)} at ${text(session.session_time)}<br>${text(session.ts)}<br>${text(sessionSourceLine(session))}${session.github_run_id ? `<br>run ${text(session.github_run_id)} attempt ${text(session.github_run_attempt || "-")}` : ""}</div></td>
-          <td><span class="pill ${healthClass(health)}">${text(health)}</span><div class="muted">build ${text(session.build_ok)} / test ${text(session.test_ok)}<br>tasks ${text(session.tasks_succeeded)}/${text(session.tasks_attempted)}${verifiedText}<br>${text(work.headline)}</div></td>
+          <td><span class="pill ${healthClass(health)}">${text(health)}</span><div class="muted">build ${text(session.build_ok)} / test ${text(session.test_ok)}<br>tasks ${text(session.tasks_succeeded)}/${text(session.tasks_attempted)}${verifiedText}<br>${text(work.headline)}<br>Health reason: ${healthReasonText}</div></td>
           <td><span class="${decisionClass(decision)}">${text(decision.criterion || decision.decision || decision.decision_type)}</span><div class="muted">${text(decision.reason)}</div></td>
           <td><span class="pill soft">${text(trace.label || "unknown trace")}</span><div class="muted">${text(trace.trace_event_count || 0)} trace events / ${text(events)} total<br>eval ${text(evalData.status)} ${evalData.score === undefined ? "" : `score ${text(evalData.score)}`}</div></td>
           <td><a href="${text(session.audit_url)}">audit files</a><div class="muted">${text((session.blockers || []).length)} blockers / ${text((session.evals || []).length)} evals / ${text(work.source_commit_count || 0)} source commits / ${text(work.bookkeeping_commit_count || 0)} bookkeeping commits / ${text((session.patches || []).length)} state patches</div></td>

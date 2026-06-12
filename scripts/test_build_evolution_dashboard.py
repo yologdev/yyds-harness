@@ -17,6 +17,7 @@ from build_evolution_dashboard import (  # noqa: E402
     build,
     count_claim,
     run_health,
+    run_health_reasons,
     summarize_events_for_work,
     summarize_transcript_actions,
     task_verification_summary,
@@ -759,6 +760,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["task_lineage"][0]["verification_problems"], [])
             self.assertEqual(data["sessions"][0]["trace_quality"]["status"], "full")
             self.assertEqual(data["sessions"][0]["health"], "passed")
+            self.assertEqual(data["sessions"][0]["health_reasons"], ["verified tasks and clean harness evidence"])
+            self.assertIn("Health reason:", html)
+            self.assertIn("function healthReasonsOf(session)", html)
             self.assertIn("const harnessAttention = failedTools.length > 0 || lifecycleUnhealthy || assessmentMissing", html)
             self.assertIn("const evalRows = (task.evals || [])", html)
             self.assertIn("evalRow.reason", html)
@@ -776,18 +780,50 @@ class BuildEvolutionDashboard(unittest.TestCase):
         }
 
         self.assertEqual(run_health(base), "passed")
+        self.assertEqual(run_health_reasons(base), ["verified tasks and clean harness evidence"])
 
         cases = [
-            {"failed_tools": ["edit src/lib.rs: old_text did not match"]},
-            {"state_lifecycle": {"observed": True, "healthy": False}},
-            {"assessment_artifact_present": False, "assessment_transcript_present": True},
-            {"assessment_artifact_present": False, "assessment_diagnostic_present": True},
+            (
+                {"failed_tools": ["edit src/lib.rs: old_text did not match"]},
+                ["1 failed tool action(s)"],
+            ),
+            (
+                {
+                    "state_lifecycle": {
+                        "observed": True,
+                        "healthy": False,
+                        "runs": {"incomplete": 2, "unmatched_completed": 1},
+                        "model_calls": {"incomplete": 3, "unmatched_completed": 4},
+                    }
+                },
+                [
+                    "state lifecycle unhealthy (runs incomplete 2; runs unmatched 1; model calls incomplete 3; model calls unmatched 4)"
+                ],
+            ),
+            (
+                {"assessment_artifact_present": False, "assessment_transcript_present": True},
+                ["assessment artifact missing"],
+            ),
+            (
+                {"assessment_artifact_present": False, "assessment_diagnostic_present": True},
+                ["assessment artifact missing"],
+            ),
         ]
-        for work_update in cases:
+        for work_update, expected_reasons in cases:
             with self.subTest(work_update=work_update):
                 session = json.loads(json.dumps(base))
                 session["work_summary"].update(work_update)
                 self.assertEqual(run_health(session), "partial")
+                self.assertEqual(run_health_reasons(session), expected_reasons)
+
+        incomplete = json.loads(json.dumps(base))
+        incomplete["work_summary"]["task_verification"] = {"task_count": 3, "verified_task_count": 2}
+        incomplete["work_summary"]["failed_tools"] = ["read src/main.rs: missing"]
+        self.assertEqual(run_health(incomplete), "partial")
+        self.assertEqual(
+            run_health_reasons(incomplete),
+            ["2/3 verified tasks", "1 failed tool action(s)"],
+        )
 
     def test_state_pipeline_diagnostics_are_visible(self):
         with tempfile.TemporaryDirectory() as tmp:
