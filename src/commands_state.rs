@@ -853,7 +853,15 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
     }
     match build_why_report(&events, id) {
         Ok(report) => println!("{report}"),
-        Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+        Err(e) => {
+            let mut msg = format!("{YELLOW}  {e}{RESET}");
+            if limit > 0 && events.len() >= limit {
+                msg.push_str(&format!(
+                    "\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}"
+                ));
+            }
+            eprintln!("{msg}");
+        }
     }
     if limit > 0 {
         let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
