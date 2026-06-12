@@ -1417,7 +1417,20 @@ def work_summary(
     causal_chains = annotate_task_lineage_verification(causal_chains, task_verification)
     suggestions = augment_evolution_suggestions(suggestions, task_verification)
     source_patch_count = len(source_commits)
-    assessment_artifact_present = bool(task_manifest.get("assessment_present")) if task_manifest else None
+    assessment_file_present = (session_dir / "tasks" / "assessment.md").is_file()
+    assessment_missing_file_present = (session_dir / "tasks" / "assessment_missing.md").is_file()
+    if task_manifest:
+        assessment_artifact_present = bool(task_manifest.get("assessment_present") or assessment_file_present)
+    else:
+        assessment_artifact_present = assessment_file_present
+    assessment_diagnostic_present = bool(
+        task_manifest.get("assessment_missing_present")
+        or (
+            isinstance(task_manifest.get("artifacts"), dict)
+            and task_manifest.get("artifacts", {}).get("assessment_missing")
+        )
+        or assessment_missing_file_present
+    )
     assessment_transcript_present = bool((transcript_data.get("phase_counts") or {}).get("assess"))
     verification_rows = task_verification.get("rows") if isinstance(task_verification.get("rows"), list) else []
     unlanded_source_task_count = sum(
@@ -1446,7 +1459,7 @@ def work_summary(
         labels.append("planning produced no task files")
     if unlanded_source_task_count:
         labels.append(f"{unlanded_source_task_count} unlanded source task(s)")
-    if task_manifest and assessment_artifact_present is False:
+    if assessment_artifact_present is False and (task_manifest or assessment_transcript_present or assessment_missing_file_present):
         if assessment_transcript_present:
             labels.append("assessment artifact missing (assess transcript present)")
         else:
@@ -1473,6 +1486,7 @@ def work_summary(
         "headline": "; ".join(labels[:4]),
         "labels": labels,
         "assessment_artifact_present": assessment_artifact_present,
+        "assessment_diagnostic_present": assessment_diagnostic_present,
         "assessment_transcript_present": assessment_transcript_present,
         "unlanded_source_task_count": unlanded_source_task_count,
         "transcripts": transcript_data,
@@ -2214,11 +2228,12 @@ def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
     artifact_present = work.get("assessment_artifact_present")
     transcript_present = work.get("assessment_transcript_present")
     manifest_artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), dict) else {}
-    diagnostic_present = bool(manifest.get("assessment_missing_present") or manifest_artifacts.get("assessment_missing"))
-    if not manifest:
-        status = "missing"
-        detail = "No task manifest is available, so assessment artifact state is unknown."
-    elif artifact_present is True:
+    diagnostic_present = bool(
+        work.get("assessment_diagnostic_present")
+        or manifest.get("assessment_missing_present")
+        or manifest_artifacts.get("assessment_missing")
+    )
+    if artifact_present is True:
         status = "proven"
         detail = "Assessment artifact is present."
     elif diagnostic_present and transcript_present:
@@ -2227,9 +2242,12 @@ def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
     elif transcript_present:
         status = "observed"
         detail = "Assessment phase transcript exists but the assessment artifact is missing."
+    elif artifact_present is False:
+        status = "missing"
+        detail = "No assessment artifact or assessment transcript was found."
     else:
         status = "missing"
-        detail = "Task manifest exists but no assessment artifact or assessment transcript was found."
+        detail = "Assessment artifact state is unknown."
     return claim_row(
         "assessment_artifact_and_transcript_state",
         status,
@@ -3994,7 +4012,7 @@ HTML = r"""<!doctype html>
               <div class="fact"><strong>${text(work.unlanded_source_task_count || 0)}</strong>unlanded source tasks</div>
               <div class="fact"><strong>${text(evidenceFiles.length || 0)}</strong>evidence edits</div>
               <div class="fact"><strong>${text(work.eval_count || 0)}</strong>evals</div>
-              <div class="fact"><strong>${hasManifest ? text(manifest.assessment_present ? "yes" : "no") : "-"}</strong>assessment artifact</div>
+              <div class="fact"><strong>${work.assessment_artifact_present === true ? "yes" : work.assessment_artifact_present === false ? "no" : "-"}</strong>assessment artifact</div>
               <div class="fact"><strong>${text(work.source_commit_count || 0)}</strong>source commits</div>
               <div class="fact"><strong>${text(failedTools.length || 0)}</strong>tool fails</div>
               <div class="fact"><strong>${text(work.decision_count || 0)}</strong>decisions</div>

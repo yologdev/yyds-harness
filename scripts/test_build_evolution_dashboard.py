@@ -2245,6 +2245,43 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertTrue(assessment_claim["actual"]["diagnostic_present"])
             self.assertIn("diagnostic artifact", assessment_claim["detail"])
 
+    def test_assessment_transcript_without_manifest_marks_artifact_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "build_ok": True,
+                    "test_ok": True,
+                },
+            )
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("assess.log").write_text("assessment phase ran\n", encoding="utf-8")
+
+            data = build(root / "sessions", root / "out")
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            work = data["sessions"][0]["work_summary"]
+            assessment_claim = next(
+                claim
+                for claim in claims["sessions"][0]["claims"]
+                if claim["name"] == "assessment_artifact_and_transcript_state"
+            )
+
+            self.assertFalse(work["assessment_artifact_present"])
+            self.assertTrue(work["assessment_transcript_present"])
+            self.assertFalse(work["assessment_diagnostic_present"])
+            self.assertIn("assessment artifact missing (assess transcript present)", work["headline"])
+            self.assertEqual(assessment_claim["status"], "observed")
+            self.assertEqual(assessment_claim["actual"]["artifact_present"], False)
+            self.assertTrue(assessment_claim["actual"]["transcript_present"])
+            self.assertIn("assessment artifact is missing", assessment_claim["detail"])
+
     def test_transcript_actions_fill_work_evidence_when_state_events_are_sparse(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
