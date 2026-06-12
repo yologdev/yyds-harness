@@ -4138,6 +4138,43 @@ HTML = r"""<!doctype html>
       return `<ul class="mini-list">${rows.map(row => `<li>${row}</li>`).join("")}</ul>`;
     }
 
+    function lifecycleLastEventLabel(lastEvent) {
+      if (!lastEvent || typeof lastEvent !== "object") return "";
+      const bits = [lastEvent.kind, lastEvent.tool_name, lastEvent.path, lastEvent.command, lastEvent.status]
+        .filter(value => value !== null && value !== undefined && value !== "")
+        .map(value => String(value));
+      return bits.length ? `; last ${bits.join(" / ")}` : "";
+    }
+
+    function renderLifecycleRuns(label, rows) {
+      const values = Array.isArray(rows) ? rows.slice(0, 4) : [];
+      if (!values.length) return "";
+      return values.map(row => {
+        if (typeof row === "string") return `${label}: ${text(row)}`;
+        const runId = row && typeof row === "object" ? row.run_id : "";
+        return `${label}: ${text(runId || "unknown")}${text(lifecycleLastEventLabel(row.last_event))}`;
+      });
+    }
+
+    function renderStateLifecycle(work) {
+      const lifecycle = work.state_lifecycle || {};
+      const runs = lifecycle.runs || {};
+      const modelCalls = lifecycle.model_calls || {};
+      if (lifecycle.observed !== true) {
+        return `<p class="muted">No run/model lifecycle events observed.</p>`;
+      }
+      const rows = [
+        `status ${text(lifecycle.healthy === true ? "healthy" : "unhealthy")} / balanced ${text(lifecycle.balanced === true ? "yes" : "no")}`,
+        `runs ${text(runs.started || 0)} started, ${text(runs.completed || 0)} completed, ${text(runs.incomplete || 0)} incomplete, ${text(runs.unmatched_completed || 0)} unmatched completed`,
+        `model calls ${text(modelCalls.started || 0)} started, ${text(modelCalls.completed || 0)} completed, ${text(modelCalls.incomplete || 0)} incomplete, ${text(modelCalls.unmatched_completed || 0)} unmatched completed`
+      ];
+      rows.push(...renderLifecycleRuns("incomplete run", runs.incomplete_runs));
+      rows.push(...renderLifecycleRuns("unmatched completed run", runs.unmatched_completed_runs));
+      rows.push(...renderLifecycleRuns("incomplete model call", modelCalls.incomplete_runs));
+      rows.push(...renderLifecycleRuns("unmatched completed model call", modelCalls.unmatched_completed_runs));
+      return `<ul class="mini-list">${rows.map(row => `<li>${row}</li>`).join("")}</ul>`;
+    }
+
     function renderTaskArtifacts(session, work) {
       const manifest = work.task_manifest || {};
       const verification = work.task_verification || {};
@@ -4330,6 +4367,7 @@ HTML = r"""<!doctype html>
                 <div><strong>Next-task suggestions</strong>${renderEvolutionSuggestions(work)}</div>
                 <div><strong>Task decision evidence</strong>${renderTaskArtifacts(session, work)}</div>
                 <div><strong>Agent transcripts</strong>${renderTranscriptList(session, work)}</div>
+                <div><strong>State lifecycle</strong>${renderStateLifecycle(work)}</div>
                 <div><strong>State pipeline</strong>${renderStatePipeline(work)}</div>
                 <div><strong>Validated</strong>${listItems(work.commands, "No command events recorded.")}</div>
                 <div><strong>Read${sampleCountLabel(work.read_files, readFileCount)}</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
