@@ -1172,7 +1172,11 @@ ASSESSEOF
 
 AGENT_LOG=$(mktemp)
 ASSESS_EXIT=0
-STAGE_NAME=assess run_agent_with_fallback "$ASSESS_TIMEOUT" "$ASSESS_PROMPT" "$AGENT_LOG" "--no-auto-watch" || ASSESS_EXIT=$?
+STAGE_NAME=assess \
+    run_agent_with_completion_watch \
+        "$ASSESS_TIMEOUT" "$ASSESS_PROMPT" "$AGENT_LOG" \
+        "session_plan/assessment.md" '^# Assessment\b' \
+        "--no-auto-watch" || ASSESS_EXIT=$?
 
 rm -f "$ASSESS_PROMPT"
 
