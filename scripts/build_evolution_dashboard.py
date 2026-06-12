@@ -55,6 +55,26 @@ def log_feedback_metrics(session_dir: Path) -> dict[str, Any]:
     }
 
 
+def log_feedback_top_lessons(session_dir: Path) -> list[dict[str, Any]]:
+    feedback = load_json(session_dir / "log_feedback.json")
+    lessons = feedback.get("top_lessons")
+    if not isinstance(lessons, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for lesson in lessons[:6]:
+        if not isinstance(lesson, dict):
+            continue
+        rows.append(
+            {
+                "kind": str(lesson.get("kind") or ""),
+                "fingerprint": str(lesson.get("fingerprint") or ""),
+                "action": str(lesson.get("action") or ""),
+                "count": lesson.get("count"),
+            }
+        )
+    return rows
+
+
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     if not path.is_file():
@@ -2017,9 +2037,14 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         trace = trace_quality(summary, evals)
         work = work_summary(session_dir, outcome, summary, evals, blockers, commits)
         feedback_metrics = log_feedback_metrics(session_dir)
+        feedback_lessons = log_feedback_top_lessons(session_dir)
         latest_gnomes = corrected_gnomes(summary, work, trace, outcome, feedback_metrics)
         normalize_work_gnome_snapshots(work, latest_gnomes)
         evals, latest_eval, latest_eval_corrections = normalize_latest_eval_gnomes(evals, latest_gnomes)
+        if feedback_lessons:
+            work["log_feedback_top_lessons"] = feedback_lessons
+        if latest_eval and feedback_lessons:
+            latest_eval["top_lessons"] = feedback_lessons
         if latest_eval:
             work["latest_eval_status"] = latest_eval.get("status")
             work["latest_eval_score"] = latest_eval.get("score")
@@ -4344,6 +4369,17 @@ HTML = r"""<!doctype html>
       }).join("")}</ul>`;
     }
 
+    function renderLogFeedbackLessons(session, work) {
+      const evalData = session.latest_eval || {};
+      const rows = (work.log_feedback_top_lessons || evalData.top_lessons || []).slice(0, 4);
+      if (!rows.length) return `<p class="muted">No log-feedback lessons recorded.</p>`;
+      return `<ul class="mini-list">${rows.map(row => {
+        const kind = row.kind ? `${text(row.kind)}: ` : "";
+        const count = row.count === undefined || row.count === null ? "" : ` (${text(row.count)}x)`;
+        return `<li><strong>${kind}${text(row.fingerprint || "lesson")}${count}</strong><br><span class="muted">${text(row.action || "")}</span></li>`;
+      }).join("")}</ul>`;
+    }
+
     function renderSessionWork(sessions) {
       const panel = document.getElementById("sessionWork");
       if (!sessions.length) {
@@ -4398,6 +4434,7 @@ HTML = r"""<!doctype html>
                 <div><strong>Task lineage</strong>${renderTaskLineage(work)}</div>
                 <div><strong>Causal chains</strong>${renderCausalChains(work)}</div>
                 <div><strong>Next-task suggestions</strong>${renderEvolutionSuggestions(work)}</div>
+                <div><strong>Log-feedback lessons</strong>${renderLogFeedbackLessons(session, work)}</div>
                 <div><strong>Task decision evidence</strong>${renderTaskArtifacts(session, work)}</div>
                 <div><strong>Agent transcripts</strong>${renderTranscriptList(session, work)}</div>
                 <div><strong>State lifecycle</strong>${renderStateLifecycle(work)}</div>

@@ -2703,6 +2703,63 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(failed_tool_claim["expected"]["minimum_count"], 10)
             self.assertEqual(len(failed_tool_claim["evidence"]), 8)
 
+    def test_log_feedback_top_lessons_are_exposed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "evals": [
+                        {
+                            "eval_id": "log-feedback-1",
+                            "suite": "log-feedback",
+                            "status": "failed",
+                            "score": 0.4,
+                            "gnomes": {"coding_log_score": 0.4},
+                        }
+                    ],
+                    "latest_gnomes": {"coding_log_score": 0.4},
+                    "gnome_keys": ["coding_log_score"],
+                },
+            )
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {"coding_log_score": 0.4},
+                    "top_lessons": [
+                        {
+                            "kind": "search_error",
+                            "fingerprint": "search tool or grep produced an error",
+                            "action": "prefer the hardened search tool and scoped literal searches",
+                        }
+                    ],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+            lessons = session_data["latest_eval"]["top_lessons"]
+
+            self.assertEqual(lessons[0]["kind"], "search_error")
+            self.assertEqual(
+                session_data["work_summary"]["log_feedback_top_lessons"][0]["action"],
+                "prefer the hardened search tool and scoped literal searches",
+            )
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            data_json = (root / "out/data.json").read_text(encoding="utf-8")
+            self.assertIn("Log-feedback lessons", html)
+            self.assertIn("search tool or grep produced an error", data_json)
+
     def test_build_writes_structured_claims_projection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
