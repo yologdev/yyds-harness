@@ -4179,6 +4179,18 @@ HTML = r"""<!doctype html>
       const manifest = work.task_manifest || {};
       const verification = work.task_verification || {};
       const rows = (work.task_artifacts || []).slice(0, 6);
+      const attempted = Number(session.tasks_attempted || 0);
+      const succeeded = Number(session.tasks_succeeded || 0);
+      const manifestTaskCount = Number(manifest.task_count ?? ((manifest.tasks || []).length || 0));
+      const artifactCount = (work.task_artifacts || []).length;
+      const strictTotal = Number(verification.task_count || 0);
+      const strictVerified = Number(verification.verified_task_count || 0);
+      const assessmentText = work.assessment_artifact_present === true
+        ? "assessment present"
+        : work.assessment_artifact_present === false
+          ? "assessment missing"
+          : "assessment unknown";
+      const evidenceSummary = `<p class="muted">Task evidence: raw outcome ${text(succeeded)}/${text(attempted)}; manifest ${text(manifestTaskCount)} task(s); artifact bundles ${text(artifactCount)}; strict verification ${text(strictVerified)}/${text(strictTotal)}; ${text(assessmentText)}.</p>`;
       const manifestArtifacts = manifest.artifacts || {};
       const manifestLinks = [
         manifestArtifacts.manifest ? auditLink(session, manifestArtifacts.manifest, "manifest.json") : "",
@@ -4204,6 +4216,7 @@ HTML = r"""<!doctype html>
       }).join("");
       const manifestBlock = manifest.task_count !== undefined ? `<div class="task-evidence">
           <strong>Plan decision ${manifest.planning_failed ? "(planning failed)" : ""}</strong>
+          ${evidenceSummary}
           ${planningFailure}
           <p class="muted">${text(manifest.selected_task_count || 0)} selected of ${text(manifest.task_count || 0)} task file(s). ${text((manifest.warnings || []).join(", ") || "No manifest warnings.")}</p>
           ${verificationBlock}
@@ -4211,7 +4224,7 @@ HTML = r"""<!doctype html>
           ${manifestLinks ? `<p class="muted">${manifestLinks}</p>` : ""}
           ${manifestTasks ? `<ul class="mini-list"><li>${manifestTasks}</li></ul>` : ""}
         </div>` : "";
-      if (!rows.length) return manifestBlock || `<p class="muted">No per-task artifact bundle recorded yet.</p>`;
+      if (!rows.length) return manifestBlock || evidenceSummary + `<p class="muted">No per-task artifact bundle recorded yet.</p>`;
       return manifestBlock + rows.map(task => {
         const statuses = (task.eval_statuses || []).length ? task.eval_statuses.join(", ") : "no eval artifact";
         const attempts = (task.attempts || []).slice(0, 4).map(attempt => {

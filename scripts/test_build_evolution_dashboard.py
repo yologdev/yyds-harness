@@ -793,6 +793,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("State lifecycle", html)
             self.assertIn("incomplete run", html)
             self.assertIn("unmatched completed model call", html)
+            self.assertIn("Task evidence: raw outcome", html)
+            self.assertIn("artifact bundles", html)
             self.assertIn('String(session.health || "").trim()', html)
             self.assertIn(
                 "const harnessAttention = failedToolCount > 0 || failedCommandCount > failedToolCount || lifecycleMissing || lifecycleUnhealthy || assessmentMissing",
