@@ -182,8 +182,8 @@ Implementation Notes:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--assessment", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--assessment", type=Path)
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--day", default="")
     parser.add_argument("--session-time", default="")
     parser.add_argument("--test", action="store_true")
@@ -197,8 +197,15 @@ def main() -> int:
         assert task["title"] == "Record DeepSeek prompt cache metrics during prompt runs", task
         text = render_task(task, "103", "12:53")
         assert "Title:" in text and "Success Criteria:" in text and "Origin: harness-seed" in text
+        assessment = "Assessment phase produced a transcript but did not write session_plan/assessment.md."
+        task = choose_task(assessment)
+        assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
         print("preseed_session_plan self-tests passed")
         return 0
+    if args.assessment is None:
+        parser.error("--assessment is required unless --test is set")
+    if args.output_dir is None:
+        parser.error("--output-dir is required unless --test is set")
 
     if any(args.output_dir.glob("task_*.md")):
         return 0

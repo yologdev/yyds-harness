@@ -1178,17 +1178,23 @@ Expected follow-up:
 ASSESSMISSING
 fi
 rm -f session_plan/task_*.md
+PRESEED_SOURCE=""
 if [ -s session_plan/assessment.md ]; then
+    PRESEED_SOURCE="session_plan/assessment.md"
+elif [ -s session_plan/assessment_missing.md ]; then
+    PRESEED_SOURCE="session_plan/assessment_missing.md"
+fi
+if [ -n "$PRESEED_SOURCE" ]; then
     if python3 scripts/preseed_session_plan.py \
-        --assessment session_plan/assessment.md \
+        --assessment "$PRESEED_SOURCE" \
         --output-dir session_plan \
         --day "$DAY" \
         --session-time "$SESSION_TIME"; then
         if [ -f session_plan/task_01.md ]; then
-            echo "  Seeded task_01.md from assessment evidence before planner refinement."
+            echo "  Seeded task_01.md from assessment/fallback evidence before planner refinement."
         fi
     else
-        echo "  WARNING: failed to preseed session plan from assessment" >&2
+        echo "  WARNING: failed to preseed session plan from assessment/fallback evidence" >&2
     fi
 fi
 
