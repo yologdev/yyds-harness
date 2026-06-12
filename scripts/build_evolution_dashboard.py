@@ -2488,14 +2488,19 @@ def build_claims_projection(
     status_counts: dict[str, int] = {}
     claim_count = 0
     for session in sessions:
-        claims = session_claims(session)
+        session_id = session.get("id")
+        claims = [
+            {**claim, "session_id": session_id}
+            for claim in session_claims(session)
+            if isinstance(claim, dict)
+        ]
         claim_count += len(claims)
         for row in claims:
             status = str(row.get("status") or "unknown")
             status_counts[status] = status_counts.get(status, 0) + 1
         session_rows.append(
             {
-                "id": session.get("id"),
+                "id": session_id,
                 "ts": session.get("ts"),
                 "health": session.get("health"),
                 "headline": (session.get("work_summary") or {}).get("headline")

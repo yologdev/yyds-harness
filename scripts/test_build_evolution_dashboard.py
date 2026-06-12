@@ -1469,6 +1469,10 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(latest["deepseek_cache_metric_event_count"], 1)
             self.assertEqual(latest["deepseek_cache_metric_missing_count"], 0)
             self.assertEqual(cache_claim["status"], "proven")
+            self.assertEqual(cache_claim["session_id"], "day-1")
+            self.assertTrue(
+                all(claim["session_id"] == "day-1" for claim in claims["sessions"][0]["claims"])
+            )
 
     def test_incomplete_deepseek_model_calls_are_claimed(self):
         with tempfile.TemporaryDirectory() as tmp:
