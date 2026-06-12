@@ -3092,6 +3092,22 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 session_claims["deepseek_cache_ratio_is_token_backed_or_marked_unverified"]["actual"]["unverified_count"],
                 1,
             )
+            self.assertEqual(
+                session_claims["failed_tool_summary_counts_match_failures"]["status"],
+                "proven",
+            )
+            self.assertEqual(
+                session_claims["failed_tool_summary_counts_match_failures"]["actual"]["category_counts"],
+                {"search_tool_error": 1},
+            )
+            self.assertEqual(
+                session_claims["task_state_counts_match_rows"]["status"],
+                "proven",
+            )
+            self.assertEqual(
+                session_claims["task_state_counts_match_rows"]["actual"]["task_count"],
+                0,
+            )
 
     def test_count_claim_observes_zero_evidence_when_metric_is_absent(self):
         claim = count_claim(

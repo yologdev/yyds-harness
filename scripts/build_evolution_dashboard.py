@@ -3009,6 +3009,80 @@ def task_verification_count_claim(work: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def task_state_count_claim(work: dict[str, Any]) -> dict[str, Any]:
+    task_states = work.get("task_states") if isinstance(work.get("task_states"), dict) else {}
+    rows = task_states.get("tasks") if isinstance(task_states.get("tasks"), list) else []
+    typed_rows = [row for row in rows if isinstance(row, dict)]
+    expected_state_counts: dict[str, int] = {}
+    for row in typed_rows:
+        state = str(row.get("state") or "unknown")
+        expected_state_counts[state] = expected_state_counts.get(state, 0) + 1
+    expected_strict_success = sum(1 for row in typed_rows if row.get("strict_success") is True)
+    expected_unverified = len(typed_rows) - expected_strict_success
+    actual = {
+        "task_count": task_states.get("task_count"),
+        "strict_success_count": task_states.get("strict_success_count"),
+        "unverified_count": task_states.get("unverified_count"),
+        "state_counts": task_states.get("state_counts") if isinstance(task_states.get("state_counts"), dict) else {},
+    }
+    status = "proven"
+    if not typed_rows and not task_states:
+        status = "observed"
+    elif (
+        int_or_none(actual["task_count"]) != len(typed_rows)
+        or int_or_none(actual["strict_success_count"]) != expected_strict_success
+        or int_or_none(actual["unverified_count"]) != expected_unverified
+        or actual["state_counts"] != dict(sorted(expected_state_counts.items()))
+    ):
+        status = "conflict"
+    return claim_row(
+        "task_state_counts_match_rows",
+        status,
+        {
+            "task_count": len(typed_rows),
+            "strict_success_count": expected_strict_success,
+            "unverified_count": expected_unverified,
+            "state_counts": dict(sorted(expected_state_counts.items())),
+        },
+        actual,
+        [str(row.get("task_id")) for row in typed_rows if row.get("task_id")][:8],
+        "Structured task-state summary counts should be derived from task state rows.",
+        ["work_summary.task_states.tasks", "work_summary.task_states"],
+    )
+
+
+def failed_tool_summary_count_claim(work: dict[str, Any]) -> dict[str, Any]:
+    summary = work.get("failed_tool_summary") if isinstance(work.get("failed_tool_summary"), dict) else {}
+    category_counts = summary.get("category_counts") if isinstance(summary.get("category_counts"), dict) else {}
+    category_total = sum(int(value or 0) for value in category_counts.values())
+    failed_tool_count = int_or_none(work.get("failed_tool_count")) or 0
+    total_count = int_or_none(summary.get("total_count"))
+    status = "proven"
+    if total_count != category_total or total_count != failed_tool_count:
+        status = "conflict"
+    if total_count == 0 and failed_tool_count == 0 and not category_counts:
+        status = "observed"
+    return claim_row(
+        "failed_tool_summary_counts_match_failures",
+        status,
+        {
+            "failed_tool_count": failed_tool_count,
+            "category_total": category_total,
+        },
+        {
+            "total_count": total_count,
+            "failed_tool_count": failed_tool_count,
+            "category_counts": category_counts,
+        },
+        [
+            f"{category}:{count}"
+            for category, count in sorted(category_counts.items(), key=lambda item: (-int(item[1] or 0), item[0]))
+        ][:8],
+        "Failed-tool category totals should match the uncapped failed tool count.",
+        ["work_summary.failed_tools", "work_summary.failed_tool_summary"],
+    )
+
+
 def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
     manifest = work.get("task_manifest") if isinstance(work.get("task_manifest"), dict) else {}
     artifact_present = work.get("assessment_artifact_present")
@@ -3252,6 +3326,8 @@ def session_claims(session: dict[str, Any]) -> list[dict[str, Any]]:
             "Tasks with source edits and no landed source commit should be reflected in task_unlanded_source_count.",
         ),
         task_verification_count_claim(work),
+        task_state_count_claim(work),
+        failed_tool_summary_count_claim(work),
         assessment_claim(work),
         model_call_lifecycle_claim(gnomes, work),
         state_run_lifecycle_claim(gnomes, work),
