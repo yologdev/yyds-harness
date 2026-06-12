@@ -3675,6 +3675,30 @@ HTML = r"""<!doctype html>
       box-shadow: var(--shadow);
     }
 
+    .dataset-notice {
+      display: none;
+      border: 1px solid rgba(178, 119, 24, 0.32);
+      border-left: 4px solid var(--warning);
+      border-radius: 8px;
+      background: rgba(255, 247, 232, 0.9);
+      padding: 14px 16px;
+      color: #4f3920;
+    }
+
+    .dataset-notice.visible {
+      display: block;
+    }
+
+    .dataset-notice strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .dataset-notice ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
     .hero-title {
       margin: 12px 0 0;
       max-width: 920px;
@@ -4175,6 +4199,7 @@ HTML = r"""<!doctype html>
       </select>
       <button id="reset" type="button">Reset</button>
     </section>
+    <section class="dataset-notice" id="datasetNotice" aria-live="polite"></section>
     <section class="hero-report" id="heroSummary"></section>
     <section class="signal-strip" id="summary"></section>
     <section class="chart-dashboard">
@@ -4701,6 +4726,41 @@ HTML = r"""<!doctype html>
             </div>
           </div>
         </aside>`;
+    }
+
+    function datasetWarnings(data) {
+      const warnings = [];
+      const schema = Number(data?.schema_version || 0);
+      if (data?.error) {
+        warnings.push(`Could not load data.json: ${data.error}`);
+      }
+      if (schema && schema < 2) {
+        warnings.push(`data.json schema ${schema} is older than the dashboard's schema 2 evidence model.`);
+      }
+      if (!data?.generated_at) {
+        warnings.push("data.json has no generated_at timestamp, so dashboard freshness cannot be verified.");
+      }
+      if (!data?.claims_summary) {
+        warnings.push("claims_summary is missing; claim health and the unresolved evidence queue are incomplete.");
+      }
+      const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+      const hasCurrentWorkEvidence = sessions.some(session => {
+        const work = session.work_summary || {};
+        return Boolean(work.task_states || work.state_lifecycle || work.transcript_actions || work.failed_tool_summary);
+      });
+      if (sessions.length && !hasCurrentWorkEvidence) {
+        warnings.push("session work summaries lack current task-state, action-log, transcript-action, and lifecycle evidence fields.");
+      }
+      return warnings;
+    }
+
+    function renderDatasetNotice(data) {
+      const target = document.getElementById("datasetNotice");
+      const warnings = datasetWarnings(data || {});
+      target.classList.toggle("visible", warnings.length > 0);
+      target.innerHTML = warnings.length
+        ? `<strong>Dataset schema warning</strong><ul>${warnings.map(item => `<li>${text(item)}</li>`).join("")}</ul>`
+        : "";
     }
 
     function renderSummary(agg) {
@@ -5537,6 +5597,7 @@ HTML = r"""<!doctype html>
       const data = state.data || { sessions: [], aggregate: {} };
       const filtered = (data.sessions || []).filter(matches);
       const visibleAgg = aggregateSessions(filtered, data.aggregate || {});
+      renderDatasetNotice(data);
       renderHero(filtered, visibleAgg);
       renderSummary(visibleAgg);
       renderCharts(visibleAgg);

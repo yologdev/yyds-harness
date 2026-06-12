@@ -3213,6 +3213,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("Claim health", html)
             self.assertIn("Unresolved claims", html)
             self.assertIn("latest:", html)
+            self.assertIn("Dataset schema warning", html)
+            self.assertIn("claims_summary is missing", html)
+            self.assertIn("schema 2 evidence model", html)
 
     def test_count_claim_proves_zero_expected_when_metric_is_absent(self):
         claim = count_claim(
