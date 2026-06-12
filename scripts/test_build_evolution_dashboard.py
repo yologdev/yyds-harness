@@ -1102,12 +1102,26 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(verification["unverified_task_count"], 1)
             self.assertIn("source_edits_not_landed", verification["rows"][0]["problems"])
             self.assertIn("no_landed_source_commit", verification["rows"][0]["problems"])
+            task_state = session_data["work_summary"]["task_states"]["tasks"][0]
+            self.assertEqual(task_state["state"], "unlanded_source_edits")
+            self.assertTrue(task_state["attempted"])
+            self.assertEqual(task_state["planned_files"], ["src/state.rs"])
+            self.assertEqual(task_state["touched_files"], ["src/state.rs"])
+            self.assertEqual(task_state["landed_commit_shas"], [])
+            self.assertEqual(task_state["eval_attempt_count"], 1)
+            self.assertIn("task_artifacts", task_state["evidence_sources"])
+            self.assertIn("eval_attempts", task_state["evidence_sources"])
             self.assertEqual(session_data["latest_gnomes"]["task_success_rate"], 0.0)
             self.assertEqual(session_data["latest_gnomes"]["session_success_rate"], 0.0)
             self.assertEqual(session_data["latest_gnomes"]["task_unlanded_source_count"], 1)
             self.assertEqual(session_data["work_summary"]["unlanded_source_task_count"], 1)
             self.assertIn("1 unlanded source task(s)", session_data["work_summary"]["headline"])
             self.assertEqual(session_data["health"], "attention")
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+            self.assertEqual(states["schema_version"], 1)
+            self.assertEqual(states["summary"]["task_count"], 1)
+            self.assertEqual(states["summary"]["state_counts"]["unlanded_source_edits"], 1)
+            self.assertEqual(states["sessions"][0]["tasks"][0]["state"], "unlanded_source_edits")
 
     def test_reverted_source_task_counts_as_unlanded_source_work(self):
         with tempfile.TemporaryDirectory() as tmp:

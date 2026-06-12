@@ -1071,6 +1071,124 @@ def task_verification_summary(
     }
 
 
+def classify_task_state(row: dict[str, Any]) -> str:
+    problems = row.get("problems") if isinstance(row.get("problems"), list) else []
+    outcome_status = str(row.get("outcome_status") or "").strip().lower()
+    if row.get("strict_success"):
+        return "verified_landed"
+    if outcome_status == "reverted":
+        if "source_edits_not_landed" in problems or "no_landed_source_commit" in problems:
+            return "reverted_unlanded_source_edits"
+        if "no_touched_files" in problems:
+            return "reverted_no_git_visible_changes"
+        if "no_planned_file_overlap" in problems:
+            return "reverted_scope_mismatch"
+        if "no_passing_verifier" in problems:
+            return "reverted_unverified"
+        return "reverted"
+    if "source_edits_not_landed" in problems or "no_landed_source_commit" in problems:
+        return "unlanded_source_edits"
+    if "no_touched_files" in problems:
+        return "no_git_visible_changes"
+    if "no_planned_file_overlap" in problems:
+        return "scope_mismatch"
+    if "evaluator_timed_out_after_verdict" in problems:
+        return "verifier_timed_out_after_verdict"
+    if "no_passing_verifier" in problems:
+        return "verifier_unproven"
+    return "unknown"
+
+
+def structured_task_states(
+    task_manifest: dict[str, Any],
+    task_artifacts: list[dict[str, Any]],
+    task_lineage: list[dict[str, Any]],
+    task_verification: dict[str, Any],
+) -> dict[str, Any]:
+    manifest_tasks = {
+        str(row.get("task_id")): row
+        for row in (task_manifest.get("tasks") if isinstance(task_manifest.get("tasks"), list) else [])
+        if isinstance(row, dict) and row.get("task_id")
+    }
+    artifacts_by_id = {
+        str(row.get("task_id")): row
+        for row in task_artifacts
+        if isinstance(row, dict) and row.get("task_id")
+    }
+    lineage_by_id = {
+        str(row.get("task_id")): row
+        for row in task_lineage
+        if isinstance(row, dict) and row.get("task_id")
+    }
+    rows = task_verification.get("rows") if isinstance(task_verification.get("rows"), list) else []
+    states: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        task_id = str(row.get("task_id") or "")
+        if not task_id:
+            continue
+        manifest_task = manifest_tasks.get(task_id, {})
+        artifact = artifacts_by_id.get(task_id, {})
+        lineage = lineage_by_id.get(task_id, {})
+        problems = row.get("problems") if isinstance(row.get("problems"), list) else []
+        latest_eval = row.get("latest_eval_attempt") if isinstance(row.get("latest_eval_attempt"), dict) else {}
+        attempted = bool(
+            artifact
+            or lineage.get("status")
+            or row.get("outcome_status")
+            or row.get("touched_files")
+            or row.get("eval_attempt_count")
+        )
+        evidence_sources = ["task_manifest"]
+        if artifact:
+            evidence_sources.append("task_artifacts")
+        if lineage:
+            evidence_sources.append("state_lineage")
+        if row.get("eval_attempt_count"):
+            evidence_sources.append("eval_attempts")
+        if row.get("landed_commit_shas"):
+            evidence_sources.append("commits")
+        failure_reasons = list(problems)
+        if row.get("revert_reason"):
+            failure_reasons.append(str(row.get("revert_reason")))
+        states.append(
+            {
+                "task_id": task_id,
+                "title": row.get("title") or manifest_task.get("title") or lineage.get("task_title"),
+                "state": classify_task_state(row),
+                "attempted": attempted,
+                "planned_files": row.get("planned_files") or [],
+                "touched_files": row.get("touched_files") or [],
+                "implementation_status": row.get("outcome_status"),
+                "strict_success": bool(row.get("strict_success")),
+                "verified": bool(row.get("verified")),
+                "overlap": bool(row.get("overlap")),
+                "landed_commit_shas": row.get("landed_commit_shas") or [],
+                "reverted": row.get("outcome_status") == "reverted" or bool(row.get("revert_reason")),
+                "revert_reason": row.get("revert_reason"),
+                "eval_attempt_count": row.get("eval_attempt_count") or 0,
+                "latest_eval_attempt": latest_eval or None,
+                "implementation_attempt_count": artifact.get("attempt_count") or len(artifact.get("attempts") or []),
+                "task_artifact_path": manifest_task.get("artifact_path"),
+                "evidence_sources": evidence_sources,
+                "failure_reasons": failure_reasons,
+            }
+        )
+    state_counts: dict[str, int] = {}
+    for state in states:
+        key = str(state.get("state") or "unknown")
+        state_counts[key] = state_counts.get(key, 0) + 1
+    return {
+        "schema_version": 1,
+        "task_count": len(states),
+        "strict_success_count": sum(1 for state in states if state.get("strict_success")),
+        "unverified_count": sum(1 for state in states if not state.get("strict_success")),
+        "state_counts": dict(sorted(state_counts.items())),
+        "tasks": states,
+    }
+
+
 def annotate_task_lineage_verification(
     task_lineage: list[dict[str, Any]],
     task_verification: dict[str, Any],
@@ -1538,6 +1656,7 @@ def work_summary(
     task_lineage = summary.get("task_lineage") if isinstance(summary.get("task_lineage"), list) else []
     task_lineage = enrich_task_lineage_with_artifacts(task_lineage, task_artifacts)
     task_verification = task_verification_summary(task_manifest, task_artifacts, task_lineage)
+    task_states = structured_task_states(task_manifest, task_artifacts, task_lineage, task_verification)
     task_lineage = annotate_task_lineage_verification(task_lineage, task_verification)
     causal_chains = annotate_task_lineage_verification(causal_chains, task_verification)
     suggestions = augment_evolution_suggestions(suggestions, task_verification)
@@ -1620,6 +1739,7 @@ def work_summary(
         "task_manifest": task_manifest,
         "task_artifacts": task_artifacts,
         "task_verification": task_verification,
+        "task_states": task_states,
         "causal_chains": causal_chains,
         "evolution_suggestions": suggestions,
         "edited_files": edited_files,
@@ -2976,6 +3096,76 @@ def build_claims_projection(
     }
 
 
+def session_state_projection(session: dict[str, Any]) -> dict[str, Any]:
+    work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
+    task_states = work.get("task_states") if isinstance(work.get("task_states"), dict) else {}
+    verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
+    lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
+    gnome_audit = session.get("state_gnome_audit") if isinstance(session.get("state_gnome_audit"), dict) else {}
+    return {
+        "id": session.get("id"),
+        "ts": session.get("ts"),
+        "health": session.get("health"),
+        "headline": work.get("headline"),
+        "outcome": {
+            "tasks_attempted": session.get("tasks_attempted"),
+            "tasks_succeeded": session.get("tasks_succeeded"),
+            "reverted": session.get("reverted"),
+            "build_ok": session.get("build_ok"),
+            "test_ok": session.get("test_ok"),
+        },
+        "task_summary": {
+            "task_count": verification.get("task_count"),
+            "verified_task_count": verification.get("verified_task_count"),
+            "unverified_task_count": verification.get("unverified_task_count"),
+            "state_counts": task_states.get("state_counts") or {},
+        },
+        "tasks": task_states.get("tasks") if isinstance(task_states.get("tasks"), list) else [],
+        "lifecycle": {
+            "runs": lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {},
+            "model_calls": lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {},
+        },
+        "gnome_audit": {
+            "raw_state_gnome_count": gnome_audit.get("raw_state_gnome_count"),
+            "corrected_gnome_count": gnome_audit.get("corrected_gnome_count"),
+            "correction_count": gnome_audit.get("correction_count"),
+            "corrections_by_source": gnome_audit.get("corrections_by_source") or {},
+        },
+    }
+
+
+def build_states_projection(
+    sessions: list[dict[str, Any]],
+    generated_at: str,
+    audit_sessions: Path,
+) -> dict[str, Any]:
+    session_states = [session_state_projection(session) for session in sessions]
+    task_count = sum(len(row.get("tasks") or []) for row in session_states)
+    strict_success_count = sum(
+        1
+        for row in session_states
+        for task in (row.get("tasks") or [])
+        if isinstance(task, dict) and task.get("strict_success")
+    )
+    state_counts: dict[str, int] = {}
+    for row in session_states:
+        for state, count in (row.get("task_summary", {}).get("state_counts") or {}).items():
+            state_counts[str(state)] = state_counts.get(str(state), 0) + int(count or 0)
+    return {
+        "schema_version": 1,
+        "generated_at": generated_at,
+        "source": str(audit_sessions),
+        "summary": {
+            "session_count": len(session_states),
+            "task_count": task_count,
+            "strict_success_count": strict_success_count,
+            "unverified_count": task_count - strict_success_count,
+            "state_counts": dict(sorted(state_counts.items())),
+        },
+        "sessions": session_states,
+    }
+
+
 HTML = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -3572,6 +3762,7 @@ HTML = r"""<!doctype html>
     <div class="note">
       <span>Source: audit-log branch</span>
       <span>Only sessions with pushed audit evidence appear here.</span>
+      <span>Structured artifacts: <a href="data.json">data.json</a> · <a href="claims.json">claims.json</a> · <a href="states.json">states.json</a></span>
     </div>
   </header>
   <main>
@@ -4941,9 +5132,11 @@ def build(audit_sessions: Path, output_dir: Path, repo_root: Path | None = None)
         "sessions": sessions,
     }
     claims = build_claims_projection(sessions, generated_at, audit_sessions)
+    states = build_states_projection(sessions, generated_at, audit_sessions)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "data.json").write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (output_dir / "claims.json").write_text(json.dumps(claims, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "states.json").write_text(json.dumps(states, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (output_dir / "index.html").write_text(HTML, encoding="utf-8")
     return data
 
