@@ -2885,6 +2885,69 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("failed checks", html)
             self.assertIn("search_tool_error", data_json)
 
+    def test_action_evidence_preserves_state_and_transcript_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_events(
+                session / "state/events.jsonl",
+                [
+                    {
+                        "kind": "ToolCallStarted",
+                        "payload": {
+                            "tool_call_id": "tool-1",
+                            "tool_name": "bash",
+                            "args": {"command": "cargo check"},
+                        },
+                    },
+                    {
+                        "kind": "ToolCallCompleted",
+                        "payload": {
+                            "tool_call_id": "tool-1",
+                            "tool_name": "bash",
+                            "is_error": True,
+                            "result_preview": "Exit code: 101",
+                        },
+                    },
+                ],
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "  ▶ search 'missing' in src/main.rs ✗ (17ms)\n"
+                "Search error: grep: src/main.rs: No such file or directory\n",
+                encoding="utf-8",
+            )
+
+            data = build(root / "sessions", root / "out")
+            work = data["sessions"][0]["work_summary"]
+
+            self.assertEqual(work["failed_tool_count"], 2)
+            self.assertEqual(work["action_evidence"]["state"]["failed_tool_count"], 1)
+            self.assertEqual(work["action_evidence"]["transcripts"]["failed_tool_count"], 1)
+            self.assertEqual(work["action_evidence"]["merged"]["failed_tool_count"], 2)
+            self.assertEqual(work["action_evidence"]["state_only_failed_tool_count"], 1)
+            self.assertEqual(work["action_evidence"]["transcript_only_failed_tool_count"], 1)
+            self.assertEqual(
+                work["failed_tool_summary"]["category_counts"],
+                {"bash_tool_error": 1, "search_error": 1},
+            )
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            data_json = (root / "out/data.json").read_text(encoding="utf-8")
+            self.assertIn("Action evidence", html)
+            self.assertIn("state-only", html)
+            self.assertIn("action_evidence", data_json)
+
     def test_file_evidence_totals_use_uncapped_counts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

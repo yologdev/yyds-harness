@@ -205,6 +205,14 @@ def compact_count(values: list[str]) -> int:
     return len(out)
 
 
+def normalized_set(values: list[str]) -> set[str]:
+    return {text for value in values if (text := " ".join(str(value).split()))}
+
+
+def unique_delta_count(left: list[str], right: list[str]) -> int:
+    return len(normalized_set(left) - normalized_set(right))
+
+
 def evidence_text(value: Any, max_len: int = 220) -> str:
     text = " ".join(str(value or "").split())
     text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", text)
@@ -1797,6 +1805,34 @@ def work_summary(
     public_transcript_actions = {
         key: value for key, value in transcript_actions.items() if not str(key).startswith("_")
     }
+    state_failed_tools_all = event_data.get("_failed_tools_all", event_data["failed_tools"])
+    transcript_failed_tools_all = transcript_actions.get("_failed_tools_all", transcript_actions["failed_tools"])
+    action_evidence = {
+        "schema_version": 1,
+        "state": {
+            "command_count": event_data["command_count"],
+            "failed_command_count": event_data["failed_command_count"],
+            "failed_tool_count": event_data["failed_tool_count"],
+            "read_file_count": event_data["read_file_count"],
+            "edited_file_count": event_data["edited_file_count"],
+        },
+        "transcripts": {
+            "command_count": transcript_actions["command_count"],
+            "failed_command_count": transcript_actions["failed_command_count"],
+            "failed_tool_count": transcript_actions["failed_tool_count"],
+            "read_file_count": transcript_actions["read_file_count"],
+            "edited_file_count": transcript_actions["edited_file_count"],
+        },
+        "merged": {
+            "command_count": command_count,
+            "failed_command_count": failed_command_count,
+            "failed_tool_count": failed_tool_count,
+            "read_file_count": read_file_count,
+            "edited_file_count": edited_file_count,
+        },
+        "state_only_failed_tool_count": unique_delta_count(state_failed_tools_all, transcript_failed_tools_all),
+        "transcript_only_failed_tool_count": unique_delta_count(transcript_failed_tools_all, state_failed_tools_all),
+    }
     attempted = int(outcome.get("tasks_attempted") or 0)
     succeeded = int(outcome.get("tasks_succeeded") or 0)
     patches = summary.get("patches", []) if isinstance(summary.get("patches"), list) else []
@@ -1918,6 +1954,7 @@ def work_summary(
         "command_count": command_count,
         "failed_command_count": failed_command_count,
         "failed_tool_count": failed_tool_count,
+        "action_evidence": action_evidence,
         "transcript_actions": public_transcript_actions,
         "tool_counts": event_data["tool_counts"],
         "deepseek_cache_hit_ratio": event_data["deepseek_cache_hit_ratio"],
@@ -5318,6 +5355,25 @@ HTML = r"""<!doctype html>
       }).join("")}</ul>`;
     }
 
+    function renderActionEvidence(work) {
+      const evidence = work.action_evidence || {};
+      const stateRows = evidence.state || {};
+      const transcriptRows = evidence.transcripts || {};
+      const mergedRows = evidence.merged || {};
+      if (!Object.keys(evidence).length) return `<p class="muted">No action evidence provenance recorded.</p>`;
+      const stateOnlyFails = Number(evidence.state_only_failed_tool_count || 0);
+      const transcriptOnlyFails = Number(evidence.transcript_only_failed_tool_count || 0);
+      const drift = stateOnlyFails || transcriptOnlyFails
+        ? `<br><span class="warn">${text(stateOnlyFails)} state-only / ${text(transcriptOnlyFails)} transcript-only failed tool action(s)</span>`
+        : "";
+      return `<p class="muted">Merged action counts preserve state-event and transcript evidence without hiding provenance.${drift}</p>
+        <div class="detail-grid">
+          <div class="item"><strong>State events</strong><br><span class="muted">${text(stateRows.command_count || 0)} commands / ${text(stateRows.failed_tool_count || 0)} tool fails / ${text(stateRows.failed_command_count || 0)} failed checks</span></div>
+          <div class="item"><strong>Transcripts</strong><br><span class="muted">${text(transcriptRows.command_count || 0)} commands / ${text(transcriptRows.failed_tool_count || 0)} tool fails / ${text(transcriptRows.failed_command_count || 0)} failed checks</span></div>
+          <div class="item"><strong>Merged</strong><br><span class="muted">${text(mergedRows.command_count || 0)} commands / ${text(mergedRows.failed_tool_count || 0)} tool fails / ${text(mergedRows.failed_command_count || 0)} failed checks</span></div>
+        </div>`;
+    }
+
     function renderLogFeedbackLessons(session, work) {
       const evalData = session.latest_eval || {};
       const rawRows = (work.log_feedback_top_lessons || evalData.top_lessons || []).slice(0, 4);
@@ -5398,6 +5454,7 @@ HTML = r"""<!doctype html>
                 <div><strong>Read${sampleCountLabel(work.read_files, readFileCount)}</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
                 <div><strong>Evidence/bookkeeping edits${sampleCountLabel(evidenceFiles, evidenceFileCount)}</strong>${listItems(evidenceFiles, "No evidence or bookkeeping edits recorded.")}</div>
                 <div><strong>Failures</strong>${listItems(work.failed_commands, "No failed commands recorded.")}</div>
+                <div><strong>Action evidence</strong>${renderActionEvidence(work)}</div>
                 <div><strong>Tool failures</strong>${renderFailedToolSummary(work)}</div>
                 <div><strong>State/gnome audit</strong>${renderStateGnomeAudit(session)}</div>
               </div>
