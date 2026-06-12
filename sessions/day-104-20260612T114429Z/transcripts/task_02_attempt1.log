@@ -1,0 +1,364 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill to understand the canonical implementation contract, then examine the relevant code in `src/commands_state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ search 'fn handle_why' in src/commands_state.rs ✓ (11ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `handle_why` function and also find `build_why_report` to understand how the error path works.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:836..916  ▶ search 'fn build_why_report' in src/commands_state.rs ✓ (11ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the `build_why_report` function to understand its error paths, particularly the "No failure data to diagnose" message.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2563..2663 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. The `handle_why` function at line 836:
+
+1. Reads events with `read_tail_events` using the `limit`
+2. If `build_why_report` returns `Err`, prints the error in yellow
+3. After the match, if `limit > 0`, it shows a footer about the scan window
+
+The problem: when the target event isn't found, `build_why_report` returns `Err` with "no state event found for '{id}'" followed by summary+guidance. The guidance can say "No failure data to diagnose" even when failures exist beyond the 200-event window.
+
+The fix (Option A): In `handle_why`, after `build_why_report` returns `Err`, check if `limit > 0 && events.len() >= limit`, and append a windowing hint to the error message.
+
+Let me look at the Color constants to make sure DIM and RESET are available.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check what Color constants are available and how they're used in the file:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^use.*Color' in src/commands_state.rs  ▶ search 'DIM.*RESET' in src/commands_state.rs ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The Color constants aren't imported directly in commands_state.rs. Let me look at the top of the file to see how colors are used.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs (30 lines) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, it uses `use crate::format::*;` which brings in all the color constants. Let me check what `DIM` and `RESET` are in format/mod.rs:
+
+Actually, I already saw `{DIM}` and `{RESET}` being used in the file at lines 846-847, 862, 865, 882. So they're available. The plan is clear:
+
+Option A (simpler — modify `handle_why`):
+- After `build_why_report` returns Err at line 856, check: if `limit > 0 && events.len() >= limit`, append a windowing hint to the error before printing.
+- This keeps `build_why_report` unchanged (minimizes test impact).
+
+The current code at line 856 is:
+```rust
+Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+```
+
+I need to change this to:
+```rust
+Err(e) => {
+    let mut msg = format!("{YELLOW}  {e}{RESET}");
+    if limit > 0 && events.len() >= limit {
+        msg.push_str(&format!(
+            "\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}"
+        ));
+    }
+    eprintln!("{msg}");
+}
+```
+
+Wait, but `e` already contains the error string with newlines. Let me think about the exact format. The task says the hint should read:
+```
+{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}
+```
+
+So the error output should be:
+```
+  <error message from build_why_report>
+  (note: only the most recent 200 events were scanned; the target may be further back — retry with --limit 0)
+```
+
+But looking at the actual flow: the error message from `build_why_report` already ends with a newline (from the guidance text). So the new message should be appended after it.
+
+Let me make the edit. I need to change lines 856-857 from:
+```rust
+        Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+```
+
+to:
+```rust
+        Err(e) => {
+            let mut msg = format!("{YELLOW}  {e}{RESET}");
+            if limit > 0 && events.len() >= limit {
+                msg.push_str(&format!(
+                    "\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}"
+                ));
+            }
+            eprintln!("{msg}");
+        }
+```
+
+Let me first build to make sure everything compiles, then make the edit.
+
+Actually, let me first check if there are existing tests for `handle_why` or `build_why_report`:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check for existing tests:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_why|build_why_report' in src/commands_state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, that search returned no matches? That seems wrong, I just saw both functions. Let me try again - maybe the search is case sensitive or something. Actually, the functions definitely exist at lines 836 and 2563. Maybe the search tool is having issues. Let me try with separate searches.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_why' in src/commands_state.rs  ▶ search 'build_why_report' in src/commands_state.rs ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Many tests call `build_why_report` directly. Let me look at the test at line 15022 to understand the test pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+Let me check the test structure around the relevant tests to see if there are any tests for error cases (where the target isn't found):
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test.*why' in src/commands_state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the test module and tests related to `build_why_report`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_why_report.*Err' in src/commands_state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for tests that test the error case (when target isn't found):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_why_report.*err' in src/commands_state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the tests around line 15022 to see what tests exist:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:15000..15060 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also check if there are any tests for the error case (when the target isn't found). Let me search for tests that call `build_why_report` and expect an error.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_why_report.*is_err' in src/commands_state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are no tests for the error case of `build_why_report`. Now I understand the full picture. Let me implement Option A.
+
+The change is simple: in `handle_why`, when `build_why_report` returns `Err`, check if `limit > 0 && events.len() >= limit` and append the windowing hint.
+
+Let me now make the edit. The current code at lines 854-857:
+
+```rust
+    match build_why_report(&events, id) {
+        Ok(report) => println!("{report}"),
+        Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+    }
+```
+
+Should become:
+
+```rust
+    match build_why_report(&events, id) {
+        Ok(report) => println!("{report}"),
+        Err(e) => {
+            let mut msg = format!("{YELLOW}  {e}{RESET}");
+            if limit > 0 && events.len() >= limit {
+                msg.push_str(&format!(
+                    "\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}"
+                ));
+            }
+            eprintln!("{msg}");
+        }
+    }
+```
+
+Now let me first run the existing tests to make sure they pass before my change, then make the edit, then run tests again.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. I understand the complete picture now. The fix is a 3-line addition in `handle_why` — Option A. Let me first run the existing tests to establish a baseline, then make the surgical edit.
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib commands_stat… ✓ (2.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+153 passed. Now let me make the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+153 tests pass. Now let me make the surgical edit:
+  -         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  +         Err(e) => {
+  +             let mut msg = format!("{YELLOW}  {e}{RESET}");
+  +             if limit > 0 && events.len() >= limit {
+  +                 msg.push_str(&format!(
+  +                     "\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}"
+  +                 ));
+  +             }
+  +             eprintln!("{msg}");
+  +         }
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 9 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (1 → 9 lines)
+  -         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  +         Err(e) => {
+  +             let mut msg = format!("{YELLOW}  {e}{RESET}");
+  +             if limit > 0 && events.len() >= limit {
+  +                 msg.push_str(&format!(
+  +                     "\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}"
+  +                 ));
+  +             }
+  +             eprintln!("{msg}");
+  +         }
+ ✗ (12ms)
+    │ old_text matches 13 locations in src/commands_state.rs. Include more surrounding context to make the match unique.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The pattern `Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),` matches 13 locations. I need to include more surrounding context. Let me use the specific context around lines 854-857.
+────────────────────────────────────────────────────────────────────────────────
+
+Need more context for uniqueness. Let me include surrounding lines:
+        match build_why_report(&events, id) {
+            Ok(report) => println!("{report}"),
+  -         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  +         Err(e) => {
+  +             let mut msg = format!("{YELLOW}  {e}{RESET}");
+  +             if limit > 0 && events.len() >= limit {
+  +                 msg.push_str(&format!(
+  +                     "\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}"
+  +                 ));
+  +             }
+  +             eprintln!("{msg}");
+  +         }
+        }
+  ✓ Auto-approved: edit: src/commands_state.rs (4 → 12 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (4 → 12 lines)
+        match build_why_report(&events, id) {
+            Ok(report) => println!("{report}"),
+  -         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  +         Err(e) => {
+  +             let mut msg = format!("{YELLOW}  {e}{RESET}");
+  +             if limit > 0 && events.len() >= limit {
+  +                 msg.push_str(&format!(
+  +                     "\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}"
+  +                 ));
+  +             }
+  +             eprintln!("{msg}");
+  +         }
+        }
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Edit applied. Now let me run the tests, clippy, build, and full test suite.
+────────────────────────────────────────────────────────────────────────────────
+
+Edit applied. Now let me run the verification checks:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt && cargo clippy --al… ✓ (26.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+fmt and clippy passed. Now let's build and test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -5 ✓ (15.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now run the commands_state tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib commands_stat… ✓ (30.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 153 tests pass. Now let me run the full test suite to make sure nothing else is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+All 153 commands_state tests pass. Now let me run the full test suite:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✓ (4m 59s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Let me verify the actual change looks right by reading the edited section:
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Let me verify the final edit looks correct:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:854..874 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edit looks correct. The windowing hint is now appended to the error message when `limit > 0 && events.len() >= limit`. The existing footer hint at line 870 is preserved.
+
+Now let me commit. The commit message should be: "Day 104 (11:44): Fix `state why last-failure` windowing blind spot (Task 2)"
+
+First let me check git status:
+────────────────────────────────────────────────────────────────────────────────
+
+The edit is clean. Now let me commit:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Done. Let me summarize what was done.
+
+The task asked me to fix a blind spot where `state why last-failure` (or any failure ID search) silently hides failures beyond the default 200-event scan window. The error message said "No failure data to diagnose" even when failures exist 201+ events back.
+
+I implemented Option A — a 3-line addition in `handle_why` that appends a windowing hint to the error when:
+1. `build_why_report` returns an error (target not found)
+2. `limit > 0` (scanning was windowed)
+3. `events.len() >= limit` (truncation actually occurred)
+
+The hint reads: "(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0)"
+
+All 153 commands_state tests pass, all 89 other lib tests pass, clippy is clean, fmt is clean, and the build succeeds.
+────────────────────────────────────────────────────────────────────────────────
+
+Done. Here's what changed:
+
+**File:** `src/commands_state.rs`, lines 856-864 (`handle_why` function)
+
+**Change:** When `build_why_report` returns `Err` (target event not found), the code now checks whether scanning was windowed (`limit > 0 && events.len() >= limit`). If so, it appends a diagnostic hint to the error:  
+
+│  (note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0)
+
+**Verification:**
+• `cargo fmt` — clean
+• `cargo clippy --all-targets -- -D warnings` — clean
+• `cargo build` — passes
+• `cargo test --lib commands_state` — 153 passed, 0 failed
+• `cargo test` (full suite) — 89 passed, 0 failed
+• The existing footer hint (`"use --limit 0 for full scan"`) is preserved at line 870
+
+

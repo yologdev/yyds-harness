@@ -1,0 +1,384 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to:
+
+1. Verify and fix sub-agent API key propagation in `src/tools.rs` and `src/agent_builder.rs`
+2. Make sure sub-agents receive the resolved DeepSeek API key
+3. Record diagnostics when the key is missing
+4. Keep side-agent behavior unchanged when an explicit key is configured
+
+Let me first read the evolve skill, then examine the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the relevant source files. I need to understand:
+1. How sub-agents are constructed in `src/tools.rs`
+2. How API keys are resolved in `src/agent_builder.rs`
+
+Let me also check for any existing session plan file that might have more context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read src/tools.rs  ▶ read src/agent_builder.rs ✓ (26ms)
+ ✓ (21ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the key functions I need to understand:
+1. `build_sub_agent_tool` in `src/tools.rs`
+2. `build_agent` and `build_side_agent` in `src/agent_builder.rs`
+3. How API keys are resolved
+
+Let me also look at how `create_model_config` works and where the DeepSeek API key is resolved.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.8s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_sub_agent_tool' in src/tools.rs  ▶ search 'build_side_agent' in src/agent_builder.rs  ▶ search 'api_key' in src/agent_builder.rs ✓ (20ms)
+ ✓ (20ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the key sections of both files - the `build_sub_agent_tool` function and the `build_side_agent` / `AgentConfig` struct.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.8s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1387..1507  ▶ read src/agent_builder.rs:390..550 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the `build_agent` and `build_side_agent` functions more carefully, and also the function that resolves API keys.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:580..680  ▶ read src/agent_builder.rs:690..840  ▶ search 'fn create_model_config' in src/agent_builder.rs ✓ (21ms)
+ ✓ (17ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `build_agent` function and `create_model_config` function.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.2s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:560..610  ▶ read src/agent_builder.rs:277..397 ✓ (16ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me analyze the current state:
+
+1. **`build_sub_agent_tool` (src/tools.rs:1387-1434)**: This function creates a `SubAgentTool` and `SharedState`. It does pass `config.api_key` to the sub-agent via `.with_api_key(&config.api_key)` on line 1427. So the api_key is already being passed to the sub-agent tool.
+
+2. **`build_agent` (src/agent_builder.rs:562-591)**: This function creates the main agent. It calls `configure_agent()` which passes `self.api_key` via `.with_api_key(&self.api_key)`.
+
+3. **`build_side_agent` (src/agent_builder.rs:629-667)**: Creates a side agent. Also passes `self.api_key` via `.with_api_key(&self.api_key)`.
+
+So looking at this, the API key IS being passed to sub-agents (line 1427 in tools.rs). The `config.api_key` should already be resolved before `build_sub_agent_tool` is called.
+
+But wait - let me think about what the task is really asking. The assessment found `api_key_present: false` in error traces. This could mean:
+
+1. The `config.api_key` field might be empty or unresolved when `build_sub_agent_tool` is called
+2. There might be no diagnostic when the key is missing
+
+Let me look at how the AgentConfig is constructed to see if there's a path where `api_key` could be empty. Let me also check the `Provider` type and how it handles api_key, since `build_sub_agent_tool` creates a bare provider (line 1406-1411) without the `ModelConfig`:
+
+```rust
+let provider: Arc<dyn StreamProvider> = match config.provider.as_str() {
+    "anthropic" => Arc::new(AnthropicProvider),
+    "google" => Arc::new(GoogleProvider),
+    "bedrock" => Arc::new(BedrockProvider),
+    _ => Arc::new(OpenAiCompatProvider),
+};
+```
+
+Then:
+```rust
+let tool = SubAgentTool::new("sub_agent", provider)
+    .with_model(&config.model)
+    .with_api_key(&config.api_key)
+    ...
+```
+
+The API key IS being passed. But the issue might be that when the API key is empty, there's no diagnostic. Sub-agents would silently fail with authentication errors.
+
+Let me check: where does the AgentConfig get its api_key from? Let me look at how the AgentConfig is initially built.
+
+Actually, let me think about what "resolve" means here. The task says the API key should be resolved from:
+1. An explicit key (the `--api-key` flag or config file)
+2. The provider-specific environment key (e.g., `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`)
+
+Let me check if there's any fallback resolution that happens before the AgentConfig is constructed. Let me look for where api_key is resolved from environment variables.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.9s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'DEEPSEEK_API_KEY' in src  ▶ search 'provider_api_key_env' in src ✓ (16ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the providers.rs to understand the key resolution, and then look at where AgentConfig is initially constructed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/providers.rs (60 lines)  ▶ read src/cli.rs:470..600 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the full flow. Let me trace the key resolution for the AgentConfig:
+
+1. `parse_args()` in `cli.rs` resolves the API key from: `--api-key` flag > provider-specific env var > `ANTHROPIC_API_KEY` > `API_KEY` > config file. It stores it in a `ModelConfig` struct.
+
+2. Then somewhere, this `ModelConfig` is used to construct the `AgentConfig` with the `api_key` field populated.
+
+3. `build_sub_agent_tool(config: &AgentConfig)` uses `config.api_key` to set the sub-agent's API key via `.with_api_key(&config.api_key)`.
+
+So the API key IS being passed to sub-agents already. But the problem is:
+
+**What happens when `config.api_key` is empty?** It could be empty in interactive mode when the wizard hasn't run yet. In that case, `build_sub_agent_tool` passes an empty string as the API key, which would cause authentication errors.
+
+The task says: "Make yyds either pass the resolved DeepSeek API key into spawned side/sub agents or record a precise diagnostic explaining why the key is unavailable."
+
+So the issue is:
+1. When `config.api_key` is empty, the sub-agent tool should NOT be created silently - it should record a diagnostic
+2. Or, the key should be resolved from the environment at sub-agent construction time
+
+Wait, let me re-read the task more carefully. It says "Sub-agent construction resolves an explicit key or the provider-specific environment key before spawn." This implies that the sub-agent should try to resolve the key from the environment if the explicit key is not set.
+
+And: "Missing-key failures produce a state diagnostic that names the failing sub-agent/startup path."
+
+Let me look at what state diagnostics exist already. Let me check the state module for how diagnostics are recorded.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.4s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_state_event' in src  ▶ search 'fn record_state_event\|pub fn record_state_event' in src ✓ (6ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for state event recording differently.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'StateEvent' in src ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the StateEvent struct and how append_event works. Then I can understand how to record diagnostics.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:237..317  ▶ read src/state.rs:440..490 ✓ (16ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the EventType enum to see what types of events exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub enum EventType' in src/state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the EventType enum and also check how `append_state_event` is called from `agent_builder.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:108..208  ▶ search 'append_state_event' in src ✓ (11ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for how state events are recorded in agent_builder.rs and tools.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'state::\|state_event\|FailureObserved\|DecisionRecorded' in src/tools.rs  ▶ search 'state::\|state_event\|FailureObserved\|DecisionRecorded\|app…' in src/agent_builder.rs ✓ (12ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It seems state events aren't directly recorded from within `tools.rs` or `agent_builder.rs`. Let me look at where `FailureObserved` events are recorded to understand the pattern, and then check how the global state recorder is accessed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' in src  ▶ search 'GLOBAL_RECORDER' in src ✓ (6ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at how state events are typically recorded from within the codebase. Let me look at the `record` function and how it's used.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:82..162 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `record` function and how it's accessed from other modules.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:18..78 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look for the `record` function that's used in the panic hook.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record\(' in src/state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `pub fn record` or just `fn record` in the state file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record' in src/state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `record` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:316..356 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a comprehensive understanding of the codebase. Let me now plan what to do:
+
+**Current state:**
+1. `build_sub_agent_tool` (src/tools.rs:1387) already passes `config.api_key` to the sub-agent via `.with_api_key(&config.api_key)`
+2. `build_side_agent` (src/agent_builder.rs:629) already passes `self.api_key` via `.with_api_key(&self.api_key)`
+3. The `config.api_key` is resolved from CLI args, env vars, or config file in `parse_args()` before `AgentConfig` is constructed
+
+**The problem:**
+When `config.api_key` is empty (e.g., in interactive mode where the setup wizard hasn't run yet), sub-agents are created with an empty API key. This causes silent authentication failures. The task wants either:
+1. Resolve the API key from the environment at sub-agent construction time (as a fallback), OR
+2. Record a diagnostic when the key is missing
+
+**What I should do:**
+
+Looking at the code more carefully, the key resolution happens in `parse_args()` in `cli.rs` and is stored in `AgentConfig.api_key`. The issue is:
+- In `build_sub_agent_tool`, the api_key is passed as-is, but if it's empty, there's no diagnostic
+- The sub-agent doesn't try to resolve the key from the environment as a fallback
+
+The task says: "Sub-agent construction resolves an explicit key or the provider-specific environment key before spawn."
+
+So I should:
+1. In `build_sub_agent_tool`, before passing the key, try to resolve it from the provider-specific environment variable if it's empty - just like `try_switch_to_fallback` does
+2. Record a `FailureObserved` state event (or use `stash_diagnostic_error`) when the key is still empty after resolution
+3. Also check `build_side_agent` and `build_architect_agent` for the same pattern
+
+But wait, the task also says: "Existing side-agent behavior remains unchanged when an explicit key is configured." So side-agent should keep working as-is. The diagnostic recording is mainly for sub-agents.
+
+Let me also consider: the `build_sub_agent_tool` creates the SubAgentTool struct but doesn't actually spawn the sub-agent - the spawning happens later when the parent agent invokes the tool. So recording a `FailureObserved` at construction time might be too early. But we can still validate the key at construction time.
+
+Let me now think about the implementation:
+
+1. In `build_sub_agent_tool`, add key resolution logic: if `config.api_key` is empty, try to resolve from the provider's environment variable
+2. If still empty, record a `FailureObserved` event with a diagnostic payload
+3. Add a test for this behavior
+
+But actually, looking more carefully at the task description, it says "record a precise diagnostic explaining why the key is unavailable." The simplest and most effective approach would be:
+
+1. In `build_sub_agent_tool`, resolve the API key: use `config.api_key` if non-empty, otherwise try `provider_api_key_env(config.provider)` and read from env
+2. If still empty, stash a diagnostic error using `crate::state::stash_diagnostic_error` or record a `FailureObserved` event
+
+Let me implement this. Let me first run the existing tests to make sure everything passes.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me first run the existing tests to establish a baseline:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib agent_builder… ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The cargo test filter syntax is different. `--lib` already filters to lib tests, and then the test name filter is for test names, not modules. Let me try differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- agent_buil… ✓ (43.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, all 499 tests pass. Now let me plan my implementation.
+
+The task is clear:
+1. In `build_sub_agent_tool` (src/tools.rs), resolve the API key from the environment if `config.api_key` is empty
+2. Record a diagnostic when the key is unavailable
+3. Don't change side-agent behavior
+
+Let me now implement this. Here's my plan:
+
+### Changes to `src/tools.rs`:
+
+In `build_sub_agent_tool`:
+- After resolving the provider, check if `config.api_key` is empty
+- If it is, try to resolve from `provider_api_key_env(config.provider)`
+- If still empty, record a `FailureObserved` state event with a diagnostic message
+- Pass the resolved key (or empty) to the sub-agent
+
+I also need to import `crate::state` and `crate::providers::provider_api_key_env`.
+
+### Changes to `src/agent_builder.rs`:
+
+The `build_side_agent` already passes `self.api_key`. The task says to keep side-agent behavior unchanged. But I should also check the key resolution there for consistency. Actually the task explicitly says: "Existing side-agent behavior remains unchanged when an explicit key is configured." So I should only change `build_sub_agent_tool`.
+
+Wait, but looking at the `build_side_agent`, it also uses `self.api_key`:
+```rust
+.with_api_key(&self.api_key)
+```
+
+The `self.api_key` should already be resolved because `AgentConfig` is constructed from parsed args. The only case where `api_key` could be empty is:
+1. Interactive mode, setup wizard hasn't run yet (returns empty string)
+2. Some edge case I'm not aware of
+
+For `build_agent`, `build_side_agent`, `build_architect_agent`, and `build_editor_agent` - they all use `self.api_key` which is resolved at AgentConfig construction time. The sub-agent is the one that could be constructed before the main agent is fully initialized (e.g., during planning).
+
+Actually, let me re-read the code. In `configure_agent`:
+```rust
+let (sub_agent_tool, _shared_state) = build_sub_agent_tool(self);
+agent = agent.with_sub_agent(sub_agent_tool);
+```
+
+This is called during `build_agent`, so `self.api_key` should already be resolved. But what if it's not? The issue from the assessment shows `api_key_present: false` in error traces.
+
+Let me focus on the key resolution: the `build_sub_agent_tool` should try to resolve the API key from the environment as a fallback if `config.api_key` is empty.
+
+Let me write the code now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the changes:
+
+**Plan:**
+1. In `build_sub_agent_tool` (src/tools.rs): Resolve API key from environment if `config.api_key` is empty, and record a `FailureObserved` diagnostic when the key is still unavailable after resolution.
+2. Add tests for the new key resolution behavior.
+
+Let me first look at the imports in tools.rs to understand what's already imported:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1..51 ✓ (5ms)
+
+
