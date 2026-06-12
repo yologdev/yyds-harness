@@ -2073,7 +2073,7 @@ mod tests {
         assert_eq!(payload["prompt_contract_version"], 3);
         assert_eq!(
             payload["system_contract_version"],
-            "deepseek_native_contract@v3"
+            "deepseek_native_contract@v4"
         );
         assert_eq!(payload["layout_version"], 7);
         assert_eq!(payload["tool_schema_version"], 1);

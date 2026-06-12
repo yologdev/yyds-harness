@@ -46,6 +46,12 @@ exactly.
    event, gnome movement, dashboard change, or user-visible behavior.
 5. If the task cannot be completed honestly, say why in the task artifact or
    issue response. Do not fake completion.
+6. Before reading or searching a guessed file path, verify it exists with the
+   repo file list (`rg --files`). If it is absent, search for the owning module,
+   binary entrypoint, or symbol instead of retrying the missing path.
+7. Use `rg` for code discovery. Use fixed-string/literal searches for snippets
+   that contain regex punctuation such as `(`, `[`, `{`, `|`, or `\`, and keep
+   searches scoped away from `.git`, `target`, and generated state files.
 
 ## Making Changes
 

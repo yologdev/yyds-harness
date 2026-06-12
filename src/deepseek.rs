@@ -1116,7 +1116,7 @@ fn transport_decision_reason(
     }
 }
 
-pub const DEEPSEEK_SYSTEM_CONTRACT_VERSION: &str = "deepseek_native_contract@v3";
+pub const DEEPSEEK_SYSTEM_CONTRACT_VERSION: &str = "deepseek_native_contract@v4";
 
 pub fn stable_system_contract() -> &'static str {
     r#"# DeepSeek Native Harness Contract
@@ -1125,6 +1125,7 @@ pub fn stable_system_contract() -> &'static str {
 - Use state, eval, logs, command output, and git evidence before drawing conclusions.
 - Keep source inspection bounded: search first, then read targeted files, functions, or line ranges.
 - Prefer rg/project search over recursive grep; exclude target/.git/generated state paths; use literal search for snippets with regex punctuation.
+- Verify candidate paths with repo file listing before reading/searching guessed files; if a path is absent, search for the owning module or symbol instead of retrying the missing path.
 - Keep verification bounded: run the narrowest useful check first, and do not repeat expensive checks without new evidence.
 - Use thinking for root-cause analysis, patch planning, risky edits, and failed-task repair.
 - Do not treat raw reasoning content as durable truth; distill decisions into hypotheses, evidence, risks, and patch intent.
@@ -2614,12 +2615,14 @@ mod tests {
         let contract = stable_system_contract();
         assert_eq!(
             DEEPSEEK_SYSTEM_CONTRACT_VERSION,
-            "deepseek_native_contract@v3"
+            "deepseek_native_contract@v4"
         );
         assert!(contract.contains("deterministic prompt layout"));
         assert!(contract.contains("state, eval, logs"));
         assert!(contract.contains("source inspection bounded"));
         assert!(contract.contains("rg/project search"));
+        assert!(contract.contains("Verify candidate paths"));
+        assert!(contract.contains("search for the owning module or symbol"));
         assert!(contract.contains("verification bounded"));
         assert!(contract.contains("Do not claim completion"));
         assert!(contract.contains("structured outputs"));

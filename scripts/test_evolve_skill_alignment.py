@@ -33,6 +33,8 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("First read and follow `skills/evolve/SKILL.md`", script)
         self.assertIn("canonical\nimplementation contract for yyds self-evolution", script)
         self.assertIn("Follow the evolve skill rules", script)
+        self.assertIn("Verify guessed file paths with \\`rg --files\\`", script)
+        self.assertIn("literal/fixed-string search", script)
 
     def test_assessment_phase_uses_self_assess_skill(self):
         script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
@@ -57,6 +59,14 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("dashboard JSON", text)
         self.assertIn("state/events.jsonl", text)
         self.assertIn("prompt-cache regressions", text)
+
+    def test_evolve_skill_teaches_search_discipline_from_audit_friction(self):
+        text = EVOLVE_SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("verify it exists with the\n   repo file list (`rg --files`)", text)
+        self.assertIn("search for the owning module", text)
+        self.assertIn("fixed-string/literal searches", text)
+        self.assertIn("regex punctuation", text)
 
 
 if __name__ == "__main__":

@@ -1585,6 +1585,8 @@ implementation contract for yyds self-evolution.
 Follow the evolve skill rules:
 - Write a test first if possible
 - Use edit_file for surgical changes
+- Verify guessed file paths with \`rg --files\` before reading/searching them; if a path is absent, search for the owning module, binary entrypoint, or symbol instead of retrying the missing path.
+- Use \`rg\` for code discovery and literal/fixed-string search for snippets with regex punctuation; keep searches scoped away from .git, target, and generated state files.
 - Treat yoagent as upstream foundation code. If this task reveals that yoagent itself must change, do not patch around it in this repo. $YOAGENT_UPSTREAM_TARGET When you cannot safely make an upstream PR, create an agent-help-wanted issue in $REPO with the evidence and proposed upstream change, then stop this task or choose a harness-only mitigation that stays honest about the upstream dependency.
 - Run cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test after changes
 - If any check fails, read the error and fix it. Keep trying until it passes.
