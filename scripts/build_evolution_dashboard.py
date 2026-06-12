@@ -1779,6 +1779,21 @@ def corrected_gnomes(
             int(gnomes.get("task_unlanded_source_count") or 0),
             unlanded,
         )
+    elif attempted:
+        succeeded = int(outcome.get("tasks_succeeded") or 0)
+        gnomes["task_success_rate"] = None
+        gnomes["session_success_rate"] = 0.0
+        gnomes["raw_tasks_attempted"] = max(int(gnomes.get("raw_tasks_attempted") or 0), attempted)
+        gnomes["raw_tasks_succeeded"] = max(int(gnomes.get("raw_tasks_succeeded") or 0), succeeded)
+        gnomes["task_unverified_raw_attempt_count"] = max(
+            int(gnomes.get("task_unverified_raw_attempt_count") or 0),
+            attempted,
+        )
+        gnomes["task_unverified_raw_success_count"] = max(
+            int(gnomes.get("task_unverified_raw_success_count") or 0),
+            succeeded,
+        )
+        recalc_score = True
     if manifest.get("planning_failed"):
         gnomes["planner_no_task_count"] = max(int(gnomes.get("planner_no_task_count") or 0), 1)
         gnomes["session_success_rate"] = 0.0
@@ -1845,6 +1860,7 @@ def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
             + metric_float(metrics, "evaluator_unverified_count")
             + metric_float(metrics, "evaluator_timeout_with_verdict_count") * 2.0
             + metric_float(metrics, "task_unlanded_source_count") * 2.0
+            + metric_float(metrics, "task_unverified_raw_success_count")
             + metric_float(metrics, "state_live_baseline_shrink_count") * 2.0
         )
         / 12.0,
@@ -3461,6 +3477,10 @@ HTML = r"""<!doctype html>
       evaluator_unverified_count: "Evaluator unverified count",
       evaluator_timeout_with_verdict_count: "Evaluator verdict timeouts",
       task_unlanded_source_count: "Unlanded source tasks",
+      raw_tasks_attempted: "Raw tasks attempted",
+      raw_tasks_succeeded: "Raw tasks succeeded",
+      task_unverified_raw_attempt_count: "Unverified raw task attempts",
+      task_unverified_raw_success_count: "Unverified raw task successes",
       max_task_turn_count: "Max task turns",
       avg_task_turn_count: "Avg task turns",
       total_task_turn_count: "Total task turns",

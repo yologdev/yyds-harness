@@ -2833,8 +2833,20 @@ class BuildEvolutionDashboard(unittest.TestCase):
             write_json(
                 session / "state/summary.json",
                 {
-                    "latest_gnomes": {"coding_log_score": 0.8},
-                    "gnome_keys": ["coding_log_score"],
+                    "latest_gnomes": {
+                        "coding_log_score": 0.8,
+                        "session_success_rate": 1.0,
+                        "task_success_rate": 1.0,
+                        "tasks_attempted": 3,
+                        "tasks_succeeded": 3,
+                    },
+                    "gnome_keys": [
+                        "coding_log_score",
+                        "session_success_rate",
+                        "task_success_rate",
+                        "tasks_attempted",
+                        "tasks_succeeded",
+                    ],
                 },
             )
             write_json(
@@ -3066,6 +3078,15 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(session_data["health"], "attention")
             self.assertIn("3/3 raw outcome task(s)", session_data["work_summary"]["headline"])
             self.assertIn("missing strict task evidence", session_data["work_summary"]["labels"])
+            self.assertIsNone(session_data["latest_gnomes"]["task_success_rate"])
+            self.assertEqual(session_data["latest_gnomes"]["session_success_rate"], 0.0)
+            self.assertEqual(session_data["latest_gnomes"]["raw_tasks_attempted"], 3)
+            self.assertEqual(session_data["latest_gnomes"]["raw_tasks_succeeded"], 3)
+            self.assertEqual(session_data["latest_gnomes"]["task_unverified_raw_attempt_count"], 3)
+            self.assertEqual(session_data["latest_gnomes"]["task_unverified_raw_success_count"], 3)
+            self.assertIn("task_unverified_raw_success_count", data["aggregate"]["gnome_keys"])
+            self.assertNotIn("task_success_rate", data["gnome_history"][0]["values"])
+            self.assertEqual(data["gnome_history"][0]["values"]["task_unverified_raw_success_count"], 3.0)
             self.assertEqual(aggregate["tasks_attempted"], 0)
             self.assertEqual(aggregate["tasks_succeeded"], 0)
             self.assertIsNone(aggregate["task_success_rate"])
