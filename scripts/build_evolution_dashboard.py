@@ -3624,7 +3624,17 @@ HTML = r"""<!doctype html>
       if (failedToolCount > 0) reasons.push(`${failedToolCount} failed tool action(s)`);
       if (failedCommandCount > failedToolCount) reasons.push(`${failedCommandCount} failed command/check(s)`);
       if (lifecycleMissing) reasons.push("state lifecycle not observed");
-      else if (lifecycleUnhealthy) reasons.push("state lifecycle unhealthy");
+      else if (lifecycleUnhealthy) {
+        const runs = lifecycle.runs || {};
+        const modelCalls = lifecycle.model_calls || {};
+        const parts = [
+          `runs incomplete ${Number(runs.incomplete || 0)}`,
+          `runs unmatched ${Number(runs.unmatched_completed || 0)}`,
+          `model calls incomplete ${Number(modelCalls.incomplete || 0)}`,
+          `model calls unmatched ${Number(modelCalls.unmatched_completed || 0)}`
+        ];
+        reasons.push(`state lifecycle unhealthy (${parts.join("; ")})`);
+      }
       if (assessmentMissing) reasons.push("assessment artifact missing");
       return reasons.length ? reasons : ["no success evidence captured"];
     }

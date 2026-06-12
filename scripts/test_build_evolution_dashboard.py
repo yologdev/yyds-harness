@@ -1912,6 +1912,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
 
             data = build(root / "sessions", root / "out", repo_root=root)
             claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            html = (root / "out/index.html").read_text(encoding="utf-8")
             session_claims = {claim["name"]: claim for claim in claims["sessions"][0]["claims"]}
             latest = data["sessions"][0]["latest_gnomes"]
 
@@ -1920,6 +1921,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(latest["state_run_incomplete_count"], 1)
             self.assertEqual(latest["state_run_unmatched_completed_count"], 0)
             self.assertEqual(latest["deepseek_model_call_incomplete_count"], 0)
+            self.assertIn("runs incomplete ${Number(runs.incomplete || 0)}", html)
+            self.assertIn("model calls unmatched ${Number(modelCalls.unmatched_completed || 0)}", html)
             self.assertEqual(session_claims["deepseek_model_call_lifecycle_balanced"]["status"], "proven")
             self.assertEqual(session_claims["state_run_lifecycle_balanced"]["status"], "missing")
             self.assertEqual(
