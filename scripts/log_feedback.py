@@ -140,6 +140,7 @@ GNOME_KEYS = [
     "deepseek_model_call_unmatched_completed_count",
     "state_run_unstarted_input_validation_error_count",
 ]
+NORMAL_MODEL_COMPLETION_STATUSES = {"completed", "success", "ok", "stopped_after_completion_file"}
 
 
 def explicit_pass(value: Any) -> bool:
@@ -747,8 +748,10 @@ def cache_metrics_expected_from_completion(payload: dict[str, Any]) -> bool:
 
 def abnormal_model_completion_status(payload: dict[str, Any]) -> str | None:
     status = str(payload.get("status") or "").strip()
-    if status and status not in {"completed", "success", "ok"}:
+    if status and status not in NORMAL_MODEL_COMPLETION_STATUSES:
         return status
+    if status == "stopped_after_completion_file":
+        return None
     if payload.get("error") or payload.get("error_detail"):
         return status or "error"
     return None

@@ -35,6 +35,7 @@ PSEUDO_ROOT_NAMES = {
     "tasks",
     "tests",
 }
+NORMAL_MODEL_COMPLETION_STATUSES = {"completed", "success", "ok", "stopped_after_completion_file"}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -178,8 +179,10 @@ def cache_metrics_expected_from_completion(payload: dict[str, Any]) -> bool:
 
 def abnormal_model_completion_status(payload: dict[str, Any]) -> str | None:
     status = str(payload.get("status") or "").strip()
-    if status and status not in {"completed", "success", "ok"}:
+    if status and status not in NORMAL_MODEL_COMPLETION_STATUSES:
         return status
+    if status == "stopped_after_completion_file":
+        return None
     if payload.get("error") or payload.get("error_detail"):
         return status or "error"
     return None
@@ -2074,7 +2077,7 @@ def corrected_gnomes(
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 continue
             current = gnomes.get(key)
-            if not isinstance(current, (int, float)) or isinstance(current, bool) or int(value) > int(current):
+            if not isinstance(current, (int, float)) or isinstance(current, bool) or int(value) != int(current):
                 gnomes[key] = int(value)
                 recalc_score = True
     state_lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
@@ -2092,7 +2095,7 @@ def corrected_gnomes(
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 continue
             current = gnomes.get(gnome_key)
-            if not isinstance(current, (int, float)) or isinstance(current, bool) or int(value) > int(current):
+            if not isinstance(current, (int, float)) or isinstance(current, bool) or int(value) != int(current):
                 gnomes[gnome_key] = int(value)
                 recalc_score = True
     failed_tool_count = int(

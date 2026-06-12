@@ -2105,7 +2105,19 @@ class BuildEvolutionDashboard(unittest.TestCase):
             root = Path(tmp)
             session = root / "sessions/day-1"
             write_json(session / "outcome.json", {"ts": "2026-01-01T00:00:00Z"})
-            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "deepseek_model_call_started_count": 1,
+                        "deepseek_model_call_completed_count": 1,
+                        "deepseek_model_call_abnormal_completed_count": 1,
+                        "deepseek_model_call_incomplete_count": 0,
+                        "deepseek_model_call_unmatched_completed_count": 0,
+                    },
+                    "gnome_keys": ["deepseek_model_call_abnormal_completed_count"],
+                },
+            )
             write_events(
                 session / "state/events.jsonl",
                 [
@@ -2257,6 +2269,48 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 model_claim["actual"]["abnormal_completed_runs"][0]["status"],
                 "stream_closed_without_agent_end",
             )
+
+    def test_stopped_after_completion_file_model_calls_are_normal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"ts": "2026-01-01T00:00:00Z"})
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_events(
+                session / "state/events.jsonl",
+                [
+                    {
+                        "kind": "ModelCallStarted",
+                        "run_id": "run-stopped-after-file",
+                        "payload": {"model": "deepseek-v4-pro"},
+                    },
+                    {
+                        "kind": "ModelCallCompleted",
+                        "run_id": "run-stopped-after-file",
+                        "payload": {
+                            "model": "deepseek-v4-pro",
+                            "status": "stopped_after_completion_file",
+                            "error_detail": "agent stopped after completion evidence was written",
+                        },
+                    },
+                ],
+            )
+
+            build(root / "sessions", root / "out", repo_root=root)
+            data = json.loads((root / "out/data.json").read_text(encoding="utf-8"))
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            work = data["sessions"][0]["work_summary"]
+            model_claim = next(
+                claim
+                for claim in claims["sessions"][0]["claims"]
+                if claim["name"] == "deepseek_model_call_lifecycle_balanced"
+            )
+
+            self.assertEqual(work["deepseek_model_call_abnormal_completed_count"], 0)
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["deepseek_model_call_abnormal_completed_count"], 0)
+            self.assertEqual(work["deepseek_model_call_incomplete_count"], 0)
+            self.assertEqual(work["deepseek_model_call_unmatched_completed_count"], 0)
+            self.assertEqual(model_claim["status"], "proven")
 
     def test_manifest_files_backfilled_from_task_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:

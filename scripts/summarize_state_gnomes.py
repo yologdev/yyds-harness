@@ -86,6 +86,7 @@ GNOME_KEYS = [
     "deepseek_model_call_unmatched_completed_count",
     "state_run_unstarted_input_validation_error_count",
 ]
+NORMAL_MODEL_COMPLETION_STATUSES = {"completed", "success", "ok", "stopped_after_completion_file"}
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -177,8 +178,10 @@ def deepseek_model_payload(data: dict[str, Any]) -> bool:
 
 def abnormal_model_completion_status(data: dict[str, Any]) -> str | None:
     status = str(data.get("status") or "").strip()
-    if status and status not in {"completed", "success", "ok"}:
+    if status and status not in NORMAL_MODEL_COMPLETION_STATUSES:
         return status
+    if status == "stopped_after_completion_file":
+        return None
     if data.get("error") or data.get("error_detail"):
         return status or "error"
     return None
