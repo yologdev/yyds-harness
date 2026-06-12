@@ -408,6 +408,10 @@ def summarize_transcript_actions(session_dir: Path) -> dict[str, Any]:
         "_failed_tools_all": failed_tools,
         "read_files": compact_list(read_files, 12),
         "edited_files": compact_list(edited_files, 12),
+        "read_file_count": compact_count(read_files),
+        "edited_file_count": compact_count(edited_files),
+        "_read_files_all": read_files,
+        "_edited_files_all": edited_files,
     }
 
 
@@ -1371,9 +1375,13 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         "command_count": compact_count(commands),
         "failed_command_count": compact_count(failed_commands),
         "failed_tool_count": compact_count(failed_tools),
+        "read_file_count": compact_count(read_files),
+        "edited_file_count": compact_count(edited_files),
         "_commands_all": commands,
         "_failed_commands_all": failed_commands,
         "_failed_tools_all": failed_tools,
+        "_read_files_all": read_files,
+        "_edited_files_all": edited_files,
         "deepseek_cache_hit_ratio": cache_hit_ratio,
         "deepseek_cache_hit_tokens": cache_hit_tokens if cache_token_total > 0 else None,
         "deepseek_cache_miss_tokens": cache_miss_tokens if cache_token_total > 0 else None,
@@ -1408,15 +1416,13 @@ def work_summary(
     suggestions = evolution_suggestions(session_dir)
     event_data = summarize_events_for_work(load_jsonl(session_dir / "state" / "events.jsonl"))
     transcript_actions = summarize_transcript_actions(session_dir)
-    source_files = compact_list(
-        [
-            path
-            for commit in commits
-            for path in (commit.get("source_files") or [])
-            if isinstance(path, str)
-        ],
-        16,
-    )
+    source_file_values = [
+        path
+        for commit in commits
+        for path in (commit.get("source_files") or [])
+        if isinstance(path, str)
+    ]
+    source_files = compact_list(source_file_values, 16)
     command_values = (
         event_data.get("_commands_all", event_data["commands"])
         + transcript_actions.get("_commands_all", transcript_actions["commands"])
@@ -1429,15 +1435,28 @@ def work_summary(
         event_data.get("_failed_tools_all", event_data["failed_tools"])
         + transcript_actions.get("_failed_tools_all", transcript_actions["failed_tools"])
     )
-    edited_files = compact_list(event_data["edited_files"] + transcript_actions["edited_files"], 12)
-    touched_source_files = compact_list([path for path in edited_files if source_file(path)] + source_files, 12)
-    read_files = compact_list(event_data["read_files"] + transcript_actions["read_files"], 12)
+    edited_file_values = (
+        event_data.get("_edited_files_all", event_data["edited_files"])
+        + transcript_actions.get("_edited_files_all", transcript_actions["edited_files"])
+    )
+    read_file_values = (
+        event_data.get("_read_files_all", event_data["read_files"])
+        + transcript_actions.get("_read_files_all", transcript_actions["read_files"])
+    )
+    touched_source_file_values = [path for path in edited_file_values if source_file(path)] + source_file_values
+    edited_files = compact_list(edited_file_values, 12)
+    touched_source_files = compact_list(touched_source_file_values, 12)
+    read_files = compact_list(read_file_values, 12)
     commands = compact_list(command_values, 12)
     failed_commands = compact_list(failed_command_values, 8)
     failed_tools = compact_list(failed_tool_values, 8)
     command_count = compact_count(command_values)
     failed_command_count = compact_count(failed_command_values)
     failed_tool_count = compact_count(failed_tool_values)
+    read_file_count = compact_count(read_file_values)
+    edited_file_count = compact_count(edited_file_values)
+    source_changed_file_count = compact_count(source_file_values)
+    touched_source_file_count = compact_count(touched_source_file_values)
     public_transcript_actions = {
         key: value for key, value in transcript_actions.items() if not str(key).startswith("_")
     }
@@ -1502,12 +1521,12 @@ def work_summary(
             labels.append("assessment artifact missing (assess transcript present)")
         else:
             labels.append("assessment artifact missing")
-    if source_files:
-        labels.append(f"{len(source_files)} source file(s) changed")
-    elif touched_source_files:
-        labels.append(f"{len(touched_source_files)} source file(s) touched")
-    elif edited_files:
-        labels.append(f"{len(edited_files)} evidence/bookkeeping file(s) edited")
+    if source_changed_file_count:
+        labels.append(f"{source_changed_file_count} source file(s) changed")
+    elif touched_source_file_count:
+        labels.append(f"{touched_source_file_count} source file(s) touched")
+    elif edited_file_count:
+        labels.append(f"{edited_file_count} evidence/bookkeeping file(s) edited")
     if failed_tool_count:
         labels.append(f"{failed_tool_count} failed tool action(s)")
     if failed_command_count > failed_tool_count:
@@ -1536,13 +1555,17 @@ def work_summary(
         "causal_chains": causal_chains,
         "evolution_suggestions": suggestions,
         "edited_files": edited_files,
+        "edited_file_count": edited_file_count,
         "touched_source_files": touched_source_files,
+        "touched_source_file_count": touched_source_file_count,
         "source_changed_files": source_files,
+        "source_changed_file_count": source_changed_file_count,
         "commits": serialize_commits(commits),
         "source_commits": serialize_commits(source_commits),
         "bookkeeping_commits": serialize_commits(bookkeeping_commits),
         "task_lineage": [task for task in task_lineage if isinstance(task, dict)],
         "read_files": read_files,
+        "read_file_count": read_file_count,
         "commands": commands,
         "failed_commands": failed_commands,
         "failed_tools": failed_tools,
@@ -4033,6 +4056,13 @@ HTML = r"""<!doctype html>
       return `<ul class="mini-list">${rows.map(value => `<li>${text(value)}</li>`).join("")}</ul>`;
     }
 
+    function sampleCountLabel(values, total) {
+      const sampleSize = Math.min((values || []).filter(Boolean).length, 6);
+      const count = Number(total ?? sampleSize);
+      if (!Number.isFinite(count) || count <= sampleSize) return sampleSize ? ` (${sampleSize})` : "";
+      return ` (${sampleSize} of ${fmt.format(count)})`;
+    }
+
     function commitItems(commits) {
       const rows = (commits || []).slice(0, 6);
       if (!rows.length) return `<p class="muted">No landed commits matched this session.</p>`;
@@ -4245,6 +4275,9 @@ HTML = r"""<!doctype html>
         const hasManifest = Object.keys(manifest).length > 0;
         const sourceFiles = (work.source_changed_files || []).length ? work.source_changed_files : (work.touched_source_files || []);
         const evidenceFiles = work.edited_files || [];
+        const sourceFileCount = Number((work.source_changed_file_count || 0) || (work.touched_source_file_count || 0) || sourceFiles.length);
+        const evidenceFileCount = Number(work.edited_file_count ?? evidenceFiles.length);
+        const readFileCount = Number(work.read_file_count ?? (work.read_files || []).length);
         const failedTools = work.failed_tools || [];
         const failedToolCount = Number(work.failed_tool_count ?? failedTools.length);
         const failedCommandCount = Number(work.failed_command_count || 0);
@@ -4261,9 +4294,9 @@ HTML = r"""<!doctype html>
             <div class="work-facts">
               <div class="fact"><strong>${text(session.tasks_succeeded || 0)}/${text(session.tasks_attempted || 0)}</strong>tasks</div>
               <div class="fact"><strong>${text(verification.verified_task_count || 0)}/${text(verification.task_count || 0)}</strong>verified</div>
-              <div class="fact"><strong>${text(sourceFiles.length || 0)}</strong>source files</div>
+              <div class="fact"><strong>${text(sourceFileCount || 0)}</strong>source files</div>
               <div class="fact"><strong>${text(work.unlanded_source_task_count || 0)}</strong>unlanded source tasks</div>
-              <div class="fact"><strong>${text(evidenceFiles.length || 0)}</strong>evidence edits</div>
+              <div class="fact"><strong>${text(evidenceFileCount || 0)}</strong>evidence edits</div>
               <div class="fact"><strong>${text(work.eval_count || 0)}</strong>evals</div>
               <div class="fact"><strong>${work.assessment_artifact_present === true ? "yes" : work.assessment_artifact_present === false ? "no" : "-"}</strong>assessment artifact</div>
               <div class="fact"><strong>${text(work.source_commit_count || 0)}</strong>source commits</div>
@@ -4275,7 +4308,7 @@ HTML = r"""<!doctype html>
             <details class="work-details">
               <summary>Open audit evidence</summary>
               <div class="detail-grid">
-                <div><strong>Source changes</strong>${listItems(sourceFiles, "No source changes recorded.")}</div>
+                <div><strong>Source changes${sampleCountLabel(sourceFiles, sourceFileCount)}</strong>${listItems(sourceFiles, "No source changes recorded.")}</div>
                 <div><strong>Source commits</strong>${sourceCommitItems(work)}</div>
                 <div><strong>Bookkeeping commits</strong>${bookkeepingCommitItems(work)}</div>
                 <div><strong>Task lineage</strong>${renderTaskLineage(work)}</div>
@@ -4285,8 +4318,8 @@ HTML = r"""<!doctype html>
                 <div><strong>Agent transcripts</strong>${renderTranscriptList(session, work)}</div>
                 <div><strong>State pipeline</strong>${renderStatePipeline(work)}</div>
                 <div><strong>Validated</strong>${listItems(work.commands, "No command events recorded.")}</div>
-                <div><strong>Read</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
-                <div><strong>Evidence/bookkeeping edits</strong>${listItems(evidenceFiles, "No evidence or bookkeeping edits recorded.")}</div>
+                <div><strong>Read${sampleCountLabel(work.read_files, readFileCount)}</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
+                <div><strong>Evidence/bookkeeping edits${sampleCountLabel(evidenceFiles, evidenceFileCount)}</strong>${listItems(evidenceFiles, "No evidence or bookkeeping edits recorded.")}</div>
                 <div><strong>Failures</strong>${listItems(work.failed_commands, "No failed commands recorded.")}</div>
                 <div><strong>Tool failures</strong>${listItems(work.failed_tools, "No failed tool calls recorded.")}</div>
               </div>

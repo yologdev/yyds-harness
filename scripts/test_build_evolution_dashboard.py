@@ -66,6 +66,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn(".gitignore", actions["edited_files"])
             self.assertNotIn(".src/state.rs", actions["read_files"])
             self.assertNotIn(".session_plan/eval_task_1.md", actions["edited_files"])
+            self.assertEqual(actions["read_file_count"], 1)
+            self.assertEqual(actions["edited_file_count"], 3)
 
     def test_state_event_paths_drop_workspace_prefix(self):
         events = [
@@ -87,6 +89,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
 
         self.assertEqual(work["edited_files"], ["session_plan/eval_task_3.md"])
         self.assertEqual(work["read_files"], ["src/deepseek.rs"])
+        self.assertEqual(work["edited_file_count"], 1)
+        self.assertEqual(work["read_file_count"], 1)
 
     def test_transcript_search_in_src_does_not_emit_pseudo_dot_src(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2589,14 +2593,56 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["command_count"], 2)
             self.assertEqual(work["failed_command_count"], 2)
             self.assertEqual(work["failed_tool_count"], 1)
+            self.assertEqual(work["read_file_count"], 2)
+            self.assertEqual(work["edited_file_count"], 1)
+            self.assertEqual(work["touched_source_file_count"], 1)
             self.assertEqual(work["transcript_actions"]["command_count"], 2)
             self.assertEqual(work["transcript_actions"]["failed_command_count"], 2)
             self.assertEqual(work["transcript_actions"]["failed_tool_count"], 1)
+            self.assertEqual(work["transcript_actions"]["read_file_count"], 2)
+            self.assertEqual(work["transcript_actions"]["edited_file_count"], 1)
             self.assertEqual(session_data["latest_gnomes"]["tool_error_count"], 1)
             self.assertEqual(work["transcript_actions"]["edited_files"], ["src/state.rs"])
             html = (root / "out/index.html").read_text(encoding="utf-8")
             self.assertIn("tool fails", html)
             self.assertIn("failed checks", html)
+
+    def test_file_evidence_totals_use_uncapped_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "\n".join(
+                    [f"  ▶ read src/read_{index}.rs ✓ (5ms)" for index in range(14)]
+                    + [f"  ▶ edit journals/evidence_{index}.md ✓ (5ms)" for index in range(13)]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            data = build(root / "sessions", root / "out")
+            work = data["sessions"][0]["work_summary"]
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+
+            self.assertEqual(len(work["read_files"]), 12)
+            self.assertEqual(work["read_file_count"], 14)
+            self.assertEqual(len(work["edited_files"]), 12)
+            self.assertEqual(work["edited_file_count"], 13)
+            self.assertEqual(work["touched_source_file_count"], 0)
+            self.assertIn("13 evidence/bookkeeping file(s) edited", work["headline"])
+            self.assertIn("readFileCount", html)
+            self.assertIn("sampleCountLabel(work.read_files, readFileCount)", html)
 
     def test_failed_tool_totals_use_uncapped_counts(self):
         with tempfile.TemporaryDirectory() as tmp:
