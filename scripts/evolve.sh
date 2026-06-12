@@ -1057,13 +1057,30 @@ standard.
 
 Steps:
 
-1. **Read your source code** — all .rs files under src/ (this is YOU). Note module structure, line counts, key entry points.
+0. **Tool and command discipline** — keep assessment evidence bounded. Prefer the
+   `search` tool for code search; it treats patterns literally by default and
+   skips build/state artifacts. If you use bash search, prefer `rg --files`,
+   `rg --fixed-strings`, and scoped paths. Verify guessed paths with
+   `rg --files` before reading them. Do not search `.git`, `target`, or
+   `.yoyo/state`. Do not assume `src/main.rs` exists; discover the binary entry
+   point first.
+
+1. **Read your source architecture, not every source file** — use `rg --files src`,
+   `wc -l`, module declarations, and a few key entry points to summarize module
+   structure, line counts, and ownership. Read focused files only when the
+   trajectory/state evidence points at them. Do not read all `.rs` files under
+   `src/`.
 
 2. **Read recent history** — journals/JOURNAL.md (last 10 entries), git log (last 10 commits). Summarize what changed recently. Also check journals/ for any external project journals (e.g., journals/llm-wiki.md) and briefly note recent external work.
 
 3. **Read memory files** — memory/active_learnings.md, memory/active_social_learnings.md. Note any recurring themes or blockers.
 
-4. **Self-test** — run \`cargo build\` and \`cargo test\`. Try running the binary with a simple prompt. Note what worked, what broke, any friction.
+4. **Self-test** — the harness already ran \`cargo build\` and \`cargo test\`
+   before this assessment phase. Treat that preflight as the baseline build/test
+   evidence unless the current evidence contradicts it. Run only bounded,
+   directly relevant checks: for example one focused test, a help command, or a
+   state/cache command. Do not rerun full \`cargo test\`, full clippy, broad
+   source scans, or long-running binary prompts during assessment.
 
 5. **Analyze your evolution history** — run \`gh run list --repo $REPO --workflow evolve.yml --limit 5 --json conclusion,startedAt,displayTitle\` to see recent run outcomes. For any failed runs, check logs with \`gh run view RUN_ID --repo $REPO --log-failed 2>/dev/null | tail -40\`. Look for patterns: repeated failures, API errors, reverts, timeouts. This is ground truth about what actually happened, not what you think happened.
 
@@ -1076,7 +1093,11 @@ Steps:
 
 7. **Audit upstream dependency boundaries** — yoagent and yoagent-state are foundation dependencies, not code to patch inside this harness. $YOAGENT_UPSTREAM_TARGET If DeepSeek harness evidence points to a yoagent defect or missing capability, identify the smallest upstream change and whether it needs a yyds help issue or an upstream yoagent PR.
 
-8. **Research competitors** — use curl to check what Claude Code, Cursor, Aider, Codex, and other coding agents can do. What capabilities do they have that you don't? What's your biggest gap?
+8. **Research competitors** — use existing docs, memory, and recent known context
+   first. Use curl only for one or two bounded checks when network access is
+   available and it directly informs a DeepSeek harness task. Do not let
+   competitor research consume the assessment budget or block writing
+   assessment.md.
 
 9. **Check your own backlog** — read any self-filed issues (agent-self label) to see what you planned but haven't done.
 
