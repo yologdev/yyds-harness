@@ -2147,9 +2147,74 @@ def metric_int(metrics: dict[str, Any], key: str, default: int = 0) -> int:
     return int(value) if numeric_value(value) else default
 
 
+def failed_tool_category_lesson(category: str) -> tuple[str, str, str] | None:
+    lessons = {
+        "search_regex_error": (
+            "tool_error_search_regex",
+            "search patterns failed because regex punctuation was interpreted by grep",
+            "search simple identifiers or use rg --fixed-strings with scoped paths instead of escaped regex snippets",
+        ),
+        "search_binary_match": (
+            "tool_error_search_binary",
+            "search scanned binary build artifacts",
+            "scope searches to source paths and exclude target/generated artifacts with rg --glob '!target/**'",
+        ),
+        "missing_file_read": (
+            "tool_error_missing_file",
+            "agent read or searched paths that did not exist",
+            "verify guessed paths with rg --files before reading them, then search owning symbols instead of retrying absent paths",
+        ),
+        "read_error": (
+            "tool_error_read_path",
+            "file-read evidence contained path or access errors",
+            "verify paths with rg --files and prefer module or symbol discovery when exact files are uncertain",
+        ),
+        "edit_context_mismatch": (
+            "tool_error_edit_context",
+            "edit failed because the replacement context was ambiguous or absent",
+            "read a tighter surrounding range and use unique old_text context before applying edits",
+        ),
+        "bash_tool_error": (
+            "tool_error_bash",
+            "shell tool commands failed during the session",
+            "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks",
+        ),
+    }
+    return lessons.get(category)
+
+
+def failed_tool_category_lessons(work: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(work, dict):
+        return []
+    summary = work.get("failed_tool_summary") if isinstance(work.get("failed_tool_summary"), dict) else {}
+    top_categories = summary.get("top_categories") if isinstance(summary.get("top_categories"), list) else []
+    lessons: list[dict[str, Any]] = []
+    for row in top_categories:
+        if not isinstance(row, dict):
+            continue
+        category = str(row.get("category") or "")
+        mapped = failed_tool_category_lesson(category)
+        if not mapped:
+            continue
+        kind, fingerprint, action = mapped
+        lessons.append(
+            {
+                "kind": kind,
+                "fingerprint": fingerprint,
+                "action": action,
+                "count": int(row.get("count") or 0),
+                "source": "failed_tool_summary",
+                "metric": f"failed_tool_summary.{category}",
+                "examples": row.get("examples") if isinstance(row.get("examples"), list) else [],
+            }
+        )
+    return lessons
+
+
 def corrected_gnome_lessons(
     gnomes: dict[str, Any],
     existing_lessons: list[dict[str, Any]] | None = None,
+    work: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     existing_keys = {lesson_key(lesson) for lesson in existing_lessons or [] if isinstance(lesson, dict)}
     candidates = [
@@ -2215,7 +2280,20 @@ def corrected_gnome_lessons(
         ),
     ]
     lessons: list[dict[str, Any]] = []
+    for lesson in failed_tool_category_lessons(work):
+        if lesson.get("count", 0) <= 0:
+            continue
+        key = lesson_key(lesson)
+        if key in existing_keys:
+            continue
+        lessons.append(lesson)
+    has_tool_category_lesson = any(
+        str(lesson.get("metric") or "").startswith("failed_tool_summary.")
+        for lesson in lessons
+    )
     for metric_key, kind, fingerprint, action in candidates:
+        if metric_key == "tool_error_count" and has_tool_category_lesson:
+            continue
         count = metric_int(gnomes, metric_key)
         if count <= 0:
             continue
@@ -2506,7 +2584,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         feedback_lessons = log_feedback_top_lessons(session_dir)
         raw_state_gnomes = summary.get("latest_gnomes") if isinstance(summary.get("latest_gnomes"), dict) else {}
         latest_gnomes = corrected_gnomes(summary, work, trace, outcome, feedback_metrics)
-        corrected_lessons = corrected_gnome_lessons(latest_gnomes, feedback_lessons)
+        corrected_lessons = corrected_gnome_lessons(latest_gnomes, feedback_lessons, work)
         gnome_audit = state_gnome_audit(raw_state_gnomes, latest_gnomes, feedback_metrics)
         normalize_work_gnome_snapshots(work, latest_gnomes)
         evals, latest_eval, latest_eval_corrections = normalize_latest_eval_gnomes(evals, latest_gnomes)

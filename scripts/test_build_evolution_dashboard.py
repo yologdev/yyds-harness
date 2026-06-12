@@ -2912,6 +2912,57 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("failed tool actions were recovered from transcripts", data_json)
             self.assertIn("transcript action parsing corrected the gnome", data_json)
 
+    def test_corrected_lessons_use_failed_tool_categories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {"tool_error_count": 0},
+                    "gnome_keys": ["tool_error_count"],
+                },
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "\n".join(
+                    [
+                        "  ▶ search 'fn handle_run\\(' in src/commands_eval.rs ✗ (17ms)",
+                        "      │ Search error: grep: Unmatched ( or \\(",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            data = build(root / "sessions", root / "out")
+            work = data["sessions"][0]["work_summary"]
+            category_lesson = work["corrected_gnome_lessons"][0]
+
+            self.assertEqual(work["failed_tool_summary"]["category_counts"], {"search_regex_error": 1})
+            self.assertEqual(category_lesson["kind"], "tool_error_search_regex")
+            self.assertEqual(category_lesson["source"], "failed_tool_summary")
+            self.assertEqual(category_lesson["metric"], "failed_tool_summary.search_regex_error")
+            self.assertEqual(category_lesson["count"], 1)
+            self.assertIn("rg --fixed-strings", category_lesson["action"])
+            self.assertNotIn(
+                "tool_error",
+                [
+                    row["kind"]
+                    for row in work["corrected_gnome_lessons"][1:]
+                ],
+            )
+
     def test_log_feedback_top_lessons_are_exposed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
