@@ -2003,6 +2003,84 @@ def gnome_corrections(raw: dict[str, Any], corrected: dict[str, Any]) -> dict[st
     return corrections
 
 
+def gnome_correction_source(key: str, corrected_value: Any, feedback_metrics: dict[str, Any]) -> tuple[str, str]:
+    if key in feedback_metrics and feedback_metrics.get(key) == corrected_value:
+        return ("log_feedback", "log_feedback.json metric overrode or filled the state gnome")
+    if key in {
+        "tool_error_count",
+        "command_timeout_count",
+        "search_error_count",
+        "failed_command_count",
+    }:
+        return ("transcripts", "transcript action parsing corrected the gnome")
+    if key.startswith("deepseek_model_call_"):
+        return ("state_lifecycle.model_calls", "model-call lifecycle events corrected the gnome")
+    if key.startswith("state_run_"):
+        return ("state_lifecycle.runs", "run lifecycle events corrected the gnome")
+    if key.startswith("deepseek_cache_"):
+        return ("deepseek_cache_metrics", "token-backed DeepSeek cache/model metrics corrected the gnome")
+    if key in {
+        "task_success_rate",
+        "session_success_rate",
+        "evaluator_unverified_count",
+        "evaluator_timeout_with_verdict_count",
+        "task_unlanded_source_count",
+        "task_unverified_raw_attempt_count",
+        "task_unverified_raw_success_count",
+        "raw_tasks_attempted",
+        "raw_tasks_succeeded",
+        "task_unattempted_count",
+        "task_artifact_coverage",
+        "planner_no_task_count",
+        "max_task_turn_count",
+        "avg_task_turn_count",
+        "total_task_turn_count",
+    }:
+        return ("task_artifacts", "task artifacts, verifier rows, or raw outcome evidence corrected the gnome")
+    if key in {
+        "state_live_baseline_shrink_count",
+        "state_operational_capture_coverage",
+        "state_capture_coverage",
+        "task_lineage_capture_coverage",
+        "task_lineage_event_count",
+    }:
+        return ("state_pipeline", "state replay, merge, or trace-quality evidence corrected the gnome")
+    if key == "coding_log_score":
+        return ("derived_score", "coding log score was recomputed from corrected gnome inputs")
+    return ("dashboard_correction", "dashboard normalization corrected the gnome")
+
+
+def state_gnome_audit(
+    raw_state_gnomes: dict[str, Any],
+    corrected_gnomes: dict[str, Any],
+    feedback_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    corrections = gnome_corrections(raw_state_gnomes, corrected_gnomes)
+    rows: list[dict[str, Any]] = []
+    source_counts: dict[str, int] = {}
+    for key, correction in corrections.items():
+        source, reason = gnome_correction_source(key, correction.get("to"), feedback_metrics)
+        source_counts[source] = source_counts.get(source, 0) + 1
+        rows.append(
+            {
+                "key": key,
+                "from": correction.get("from"),
+                "to": correction.get("to"),
+                "source": source,
+                "reason": reason,
+            }
+        )
+    rows.sort(key=lambda row: (str(row.get("source") or ""), str(row.get("key") or "")))
+    return {
+        "schema_version": 1,
+        "raw_state_gnome_count": len(raw_state_gnomes),
+        "corrected_gnome_count": len(corrected_gnomes),
+        "correction_count": len(corrections),
+        "corrections_by_source": dict(sorted(source_counts.items())),
+        "corrections": rows,
+    }
+
+
 def normalize_latest_eval_gnomes(
     evals: list[dict[str, Any]],
     corrected: dict[str, Any],
@@ -2137,8 +2215,10 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         work = work_summary(session_dir, outcome, summary, evals, blockers, commits)
         feedback_metrics = log_feedback_metrics(session_dir)
         feedback_lessons = log_feedback_top_lessons(session_dir)
+        raw_state_gnomes = summary.get("latest_gnomes") if isinstance(summary.get("latest_gnomes"), dict) else {}
         latest_gnomes = corrected_gnomes(summary, work, trace, outcome, feedback_metrics)
         corrected_lessons = corrected_gnome_lessons(latest_gnomes, feedback_lessons)
+        gnome_audit = state_gnome_audit(raw_state_gnomes, latest_gnomes, feedback_metrics)
         normalize_work_gnome_snapshots(work, latest_gnomes)
         evals, latest_eval, latest_eval_corrections = normalize_latest_eval_gnomes(evals, latest_gnomes)
         if feedback_lessons:
@@ -2173,10 +2253,8 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
             "event_counts": summary.get("event_counts", {}),
             "trace_quality": trace,
             "latest_gnomes": latest_gnomes,
-            "gnome_corrections": gnome_corrections(
-                summary.get("latest_gnomes") if isinstance(summary.get("latest_gnomes"), dict) else {},
-                latest_gnomes,
-            ),
+            "gnome_corrections": gnome_corrections(raw_state_gnomes, latest_gnomes),
+            "state_gnome_audit": gnome_audit,
             "gnome_keys": summary.get("gnome_keys", []),
             "evals": evals,
             "latest_eval": latest_eval,
@@ -4324,6 +4402,28 @@ HTML = r"""<!doctype html>
       return `<ul class="mini-list">${rows.map(row => `<li>${row}</li>`).join("")}</ul>`;
     }
 
+    function renderStateGnomeAudit(session) {
+      const audit = session.state_gnome_audit || {};
+      const rows = Array.isArray(audit.corrections) ? audit.corrections : [];
+      const sourceCounts = audit.corrections_by_source || {};
+      const sourceBits = Object.entries(sourceCounts)
+        .map(([source, count]) => `${source} ${count}`)
+        .join(", ");
+      const summary = [
+        `raw ${text(audit.raw_state_gnome_count || 0)}`,
+        `corrected ${text(audit.corrected_gnome_count || 0)}`,
+        `changed ${text(audit.correction_count || 0)}`
+      ].join(" / ");
+      if (!rows.length) {
+        return `<p class="muted">${summary}. Raw state gnomes already match dashboard-corrected gnomes.</p>`;
+      }
+      return `<p class="muted">${summary}${sourceBits ? `; ${text(sourceBits)}` : ""}</p><ul class="mini-list">${rows.slice(0, 8).map(row => {
+        const fromValue = metricValue(row.key || "", row.from);
+        const toValue = metricValue(row.key || "", row.to);
+        return `<li><strong>${text(row.source || "correction")}: ${text(row.key || "")}</strong><br><span class="muted">${fromValue} → ${toValue}; ${text(row.reason || "")}</span></li>`;
+      }).join("")}</ul>`;
+    }
+
     function renderTaskArtifacts(session, work) {
       const manifest = work.task_manifest || {};
       const verification = work.task_verification || {};
@@ -4553,6 +4653,7 @@ HTML = r"""<!doctype html>
                 <div><strong>Evidence/bookkeeping edits${sampleCountLabel(evidenceFiles, evidenceFileCount)}</strong>${listItems(evidenceFiles, "No evidence or bookkeeping edits recorded.")}</div>
                 <div><strong>Failures</strong>${listItems(work.failed_commands, "No failed commands recorded.")}</div>
                 <div><strong>Tool failures</strong>${listItems(work.failed_tools, "No failed tool calls recorded.")}</div>
+                <div><strong>State/gnome audit</strong>${renderStateGnomeAudit(session)}</div>
               </div>
               <p class="muted">Transcript phases: ${text(phaseText || "no transcripts")}. ${text(trace.label || "unknown trace")} from ${text(trace.event_count || 0)} total event(s). Audit files: <a href="${text(session.audit_url)}">open session evidence</a>.</p>
             </details>

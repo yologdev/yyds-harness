@@ -2688,6 +2688,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             data = build(root / "sessions", root / "out")
             session_data = data["sessions"][0]
             work = session_data["work_summary"]
+            audit = session_data["state_gnome_audit"]
             claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
             failed_tool_claim = next(
                 claim
@@ -2703,13 +2704,28 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["corrected_gnome_lessons"][0]["kind"], "tool_error")
             self.assertEqual(work["corrected_gnome_lessons"][0]["count"], 10)
             self.assertEqual(work["corrected_gnome_lessons"][0]["source"], "corrected_gnomes")
+            self.assertGreaterEqual(audit["correction_count"], 1)
+            self.assertEqual(audit["corrections_by_source"].get("transcripts"), 1)
+            tool_error_audit = next(row for row in audit["corrections"] if row["key"] == "tool_error_count")
+            self.assertEqual(
+                tool_error_audit,
+                {
+                    "key": "tool_error_count",
+                    "from": 0,
+                    "to": 10,
+                    "source": "transcripts",
+                    "reason": "transcript action parsing corrected the gnome",
+                },
+            )
             self.assertEqual(failed_tool_claim["expected"]["minimum_count"], 10)
             self.assertEqual(len(failed_tool_claim["evidence"]), 8)
             html = (root / "out/index.html").read_text(encoding="utf-8")
             data_json = (root / "out/data.json").read_text(encoding="utf-8")
             self.assertIn("Feedback lessons", html)
             self.assertIn("Corrected gnome pressure", html)
+            self.assertIn("State/gnome audit", html)
             self.assertIn("failed tool actions were recovered from transcripts", data_json)
+            self.assertIn("transcript action parsing corrected the gnome", data_json)
 
     def test_log_feedback_top_lessons_are_exposed(self):
         with tempfile.TemporaryDirectory() as tmp:
