@@ -3548,6 +3548,10 @@ HTML = r"""<!doctype html>
     }
 
     function healthOf(session) {
+      const storedHealth = String(session.health || "").trim();
+      if (["passed", "partial", "attention", "failed", "reverted"].includes(storedHealth)) {
+        return storedHealth;
+      }
       const attempted = Number(session.tasks_attempted || 0);
       const succeeded = Number(session.tasks_succeeded || 0);
       const work = session.work_summary || {};

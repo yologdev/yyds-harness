@@ -789,6 +789,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["sessions"][0]["health_reasons"], ["state lifecycle not observed"])
             self.assertIn("Health reason:", html)
             self.assertIn("function healthReasonsOf(session)", html)
+            self.assertIn('String(session.health || "").trim()', html)
             self.assertIn(
                 "const harnessAttention = failedToolCount > 0 || failedCommandCount > failedToolCount || lifecycleMissing || lifecycleUnhealthy || assessmentMissing",
                 html,
