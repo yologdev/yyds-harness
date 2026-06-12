@@ -785,7 +785,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("Health reason:", html)
             self.assertIn("function healthReasonsOf(session)", html)
             self.assertIn(
-                "const harnessAttention = failedToolCount > 0 || lifecycleMissing || lifecycleUnhealthy || assessmentMissing",
+                "const harnessAttention = failedToolCount > 0 || failedCommandCount > failedToolCount || lifecycleMissing || lifecycleUnhealthy || assessmentMissing",
                 html,
             )
             self.assertIn("const evalRows = (task.evals || [])", html)
@@ -811,6 +811,10 @@ class BuildEvolutionDashboard(unittest.TestCase):
             (
                 {"failed_tools": ["edit src/lib.rs: old_text did not match"]},
                 ["1 failed tool action(s)"],
+            ),
+            (
+                {"failed_command_count": 2, "failed_tool_count": 0},
+                ["2 failed command/check(s)"],
             ),
             (
                 {"state_lifecycle": {"observed": False, "healthy": False}},
@@ -2538,7 +2542,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
             self.assertIn("1 source file(s) touched", work["headline"])
             self.assertIn("1 failed tool action(s)", work["headline"])
+            self.assertIn("2 failed command/check(s)", work["labels"])
             self.assertIn("2 command/check signal(s)", work["labels"])
+            self.assertIn("2 failed command/check(s)", session_data["health_reasons"])
             self.assertEqual(work["command_count"], 2)
             self.assertEqual(work["failed_command_count"], 2)
             self.assertEqual(work["failed_tool_count"], 1)
@@ -2549,6 +2555,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["transcript_actions"]["edited_files"], ["src/state.rs"])
             html = (root / "out/index.html").read_text(encoding="utf-8")
             self.assertIn("tool fails", html)
+            self.assertIn("failed checks", html)
 
     def test_failed_tool_totals_use_uncapped_counts(self):
         with tempfile.TemporaryDirectory() as tmp:

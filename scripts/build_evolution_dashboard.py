@@ -1510,6 +1510,8 @@ def work_summary(
         labels.append(f"{len(edited_files)} evidence/bookkeeping file(s) edited")
     if failed_tool_count:
         labels.append(f"{failed_tool_count} failed tool action(s)")
+    if failed_command_count > failed_tool_count:
+        labels.append(f"{failed_command_count} failed command/check(s)")
     if command_count:
         labels.append(f"{command_count} command/check signal(s)")
     if evals:
@@ -2038,6 +2040,9 @@ def harness_attention_reasons(work: dict[str, Any]) -> list[str]:
     failed_tool_count = reason_count(work.get("failed_tool_count")) or len(failed_tools)
     if failed_tool_count:
         reasons.append(f"{failed_tool_count} failed tool action(s)")
+    failed_command_count = reason_count(work.get("failed_command_count"))
+    if failed_command_count > failed_tool_count:
+        reasons.append(f"{failed_command_count} failed command/check(s)")
     lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
     lifecycle_missing = lifecycle.get("observed") is not True
     lifecycle_unhealthy = lifecycle.get("observed") is True and lifecycle.get("healthy") is False
@@ -3484,12 +3489,13 @@ HTML = r"""<!doctype html>
       const strictVerified = Number(verification.verified_task_count || 0);
       const failedTools = Array.isArray(work.failed_tools) ? work.failed_tools : [];
       const failedToolCount = Number(work.failed_tool_count ?? failedTools.length);
+      const failedCommandCount = Number(work.failed_command_count || 0);
       const lifecycle = work.state_lifecycle || {};
       const lifecycleMissing = lifecycle.observed !== true;
       const lifecycleUnhealthy = lifecycle.observed === true && lifecycle.healthy === false;
       const assessmentMissing = work.assessment_artifact_present === false
         && (work.assessment_transcript_present === true || work.assessment_diagnostic_present === true);
-      const harnessAttention = failedToolCount > 0 || lifecycleMissing || lifecycleUnhealthy || assessmentMissing;
+      const harnessAttention = failedToolCount > 0 || failedCommandCount > failedToolCount || lifecycleMissing || lifecycleUnhealthy || assessmentMissing;
       if (session.reverted) return "reverted";
       if (manifest.planning_failed) return "attention";
       if (strictTotal && strictVerified < strictTotal) return strictVerified ? "partial" : "attention";
@@ -3513,6 +3519,7 @@ HTML = r"""<!doctype html>
       const strictVerified = Number(verification.verified_task_count || 0);
       const failedTools = Array.isArray(work.failed_tools) ? work.failed_tools : [];
       const failedToolCount = Number(work.failed_tool_count ?? failedTools.length);
+      const failedCommandCount = Number(work.failed_command_count || 0);
       const lifecycle = work.state_lifecycle || {};
       const lifecycleMissing = lifecycle.observed !== true;
       const lifecycleUnhealthy = lifecycle.observed === true && lifecycle.healthy === false;
@@ -3521,6 +3528,7 @@ HTML = r"""<!doctype html>
       const reasons = [];
       if (strictTotal && strictVerified < strictTotal) reasons.push(`${strictVerified}/${strictTotal} verified tasks`);
       if (failedToolCount > 0) reasons.push(`${failedToolCount} failed tool action(s)`);
+      if (failedCommandCount > failedToolCount) reasons.push(`${failedCommandCount} failed command/check(s)`);
       if (lifecycleMissing) reasons.push("state lifecycle not observed");
       else if (lifecycleUnhealthy) reasons.push("state lifecycle unhealthy");
       if (assessmentMissing) reasons.push("assessment artifact missing");
@@ -4168,6 +4176,7 @@ HTML = r"""<!doctype html>
         const evidenceFiles = work.edited_files || [];
         const failedTools = work.failed_tools || [];
         const failedToolCount = Number(work.failed_tool_count ?? failedTools.length);
+        const failedCommandCount = Number(work.failed_command_count || 0);
         const phaseText = Object.entries(transcripts.phase_counts || {}).map(([phase, count]) => `${phase} ${count}`).join(", ");
         const healthReasons = healthReasonsOf(session).map(text).join("; ");
         return `<article class="item work-row">
@@ -4188,6 +4197,7 @@ HTML = r"""<!doctype html>
               <div class="fact"><strong>${work.assessment_artifact_present === true ? "yes" : work.assessment_artifact_present === false ? "no" : "-"}</strong>assessment artifact</div>
               <div class="fact"><strong>${text(work.source_commit_count || 0)}</strong>source commits</div>
               <div class="fact"><strong>${text(failedToolCount || 0)}</strong>tool fails</div>
+              <div class="fact"><strong>${text(failedCommandCount || 0)}</strong>failed checks</div>
               <div class="fact"><strong>${text(work.decision_count || 0)}</strong>decisions</div>
               <div class="fact"><strong>${text(trace.trace_event_count || 0)}</strong>trace events</div>
             </div>
