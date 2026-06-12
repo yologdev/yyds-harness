@@ -2049,14 +2049,96 @@ class BuildEvolutionDashboard(unittest.TestCase):
         self.assertEqual(lifecycle["runs"]["completed"], 1)
         self.assertEqual(lifecycle["runs"]["incomplete"], 1)
         self.assertEqual(lifecycle["runs"]["unmatched_completed"], 1)
+        self.assertEqual(lifecycle["runs"]["unstarted_input_validation_error"], 0)
         self.assertEqual(lifecycle["runs"]["incomplete_runs"][0]["run_id"], "run-open")
         self.assertEqual(lifecycle["runs"]["incomplete_runs"][0]["last_event"]["kind"], "FileEdited")
         self.assertEqual(lifecycle["runs"]["incomplete_runs"][0]["last_event"]["path"], "src/lib.rs")
         self.assertEqual(lifecycle["runs"]["unmatched_completed_runs"], ["run-closed-without-start"])
+        self.assertEqual(
+            lifecycle["runs"]["unmatched_completed_details"][0]["run_id"],
+            "run-closed-without-start",
+        )
+        self.assertEqual(lifecycle["runs"]["unmatched_completed_details"][0]["session_started"], False)
         self.assertEqual(lifecycle["model_calls"]["started"], 1)
         self.assertEqual(lifecycle["model_calls"]["completed"], 0)
         self.assertEqual(lifecycle["model_calls"]["incomplete"], 1)
         self.assertEqual(lifecycle["model_calls"]["incomplete_runs"][0]["run_id"], "run-open")
+
+    def test_state_lifecycle_buckets_unstarted_input_validation_errors(self):
+        work = summarize_events_for_work(
+            [
+                {
+                    "kind": "SessionStarted",
+                    "run_id": "run-empty",
+                    "payload": {"model": "deepseek-v4-pro"},
+                },
+                {
+                    "kind": "RunCompleted",
+                    "run_id": "run-empty",
+                    "payload": {
+                        "status": "error",
+                        "error": "exit code 1",
+                        "error_detail": "empty_input",
+                    },
+                },
+            ]
+        )
+
+        lifecycle = work["state_lifecycle"]
+        self.assertFalse(lifecycle["balanced"])
+        self.assertEqual(lifecycle["runs"]["started"], 0)
+        self.assertEqual(lifecycle["runs"]["completed"], 1)
+        self.assertEqual(lifecycle["runs"]["unmatched_completed"], 1)
+        self.assertEqual(lifecycle["runs"]["unstarted_input_validation_error"], 1)
+        self.assertEqual(
+            lifecycle["runs"]["unstarted_input_validation_error_runs"][0]["run_id"],
+            "run-empty",
+        )
+        self.assertTrue(lifecycle["runs"]["unstarted_input_validation_error_runs"][0]["session_started"])
+        self.assertEqual(
+            lifecycle["runs"]["unstarted_input_validation_error_runs"][0]["last_event"]["error_detail"],
+            "empty_input",
+        )
+
+    def test_state_run_claim_reports_unstarted_input_validation_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"ts": "2026-01-01T00:00:00Z"})
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_events(
+                session / "state/events.jsonl",
+                [
+                    {
+                        "kind": "SessionStarted",
+                        "run_id": "run-empty",
+                        "payload": {"model": "deepseek-v4-pro"},
+                    },
+                    {
+                        "kind": "RunCompleted",
+                        "run_id": "run-empty",
+                        "payload": {
+                            "status": "error",
+                            "error": "exit code 1",
+                            "error_detail": "empty_input",
+                        },
+                    },
+                ],
+            )
+
+            build(root / "sessions", root / "out", repo_root=root)
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            session_claims = {claim["name"]: claim for claim in claims["sessions"][0]["claims"]}
+            claim = session_claims["state_run_lifecycle_balanced"]
+
+            self.assertEqual(claim["status"], "missing")
+            self.assertEqual(claim["actual"]["unmatched_completed"], 1)
+            self.assertEqual(claim["actual"]["unstarted_input_validation_error"], 1)
+            self.assertIn("input-validation exits without RunStarted", claim["detail"])
+            self.assertEqual(
+                claim["actual"]["unstarted_input_validation_error_runs"][0]["run_id"],
+                "run-empty",
+            )
 
     def test_state_lifecycle_without_events_is_balanced_but_not_healthy(self):
         lifecycle = summarize_events_for_work([])["state_lifecycle"]

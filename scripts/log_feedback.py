@@ -138,6 +138,7 @@ GNOME_KEYS = [
     "deepseek_model_call_abnormal_completed_count",
     "deepseek_model_call_incomplete_count",
     "deepseek_model_call_unmatched_completed_count",
+    "state_run_unstarted_input_validation_error_count",
 ]
 
 

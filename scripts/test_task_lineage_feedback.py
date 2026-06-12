@@ -1195,6 +1195,7 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(lifecycle["runs"]["completed"], 1)
             self.assertEqual(lifecycle["runs"]["incomplete"], 1)
             self.assertEqual(lifecycle["runs"]["unmatched_completed"], 1)
+            self.assertEqual(lifecycle["runs"]["unstarted_input_validation_error"], 0)
             self.assertEqual(lifecycle["runs"]["incomplete_runs"][0]["run_id"], "run-open")
             self.assertEqual(lifecycle["runs"]["incomplete_runs"][0]["last_event"]["kind"], "FileEdited")
             self.assertEqual(lifecycle["model_calls"]["started"], 1)
@@ -1207,6 +1208,39 @@ class TaskLineageFeedback(unittest.TestCase):
                 lifecycle["model_calls"]["abnormal_completed_runs"][0]["run_id"],
                 "run-closed-without-start",
             )
+
+    def test_summarize_state_lifecycle_buckets_empty_input_without_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            append_event(
+                events,
+                "SessionStarted",
+                {"model": "deepseek-chat", "provider": "deepseek"},
+                run_id="run-empty",
+            )
+            append_event(
+                events,
+                "RunCompleted",
+                {"status": "error", "error": "exit code 1", "error_detail": "empty_input"},
+                run_id="run-empty",
+            )
+
+            summary = summarize_state_gnomes.summarize(
+                summarize_state_gnomes.load_jsonl(events),
+                events,
+            )
+
+            lifecycle = summary["state_lifecycle"]
+            self.assertFalse(lifecycle["balanced"])
+            self.assertEqual(lifecycle["runs"]["started"], 0)
+            self.assertEqual(lifecycle["runs"]["completed"], 1)
+            self.assertEqual(lifecycle["runs"]["unmatched_completed"], 1)
+            self.assertEqual(lifecycle["runs"]["unstarted_input_validation_error"], 1)
+            self.assertEqual(
+                lifecycle["runs"]["unstarted_input_validation_error_runs"][0]["run_id"],
+                "run-empty",
+            )
+            self.assertTrue(lifecycle["runs"]["unstarted_input_validation_error_runs"][0]["session_started"])
 
     def test_summary_merges_post_wrapup_commit_links(self):
         with tempfile.TemporaryDirectory() as tmp:

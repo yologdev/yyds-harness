@@ -1495,6 +1495,7 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     deepseek_model_call_abnormal_completed = 0
     run_started_ids: set[str] = set()
     run_completed_ids: set[str] = set()
+    run_session_started_ids: set[str] = set()
     model_call_started_runs: dict[str, dict[str, Any]] = {}
     model_call_completed_runs: set[str] = set()
     model_call_abnormal_completed_runs: list[dict[str, Any]] = []
@@ -1519,6 +1520,8 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
             }
         if kind == "RunStarted" and run_id:
             run_started_ids.add(run_id)
+        elif kind == "SessionStarted" and run_id:
+            run_session_started_ids.add(run_id)
         elif kind == "RunCompleted" and run_id:
             run_completed_ids.add(run_id)
         if kind == "ModelCallStarted" and deepseek_model_payload(data):
@@ -1622,6 +1625,19 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     cache_hit_ratio = round(cache_hit_tokens / cache_token_total, 6) if cache_token_total > 0 else None
     run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
     run_unmatched_completed_ids = sorted(run_id for run_id in run_completed_ids if run_id not in run_started_ids)
+    run_unmatched_completed = [
+        {
+            "run_id": run_id,
+            "last_event": run_last_events.get(run_id),
+            "session_started": run_id in run_session_started_ids,
+        }
+        for run_id in run_unmatched_completed_ids[:8]
+    ]
+    run_unstarted_input_validation_errors = [
+        run
+        for run in run_unmatched_completed
+        if is_input_validation_completion(run.get("last_event"))
+    ]
     run_incomplete = [
         {
             "run_id": run_id,
@@ -1636,8 +1652,11 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
             "completed": len(run_completed_ids),
             "incomplete": len(run_incomplete_ids),
             "unmatched_completed": len(run_unmatched_completed_ids),
+            "unstarted_input_validation_error": len(run_unstarted_input_validation_errors),
             "incomplete_runs": run_incomplete,
             "unmatched_completed_runs": run_unmatched_completed_ids[:8],
+            "unmatched_completed_details": run_unmatched_completed,
+            "unstarted_input_validation_error_runs": run_unstarted_input_validation_errors,
         },
         "model_calls": {
             "started": deepseek_model_call_started,
@@ -1704,6 +1723,17 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         "deepseek_model_call_unmatched_completed_runs": unmatched_completed_run_ids[:8],
         "state_lifecycle": state_lifecycle,
     }
+
+
+def is_input_validation_completion(last_event: Any) -> bool:
+    if not isinstance(last_event, dict):
+        return False
+    if last_event.get("kind") != "RunCompleted":
+        return False
+    if last_event.get("status") != "error":
+        return False
+    detail = str(last_event.get("error_detail") or "")
+    return detail == "empty_input" or detail.startswith("invalid_input:")
 
 
 def work_summary(
@@ -2017,6 +2047,7 @@ def corrected_gnomes(
         "state_run_completed_count": "completed",
         "state_run_incomplete_count": "incomplete",
         "state_run_unmatched_completed_count": "unmatched_completed",
+        "state_run_unstarted_input_validation_error_count": "unstarted_input_validation_error",
     }
     if any(int(run_lifecycle.get(source_key) or 0) > 0 for source_key in run_lifecycle_keys.values()):
         for gnome_key, source_key in run_lifecycle_keys.items():
@@ -3252,16 +3283,25 @@ def state_run_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> d
     completed = int(gnomes.get("state_run_completed_count") or 0)
     incomplete = int(gnomes.get("state_run_incomplete_count") or 0)
     unmatched_completed = int(gnomes.get("state_run_unmatched_completed_count") or 0)
+    unstarted_input_validation_error = int(gnomes.get("state_run_unstarted_input_validation_error_count") or 0)
     state_lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
     runs = state_lifecycle.get("runs") if isinstance(state_lifecycle.get("runs"), dict) else {}
     incomplete_runs = runs.get("incomplete_runs") if isinstance(runs.get("incomplete_runs"), list) else []
     unmatched_runs = runs.get("unmatched_completed_runs") if isinstance(runs.get("unmatched_completed_runs"), list) else []
+    unmatched_details = runs.get("unmatched_completed_details") if isinstance(runs.get("unmatched_completed_details"), list) else []
+    unstarted_input_validation_error_runs = (
+        runs.get("unstarted_input_validation_error_runs")
+        if isinstance(runs.get("unstarted_input_validation_error_runs"), list)
+        else []
+    )
     if started == 0 and completed == 0:
         status = "missing"
         detail = "No yyds run lifecycle events were captured."
     elif incomplete > 0 or unmatched_completed > 0:
         status = "missing"
         detail = "RunStarted and RunCompleted events do not pair by run_id."
+        if unstarted_input_validation_error > 0:
+            detail += f" {unstarted_input_validation_error} unmatched completion(s) are input-validation exits without RunStarted."
     else:
         status = "proven"
         detail = "RunStarted and RunCompleted events are paired by run_id."
@@ -3274,8 +3314,11 @@ def state_run_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> d
             "completed": completed,
             "incomplete": incomplete,
             "unmatched_completed": unmatched_completed,
+            "unstarted_input_validation_error": unstarted_input_validation_error,
             "incomplete_runs": incomplete_runs[:8],
             "unmatched_completed_runs": unmatched_runs[:8],
+            "unmatched_completed_details": unmatched_details[:8],
+            "unstarted_input_validation_error_runs": unstarted_input_validation_error_runs[:8],
         },
         [
             "RunStarted",
@@ -3284,6 +3327,7 @@ def state_run_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> d
             "state_run_completed_count",
             "state_run_incomplete_count",
             "state_run_unmatched_completed_count",
+            "state_run_unstarted_input_validation_error_count",
         ],
         detail,
         ["state.events", "work_summary.state_lifecycle", "latest_gnomes"],
@@ -4247,6 +4291,7 @@ HTML = r"""<!doctype html>
       state_run_completed_count: "State runs completed",
       state_run_incomplete_count: "Incomplete state runs",
       state_run_unmatched_completed_count: "Unmatched completed state runs",
+      state_run_unstarted_input_validation_error_count: "Input-validation completions without starts",
       audit_capture_coverage: "Audit capture",
       state_trace_event_count: "Trace events",
       closed_loop_fix_rate: "Closed-loop fix rate",

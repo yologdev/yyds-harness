@@ -84,6 +84,7 @@ GNOME_KEYS = [
     "deepseek_model_call_abnormal_completed_count",
     "deepseek_model_call_incomplete_count",
     "deepseek_model_call_unmatched_completed_count",
+    "state_run_unstarted_input_validation_error_count",
 ]
 
 
@@ -217,6 +218,7 @@ def state_metrics(value: dict[str, Any]) -> dict[str, Any]:
 def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
     run_started_ids: set[str] = set()
     run_completed_ids: set[str] = set()
+    run_session_started_ids: set[str] = set()
     run_last_events: dict[str, dict[str, Any]] = {}
     model_call_started = 0
     model_call_completed = 0
@@ -236,6 +238,8 @@ def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
             run_last_events[run_id] = event_lifecycle_summary(event, kind, data)
         if kind == "RunStarted" and run_id:
             run_started_ids.add(run_id)
+        elif kind == "SessionStarted" and run_id:
+            run_session_started_ids.add(run_id)
         elif kind == "RunCompleted" and run_id:
             run_completed_ids.add(run_id)
             if data.get("status") == "error" or data.get("error") or data.get("error_detail"):
@@ -268,6 +272,19 @@ def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
 
     run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
     run_unmatched_completed_ids = sorted(run_id for run_id in run_completed_ids if run_id not in run_started_ids)
+    run_unmatched_completed = [
+        {
+            "run_id": run_id,
+            "last_event": run_last_events.get(run_id),
+            "session_started": run_id in run_session_started_ids,
+        }
+        for run_id in run_unmatched_completed_ids[:8]
+    ]
+    run_unstarted_input_validation_errors = [
+        run
+        for run in run_unmatched_completed
+        if is_input_validation_completion(run.get("last_event"))
+    ]
     model_incomplete_ids = sorted(
         run_id for run_id in model_call_started_runs if run_id not in model_call_completed_runs
     )
@@ -289,11 +306,14 @@ def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
             "completed": len(run_completed_ids),
             "incomplete": len(run_incomplete_ids),
             "unmatched_completed": len(run_unmatched_completed_ids),
+            "unstarted_input_validation_error": len(run_unstarted_input_validation_errors),
             "incomplete_runs": [
                 {"run_id": run_id, "last_event": run_last_events.get(run_id)}
                 for run_id in run_incomplete_ids[:8]
             ],
             "unmatched_completed_runs": run_unmatched_completed_ids[:8],
+            "unmatched_completed_details": run_unmatched_completed,
+            "unstarted_input_validation_error_runs": run_unstarted_input_validation_errors,
         },
         "model_calls": {
             "started": model_call_started,
@@ -338,6 +358,17 @@ def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
         and model_call_abnormal_completed == 0
     )
     return lifecycle
+
+
+def is_input_validation_completion(last_event: Any) -> bool:
+    if not isinstance(last_event, dict):
+        return False
+    if last_event.get("kind") != "RunCompleted":
+        return False
+    if last_event.get("status") != "error":
+        return False
+    detail = str(last_event.get("error_detail") or "")
+    return detail == "empty_input" or detail.startswith("invalid_input:")
 
 
 def summarize_patch(event: dict[str, Any]) -> dict[str, Any]:
