@@ -31,14 +31,19 @@ evidence that lets the planner choose small, useful, verifiable work.
    rerun full `cargo test`, full clippy, broad source scans, or long prompts
    during assessment.
 4. **Inspect evolution evidence.** Use recent GitHub Actions runs, audit-log
-   session artifacts, transcripts, task manifests, outcomes, and dashboard JSON
-   to see what actually happened.
+   session artifacts, transcripts, task manifests, outcomes, dashboard JSON,
+   `states.json`, and `claims.json` to see what actually happened.
 5. **Read yoagent-state feedback.** Prefer concrete state evidence:
    `state tail`, `state why`, graph hotspots, replay integrity, cache reports,
    model/tool events, task lineage, and `PatchEvaluated` gnome values.
-6. **Compare intent to evidence.** Ask whether task artifacts, action logs,
+6. **Print the structured state snapshot.** Summarize claim health, top
+   unresolved claim families, task-state counts, and top tool-failure
+   categories before choosing candidate tasks. Use the trajectory snapshot when
+   present; otherwise derive the compact view from current dashboard/state
+   artifacts.
+7. **Compare intent to evidence.** Ask whether task artifacts, action logs,
    transcripts, states, and gnomes really prove what the dashboard says.
-7. **Identify the next smallest improvement.** Favor fixes that improve
+8. **Identify the next smallest improvement.** Favor fixes that improve
    DeepSeek protocol reliability, prompt/context quality, evidence capture,
    verifier honesty, cache observability, dashboard readability, or autonomous
    planning/execution reliability.
@@ -52,6 +57,9 @@ evidence that lets the planner choose small, useful, verifiable work.
 - Thin evidence: missing `state/events.jsonl`, missing operational events,
   feedback-only traces where full state traces were expected, or dashboard
   claims that cannot be replayed.
+- Structured-state drift: `states.json`, `claims.json`, or dashboard
+  `claims_summary` shows unresolved families that the assessment does not name
+  and translate into candidate tasks.
 - DeepSeek friction: schema/tool-call errors, thinking/protocol mismatches,
   context misses, prompt-cache regressions, retry churn, provider failures, or
   model route mistakes.
@@ -68,6 +76,7 @@ Write findings as prioritized evidence, not guesses:
 
 ```markdown
 SELF-ASSESSMENT Day [N]:
+Structured State Snapshot: [claim health; top unresolved claim families; task-state counts; top tool-failure categories]
 1. [CRITICAL/HIGH/MEDIUM/LOW] [issue]
    Evidence: [file, session id, metric, transcript, command, or dashboard field]
    Impact: [why this matters for yyds as a DeepSeek coding agent]

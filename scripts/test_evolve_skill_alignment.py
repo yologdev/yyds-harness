@@ -44,6 +44,8 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
 
         self.assertIn("First read and follow `skills/self-assess/SKILL.md`", script)
         self.assertIn("canonical assessment contract for yyds", script)
+        self.assertIn("Structured state snapshot", script)
+        self.assertIn("claim health, unresolved claim families, task-state counts", script)
 
     def test_self_assess_skill_is_yyds_deepseek_native(self):
         text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")
@@ -60,8 +62,12 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("audit-log", text)
         self.assertIn("task manifests", text)
         self.assertIn("dashboard JSON", text)
+        self.assertIn("states.json", text)
+        self.assertIn("claims.json", text)
         self.assertIn("state/events.jsonl", text)
         self.assertIn("prompt-cache regressions", text)
+        self.assertIn("Structured State Snapshot", text)
+        self.assertIn("top unresolved claim families", text)
 
     def test_self_assess_skill_preserves_bounded_assessment_contract(self):
         text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")

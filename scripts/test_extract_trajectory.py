@@ -174,6 +174,61 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("no planned-file overlap", rendered)
             self.assertIn("no passing verifier", rendered)
 
+    def test_structured_state_snapshot_surfaces_claims_task_states_and_tool_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {"tool_error_count": 1},
+                    "gnome_keys": ["tool_error_count"],
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {"tasks": [{"task_id": "task_01", "title": "Fix search", "files": ["src/lib.rs"]}]},
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "planned_files": ["src/lib.rs"],
+                    "touched_files": ["src/lib.rs"],
+                    "source_files": ["src/lib.rs"],
+                    "commit_shas": [],
+                },
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "  ▶ search 'fn handle_run\\(' in src/commands.rs ✗ (17ms)\n",
+                encoding="utf-8",
+            )
+
+            rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
+
+            self.assertIn("## Structured state snapshot", rendered)
+            self.assertIn("claims:", rendered)
+            self.assertIn("deepseek_model_call_lifecycle_balanced", rendered)
+            self.assertIn("task states:", rendered)
+            self.assertIn("unlanded_source_edits=1", rendered)
+            self.assertIn("tool failures:", rendered)
+            self.assertIn("search_tool_error=1", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

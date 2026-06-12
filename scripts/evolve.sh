@@ -1106,6 +1106,9 @@ Steps:
    - \`$YOYO_BIN state graph hotspots --limit 10\`
    - \`$YOYO_BIN deepseek cache-report\`
    Treat this as harness feedback, not product-user behavior. Look for DeepSeek protocol failures, repair churn, eval regressions, cache inefficiency, tool-call/schema friction, context misses, rollback pressure, and recurring failure classes.
+   If the trajectory includes a "Structured state snapshot", copy its compact
+   claim health, unresolved claim families, task-state counts, and tool-failure
+   categories into your assessment before choosing candidate tasks.
 
 7. **Audit upstream dependency boundaries** — yoagent and yoagent-state are foundation dependencies, not code to patch inside this harness. $YOAGENT_UPSTREAM_TARGET If DeepSeek harness evidence points to a yoagent defect or missing capability, identify the smallest upstream change and whether it needs a yyds help issue or an upstream yoagent PR.
 
@@ -1139,6 +1142,9 @@ Steps:
 
 ## yoagent-state DeepSeek Feedback
 [state tail / state why / graph hotspots / cache report — concrete harness signals and what they imply]
+
+## Structured State Snapshot
+[claim health; top unresolved claim families; task-state counts; top tool-failure categories]
 
 ## Upstream Dependency Signals
 [any evidence that yoagent / yoagent-state needs upstream work; include whether to file help-wanted or propose a PR]

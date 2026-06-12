@@ -36,7 +36,7 @@ GH_RUN_VIEW_TIMEOUT = 10       # seconds per gh run view
 GH_RUN_LIST_TIMEOUT = 10       # seconds for gh run list
 STUCK_ON_THRESHOLD = 3         # ≥N attempts AND 0 successes → flag
 TOTAL_LINE_CAP = 100
-TOTAL_BYTE_CAP = 2048
+TOTAL_BYTE_CAP = 3072
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -720,6 +720,92 @@ def render_log_feedback(feedbacks: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def render_structured_state_snapshot(audit_dir: Path) -> str:
+    if not audit_dir.exists() or not audit_dir.is_dir():
+        return ""
+    try:
+        from build_evolution_dashboard import (
+            build_claims_projection,
+            build_dashboard_claim_summary,
+            build_states_projection,
+            load_sessions,
+        )
+    except Exception as e:  # pragma: no cover - defensive degradation for cron
+        warn(f"could not import dashboard projections for trajectory snapshot: {e}")
+        return ""
+
+    try:
+        sessions = load_sessions(audit_dir, Path.cwd())
+        if not sessions:
+            return ""
+        generated_at = (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        claims = build_claims_projection(sessions, generated_at, audit_dir)
+        claim_summary = build_dashboard_claim_summary(claims)
+        states = build_states_projection(sessions, generated_at, audit_dir)
+    except Exception as e:  # pragma: no cover - defensive degradation for cron
+        warn(f"could not build structured trajectory snapshot: {e}")
+        return ""
+
+    claim_total = int(claim_summary.get("claim_count") or 0)
+    claim_counts = (
+        claim_summary.get("status_counts")
+        if isinstance(claim_summary.get("status_counts"), dict)
+        else {}
+    )
+    proven = int(claim_counts.get("proven") or 0)
+    unresolved = int(claim_summary.get("unresolved_count") or 0)
+    state_summary = states.get("summary") if isinstance(states.get("summary"), dict) else {}
+    state_counts = state_summary.get("state_counts") if isinstance(state_summary.get("state_counts"), dict) else {}
+    tool_failures: Counter[str] = Counter()
+    for session in states.get("sessions", []) if isinstance(states.get("sessions"), list) else []:
+        if not isinstance(session, dict):
+            continue
+        failure_summary = (
+            (session.get("tool_failures") or {}).get("summary")
+            if isinstance(session.get("tool_failures"), dict)
+            else {}
+        )
+        category_counts = (
+            failure_summary.get("category_counts")
+            if isinstance(failure_summary, dict)
+            else {}
+        )
+        if not isinstance(category_counts, dict):
+            continue
+        for category, count in category_counts.items():
+            tool_failures[str(category)] += int(count or 0)
+
+    lines = ["## Structured state snapshot"]
+    if claim_total:
+        lines.append(f"claims: {proven}/{claim_total} proven; {unresolved} unresolved")
+    for row in (claim_summary.get("top_unresolved") or [])[:3]:
+        if not isinstance(row, dict):
+            continue
+        lines.append(
+            f"- {row.get('status', 'unknown')} "
+            f"{row.get('count', 0)}x {row.get('name', 'unknown_claim')}"
+        )
+    if state_counts:
+        top_states = sorted(
+            state_counts.items(),
+            key=lambda item: (-int(item[1] or 0), str(item[0])),
+        )[:5]
+        lines.append("task states: " + "; ".join(f"{state}={count}" for state, count in top_states))
+    if tool_failures:
+        lines.append(
+            "tool failures: "
+            + "; ".join(f"{category}={count}" for category, count in tool_failures.most_common(5))
+        )
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
 def render_graph_suggestions(audit_dir: Path) -> str:
     sessions = ordered_sessions(audit_dir)
     if not sessions:
@@ -796,6 +882,9 @@ def main() -> int:
     if s:
         sections.append(s)
     s = render_log_feedback(log_feedback)
+    if s:
+        sections.append(s)
+    s = render_structured_state_snapshot(audit_dir)
     if s:
         sections.append(s)
     s = render_graph_suggestions(audit_dir)
