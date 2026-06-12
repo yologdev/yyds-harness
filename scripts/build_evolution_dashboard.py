@@ -1147,6 +1147,8 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     deepseek_model_call_started = 0
     deepseek_model_call_completed = 0
     deepseek_model_call_abnormal_completed = 0
+    run_started_ids: set[str] = set()
+    run_completed_ids: set[str] = set()
     model_call_started_runs: dict[str, dict[str, Any]] = {}
     model_call_completed_runs: set[str] = set()
     model_call_abnormal_completed_runs: list[dict[str, Any]] = []
@@ -1169,6 +1171,10 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
                 "error": data.get("error"),
                 "error_detail": data.get("error_detail"),
             }
+        if kind == "RunStarted" and run_id:
+            run_started_ids.add(run_id)
+        elif kind == "RunCompleted" and run_id:
+            run_completed_ids.add(run_id)
         if kind == "ModelCallStarted" and deepseek_model_payload(data):
             deepseek_model_call_started += 1
             if run_id:
@@ -1261,6 +1267,57 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     incomplete_count = len(incomplete_run_ids) + max(unkeyed_model_call_starts - unkeyed_model_call_completions, 0)
     unmatched_completed_count = len(unmatched_completed_run_ids) + max(unkeyed_model_call_completions - unkeyed_model_call_starts, 0)
+    run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
+    run_unmatched_completed_ids = sorted(run_id for run_id in run_completed_ids if run_id not in run_started_ids)
+    run_incomplete = [
+        {
+            "run_id": run_id,
+            "last_event": run_last_events.get(run_id),
+        }
+        for run_id in run_incomplete_ids[:8]
+    ]
+    state_lifecycle = {
+        "schema_version": 1,
+        "runs": {
+            "started": len(run_started_ids),
+            "completed": len(run_completed_ids),
+            "incomplete": len(run_incomplete_ids),
+            "unmatched_completed": len(run_unmatched_completed_ids),
+            "incomplete_runs": run_incomplete,
+            "unmatched_completed_runs": run_unmatched_completed_ids[:8],
+        },
+        "model_calls": {
+            "started": deepseek_model_call_started,
+            "completed": deepseek_model_call_completed,
+            "abnormal_completed": deepseek_model_call_abnormal_completed,
+            "incomplete": incomplete_count,
+            "unmatched_completed": unmatched_completed_count,
+            "unkeyed_started": unkeyed_model_call_starts,
+            "unkeyed_completed": unkeyed_model_call_completions,
+            "incomplete_runs": incomplete_runs,
+            "abnormal_completed_runs": model_call_abnormal_completed_runs[:8],
+            "unmatched_completed_runs": unmatched_completed_run_ids[:8],
+        },
+    }
+    state_lifecycle["balanced"] = (
+        len(run_incomplete_ids) == 0
+        and len(run_unmatched_completed_ids) == 0
+        and incomplete_count == 0
+        and unmatched_completed_count == 0
+    )
+    state_lifecycle["observed"] = bool(
+        run_started_ids
+        or run_completed_ids
+        or deepseek_model_call_started
+        or deepseek_model_call_completed
+        or unkeyed_model_call_starts
+        or unkeyed_model_call_completions
+    )
+    state_lifecycle["healthy"] = bool(
+        state_lifecycle["observed"]
+        and state_lifecycle["balanced"]
+        and deepseek_model_call_abnormal_completed == 0
+    )
     return {
         "edited_files": compact_list(edited_files, 12),
         "read_files": compact_list(read_files, 12),
@@ -1280,6 +1337,7 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         "deepseek_model_call_incomplete_runs": incomplete_runs,
         "deepseek_model_call_abnormal_completed_runs": model_call_abnormal_completed_runs[:8],
         "deepseek_model_call_unmatched_completed_runs": unmatched_completed_run_ids[:8],
+        "state_lifecycle": state_lifecycle,
     }
 
 
@@ -1417,6 +1475,7 @@ def work_summary(
         "deepseek_model_call_incomplete_runs": event_data["deepseek_model_call_incomplete_runs"],
         "deepseek_model_call_abnormal_completed_runs": event_data["deepseek_model_call_abnormal_completed_runs"],
         "deepseek_model_call_unmatched_completed_runs": event_data["deepseek_model_call_unmatched_completed_runs"],
+        "state_lifecycle": event_data["state_lifecycle"],
         "patch_count": len(patches),
         "state_patch_count": len(patches),
         "source_patch_count": source_patch_count,

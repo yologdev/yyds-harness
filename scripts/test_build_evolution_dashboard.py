@@ -1432,9 +1432,15 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
 
             latest = data["sessions"][0]["latest_gnomes"]
+            lifecycle = data["sessions"][0]["work_summary"]["state_lifecycle"]
             self.assertEqual(latest["deepseek_model_call_started_count"], 1)
             self.assertEqual(latest["deepseek_model_call_completed_count"], 0)
             self.assertEqual(latest["deepseek_model_call_incomplete_count"], 1)
+            self.assertFalse(lifecycle["balanced"])
+            self.assertEqual(lifecycle["model_calls"]["started"], 1)
+            self.assertEqual(lifecycle["model_calls"]["completed"], 0)
+            self.assertEqual(lifecycle["model_calls"]["incomplete"], 1)
+            self.assertEqual(lifecycle["model_calls"]["incomplete_runs"][0]["last_event"]["kind"], "FileEdited")
             self.assertEqual(latest["deepseek_cache_metric_expected_count"], 0)
             self.assertEqual(latest["deepseek_cache_metric_missing_count"], 0)
             self.assertEqual(model_claim["status"], "missing")
@@ -1531,6 +1537,59 @@ class BuildEvolutionDashboard(unittest.TestCase):
         self.assertEqual(work["deepseek_model_call_completed_count"], 1)
         self.assertEqual(work["deepseek_model_call_incomplete_count"], 0)
         self.assertEqual(work["deepseek_model_call_unmatched_completed_count"], 0)
+        self.assertTrue(work["state_lifecycle"]["observed"])
+        self.assertTrue(work["state_lifecycle"]["balanced"])
+        self.assertTrue(work["state_lifecycle"]["healthy"])
+
+    def test_state_lifecycle_summary_structures_run_and_model_evidence(self):
+        work = summarize_events_for_work(
+            [
+                {
+                    "kind": "RunStarted",
+                    "run_id": "run-open",
+                    "payload": {"status": "started"},
+                },
+                {
+                    "kind": "ModelCallStarted",
+                    "run_id": "run-open",
+                    "payload": {"model": "deepseek-v4-pro"},
+                },
+                {
+                    "kind": "FileEdited",
+                    "run_id": "run-open",
+                    "payload": {"path": "/home/runner/work/yyds-harness/yyds-harness/src/lib.rs"},
+                },
+                {
+                    "kind": "RunCompleted",
+                    "run_id": "run-closed-without-start",
+                    "payload": {"status": "completed"},
+                },
+            ]
+        )
+
+        lifecycle = work["state_lifecycle"]
+        self.assertTrue(lifecycle["observed"])
+        self.assertFalse(lifecycle["balanced"])
+        self.assertFalse(lifecycle["healthy"])
+        self.assertEqual(lifecycle["runs"]["started"], 1)
+        self.assertEqual(lifecycle["runs"]["completed"], 1)
+        self.assertEqual(lifecycle["runs"]["incomplete"], 1)
+        self.assertEqual(lifecycle["runs"]["unmatched_completed"], 1)
+        self.assertEqual(lifecycle["runs"]["incomplete_runs"][0]["run_id"], "run-open")
+        self.assertEqual(lifecycle["runs"]["incomplete_runs"][0]["last_event"]["kind"], "FileEdited")
+        self.assertEqual(lifecycle["runs"]["incomplete_runs"][0]["last_event"]["path"], "src/lib.rs")
+        self.assertEqual(lifecycle["runs"]["unmatched_completed_runs"], ["run-closed-without-start"])
+        self.assertEqual(lifecycle["model_calls"]["started"], 1)
+        self.assertEqual(lifecycle["model_calls"]["completed"], 0)
+        self.assertEqual(lifecycle["model_calls"]["incomplete"], 1)
+        self.assertEqual(lifecycle["model_calls"]["incomplete_runs"][0]["run_id"], "run-open")
+
+    def test_state_lifecycle_without_events_is_balanced_but_not_healthy(self):
+        lifecycle = summarize_events_for_work([])["state_lifecycle"]
+
+        self.assertFalse(lifecycle["observed"])
+        self.assertTrue(lifecycle["balanced"])
+        self.assertFalse(lifecycle["healthy"])
 
     def test_abnormal_completed_model_calls_are_observed_not_clean(self):
         with tempfile.TemporaryDirectory() as tmp:
