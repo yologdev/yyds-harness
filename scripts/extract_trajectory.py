@@ -24,6 +24,7 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Optional, Union
 
 from state_graph_tools import evolution_suggestions, ordered_sessions
 
@@ -87,11 +88,23 @@ def truncate_lines(s: str, n: int) -> str:
 # ── Section 1: Recent session outcomes ───────────────────────────────────
 
 
-def load_outcomes(audit_dir: Path) -> list[dict]:
-    """Read last N outcome.json files, sorted newest-first by mtime.
+def outcome_sort_time(data: dict[str, Any], fallback: float) -> float:
+    ts = str(data.get("ts") or "").strip()
+    if ts:
+        normalized = ts.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized).timestamp()
+        except ValueError:
+            pass
+    return fallback
+
+
+def load_recent_session_outcomes(audit_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """Read last N outcome.json files, sorted newest-first by outcome timestamp.
     Returns dicts unchanged from outcome.json — sort metadata is kept on a
     side tuple, never mutated into the parsed object (defends against keys
-    like `_mtime` colliding with future schema additions)."""
+    like `_mtime` colliding with future schema additions). File mtime is only
+    a fallback because copied audit artifacts can have non-chronological mtimes."""
     if not audit_dir.exists() or not audit_dir.is_dir():
         return []
     triples: list[tuple[float, str, dict]] = []
@@ -111,17 +124,244 @@ def load_outcomes(audit_dir: Path) -> list[dict]:
         except OSError as e:
             warn(f"could not stat {outcome}: {e}")
             mtime = 0.0
-        triples.append((mtime, child.name, data))
+        triples.append((outcome_sort_time(data, mtime), child.name, data))
     triples.sort(key=lambda t: t[0], reverse=True)
-    # Return only the data dicts, but keep the original keys intact.
-    return [t[2] for t in triples[:WINDOW_SESSIONS]]
+    return [(audit_dir / t[1], t[2]) for t in triples[:WINDOW_SESSIONS]]
 
 
-def render_outcomes(outcomes: list[dict]) -> str:
-    if not outcomes:
+def load_outcomes(audit_dir: Path) -> list[dict[str, Any]]:
+    # Backward-compatible helper for callers/tests that only need raw outcomes.
+    return [outcome for _, outcome in load_recent_session_outcomes(audit_dir)]
+
+
+def load_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+def session_sort_time(session_dir: Path) -> float:
+    fallback = 0.0
+    for name in ("outcome.json", "log_feedback.json"):
+        path = session_dir / name
+        if not path.is_file():
+            continue
+        try:
+            fallback = max(fallback, path.stat().st_mtime)
+        except OSError:
+            pass
+        data = load_json(path)
+        if isinstance(data, dict):
+            ts_value = data.get("ts") or data.get("generated_at")
+            if ts_value:
+                return outcome_sort_time({"ts": ts_value}, fallback)
+    return fallback
+
+
+def compact_values(values: list[str]) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        text = " ".join(str(value).split()).strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def split_files(value: str) -> list[str]:
+    return compact_values([part.strip() for part in value.replace(";", ",").split(",")])
+
+
+def parse_planned_files(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        if line.startswith("Files:"):
+            return split_files(line.partition(":")[2])
+    return []
+
+
+def path_matches(planned: str, touched: str) -> bool:
+    planned = planned.strip().strip("/")
+    touched = touched.strip().strip("/")
+    if not planned or not touched:
+        return False
+    return touched == planned or touched.startswith(f"{planned}/")
+
+
+def file_overlap(planned: list[str], touched: list[str]) -> bool:
+    return any(path_matches(plan, touch) for plan in planned for touch in touched)
+
+
+def explicit_pass(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"pass", "passed", "ok", "success"} or text.startswith("pass:")
+
+
+def explicit_fail(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"fail", "failed", "failure"} or text.startswith("fail:")
+
+
+def eval_timed_out_after_verdict(eval_data: dict[str, Any]) -> bool:
+    if int(eval_data.get("exit_code") or 0) != 124:
+        return False
+    return (
+        explicit_pass(eval_data.get("status"))
+        or explicit_pass(eval_data.get("verdict"))
+        or explicit_fail(eval_data.get("status"))
+        or explicit_fail(eval_data.get("verdict"))
+        or bool(eval_data.get("verdict_file"))
+    )
+
+
+def eval_passed(evals: list[dict[str, Any]], lineage_eval: Any) -> bool:
+    if evals:
+        return any(
+            isinstance(eval_data, dict)
+            and not eval_timed_out_after_verdict(eval_data)
+            and (explicit_pass(eval_data.get("status")) or explicit_pass(eval_data.get("verdict")))
+            for eval_data in evals
+        )
+    if isinstance(lineage_eval, dict):
+        return explicit_pass(lineage_eval.get("verdict"))
+    return False
+
+
+def task_manifest_tasks(session_dir: Path) -> list[dict[str, Any]]:
+    manifest = load_json(session_dir / "tasks" / "manifest.json")
+    if not isinstance(manifest, dict):
+        return []
+    tasks = manifest.get("tasks")
+    if isinstance(tasks, list):
+        return [task for task in tasks if isinstance(task, dict)]
+    selected = manifest.get("selected_tasks")
+    if isinstance(selected, list):
+        return [task for task in selected if isinstance(task, dict)]
+    return []
+
+
+def strict_task_verification(session_dir: Path) -> dict[str, Any]:
+    tasks_dir = session_dir / "tasks"
+    if not tasks_dir.is_dir():
+        return {"task_count": 0, "verified_task_count": 0, "rows": []}
+
+    selected = task_manifest_tasks(session_dir)
+    artifact_ids = [
+        path.name
+        for path in sorted(tasks_dir.iterdir())
+        if path.is_dir() and (path / "outcome.json").is_file()
+    ]
+    if not selected:
+        selected = [{"task_id": task_id} for task_id in artifact_ids]
+
+    rows: list[dict[str, Any]] = []
+    for task in selected:
+        task_id = str(task.get("task_id") or "")
+        if not task_id:
+            continue
+        task_dir = tasks_dir / task_id
+        outcome = load_json(task_dir / "outcome.json")
+        if not isinstance(outcome, dict):
+            outcome = {}
+        evals = [
+            eval_data
+            for eval_path in sorted(task_dir.glob("eval_attempt_*.json"))
+            if isinstance((eval_data := load_json(eval_path)), dict)
+        ]
+        planned = [
+            str(path)
+            for path in (
+                task.get("files")
+                or outcome.get("planned_files")
+                or parse_planned_files(task_dir / "task.md")
+                or []
+            )
+            if path
+        ]
+        touched = [
+            str(path)
+            for path in (
+                outcome.get("source_files")
+                or outcome.get("touched_files")
+                or []
+            )
+            if path
+        ]
+        commits = [str(sha) for sha in (outcome.get("commit_shas") or []) if sha]
+        overlap = file_overlap(planned, touched) if planned and touched else False
+        verified = eval_passed(evals, outcome.get("eval"))
+        timeout_with_verdict = any(
+            isinstance(eval_data, dict) and eval_timed_out_after_verdict(eval_data)
+            for eval_data in evals
+        )
+        status = str(outcome.get("status") or "")
+        problems: list[str] = []
+        if not planned:
+            problems.append("missing_planned_files")
+        if not touched:
+            problems.append("no_touched_files")
+        if planned and touched and not overlap:
+            problems.append("no_planned_file_overlap")
+        if timeout_with_verdict:
+            problems.append("evaluator_timed_out_after_verdict")
+        if not verified:
+            problems.append("no_passing_verifier")
+        if touched and not commits:
+            problems.append("source_edits_not_landed")
+        rows.append(
+            {
+                "task_id": task_id,
+                "strict_success": status == "completed" and overlap and verified and not problems,
+                "problems": problems,
+            }
+        )
+
+    return {
+        "task_count": len(rows),
+        "verified_task_count": sum(1 for row in rows if row["strict_success"]),
+        "rows": rows,
+    }
+
+
+def summarize_task_problems(rows: list[dict[str, Any]]) -> str:
+    counts: Counter[str] = Counter()
+    for row in rows:
+        for problem in row.get("problems") or []:
+            counts[str(problem)] += 1
+    if not counts:
         return ""
-    lines = ["## Recent session outcomes (last {})".format(len(outcomes))]
-    for o in outcomes:
+    labels = {
+        "missing_planned_files": "missing planned files",
+        "no_touched_files": "no touched files",
+        "no_planned_file_overlap": "no planned-file overlap",
+        "evaluator_timed_out_after_verdict": "evaluator timeout after verdict",
+        "no_passing_verifier": "no passing verifier",
+        "source_edits_not_landed": "source edits not landed",
+    }
+    return "; ".join(
+        f"{count} {labels.get(name, name.replace('_', ' '))}"
+        for name, count in counts.most_common(3)
+    )
+
+
+def render_outcomes(
+    session_outcomes: Union[list[tuple[Path, dict[str, Any]]], list[dict[str, Any]]],
+) -> str:
+    if not session_outcomes:
+        return ""
+    normalized: list[tuple[Optional[Path], dict[str, Any]]] = []
+    for item in session_outcomes:
+        if isinstance(item, tuple):
+            normalized.append(item)
+        else:
+            normalized.append((None, item))
+    lines = ["## Recent session outcomes (last {})".format(len(normalized))]
+    for session_dir, o in normalized:
         day = o.get("day", "?")
         ts = (o.get("ts") or "").replace("T", " ").rstrip("Z")
         attempted = o.get("tasks_attempted", 0)
@@ -129,6 +369,9 @@ def render_outcomes(outcomes: list[dict]) -> str:
         build_ok = o.get("build_ok", False)
         test_ok = o.get("test_ok", False)
         reverted = o.get("reverted", False)
+        verification = strict_task_verification(session_dir) if session_dir else {"task_count": 0}
+        strict_total = int(verification.get("task_count") or 0)
+        strict_verified = int(verification.get("verified_task_count") or 0)
 
         if reverted:
             icon = "❌"
@@ -136,6 +379,30 @@ def render_outcomes(outcomes: list[dict]) -> str:
         elif attempted == 0:
             icon = "•"
             note = "no tasks attempted"
+        elif strict_total:
+            if strict_verified == strict_total and build_ok and test_ok:
+                icon = "✅"
+                note = f"{strict_verified}/{strict_total} strict verified; build OK, tests OK"
+            else:
+                icon = "⚠️"
+                issues = [f"{strict_verified}/{strict_total} strict verified"]
+                if succeeded != strict_verified:
+                    issues.append(f"raw outcome {succeeded}/{attempted}")
+                problem_summary = summarize_task_problems(verification.get("rows") or [])
+                if problem_summary:
+                    issues.append(problem_summary)
+                if not build_ok:
+                    issues.append("build broken")
+                if not test_ok:
+                    issues.append("tests broken")
+                note = "; ".join(issues) or "partial"
+        elif session_dir and attempted > 0:
+            icon = "⚠️"
+            note = f"raw outcome {succeeded}/{attempted} lacks strict task evidence"
+            if not build_ok:
+                note += "; build broken"
+            if not test_ok:
+                note += "; tests broken"
         elif succeeded == attempted and build_ok and test_ok:
             icon = "✅"
             note = "build OK, tests OK"
@@ -352,9 +619,12 @@ def collect_provider_errors(audit_dir: Path) -> tuple[int, int]:
         return 0, 0
     sessions = 0
     hits = 0
-    for child in sorted(audit_dir.iterdir(), reverse=True):
-        if not child.is_dir():
-            continue
+    session_dirs = sorted(
+        [child for child in audit_dir.iterdir() if child.is_dir()],
+        key=session_sort_time,
+        reverse=True,
+    )
+    for child in session_dirs:
         audit = child / "audit.jsonl"
         if not audit.is_file():
             continue
@@ -404,11 +674,7 @@ def load_log_feedback(audit_dir: Path) -> list[dict]:
         except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
             warn(f"skipped malformed {feedback}: {e}")
             continue
-        try:
-            mtime = feedback.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        triples.append((mtime, child.name, data))
+        triples.append((session_sort_time(child), child.name, data))
     triples.sort(key=lambda t: t[0], reverse=True)
     return [t[2] for t in triples[:WINDOW_SESSIONS]]
 
@@ -507,7 +773,7 @@ def main() -> int:
     )
 
     # Gather all sections (each falls back to "" silently on no-data)
-    outcomes = load_outcomes(audit_dir)
+    outcomes = load_recent_session_outcomes(audit_dir)
     tasks, reverts = collect_task_commits()
     sessions_audited, provider_hits = collect_provider_errors(audit_dir)
     ci_clusters = collect_failed_ci_fingerprints(repo)
