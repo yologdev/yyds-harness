@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from state_graph_tools import build_causal_chains, evolution_suggestions
-from task_manifest import parse_task as parse_task_file
+from task_manifest import normalize_file_list, parse_task as parse_task_file
 
 
 REPO_URL = "https://github.com/yologdev/yyds-harness"
@@ -1127,7 +1127,7 @@ def task_manifest_summary(session_dir: Path) -> dict[str, Any]:
                 "task_id": task.get("task_id"),
                 "task_number": task.get("task_number"),
                 "title": task.get("title") or parsed_task.get("title"),
-                "files": task.get("files") or parsed_task.get("files") or [],
+                "files": normalize_file_list(task.get("files") or parsed_task.get("files") or []),
                 "issue": task.get("issue") or parsed_task.get("issue"),
                 "origin": task.get("origin") or parsed_task.get("origin"),
                 "artifact_path": artifact_path,

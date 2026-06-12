@@ -13,15 +13,32 @@ from typing import Any
 
 FIELD_RE = re.compile(r"^([A-Za-z][A-Za-z 0-9_-]*):\s*(.*)$")
 GOAL_RE = re.compile(r"(?im)^(?:#+\s*)?(?:goal|objective)\s*:?\s*$|^(?:goal|objective)\s*:")
+FILE_ANNOTATION_RE = re.compile(
+    r"\s+\((?:new|new file|new module|existing|modified|created|generated|optional)[^)]*\)\s*$",
+    re.IGNORECASE,
+)
+FILE_TRAILING_NOTE_RE = re.compile(r"\s+(?:-|--|—)\s+.*$")
 
 
-def split_list(value: str) -> list[str]:
+def normalize_file_entry(value: object) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    text = text.strip("`'\"")
+    text = FILE_ANNOTATION_RE.sub("", text).strip()
+    text = FILE_TRAILING_NOTE_RE.sub("", text).strip()
+    return text.strip("`'\" ,")
+
+
+def normalize_file_list(values: list[object]) -> list[str]:
     out: list[str] = []
-    for part in value.replace(";", ",").split(","):
-        text = " ".join(part.split())
+    for value in values:
+        text = normalize_file_entry(value)
         if text and text not in out:
             out.append(text)
     return out
+
+
+def split_list(value: str) -> list[str]:
+    return normalize_file_list(value.replace(";", ",").split(","))
 
 
 def read_text(path: Path | None) -> str:

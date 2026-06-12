@@ -251,6 +251,52 @@ class BuildEvolutionDashboard(unittest.TestCase):
         self.assertEqual(row["eval_statuses"], ["pass"])
         self.assertEqual(row["eval_evidence_source"], "state_lineage")
 
+    def test_dashboard_normalizes_annotated_planned_files_from_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"ts": "2026-01-01T00:00:00Z"})
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {
+                        "planning_failed": False,
+                        "task_count": 1,
+                        "selected_task_count": 1,
+                    },
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Extract diagnostics module",
+                            "files": [
+                                "src/commands_state.rs",
+                                "src/commands_state_diagnostics.rs (new)",
+                            ],
+                            "artifact_path": "tasks/task_01/task.md",
+                            "quality": {"score": 1.0},
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            task_dir = session / "tasks/task_01"
+            task_dir.mkdir(parents=True)
+            task_dir.joinpath("task.md").write_text(
+                "Title: Extract diagnostics module\nFiles: src/commands_state_diagnostics.rs (new)\n",
+                encoding="utf-8",
+            )
+
+            data = build(root / "sessions", root / "out", repo_root=root)
+            task = data["sessions"][0]["work_summary"]["task_manifest"]["tasks"][0]
+
+            self.assertEqual(
+                task["files"],
+                ["src/commands_state.rs", "src/commands_state_diagnostics.rs"],
+            )
+            self.assertNotIn("src/commands_state_diagnostics.rs (new)", task["files"])
+
     def test_state_event_failures_join_started_tool_args(self):
         events = [
             {
