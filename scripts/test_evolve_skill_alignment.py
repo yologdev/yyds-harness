@@ -60,6 +60,15 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("state/events.jsonl", text)
         self.assertIn("prompt-cache regressions", text)
 
+    def test_self_assess_skill_preserves_bounded_assessment_contract(self):
+        text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("preflight `cargo build` / `cargo test` result as baseline evidence", text)
+        self.assertIn("Run only bounded, directly relevant checks", text)
+        self.assertIn("Do not\n   rerun full `cargo test`, full clippy, broad source scans", text)
+        self.assertIn("write `session_plan/assessment.md`, write\nthat file and stop", text)
+        self.assertIn("should not be\ncommitted from the assessment phase", text)
+
     def test_evolve_skill_teaches_search_discipline_from_audit_friction(self):
         text = EVOLVE_SKILL.read_text(encoding="utf-8")
 

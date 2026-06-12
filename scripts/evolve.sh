@@ -1142,10 +1142,10 @@ Steps:
 
 Keep the assessment to ~3 pages max. Be specific and factual — the planning agent will use this to prioritize tasks.
 
-After writing, commit:
-  git add session_plan/assessment.md && git commit -m "Day $DAY ($SESSION_TIME): assessment" || true
-
-Then STOP. Do not write task files. Do not implement anything.
+After writing, STOP. Do not commit `session_plan/assessment.md`: `session_plan/`
+is intentionally gitignored ephemeral planning state, and the harness will copy
+the assessment into the audit-log session artifact. Do not write task files. Do
+not implement anything.
 ASSESSEOF
 
 AGENT_LOG=$(mktemp)
@@ -1455,10 +1455,10 @@ TASK SIZING RULES — follow these strictly:
 Also create session_plan/issue_responses.md with your planned response for each issue:
 - #N: [what you'll do — implement as task, won't fix because X, already resolved, need more time, etc.]
 
-After writing all files, commit:
-  git add session_plan/ && git commit -m "Day $DAY ($SESSION_TIME): session plan" || true
-
-Then STOP. Do not implement anything. Your job is planning only.
+After writing all files, STOP. Do not commit `session_plan/`: it is
+intentionally gitignored ephemeral planning state, and the harness will copy the
+plan artifacts into the audit-log session artifact. Do not implement anything.
+Your job is planning only.
 PLANEOF
 
 AGENT_LOG=$(mktemp)

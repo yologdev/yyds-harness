@@ -24,8 +24,12 @@ evidence that lets the planner choose small, useful, verifiable work.
 2. **Read recent memory.** Check `journals/JOURNAL.md`,
    `memory/active_learnings.md`, `memory/active_social_learnings.md`, and recent
    commits for repeated failures, reverted work, or unfinished promises.
-3. **Check build and basic behavior.** Run the configured build/test checks and
-   try a small yyds command or diagnostic command when useful.
+3. **Check build and basic behavior.** In the evolution harness, treat the
+   preflight `cargo build` / `cargo test` result as baseline evidence unless the
+   current evidence contradicts it. Run only bounded, directly relevant checks
+   such as one focused test, help command, or state/cache diagnostic. Do not
+   rerun full `cargo test`, full clippy, broad source scans, or long prompts
+   during assessment.
 4. **Inspect evolution evidence.** Use recent GitHub Actions runs, audit-log
    session artifacts, transcripts, task manifests, outcomes, and dashboard JSON
    to see what actually happened.
@@ -73,4 +77,6 @@ SELF-ASSESSMENT Day [N]:
 
 Then summarize which findings should become this session's task candidates.
 Do not implement during assessment unless the active prompt explicitly changes
-phase.
+phase. If the active prompt asks you to write `session_plan/assessment.md`, write
+that file and stop; `session_plan/` is ephemeral harness state and should not be
+committed from the assessment phase.
