@@ -2074,6 +2074,47 @@ def harness_attention(work: dict[str, Any]) -> bool:
     return bool(harness_attention_reasons(work))
 
 
+def task_verification_problem_reasons(work: dict[str, Any]) -> list[str]:
+    verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
+    rows = verification.get("rows") if isinstance(verification.get("rows"), list) else []
+    no_passing = 0
+    unlanded = 0
+    no_overlap = 0
+    no_touched = 0
+    timeout_after_verdict = 0
+    missing_planned = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        problems = set(row.get("problems") if isinstance(row.get("problems"), list) else [])
+        if "no_passing_verifier" in problems:
+            no_passing += 1
+        if "source_edits_not_landed" in problems or "no_landed_source_commit" in problems:
+            unlanded += 1
+        if "no_planned_file_overlap" in problems:
+            no_overlap += 1
+        if "no_touched_files" in problems:
+            no_touched += 1
+        if "evaluator_timed_out_after_verdict" in problems:
+            timeout_after_verdict += 1
+        if "missing_planned_files" in problems:
+            missing_planned += 1
+    reasons: list[str] = []
+    if no_passing:
+        reasons.append(f"{no_passing} task(s) without passing verifier")
+    if unlanded:
+        reasons.append(f"{unlanded} unlanded source task(s)")
+    if no_overlap:
+        reasons.append(f"{no_overlap} task(s) without planned-file overlap")
+    if no_touched:
+        reasons.append(f"{no_touched} task(s) without touched files")
+    if timeout_after_verdict:
+        reasons.append(f"{timeout_after_verdict} evaluator timeout(s) after verdict")
+    if missing_planned:
+        reasons.append(f"{missing_planned} task(s) missing planned files")
+    return reasons
+
+
 def run_health_reasons(session: dict[str, Any]) -> list[str]:
     attempted = session.get("tasks_attempted") or 0
     succeeded = session.get("tasks_succeeded") or 0
@@ -2087,7 +2128,11 @@ def run_health_reasons(session: dict[str, Any]) -> list[str]:
     if manifest.get("planning_failed"):
         return ["planning produced no task files"] + harness_attention_reasons(work)
     if verified_total and verified_count < verified_total:
-        return [f"{verified_count}/{verified_total} verified tasks"] + harness_attention_reasons(work)
+        return (
+            [f"{verified_count}/{verified_total} verified tasks"]
+            + task_verification_problem_reasons(work)
+            + harness_attention_reasons(work)
+        )
     if verified_total and verified_count == verified_total:
         if session.get("build_ok") is not True or session.get("test_ok") is not True:
             return ["build/test did not both pass"]
@@ -3527,6 +3572,32 @@ HTML = r"""<!doctype html>
         && (work.assessment_transcript_present === true || work.assessment_diagnostic_present === true);
       const reasons = [];
       if (strictTotal && strictVerified < strictTotal) reasons.push(`${strictVerified}/${strictTotal} verified tasks`);
+      if (strictTotal && strictVerified < strictTotal) {
+        const rows = Array.isArray(verification.rows) ? verification.rows : [];
+        const counts = {
+          noPassing: 0,
+          unlanded: 0,
+          noOverlap: 0,
+          noTouched: 0,
+          timeoutAfterVerdict: 0,
+          missingPlanned: 0
+        };
+        rows.forEach(row => {
+          const problems = new Set(Array.isArray(row.problems) ? row.problems : []);
+          if (problems.has("no_passing_verifier")) counts.noPassing += 1;
+          if (problems.has("source_edits_not_landed") || problems.has("no_landed_source_commit")) counts.unlanded += 1;
+          if (problems.has("no_planned_file_overlap")) counts.noOverlap += 1;
+          if (problems.has("no_touched_files")) counts.noTouched += 1;
+          if (problems.has("evaluator_timed_out_after_verdict")) counts.timeoutAfterVerdict += 1;
+          if (problems.has("missing_planned_files")) counts.missingPlanned += 1;
+        });
+        if (counts.noPassing) reasons.push(`${counts.noPassing} task(s) without passing verifier`);
+        if (counts.unlanded) reasons.push(`${counts.unlanded} unlanded source task(s)`);
+        if (counts.noOverlap) reasons.push(`${counts.noOverlap} task(s) without planned-file overlap`);
+        if (counts.noTouched) reasons.push(`${counts.noTouched} task(s) without touched files`);
+        if (counts.timeoutAfterVerdict) reasons.push(`${counts.timeoutAfterVerdict} evaluator timeout(s) after verdict`);
+        if (counts.missingPlanned) reasons.push(`${counts.missingPlanned} task(s) missing planned files`);
+      }
       if (failedToolCount > 0) reasons.push(`${failedToolCount} failed tool action(s)`);
       if (failedCommandCount > failedToolCount) reasons.push(`${failedCommandCount} failed command/check(s)`);
       if (lifecycleMissing) reasons.push("state lifecycle not observed");

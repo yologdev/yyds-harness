@@ -20,6 +20,7 @@ from build_evolution_dashboard import (  # noqa: E402
     run_health_reasons,
     summarize_events_for_work,
     summarize_transcript_actions,
+    task_verification_problem_reasons,
     task_verification_summary,
     transcript_summary,
 )
@@ -850,12 +851,52 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 self.assertEqual(run_health_reasons(session), expected_reasons)
 
         incomplete = json.loads(json.dumps(base))
-        incomplete["work_summary"]["task_verification"] = {"task_count": 3, "verified_task_count": 2}
+        incomplete["work_summary"]["task_verification"] = {
+            "task_count": 3,
+            "verified_task_count": 2,
+            "rows": [
+                {
+                    "task_id": "task_01",
+                    "problems": [
+                        "no_passing_verifier",
+                        "source_edits_not_landed",
+                        "no_landed_source_commit",
+                        "no_planned_file_overlap",
+                    ],
+                },
+                {
+                    "task_id": "task_02",
+                    "problems": [
+                        "no_passing_verifier",
+                        "no_touched_files",
+                        "evaluator_timed_out_after_verdict",
+                    ],
+                },
+            ],
+        }
         incomplete["work_summary"]["failed_tools"] = ["read src/main.rs: missing"]
         self.assertEqual(run_health(incomplete), "partial")
         self.assertEqual(
+            task_verification_problem_reasons(incomplete["work_summary"]),
+            [
+                "2 task(s) without passing verifier",
+                "1 unlanded source task(s)",
+                "1 task(s) without planned-file overlap",
+                "1 task(s) without touched files",
+                "1 evaluator timeout(s) after verdict",
+            ],
+        )
+        self.assertEqual(
             run_health_reasons(incomplete),
-            ["2/3 verified tasks", "1 failed tool action(s)"],
+            [
+                "2/3 verified tasks",
+                "2 task(s) without passing verifier",
+                "1 unlanded source task(s)",
+                "1 task(s) without planned-file overlap",
+                "1 task(s) without touched files",
+                "1 evaluator timeout(s) after verdict",
+                "1 failed tool action(s)",
+            ],
         )
 
     def test_state_pipeline_diagnostics_are_visible(self):
