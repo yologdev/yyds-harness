@@ -348,6 +348,95 @@ class BuildEvolutionDashboard(unittest.TestCase):
         )
         self.assertIn("no_passing_verifier", row["problems"])
 
+    def test_structured_task_states_link_transcripts_and_unattempted_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "task_lineage": [
+                        {
+                            "task_id": "task_01",
+                            "task_title": "Transcript backed task",
+                            "status": "completed",
+                            "planned_files": ["src/state.rs"],
+                            "source_files": ["src/state.rs"],
+                            "commit_shas": [],
+                        }
+                    ]
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 2, "selected_task_count": 2},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Transcript backed task",
+                            "files": ["src/state.rs"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        },
+                        {
+                            "task_id": "task_03",
+                            "task_number": 3,
+                            "title": "Never attempted task",
+                            "files": ["src/lib.rs"],
+                            "artifact_path": "tasks/task_03/task.md",
+                        },
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            (session / "tasks/task_03").mkdir(parents=True)
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "  ▶ edit src/state.rs (1 -> 2 lines)\n",
+                encoding="utf-8",
+            )
+            transcript_dir.joinpath("eval_task1_attempt1.log").write_text(
+                "Verdict: FAIL\n",
+                encoding="utf-8",
+            )
+
+            data = build(root / "sessions", root / "out")
+            states = {
+                row["task_id"]: row
+                for row in data["sessions"][0]["work_summary"]["task_states"]["tasks"]
+            }
+
+            self.assertEqual(states["task_01"]["implementation_attempt_count"], 1)
+            self.assertEqual(states["task_01"]["implementation_transcripts"], ["transcripts/task_01_attempt1.log"])
+            self.assertEqual(states["task_01"]["eval_transcripts"], ["transcripts/eval_task1_attempt1.log"])
+            self.assertIn("transcripts", states["task_01"]["evidence_sources"])
+            self.assertTrue(states["task_01"]["attempted"])
+            self.assertFalse(states["task_03"]["attempted"])
+            self.assertEqual(states["task_03"]["state"], "not_attempted")
+            states_json = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+            state_rows = {
+                row["task_id"]: row
+                for row in states_json["sessions"][0]["tasks"]
+            }
+            self.assertEqual(state_rows["task_01"]["transcript_paths"], [
+                "transcripts/task_01_attempt1.log",
+                "transcripts/eval_task1_attempt1.log",
+            ])
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            self.assertIn("Task states", html)
+            self.assertIn("renderTaskStates", html)
+
     def test_dashboard_normalizes_annotated_planned_files_from_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

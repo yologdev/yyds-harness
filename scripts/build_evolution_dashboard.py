@@ -712,7 +712,7 @@ def transcript_summary(session_dir: Path) -> dict[str, Any]:
     return {
         "count": len(files),
         "phase_counts": {key: value for key, value in phase_counts.items() if value},
-        "files": transcript_rows[:16],
+        "files": transcript_rows,
     }
 
 
@@ -1130,11 +1130,13 @@ def task_verification_summary(
     }
 
 
-def classify_task_state(row: dict[str, Any]) -> str:
+def classify_task_state(row: dict[str, Any], attempted: bool | None = None) -> str:
     problems = row.get("problems") if isinstance(row.get("problems"), list) else []
     outcome_status = str(row.get("outcome_status") or "").strip().lower()
     if row.get("strict_success"):
         return "verified_landed"
+    if attempted is False:
+        return "not_attempted"
     if outcome_status == "reverted":
         if "source_edits_not_landed" in problems or "no_landed_source_commit" in problems:
             return "reverted_unlanded_source_edits"
@@ -1158,11 +1160,54 @@ def classify_task_state(row: dict[str, Any]) -> str:
     return "unknown"
 
 
+def task_number_from_id(task_id: str) -> str | None:
+    match = re.search(r"(\d+)$", str(task_id or ""))
+    if not match:
+        return None
+    try:
+        return str(int(match.group(1)))
+    except ValueError:
+        return None
+
+
+def task_transcript_refs(task_id: str, transcript_data: dict[str, Any]) -> dict[str, list[str]]:
+    task_number = task_number_from_id(task_id)
+    if not task_number:
+        return {"implementation": [], "eval": [], "fix": [], "build_fix": [], "all": []}
+    padded = f"{int(task_number):02d}"
+    patterns = {
+        "implementation": [
+            re.compile(rf"^task_{re.escape(padded)}_attempt\d+\.log$"),
+            re.compile(rf"^task_{re.escape(task_number)}_attempt\d+\.log$"),
+        ],
+        "eval": [re.compile(rf"^eval_task{re.escape(task_number)}_attempt\d+\.log$")],
+        "fix": [re.compile(rf"^fix_task{re.escape(task_number)}_attempt\d+\.log$")],
+        "build_fix": [re.compile(rf"^bfix_task{re.escape(task_number)}_attempt\d+\.log$")],
+    }
+    refs: dict[str, list[str]] = {key: [] for key in patterns}
+    for transcript in transcript_data.get("files") if isinstance(transcript_data.get("files"), list) else []:
+        if not isinstance(transcript, dict):
+            continue
+        name = str(transcript.get("name") or "")
+        path = str(transcript.get("path") or "")
+        if not name or not path:
+            continue
+        for key, matchers in patterns.items():
+            if any(pattern.match(name) for pattern in matchers):
+                refs[key].append(path)
+    refs["all"] = compact_list(
+        refs["implementation"] + refs["eval"] + refs["fix"] + refs["build_fix"],
+        16,
+    )
+    return refs
+
+
 def structured_task_states(
     task_manifest: dict[str, Any],
     task_artifacts: list[dict[str, Any]],
     task_lineage: list[dict[str, Any]],
     task_verification: dict[str, Any],
+    transcript_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     manifest_tasks = {
         str(row.get("task_id")): row
@@ -1192,12 +1237,21 @@ def structured_task_states(
         lineage = lineage_by_id.get(task_id, {})
         problems = row.get("problems") if isinstance(row.get("problems"), list) else []
         latest_eval = row.get("latest_eval_attempt") if isinstance(row.get("latest_eval_attempt"), dict) else {}
+        transcript_refs = task_transcript_refs(task_id, transcript_data or {})
+        implementation_attempt_count = max(
+            int(artifact.get("attempt_count") or 0),
+            len(artifact.get("attempts") or []),
+            len(transcript_refs.get("implementation") or []),
+        )
         attempted = bool(
-            artifact
-            or lineage.get("status")
+            lineage.get("status")
             or row.get("outcome_status")
             or row.get("touched_files")
             or row.get("eval_attempt_count")
+            or implementation_attempt_count
+            or transcript_refs.get("eval")
+            or transcript_refs.get("fix")
+            or transcript_refs.get("build_fix")
         )
         evidence_sources = ["task_manifest"]
         if artifact:
@@ -1206,6 +1260,8 @@ def structured_task_states(
             evidence_sources.append("state_lineage")
         if row.get("eval_attempt_count"):
             evidence_sources.append("eval_attempts")
+        if transcript_refs.get("all"):
+            evidence_sources.append("transcripts")
         if row.get("landed_commit_shas"):
             evidence_sources.append("commits")
         failure_reasons = list(problems)
@@ -1215,7 +1271,7 @@ def structured_task_states(
             {
                 "task_id": task_id,
                 "title": row.get("title") or manifest_task.get("title") or lineage.get("task_title"),
-                "state": classify_task_state(row),
+                "state": classify_task_state(row, attempted),
                 "attempted": attempted,
                 "planned_files": row.get("planned_files") or [],
                 "touched_files": row.get("touched_files") or [],
@@ -1228,7 +1284,12 @@ def structured_task_states(
                 "revert_reason": row.get("revert_reason"),
                 "eval_attempt_count": row.get("eval_attempt_count") or 0,
                 "latest_eval_attempt": latest_eval or None,
-                "implementation_attempt_count": artifact.get("attempt_count") or len(artifact.get("attempts") or []),
+                "implementation_attempt_count": implementation_attempt_count,
+                "implementation_transcripts": transcript_refs.get("implementation") or [],
+                "eval_transcripts": transcript_refs.get("eval") or [],
+                "fix_transcripts": transcript_refs.get("fix") or [],
+                "build_fix_transcripts": transcript_refs.get("build_fix") or [],
+                "transcript_paths": transcript_refs.get("all") or [],
                 "task_artifact_path": manifest_task.get("artifact_path"),
                 "evidence_sources": evidence_sources,
                 "failure_reasons": failure_reasons,
@@ -1716,7 +1777,13 @@ def work_summary(
     task_lineage = summary.get("task_lineage") if isinstance(summary.get("task_lineage"), list) else []
     task_lineage = enrich_task_lineage_with_artifacts(task_lineage, task_artifacts)
     task_verification = task_verification_summary(task_manifest, task_artifacts, task_lineage)
-    task_states = structured_task_states(task_manifest, task_artifacts, task_lineage, task_verification)
+    task_states = structured_task_states(
+        task_manifest,
+        task_artifacts,
+        task_lineage,
+        task_verification,
+        transcript_data,
+    )
     task_lineage = annotate_task_lineage_verification(task_lineage, task_verification)
     causal_chains = annotate_task_lineage_verification(causal_chains, task_verification)
     suggestions = augment_evolution_suggestions(suggestions, task_verification)
@@ -4810,6 +4877,28 @@ HTML = r"""<!doctype html>
       }).join("");
     }
 
+    function renderTaskStates(session, work) {
+      const summary = work.task_states || {};
+      const rows = Array.isArray(summary.tasks) ? summary.tasks : [];
+      if (!rows.length) return `<p class="muted">No structured task states recorded.</p>`;
+      const counts = Object.entries(summary.state_counts || {})
+        .map(([state, count]) => `${state} ${count}`)
+        .join(", ");
+      return `<p class="muted">${text(summary.strict_success_count || 0)}/${text(summary.task_count || rows.length)} strict task state(s) verified${counts ? `; ${text(counts)}` : ""}.</p><ul class="mini-list">${rows.slice(0, 5).map(row => {
+        const transcripts = []
+          .concat(row.implementation_transcripts || [])
+          .concat(row.eval_transcripts || [])
+          .slice(0, 3)
+          .map(path => auditLink(session, path, path.split("/").pop()))
+          .join(" · ");
+        const problems = (row.failure_reasons || []).slice(0, 3).join(", ");
+        const attempted = row.attempted ? "attempted" : "not attempted";
+        const transcriptText = transcripts ? ` / ${transcripts}` : "";
+        const problemText = problems ? ` / ${text(problems)}` : "";
+        return `<li><strong>${text(row.task_id || "")}: ${text(row.state || "unknown")}</strong><br><span class="muted">${text(attempted)} / impl attempts ${text(row.implementation_attempt_count || 0)} / eval artifacts ${text(row.eval_attempt_count || 0)}${transcriptText}${problemText}</span></li>`;
+      }).join("")}</ul>`;
+    }
+
     function metricDeltaValue(key, value) {
       if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
       const n = Number(value);
@@ -4962,6 +5051,7 @@ HTML = r"""<!doctype html>
                 <div><strong>Causal chains</strong>${renderCausalChains(work)}</div>
                 <div><strong>Next-task suggestions</strong>${renderEvolutionSuggestions(work)}</div>
                 <div><strong>Feedback lessons</strong>${renderLogFeedbackLessons(session, work)}</div>
+                <div><strong>Task states</strong>${renderTaskStates(session, work)}</div>
                 <div><strong>Task decision evidence</strong>${renderTaskArtifacts(session, work)}</div>
                 <div><strong>Agent transcripts</strong>${renderTranscriptList(session, work)}</div>
                 <div><strong>State lifecycle</strong>${renderStateLifecycle(work)}</div>
