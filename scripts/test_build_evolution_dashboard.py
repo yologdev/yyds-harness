@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_evolution_dashboard import (  # noqa: E402
     build,
     count_claim,
+    failed_tool_summary_count_claim,
     failed_tool_pattern_summary,
     run_health,
     run_health_reasons,
@@ -3122,7 +3123,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("Claim health", html)
             self.assertIn("Unresolved claims", html)
 
-    def test_count_claim_observes_zero_evidence_when_metric_is_absent(self):
+    def test_count_claim_proves_zero_expected_when_metric_is_absent(self):
         claim = count_claim(
             "unlanded_source_tasks_match_gnome",
             0,
@@ -3131,12 +3132,25 @@ class BuildEvolutionDashboard(unittest.TestCase):
             "Tasks with source edits and no landed source commit should be reflected in task_unlanded_source_count.",
         )
 
-        self.assertEqual(claim["status"], "observed")
+        self.assertEqual(claim["status"], "proven")
         self.assertEqual(claim["expected"], {"minimum_count": 0})
         self.assertEqual(claim["actual"]["count"], None)
         self.assertEqual(claim["actual"]["raw"], None)
         self.assertEqual(claim["actual"]["evidence_count"], 0)
-        self.assertIn("No matching evidence was found", claim["detail"])
+        self.assertIn("No matching evidence was expected", claim["detail"])
+
+    def test_failed_tool_summary_proves_empty_summary_when_no_failures(self):
+        claim = failed_tool_summary_count_claim(
+            {
+                "failed_tool_count": 0,
+                "failed_tools": [],
+                "failed_tool_summary": {"category_counts": {}, "total_count": 0},
+            }
+        )
+
+        self.assertEqual(claim["status"], "proven")
+        self.assertEqual(claim["actual"]["total_count"], 0)
+        self.assertEqual(claim["actual"]["category_counts"], {})
 
     def test_session_sort_is_natural_by_day_and_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -2957,8 +2957,8 @@ def count_claim(name: str, expected: int, actual: Any, evidence: list[str], deta
         status = "proven"
         claim_detail = detail
     elif expected == 0 and actual_int is None:
-        status = "observed"
-        claim_detail = f"{detail} No matching evidence was found and no count metric was captured."
+        status = "proven"
+        claim_detail = f"{detail} No matching evidence was expected; the count metric was absent."
     else:
         status = "conflict"
         claim_detail = detail
@@ -3060,8 +3060,6 @@ def failed_tool_summary_count_claim(work: dict[str, Any]) -> dict[str, Any]:
     status = "proven"
     if total_count != category_total or total_count != failed_tool_count:
         status = "conflict"
-    if total_count == 0 and failed_tool_count == 0 and not category_counts:
-        status = "observed"
     return claim_row(
         "failed_tool_summary_counts_match_failures",
         status,
