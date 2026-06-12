@@ -1615,6 +1615,23 @@ def corrected_gnomes(
             if not isinstance(current, (int, float)) or isinstance(current, bool) or int(value) > int(current):
                 gnomes[key] = int(value)
                 recalc_score = True
+    state_lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
+    run_lifecycle = state_lifecycle.get("runs") if isinstance(state_lifecycle.get("runs"), dict) else {}
+    run_lifecycle_keys = {
+        "state_run_started_count": "started",
+        "state_run_completed_count": "completed",
+        "state_run_incomplete_count": "incomplete",
+        "state_run_unmatched_completed_count": "unmatched_completed",
+    }
+    if any(int(run_lifecycle.get(source_key) or 0) > 0 for source_key in run_lifecycle_keys.values()):
+        for gnome_key, source_key in run_lifecycle_keys.items():
+            value = run_lifecycle.get(source_key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            current = gnomes.get(gnome_key)
+            if not isinstance(current, (int, float)) or isinstance(current, bool) or int(value) > int(current):
+                gnomes[gnome_key] = int(value)
+                recalc_score = True
     failed_tool_count = len(work.get("failed_tools") or []) if isinstance(work.get("failed_tools"), list) else 0
     if failed_tool_count > int(gnomes.get("tool_error_count") or 0):
         gnomes["tool_error_count"] = failed_tool_count
@@ -2347,6 +2364,49 @@ def model_call_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> 
     )
 
 
+def state_run_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> dict[str, Any]:
+    started = int(gnomes.get("state_run_started_count") or 0)
+    completed = int(gnomes.get("state_run_completed_count") or 0)
+    incomplete = int(gnomes.get("state_run_incomplete_count") or 0)
+    unmatched_completed = int(gnomes.get("state_run_unmatched_completed_count") or 0)
+    state_lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
+    runs = state_lifecycle.get("runs") if isinstance(state_lifecycle.get("runs"), dict) else {}
+    incomplete_runs = runs.get("incomplete_runs") if isinstance(runs.get("incomplete_runs"), list) else []
+    unmatched_runs = runs.get("unmatched_completed_runs") if isinstance(runs.get("unmatched_completed_runs"), list) else []
+    if started == 0 and completed == 0:
+        status = "missing"
+        detail = "No yyds run lifecycle events were captured."
+    elif incomplete > 0 or unmatched_completed > 0:
+        status = "missing"
+        detail = "RunStarted and RunCompleted events do not pair by run_id."
+    else:
+        status = "proven"
+        detail = "RunStarted and RunCompleted events are paired by run_id."
+    return claim_row(
+        "state_run_lifecycle_balanced",
+        status,
+        {"started_equals_completed": True},
+        {
+            "started": started,
+            "completed": completed,
+            "incomplete": incomplete,
+            "unmatched_completed": unmatched_completed,
+            "incomplete_runs": incomplete_runs[:8],
+            "unmatched_completed_runs": unmatched_runs[:8],
+        },
+        [
+            "RunStarted",
+            "RunCompleted",
+            "state_run_started_count",
+            "state_run_completed_count",
+            "state_run_incomplete_count",
+            "state_run_unmatched_completed_count",
+        ],
+        detail,
+        ["state.events", "work_summary.state_lifecycle", "latest_gnomes"],
+    )
+
+
 def session_claims(session: dict[str, Any]) -> list[dict[str, Any]]:
     work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
     gnomes = session.get("latest_gnomes") if isinstance(session.get("latest_gnomes"), dict) else {}
@@ -2382,6 +2442,7 @@ def session_claims(session: dict[str, Any]) -> list[dict[str, Any]]:
         task_verification_count_claim(work),
         assessment_claim(work),
         model_call_lifecycle_claim(gnomes, work),
+        state_run_lifecycle_claim(gnomes, work),
         cache_claim(gnomes),
     ]
 
@@ -3147,6 +3208,10 @@ HTML = r"""<!doctype html>
       state_capture_coverage: "State capture",
       state_operational_capture_coverage: "Operational state capture",
       state_live_baseline_shrink_count: "State baseline shrinks",
+      state_run_started_count: "State runs started",
+      state_run_completed_count: "State runs completed",
+      state_run_incomplete_count: "Incomplete state runs",
+      state_run_unmatched_completed_count: "Unmatched completed state runs",
       audit_capture_coverage: "Audit capture",
       state_trace_event_count: "Trace events",
       closed_loop_fix_rate: "Closed-loop fix rate",

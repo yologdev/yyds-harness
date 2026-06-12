@@ -1688,6 +1688,50 @@ class BuildEvolutionDashboard(unittest.TestCase):
         self.assertTrue(lifecycle["balanced"])
         self.assertFalse(lifecycle["healthy"])
 
+    def test_run_lifecycle_imbalance_is_claimed_separately_from_model_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(session / "outcome.json", {"ts": "2026-01-01T00:00:00Z"})
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_events(
+                session / "state/events.jsonl",
+                [
+                    {
+                        "kind": "RunStarted",
+                        "run_id": "run-open",
+                        "payload": {"status": "started"},
+                    },
+                    {
+                        "kind": "ModelCallStarted",
+                        "run_id": "run-model-balanced",
+                        "payload": {"model": "deepseek-v4-pro"},
+                    },
+                    {
+                        "kind": "ModelCallCompleted",
+                        "run_id": "run-model-balanced",
+                        "payload": {"model": "deepseek-v4-pro", "status": "completed"},
+                    },
+                ],
+            )
+
+            data = build(root / "sessions", root / "out", repo_root=root)
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            session_claims = {claim["name"]: claim for claim in claims["sessions"][0]["claims"]}
+            latest = data["sessions"][0]["latest_gnomes"]
+
+            self.assertEqual(latest["state_run_started_count"], 1)
+            self.assertEqual(latest["state_run_completed_count"], 0)
+            self.assertEqual(latest["state_run_incomplete_count"], 1)
+            self.assertEqual(latest["state_run_unmatched_completed_count"], 0)
+            self.assertEqual(latest["deepseek_model_call_incomplete_count"], 0)
+            self.assertEqual(session_claims["deepseek_model_call_lifecycle_balanced"]["status"], "proven")
+            self.assertEqual(session_claims["state_run_lifecycle_balanced"]["status"], "missing")
+            self.assertEqual(
+                session_claims["state_run_lifecycle_balanced"]["actual"]["incomplete_runs"][0]["run_id"],
+                "run-open",
+            )
+
     def test_abnormal_completed_model_calls_are_observed_not_clean(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
