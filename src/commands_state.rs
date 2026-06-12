@@ -836,12 +836,15 @@ fn handle_patches(args: &[String]) {
 fn handle_why(id: &str, show_summary: bool, limit: usize) {
     let path = default_events_path();
     let Ok(events) = read_tail_events(&path, limit) else {
-        eprintln!("{YELLOW}  No state events file found at {}{RESET}", path.display());
-        eprintln!("{YELLOW}  This is a cold start: no evolution sessions have recorded state yet.{RESET}");
-        eprintln!("{DIM}  To enable state recording, run: yoyo state init{RESET}");
         eprintln!(
-            "{DIM}  Once sessions complete, run: yoyo state why last-failure{RESET}"
+            "{YELLOW}  No state events file found at {}{RESET}",
+            path.display()
         );
+        eprintln!(
+            "{YELLOW}  This is a cold start: no evolution sessions have recorded state yet.{RESET}"
+        );
+        eprintln!("{DIM}  To enable state recording, run: yoyo state init{RESET}");
+        eprintln!("{DIM}  Once sessions complete, run: yoyo state why last-failure{RESET}");
         return;
     };
     if show_summary {
