@@ -1408,6 +1408,67 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("Missing cache metric events", html)
             self.assertIn("completed DeepSeek model call", html)
 
+    def test_deepseek_cache_metrics_are_backfilled_from_state_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_events(
+                session / "state/events.jsonl",
+                [
+                    {
+                        "kind": "ModelCallCompleted",
+                        "payload": {
+                            "_yoyo": {"run_id": "run-cache"},
+                            "model": "deepseek-v4-pro",
+                            "input_tokens": 20,
+                            "cache_read_tokens": 80,
+                        },
+                    },
+                    {
+                        "kind": "CacheMetricsRecorded",
+                        "payload": {
+                            "_yoyo": {"run_id": "run-cache"},
+                            "model": "deepseek-v4-pro",
+                            "prompt_cache_hit_tokens": 80,
+                            "prompt_cache_miss_tokens": 20,
+                            "cache_hit_ratio": 0.8,
+                        },
+                    },
+                ],
+            )
+
+            data = build(root / "sessions", root / "out")
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            cache_claim = next(
+                claim
+                for claim in claims["sessions"][0]["claims"]
+                if claim["name"] == "deepseek_cache_ratio_is_token_backed_or_marked_unverified"
+            )
+
+            session_data = data["sessions"][0]
+            latest = session_data["latest_gnomes"]
+            work = session_data["work_summary"]
+            self.assertEqual(work["deepseek_cache_hit_tokens"], 80)
+            self.assertEqual(work["deepseek_cache_miss_tokens"], 20)
+            self.assertEqual(work["deepseek_cache_hit_ratio"], 0.8)
+            self.assertEqual(latest["deepseek_cache_hit_tokens"], 80)
+            self.assertEqual(latest["deepseek_cache_miss_tokens"], 20)
+            self.assertEqual(latest["deepseek_cache_hit_ratio"], 0.8)
+            self.assertEqual(latest["deepseek_cache_metric_expected_count"], 1)
+            self.assertEqual(latest["deepseek_cache_metric_event_count"], 1)
+            self.assertEqual(latest["deepseek_cache_metric_missing_count"], 0)
+            self.assertEqual(cache_claim["status"], "proven")
+
     def test_incomplete_deepseek_model_calls_are_claimed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

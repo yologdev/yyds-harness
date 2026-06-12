@@ -1163,6 +1163,8 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     command_starts: dict[str, str] = {}
     expected_cache_metrics = 0
     cache_metric_events = 0
+    cache_hit_tokens = 0
+    cache_miss_tokens = 0
     deepseek_model_call_started = 0
     deepseek_model_call_completed = 0
     deepseek_model_call_abnormal_completed = 0
@@ -1223,6 +1225,11 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
                 expected_cache_metrics += 1
         elif kind == "CacheMetricsRecorded":
             cache_metric_events += 1
+            hit = payload_int(data, "prompt_cache_hit_tokens", "cache_hit_tokens")
+            miss = payload_int(data, "prompt_cache_miss_tokens", "cache_miss_tokens")
+            if hit is not None or miss is not None:
+                cache_hit_tokens += hit or 0
+                cache_miss_tokens += miss or 0
         elif kind == "RunCompleted":
             run_id = event_run_id(event, data)
             if run_id and (data.get("status") == "error" or data.get("error") or data.get("error_detail")):
@@ -1286,6 +1293,8 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     incomplete_count = len(incomplete_run_ids) + max(unkeyed_model_call_starts - unkeyed_model_call_completions, 0)
     unmatched_completed_count = len(unmatched_completed_run_ids) + max(unkeyed_model_call_completions - unkeyed_model_call_starts, 0)
+    cache_token_total = cache_hit_tokens + cache_miss_tokens
+    cache_hit_ratio = round(cache_hit_tokens / cache_token_total, 6) if cache_token_total > 0 else None
     run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
     run_unmatched_completed_ids = sorted(run_id for run_id in run_completed_ids if run_id not in run_started_ids)
     run_incomplete = [
@@ -1345,6 +1354,9 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         "failed_tools": compact_list(failed_tools, 8),
         "tool_counts": dict(sorted(tool_names.items(), key=lambda item: (-item[1], item[0]))[:8]),
         "command_count": len(commands),
+        "deepseek_cache_hit_ratio": cache_hit_ratio,
+        "deepseek_cache_hit_tokens": cache_hit_tokens if cache_token_total > 0 else None,
+        "deepseek_cache_miss_tokens": cache_miss_tokens if cache_token_total > 0 else None,
         "deepseek_cache_metric_expected_count": expected_cache_metrics,
         "deepseek_cache_metric_event_count": cache_metric_events,
         "deepseek_cache_metric_missing_count": max(expected_cache_metrics - cache_metric_events, 0),
@@ -1483,6 +1495,9 @@ def work_summary(
         "failed_tools": failed_tools,
         "transcript_actions": transcript_actions,
         "tool_counts": event_data["tool_counts"],
+        "deepseek_cache_hit_ratio": event_data["deepseek_cache_hit_ratio"],
+        "deepseek_cache_hit_tokens": event_data["deepseek_cache_hit_tokens"],
+        "deepseek_cache_miss_tokens": event_data["deepseek_cache_miss_tokens"],
         "deepseek_cache_metric_expected_count": event_data["deepseek_cache_metric_expected_count"],
         "deepseek_cache_metric_event_count": event_data["deepseek_cache_metric_event_count"],
         "deepseek_cache_metric_missing_count": event_data["deepseek_cache_metric_missing_count"],
@@ -1537,6 +1552,18 @@ def corrected_gnomes(
         value = trace.get("task_lineage_event_count")
         if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
             gnomes["task_lineage_event_count"] = value
+    for key in (
+        "deepseek_cache_hit_tokens",
+        "deepseek_cache_miss_tokens",
+        "deepseek_cache_hit_ratio",
+    ):
+        value = work.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        current = gnomes.get(key)
+        if current is None or not isinstance(current, (int, float)) or isinstance(current, bool):
+            gnomes[key] = value
+            recalc_score = True
     cache_hit_tokens = gnomes.get("deepseek_cache_hit_tokens")
     cache_miss_tokens = gnomes.get("deepseek_cache_miss_tokens")
     if gnomes.get("deepseek_cache_hit_ratio") is not None and not (
