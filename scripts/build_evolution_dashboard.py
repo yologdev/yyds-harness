@@ -2255,6 +2255,13 @@ def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
     else:
         status = "missing"
         detail = "Assessment artifact state is unknown."
+    evidence = []
+    if artifact_present is True:
+        evidence.append("tasks/assessment.md")
+    if diagnostic_present:
+        evidence.append("tasks/assessment_missing.md")
+    if transcript_present:
+        evidence.append("transcripts/assess.log")
     return claim_row(
         "assessment_artifact_and_transcript_state",
         status,
@@ -2264,7 +2271,7 @@ def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
             "transcript_present": transcript_present,
             "diagnostic_present": diagnostic_present,
         },
-        ["tasks/assessment.md", "tasks/assessment_missing.md", "transcripts/assess.log"],
+        evidence,
         detail,
         ["work_summary.task_manifest", "work_summary.transcripts"],
     )

@@ -2247,6 +2247,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(assessment_claim["status"], "observed")
             self.assertTrue(assessment_claim["actual"]["diagnostic_present"])
             self.assertIn("diagnostic artifact", assessment_claim["detail"])
+            self.assertIn("tasks/assessment_missing.md", assessment_claim["evidence"])
 
     def test_assessment_transcript_without_manifest_marks_artifact_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2284,6 +2285,55 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(assessment_claim["actual"]["artifact_present"], False)
             self.assertTrue(assessment_claim["actual"]["transcript_present"])
             self.assertIn("assessment artifact is missing", assessment_claim["detail"])
+            self.assertEqual(assessment_claim["evidence"], ["transcripts/assess.log"])
+
+    def test_assessment_claim_evidence_excludes_absent_diagnostic_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "build_ok": True,
+                    "test_ok": True,
+                },
+            )
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "assessment_present": True,
+                    "assessment_missing_present": False,
+                    "artifacts": {
+                        "assessment": "tasks/assessment.md",
+                        "assessment_missing": None,
+                    },
+                    "tasks": [],
+                },
+            )
+            (session / "tasks").mkdir(parents=True, exist_ok=True)
+            (session / "tasks/assessment.md").write_text("# Assessment\n", encoding="utf-8")
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("assess.log").write_text("assessment phase ran\n", encoding="utf-8")
+
+            build(root / "sessions", root / "out")
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            assessment_claim = next(
+                claim
+                for claim in claims["sessions"][0]["claims"]
+                if claim["name"] == "assessment_artifact_and_transcript_state"
+            )
+
+            self.assertEqual(assessment_claim["status"], "proven")
+            self.assertEqual(
+                assessment_claim["evidence"],
+                ["tasks/assessment.md", "transcripts/assess.log"],
+            )
+            self.assertNotIn("tasks/assessment_missing.md", assessment_claim["evidence"])
 
     def test_transcript_actions_fill_work_evidence_when_state_events_are_sparse(self):
         with tempfile.TemporaryDirectory() as tmp:
