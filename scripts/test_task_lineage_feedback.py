@@ -1089,6 +1089,61 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertIn("state_live_baseline_shrink_count", summary["gnome_keys"])
             self.assertIn("deepseek_model_call_abnormal_completed_count", summary["gnome_keys"])
 
+    def test_state_summary_exports_structured_lifecycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "state/events.jsonl"
+            append_event(events, "RunStarted", {"phase": "session"}, run_id="run-open")
+            append_event(
+                events,
+                "ModelCallStarted",
+                {"model": "deepseek-chat", "provider": "deepseek"},
+                run_id="run-open",
+            )
+            append_event(
+                events,
+                "FileEdited",
+                {"path": "src/state.rs"},
+                run_id="run-open",
+            )
+            append_event(
+                events,
+                "RunCompleted",
+                {"status": "error", "error_detail": "interrupted"},
+                run_id="run-closed-without-start",
+            )
+            append_event(
+                events,
+                "ModelCallCompleted",
+                {"model": "deepseek-chat", "provider": "deepseek", "status": "error"},
+                run_id="run-closed-without-start",
+            )
+
+            summary = summarize_state_gnomes.summarize(
+                summarize_state_gnomes.load_jsonl(events),
+                events,
+            )
+
+            lifecycle = summary["state_lifecycle"]
+            self.assertTrue(lifecycle["observed"])
+            self.assertFalse(lifecycle["balanced"])
+            self.assertFalse(lifecycle["healthy"])
+            self.assertEqual(lifecycle["runs"]["started"], 1)
+            self.assertEqual(lifecycle["runs"]["completed"], 1)
+            self.assertEqual(lifecycle["runs"]["incomplete"], 1)
+            self.assertEqual(lifecycle["runs"]["unmatched_completed"], 1)
+            self.assertEqual(lifecycle["runs"]["incomplete_runs"][0]["run_id"], "run-open")
+            self.assertEqual(lifecycle["runs"]["incomplete_runs"][0]["last_event"]["kind"], "FileEdited")
+            self.assertEqual(lifecycle["model_calls"]["started"], 1)
+            self.assertEqual(lifecycle["model_calls"]["completed"], 1)
+            self.assertEqual(lifecycle["model_calls"]["incomplete"], 1)
+            self.assertEqual(lifecycle["model_calls"]["unmatched_completed"], 1)
+            self.assertEqual(lifecycle["model_calls"]["abnormal_completed"], 1)
+            self.assertEqual(lifecycle["model_calls"]["incomplete_runs"][0]["model"], "deepseek-chat")
+            self.assertEqual(
+                lifecycle["model_calls"]["abnormal_completed_runs"][0]["run_id"],
+                "run-closed-without-start",
+            )
+
     def test_summary_merges_post_wrapup_commit_links(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

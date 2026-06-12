@@ -145,6 +145,57 @@ def event_type(event: dict[str, Any]) -> str:
     return value if isinstance(value, str) else ""
 
 
+def event_run_id(event: dict[str, Any], data: dict[str, Any]) -> str | None:
+    value = event.get("run_id")
+    if isinstance(value, str) and value:
+        return value
+    raw_payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    raw_meta = raw_payload.get("_yoyo") if isinstance(raw_payload.get("_yoyo"), dict) else {}
+    value = raw_meta.get("run_id")
+    if isinstance(value, str) and value:
+        return value
+    value = data.get("run_id")
+    if isinstance(value, str) and value:
+        return value
+    meta = data.get("_yoyo") if isinstance(data.get("_yoyo"), dict) else {}
+    value = meta.get("run_id")
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def deepseek_model_payload(data: dict[str, Any]) -> bool:
+    model = data.get("model")
+    provider = data.get("provider")
+    return (
+        data.get("deepseek_native") is True
+        or (isinstance(model, str) and model.startswith("deepseek"))
+        or provider == "deepseek"
+    )
+
+
+def abnormal_model_completion_status(data: dict[str, Any]) -> str | None:
+    status = str(data.get("status") or "").strip()
+    if status and status not in {"completed", "success", "ok"}:
+        return status
+    if data.get("error") or data.get("error_detail"):
+        return status or "error"
+    return None
+
+
+def event_lifecycle_summary(event: dict[str, Any], kind: str, data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "event_id": event_id(event),
+        "kind": kind,
+        "tool_name": data.get("tool_name"),
+        "path": data.get("path") or data.get("file") or data.get("target_path"),
+        "command": data.get("command"),
+        "status": data.get("status"),
+        "error": data.get("error"),
+        "error_detail": data.get("error_detail"),
+    }
+
+
 def select_gnomes(metrics: Any) -> dict[str, Any]:
     if not isinstance(metrics, dict):
         return {}
@@ -161,6 +212,132 @@ def state_metrics(value: dict[str, Any]) -> dict[str, Any]:
     if isinstance(nested, dict):
         return nested
     return {}
+
+
+def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
+    run_started_ids: set[str] = set()
+    run_completed_ids: set[str] = set()
+    run_last_events: dict[str, dict[str, Any]] = {}
+    model_call_started = 0
+    model_call_completed = 0
+    model_call_abnormal_completed = 0
+    model_call_started_runs: dict[str, dict[str, Any]] = {}
+    model_call_completed_runs: set[str] = set()
+    model_call_abnormal_completed_runs: list[dict[str, Any]] = []
+    model_call_run_errors: dict[str, dict[str, Any]] = {}
+    unkeyed_model_call_starts = 0
+    unkeyed_model_call_completions = 0
+
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        run_id = event_run_id(event, data)
+        if run_id:
+            run_last_events[run_id] = event_lifecycle_summary(event, kind, data)
+        if kind == "RunStarted" and run_id:
+            run_started_ids.add(run_id)
+        elif kind == "RunCompleted" and run_id:
+            run_completed_ids.add(run_id)
+            if data.get("status") == "error" or data.get("error") or data.get("error_detail"):
+                model_call_run_errors[run_id] = data
+        if kind == "ModelCallStarted" and deepseek_model_payload(data):
+            model_call_started += 1
+            if run_id:
+                model_call_started_runs[run_id] = data
+            else:
+                unkeyed_model_call_starts += 1
+        elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+            model_call_completed += 1
+            abnormal_status = abnormal_model_completion_status(data)
+            if abnormal_status:
+                model_call_abnormal_completed += 1
+                model_call_abnormal_completed_runs.append(
+                    {
+                        "run_id": run_id,
+                        "model": data.get("model"),
+                        "status": abnormal_status,
+                        "error": data.get("error"),
+                        "error_detail": data.get("error_detail"),
+                        "last_event": run_last_events.get(run_id) if run_id else None,
+                    }
+                )
+            if run_id:
+                model_call_completed_runs.add(run_id)
+            else:
+                unkeyed_model_call_completions += 1
+
+    run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
+    run_unmatched_completed_ids = sorted(run_id for run_id in run_completed_ids if run_id not in run_started_ids)
+    model_incomplete_ids = sorted(
+        run_id for run_id in model_call_started_runs if run_id not in model_call_completed_runs
+    )
+    model_unmatched_completed_ids = sorted(
+        run_id for run_id in model_call_completed_runs if run_id not in model_call_started_runs
+    )
+    model_incomplete_count = len(model_incomplete_ids) + max(
+        unkeyed_model_call_starts - unkeyed_model_call_completions,
+        0,
+    )
+    model_unmatched_completed_count = len(model_unmatched_completed_ids) + max(
+        unkeyed_model_call_completions - unkeyed_model_call_starts,
+        0,
+    )
+    lifecycle = {
+        "schema_version": 1,
+        "runs": {
+            "started": len(run_started_ids),
+            "completed": len(run_completed_ids),
+            "incomplete": len(run_incomplete_ids),
+            "unmatched_completed": len(run_unmatched_completed_ids),
+            "incomplete_runs": [
+                {"run_id": run_id, "last_event": run_last_events.get(run_id)}
+                for run_id in run_incomplete_ids[:8]
+            ],
+            "unmatched_completed_runs": run_unmatched_completed_ids[:8],
+        },
+        "model_calls": {
+            "started": model_call_started,
+            "completed": model_call_completed,
+            "abnormal_completed": model_call_abnormal_completed,
+            "incomplete": model_incomplete_count,
+            "unmatched_completed": model_unmatched_completed_count,
+            "unkeyed_started": unkeyed_model_call_starts,
+            "unkeyed_completed": unkeyed_model_call_completions,
+            "incomplete_runs": [
+                {
+                    "run_id": run_id,
+                    "model": model_call_started_runs.get(run_id, {}).get("model"),
+                    "error": model_call_run_errors.get(run_id, {}).get("error"),
+                    "error_detail": model_call_run_errors.get(run_id, {}).get("error_detail"),
+                    "status": model_call_run_errors.get(run_id, {}).get("status"),
+                    "last_event": run_last_events.get(run_id),
+                }
+                for run_id in model_incomplete_ids[:8]
+            ],
+            "abnormal_completed_runs": model_call_abnormal_completed_runs[:8],
+            "unmatched_completed_runs": model_unmatched_completed_ids[:8],
+        },
+    }
+    lifecycle["balanced"] = (
+        len(run_incomplete_ids) == 0
+        and len(run_unmatched_completed_ids) == 0
+        and model_incomplete_count == 0
+        and model_unmatched_completed_count == 0
+    )
+    lifecycle["observed"] = bool(
+        run_started_ids
+        or run_completed_ids
+        or model_call_started
+        or model_call_completed
+        or unkeyed_model_call_starts
+        or unkeyed_model_call_completions
+    )
+    lifecycle["healthy"] = bool(
+        lifecycle["observed"]
+        and lifecycle["balanced"]
+        and model_call_abnormal_completed == 0
+    )
+    return lifecycle
 
 
 def summarize_patch(event: dict[str, Any]) -> dict[str, Any]:
@@ -485,6 +662,7 @@ def summarize(events: list[dict[str, Any]], source: Path) -> dict[str, Any]:
         "event_counts": counts,
         "gnome_keys": GNOME_KEYS,
         "latest_gnomes": latest_gnomes,
+        "state_lifecycle": summarize_state_lifecycle(events),
         "patches": patches[-20:],
         "evals": evals[-20:],
         "decisions": decisions[-20:],
