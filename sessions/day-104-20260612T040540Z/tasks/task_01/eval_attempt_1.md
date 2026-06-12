@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The change improves the cold-start `why last-failure` error path from a bare "no state log found" message to actionable diagnostics (cold start explanation, `yoyo state init` hint, next-steps guidance). Existing behavior for completed sessions is untouched since only the file-not-found branch was modified. The `build_why_report` function already handles the file-exists-but-no-event case with distinct diagnostics for active/incomplete runs vs successful-only vs insufficient failures. All 153 tests pass.

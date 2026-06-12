@@ -1,0 +1,488 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and the relevant code. I need to:
+
+1. Read the evolve skill for implementation contract
+2. Read the current `commands_state.rs` and `state.rs` files to understand the current implementation
+3. Implement improvements to `state why last-failure` for cold-start scenarios
+4. Write tests, verify, and commit
+
+Let me begin.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs (100 lines)  ▶ read src/state.rs (100 lines) ✓ (39ms)
+ ✓ (16ms)
+ ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the `why` handler and the `last-failure` logic to understand the current implementation.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'last-failure' in src/commands_state.rs  ▶ search 'fn handle_why' in src/commands_state.rs ✓ (17ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `handle_why` function and the area around line 13510 where `last-failure` is handled.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:836..916  ▶ read src/commands_state.rs:13490..13570 ✓ (21ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the current implementation. The `find_target_event` function for `last-failure` simply searches events in reverse for failure event types. There's no cold-start handling. Let me also look at `build_why_report` to understand the full flow.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `build_why_report` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2555..2675 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current flow. When `why last-failure` is called:
+
+1. `handle_why` reads events, calls `build_why_report`
+2. `build_why_report` calls `find_target_event` with "last-failure"
+3. `find_target_event` searches events in reverse for failure event types
+4. If no failure found, `build_why_report` returns an error with some guidance
+
+The problem: on a cold start (no events file, or empty events, or no completed sessions), the error message is generic. The task wants me to make it more helpful by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence.
+
+Currently at line 2576-2593 there's already some cold-start handling:
+- "State recording is active but no sessions have completed yet."
+- "N successful sessions recorded. No failure data to diagnose."
+- "N failures recorded but not enough to cluster into patterns."
+
+But we can improve this by:
+1. Scanning for incomplete runs (RunStarted without matching RunCompleted)
+2. Looking for startup errors in the event stream
+3. Providing more actionable next steps
+
+Let me also check if there are RunStarted events and what event types are available. Let me look at what events are recorded for runs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RunStarted|RunCompleted' in src/state.rs  ▶ search 'RunStarted' in src/commands_state.rs ✓ (15ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. There are RunStarted events. Now I understand the situation better. Let me look at what events are available in the cold-start state and what kinds of things we can detect:
+
+1. Incomplete runs (RunStarted without matching RunCompleted)
+2. General errors/failures in the event log
+3. Missing state log entirely
+4. Empty state log
+
+Let me also check the test cases for `build_why_report` with `last-failure` to understand what tests exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14990..15070 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also look at what test covers the cold-start / missing failure case to understand the current behavior:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:15380..15480 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look for test cases where `last-failure` fails (cold-start / no failure found):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'why_report.*last-failure.*Err\|no.*failure\|cold\|no state e…' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test for `why_report_cold_start` or `why_report_missing`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'why_report.*cold\|why_report.*missing\|why_report.*empty\|wh…' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there's no test for the cold-start or missing-failure case for `why_report`. Let me also look at what `is_failure_event_type` covers and what other event types could be relevant for cold-start diagnostics:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn is_failure_event_type' in src/commands_state.rs  ▶ search 'enum EventType' in src/state.rs ✓ (15ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the EventType enum to understand available event types and also look at how exit_with_state works to see what RunCompleted error fields exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:108..208  ▶ search 'exit_with_state' in src/state.rs ✓ (15ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also look at the `RunCompleted` payload to understand what error info is captured, and check for any `exit_with_state` function that records RunCompleted with error details.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn exit_with_state' in src/state.rs  ▶ search 'exit_code\|error' in src/state.rs ✓ (14ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'exit_with_state' in src/state.rs  ▶ search 'exit_with_state\|RunCompleted\|store_run_error' in src/main.rs ✓ (15ms)
+ ✗ (21ms)
+    │ Search error: grep: src/main.rs: No such file or directory
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the actual RunCompleted recording to understand what information is available for cold-start diagnostics.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (1 ✓, 1 ✗)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'RunCompleted' in src/state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also look at how RunCompleted events are structured—specifically, what their payloads contain, especially error/success status:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'exit_code' in src/state.rs  ▶ search 'RunCompleted.*payload|payload.*exit' in src/commands_state.rs ✓ (14ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how errors are recorded in the RunCompleted payload, and also look at the `handle_failures` function for ideas about scanning for failures:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_failures' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function and also get a broader view of how the error reporting works. But first, let me plan the implementation.
+
+The task wants me to improve `state why last-failure` for cold-start scenarios. Currently, when no failure event is found:
+
+1. If events are empty or no RunCompleted events: "State recording is active but no sessions have completed yet. Diagnostics become available after 2–3 completed evolution sessions."
+2. If there are successful runs but no failures: "N successful session(s) recorded. No failure data to diagnose."
+3. If there are failures but not enough: "N failure(s) recorded but not enough to cluster into patterns."
+
+The improvements should:
+- For cold-start (no events file or empty events): Report nearby startup errors (look for FailureObserved that are not from completed sessions, or any errors before a RunStarted)
+- For incomplete runs: Detect RunStarted without matching RunCompleted and report them
+- For missing diagnostic evidence: Point to what evidence is missing and what to look for
+- Distinguish between "no history at all" vs "history exists but no failures" vs "active/incomplete runs"
+
+Let me now look at what the `build_state_summary` does when the events list is empty — this is what's shown when no failure is found:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_state_summary' in src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2295..2375 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the system. Let me plan my implementation:
+
+The task: Improve `state why last-failure` for cold-start scenarios.
+
+Current behavior when `last-failure` is used on a cold start:
+1. `handle_why` reads events and calls `build_why_report`
+2. `build_why_report` calls `find_target_event` which returns `None` if no failure events exist
+3. When `None`, `build_why_report` shows a summary and some guidance
+
+What I want to add:
+1. Detect incomplete runs (RunStarted without RunCompleted) — these are "nearby startup errors" that could explain failures
+2. Distinguish different cold-start states: no state file at all, empty state, has runs but no failures, has incomplete runs
+3. Provide more actionable next steps for each scenario
+
+Let me now look at the `handle_why` function more closely to understand the entry point for cold-start diagnostics. The `handle_why` function at line 836:
+
+```rust
+fn handle_why(id: &str, show_summary: bool, limit: usize) {
+    let path = default_events_path();
+    let Ok(events) = read_tail_events(&path, limit) else {
+        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+        return;
+    };
+    if show_summary {
+        println!("{}", build_state_summary(&events));
+        println!();
+    }
+    match build_why_report(&events, id) {
+        Ok(report) => println!("{report}"),
+        Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+    }
+    // ...
+}
+```
+
+When the events file doesn't exist, it just prints "no state log found at ..." and returns. We could improve that too.
+
+When the file exists but is empty or has no failures, the error path in `build_why_report` generates the message.
+
+Here's my plan:
+
+1. **In `handle_why`**: When the state log file doesn't exist at all, show more helpful message about how to initialize state and what to expect.
+
+2. **In `build_why_report`'s error path** (when no target event found for `last-failure`): 
+   - Detect incomplete runs (RunStarted without RunCompleted)
+   - Show incomplete runs as potential failures
+   - Distinguish between: completely empty state, only RunStarted (no completions), completions but no failures
+   - Show recovery hints: `yoyo state lifecycle`, `yoyo state failures --recent`, etc.
+
+3. **Tests**: Add tests for:
+   - No events at all (empty vec)
+   - Only RunStarted events (incomplete runs)
+   - RunStarted + RunCompleted but no failures
+   - RunStarted without RunCompleted (incomplete/stale runs)
+
+Let me also check if `handle_why` handles the case where the state log file doesn't exist — it uses `read_tail_events` and falls back to an error. Let me also add a path for checking if there's an events file that exists but is empty.
+
+Wait, actually the `read_tail_events` function is the one that returns the error if the file doesn't exist. Let me check that.
+
+Let me look at line 838: `let Ok(events) = read_tail_events(&path, limit) else {`
+
+And `read_tail_events`:
+```rust
+fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    // parse lines into Values
+}
+```
+
+So if the file doesn't exist, `read_to_string` returns `Err`, and we print "no state log found at ...".
+
+When the file exists but is empty, we get an empty Vec, which goes through to `build_why_report` where the error path fires.
+
+OK, here's my refined plan:
+
+### Changes to `handle_why`:
+When the state log file doesn't exist, provide a more helpful message that:
+- Explains this is a cold start (no state data yet)
+- Explains what to do: `yoyo state init` to initialize state recording
+
+### Changes to `build_why_report` error path for `last-failure`:
+When no failure event is found, add:
+1. Check for incomplete runs (RunStarted without RunCompleted) — these represent sessions that failed to complete
+2. If incomplete runs exist, list them with their tasks and suggest checking transcripts
+3. If the state is completely empty, suggest initializing state and waiting for first evolution session
+4. If runs completed successfully, suggest checking `yoyo state lifecycle` for run details
+5. If there are failures but none matched `last-failure` (edge case), suggest using specific event IDs
+
+Let me now look at what RunStarted payloads typically contain:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1340..1390 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also check how RunStarted payloads look — they have a "task" field. I can use this to identify incomplete runs.
+
+Now let me look at what `event_string` and other helpers look like to ensure I'm using the right utility functions:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search '^fn event_string' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the beginning of the helpers:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_string\(' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Maybe it's a different pattern. Let me search for the function definition.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_string' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I have everything I need. Let me design the implementation.
+
+### Implementation Plan:
+
+1. **Modify `handle_why`** at line 836: When the state events file doesn't exist, provide a more helpful message about cold start.
+
+2. **Modify `build_why_report` error path** (lines 2555-2594): When `last-failure` yields no match, add:
+   - Check for incomplete runs (`RunStarted` events whose `run_id` doesn't appear in any `RunCompleted` event)
+   - If incomplete runs exist, list them as potential failures-to-be
+   - Distinguish between tiers: completely empty, incomplete only, complete-but-no-failures
+   
+3. **Add tests** for cold-start scenarios.
+
+Let me now implement this. I'll start with the core change to `build_why_report` and the error path.
+
+First, let me also check whether the file-not-found case in `handle_why` also outputs `build_state_summary` — it doesn't currently because it returns early.
+
+Actually, looking more carefully:
+
+In `handle_why`:
+- If file doesn't exist → print "no state log found at ..." and return
+- If file exists and `last-failure` finds nothing → goes to error path in `build_why_report` which shows summary + guidance
+
+For the cold-start improvement, I should enhance BOTH paths:
+
+1. File doesn't exist at all: provide actionable guidance about initializing state
+2. File exists but empty or no failures: enhance the `build_why_report` error path to detect incomplete runs
+
+Let me implement:
+
+### handle_why changes:
+The early return when file doesn't exist should suggest `yoyo state init`.
+
+### build_why_report error path changes:
+When target is not found for `last-failure`:
+- Scan for incomplete runs
+- Report them with their task name, run_id, and timestamp
+- If no incomplete runs and no completions: clearly say it's a fresh state
+- If completions exist but no failures: say all sessions succeeded
+- Show next steps appropriate to the scenario
+
+Let me write the code.
+
+For detecting incomplete runs:
+```rust
+// Find all RunStarted run_ids
+let started_runs: BTreeSet<String> = events.iter()
+    .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
+    .filter_map(|e| event_string(e, "run_id").map(String::from))
+    .collect();
+// Find all RunCompleted run_ids
+let completed_runs: BTreeSet<String> = events.iter()
+    .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+    .filter_map(|e| event_string(e, "run_id").map(String::from))
+    .collect();
+// Incomplete = started - completed
+```
+
+But wait, I also need to handle the case where the events file is empty — `events.is_empty()` is already handled. Let me trace through:
+
+1. File doesn't exist → `read_tail_events` fails → `handle_why` returns "no state log found"
+2. File exists but empty → `events` is empty vec → `build_state_summary` shows "empty" → `find_target_event` returns None → error path fires
+3. File exists with RunStarted only (no completions, no failures) → `find_target_event` returns None → error path fires
+4. File exists with completions but no failures → same
+
+So the main changes are:
+- `handle_why`: better message when file doesn't exist (suggest init)
+- `build_why_report` error path: detect incomplete runs, distinguish scenarios
+
+Let me also think about what happens when `events.is_empty()` — `build_state_summary` returns "State: empty (no events recorded yet)" but then the error guidance at line 2576 says "State recording is active but no sessions have completed yet." This is contradictory — if there are ZERO events, we should say "no state events recorded yet" rather than "state recording is active but..." Let me fix this.
+
+OK, let me now write the code. Let me be surgical with edits.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a thorough understanding of the code. Let me plan and implement.
+
+**Plan:**
+1. Modify `handle_why` to give better guidance when the events file doesn't exist (suggest `yoyo state init`)
+2. Modify `build_why_report`'s error path to detect incomplete runs and distinguish cold-start scenarios
+3. Write tests for cold-start scenarios
+4. Verify with `cargo fmt && cargo clippy && cargo build && cargo test`
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with Task 1: Improve `handle_why` for the missing-events-file case.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.2s (5 ✓)
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me edit `handle_why` to improve the missing-file message.
+────────────────────────────────────────────────────────────────────────────────
+
+
+    fn handle_why(id: &str, show_summary: bool, limit: usize) {
+        let path = default_events_path();
+        let Ok(events) = read_tail_events(&path, limit) else {
+  -         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  +         eprintln!("{YELLOW}  No state events file found at {}{RESET}", path.display());
+  +         eprintln!("{YELLOW}  This is a cold start: no evolution sessions have recorded state yet.{RESET}");
+  +         eprintln!("{DIM}  To enable state recording, run: yoyo state init{RESET}");
+  +         eprintln!(
+  +             "{DIM}  Once sessions complete, run: yoyo state why last-failure{RESET}"
+  +         );
+            return;
+        };
+  ✓ Auto-approved: edit: src/commands_state.rs (6 → 11 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (6 → 11 lines)
+    fn handle_why(id: &str, show_summary: bool, limit: usize) {
+        let path = default_events_path();
+        let Ok(events) = read_tail_events(&path, limit) else {
+  -         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  +         eprintln!("{YELLOW}  No state events file found at {}{RESET}", path.display());
+  +         eprintln!("{YELLOW}  This is a cold start: no evolution sessions have recorded state yet.{RESET}");
+  +         eprintln!("{DIM}  To enable state recording, run: yoyo state init{RESET}");
+  +         eprintln!(
+  +             "{DIM}  Once sessions complete, run: yoyo state why last-failure{RESET}"
+  +         );
+            return;
+        };
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now task 2: Enhance `build_why_report` error path. Let me read the current error path more carefully and then edit it.
+
+The key change is in `build_why_report` around lines 2555-2594. I need to add incomplete-run detection.
+
+Let me re-read the current code with updated line numbers:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2560..2610 ✓ (6ms)
+
+
