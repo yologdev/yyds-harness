@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from build_evolution_dashboard import (  # noqa: E402
     build,
+    count_claim,
     summarize_events_for_work,
     summarize_transcript_actions,
     task_verification_summary,
@@ -2397,10 +2398,18 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
             self.assertEqual(
                 session_claims["failed_tool_actions_match_tool_error_gnome"]["expected"],
+                {"minimum_count": 1},
+            )
+            self.assertEqual(
+                session_claims["failed_tool_actions_match_tool_error_gnome"]["actual"]["count"],
                 1,
             )
             self.assertEqual(
-                session_claims["failed_tool_actions_match_tool_error_gnome"]["actual"],
+                session_claims["failed_tool_actions_match_tool_error_gnome"]["actual"]["raw"],
+                1,
+            )
+            self.assertEqual(
+                session_claims["failed_tool_actions_match_tool_error_gnome"]["actual"]["evidence_count"],
                 1,
             )
             self.assertEqual(
@@ -2411,6 +2420,22 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 session_claims["deepseek_cache_ratio_is_token_backed_or_marked_unverified"]["actual"]["unverified_count"],
                 1,
             )
+
+    def test_count_claim_observes_zero_evidence_when_metric_is_absent(self):
+        claim = count_claim(
+            "unlanded_source_tasks_match_gnome",
+            0,
+            None,
+            [],
+            "Tasks with source edits and no landed source commit should be reflected in task_unlanded_source_count.",
+        )
+
+        self.assertEqual(claim["status"], "observed")
+        self.assertEqual(claim["expected"], {"minimum_count": 0})
+        self.assertEqual(claim["actual"]["count"], None)
+        self.assertEqual(claim["actual"]["raw"], None)
+        self.assertEqual(claim["actual"]["evidence_count"], 0)
+        self.assertIn("No matching evidence was found", claim["detail"])
 
     def test_session_sort_is_natural_by_day_and_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:

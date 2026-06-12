@@ -2176,17 +2176,24 @@ def count_claim(name: str, expected: int, actual: Any, evidence: list[str], deta
     actual_int = int_or_none(actual)
     if actual_int is not None and actual_int >= expected:
         status = "proven"
+        claim_detail = detail
     elif expected == 0 and actual_int is None:
-        status = "missing"
+        status = "observed"
+        claim_detail = f"{detail} No matching evidence was found and no count metric was captured."
     else:
         status = "conflict"
+        claim_detail = detail
     return claim_row(
         name,
         status,
-        expected,
-        actual,
+        {"minimum_count": expected},
+        {
+            "count": actual_int,
+            "raw": actual,
+            "evidence_count": len(evidence),
+        },
         evidence,
-        detail,
+        claim_detail,
         ["work_summary", "latest_gnomes"],
     )
 
