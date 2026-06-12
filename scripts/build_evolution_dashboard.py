@@ -427,6 +427,7 @@ def summarize_transcript_actions(session_dir: Path) -> dict[str, Any]:
         "commands": compact_list(commands, 12),
         "failed_commands": compact_list(failed_commands, 8),
         "failed_tools": compact_list(failed_tools, 8),
+        "failed_tool_summary": failed_tool_pattern_summary(failed_tools),
         "command_count": compact_count(commands),
         "failed_command_count": compact_count(failed_commands),
         "failed_tool_count": compact_count(failed_tools),
@@ -439,6 +440,64 @@ def summarize_transcript_actions(session_dir: Path) -> dict[str, Any]:
         "edited_file_count": compact_count(edited_files),
         "_read_files_all": read_files,
         "_edited_files_all": edited_files,
+    }
+
+
+def failed_tool_category(label: str) -> str:
+    text = str(label or "").strip().lower()
+    if text.startswith("search "):
+        if "search error:" in text:
+            if "unmatched" in text or "invalid content" in text:
+                return "search_regex_error"
+            if "binary file matches" in text:
+                return "search_binary_match"
+            return "search_error"
+        return "search_tool_error"
+    if text.startswith("read "):
+        if "no such file" in text or "cannot access" in text:
+            return "missing_file_read"
+        return "read_error"
+    if text.startswith("edit "):
+        if "old_text" in text or "did not match" in text or "matches " in text:
+            return "edit_context_mismatch"
+        return "edit_error"
+    if text.startswith("write "):
+        return "write_error"
+    if text.startswith("bash "):
+        return "bash_tool_error"
+    return "tool_error"
+
+
+def failed_tool_pattern_summary(failed_tools: list[str]) -> dict[str, Any]:
+    category_counts: dict[str, int] = {}
+    examples_by_category: dict[str, list[str]] = {}
+    unique_labels: list[str] = []
+    seen: set[str] = set()
+    for raw in failed_tools:
+        label = evidence_text(raw, 500)
+        if not label:
+            continue
+        key = " ".join(label.split())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_labels.append(label)
+    for label in unique_labels:
+        category = failed_tool_category(label)
+        category_counts[category] = category_counts.get(category, 0) + 1
+        examples_by_category.setdefault(category, []).append(label)
+    top_categories = [
+        {
+            "category": category,
+            "count": count,
+            "examples": compact_list(examples_by_category.get(category, []), 3),
+        }
+        for category, count in sorted(category_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    return {
+        "total_count": len(unique_labels),
+        "category_counts": dict(sorted(category_counts.items())),
+        "top_categories": top_categories[:8],
     }
 
 
@@ -1636,6 +1695,7 @@ def work_summary(
     commands = compact_list(command_values, 12)
     failed_commands = compact_list(failed_command_values, 8)
     failed_tools = compact_list(failed_tool_values, 8)
+    failed_tool_summary = failed_tool_pattern_summary(failed_tool_values)
     command_count = compact_count(command_values)
     failed_command_count = compact_count(failed_command_values)
     failed_tool_count = compact_count(failed_tool_values)
@@ -1757,6 +1817,7 @@ def work_summary(
         "commands": commands,
         "failed_commands": failed_commands,
         "failed_tools": failed_tools,
+        "failed_tool_summary": failed_tool_summary,
         "command_count": command_count,
         "failed_command_count": failed_command_count,
         "failed_tool_count": failed_tool_count,
@@ -3121,6 +3182,11 @@ def session_state_projection(session: dict[str, Any]) -> dict[str, Any]:
             "state_counts": task_states.get("state_counts") or {},
         },
         "tasks": task_states.get("tasks") if isinstance(task_states.get("tasks"), list) else [],
+        "tool_failures": {
+            "failed_tool_count": work.get("failed_tool_count"),
+            "failed_command_count": work.get("failed_command_count"),
+            "summary": work.get("failed_tool_summary") if isinstance(work.get("failed_tool_summary"), dict) else {},
+        },
         "lifecycle": {
             "runs": lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {},
             "model_calls": lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {},
@@ -4815,6 +4881,16 @@ HTML = r"""<!doctype html>
       }).join("")}</ul>`;
     }
 
+    function renderFailedToolSummary(work) {
+      const summary = work.failed_tool_summary || {};
+      const rows = Array.isArray(summary.top_categories) ? summary.top_categories : [];
+      if (!rows.length) return listItems(work.failed_tools, "No failed tool calls recorded.");
+      return `<p class="muted">${text(summary.total_count || 0)} failed tool action(s) across ${text(rows.length)} categor${rows.length === 1 ? "y" : "ies"}.</p><ul class="mini-list">${rows.map(row => {
+        const examples = (row.examples || []).slice(0, 2).join(" / ");
+        return `<li><strong>${text(row.category || "tool_error")} (${text(row.count || 0)}x)</strong><br><span class="muted">${text(examples || "No examples captured.")}</span></li>`;
+      }).join("")}</ul>`;
+    }
+
     function renderLogFeedbackLessons(session, work) {
       const evalData = session.latest_eval || {};
       const rawRows = (work.log_feedback_top_lessons || evalData.top_lessons || []).slice(0, 4);
@@ -4894,7 +4970,7 @@ HTML = r"""<!doctype html>
                 <div><strong>Read${sampleCountLabel(work.read_files, readFileCount)}</strong>${listItems(work.read_files, "No file reads recorded.")}</div>
                 <div><strong>Evidence/bookkeeping edits${sampleCountLabel(evidenceFiles, evidenceFileCount)}</strong>${listItems(evidenceFiles, "No evidence or bookkeeping edits recorded.")}</div>
                 <div><strong>Failures</strong>${listItems(work.failed_commands, "No failed commands recorded.")}</div>
-                <div><strong>Tool failures</strong>${listItems(work.failed_tools, "No failed tool calls recorded.")}</div>
+                <div><strong>Tool failures</strong>${renderFailedToolSummary(work)}</div>
                 <div><strong>State/gnome audit</strong>${renderStateGnomeAudit(session)}</div>
               </div>
               <p class="muted">Transcript phases: ${text(phaseText || "no transcripts")}. ${text(trace.label || "unknown trace")} from ${text(trace.event_count || 0)} total event(s). Audit files: <a href="${text(session.audit_url)}">open session evidence</a>.</p>

@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_evolution_dashboard import (  # noqa: E402
     build,
     count_claim,
+    failed_tool_pattern_summary,
     run_health,
     run_health_reasons,
     summarize_events_for_work,
@@ -130,6 +131,26 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(len(actions["failed_tools"]), 8)
             self.assertEqual(actions["failed_tool_count"], 10)
             self.assertEqual(actions["failed_command_count"], 10)
+            self.assertEqual(actions["failed_tool_summary"]["total_count"], 10)
+            self.assertEqual(
+                actions["failed_tool_summary"]["category_counts"],
+                {"search_tool_error": 10},
+            )
+
+    def test_failed_tool_pattern_summary_uses_distinct_normalized_failures(self):
+        summary = failed_tool_pattern_summary(
+            [
+                "search 'needle' in src/lib.rs: Search error: grep: Unmatched ( or \\(",
+                "search 'needle' in src/lib.rs: Search error: grep: Unmatched ( or \\(",
+                "read src/main.rs: Cannot access src/main.rs: No such file or directory (os error 2)",
+            ]
+        )
+
+        self.assertEqual(summary["total_count"], 2)
+        self.assertEqual(
+            summary["category_counts"],
+            {"missing_file_read": 1, "search_regex_error": 1},
+        )
 
     def test_transcript_failed_edit_keeps_error_detail(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,6 +180,10 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 [
                     "edit src/prompt.rs: old_text matches 2 locations in src/prompt.rs. Include more surrounding context to make the match unique."
                 ],
+            )
+            self.assertEqual(
+                actions["failed_tool_summary"]["category_counts"],
+                {"edit_context_mismatch": 1},
             )
 
     def test_build_fix_transcripts_are_not_classified_as_other(self):
@@ -2669,13 +2694,24 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["transcript_actions"]["command_count"], 2)
             self.assertEqual(work["transcript_actions"]["failed_command_count"], 2)
             self.assertEqual(work["transcript_actions"]["failed_tool_count"], 1)
+            self.assertEqual(
+                work["failed_tool_summary"]["category_counts"],
+                {"search_tool_error": 1},
+            )
             self.assertEqual(work["transcript_actions"]["read_file_count"], 2)
             self.assertEqual(work["transcript_actions"]["edited_file_count"], 1)
             self.assertEqual(session_data["latest_gnomes"]["tool_error_count"], 1)
             self.assertEqual(work["transcript_actions"]["edited_files"], ["src/state.rs"])
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                states["sessions"][0]["tool_failures"]["summary"]["category_counts"],
+                {"search_tool_error": 1},
+            )
             html = (root / "out/index.html").read_text(encoding="utf-8")
+            data_json = (root / "out/data.json").read_text(encoding="utf-8")
             self.assertIn("tool fails", html)
             self.assertIn("failed checks", html)
+            self.assertIn("search_tool_error", data_json)
 
     def test_file_evidence_totals_use_uncapped_counts(self):
         with tempfile.TemporaryDirectory() as tmp:

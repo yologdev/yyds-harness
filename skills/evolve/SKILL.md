@@ -51,7 +51,9 @@ exactly.
    binary entrypoint, or symbol instead of retrying the missing path.
 7. Use `rg` for code discovery. Use fixed-string/literal searches for snippets
    that contain regex punctuation such as `(`, `[`, `{`, `|`, or `\`, and keep
-   searches scoped away from `.git`, `target`, and generated state files.
+   searches scoped away from `.git`, `target`, and generated state files. When
+   a search might otherwise scan the whole repo, add scoped paths or globs such
+   as `rg --glob '!target/**'`.
 8. Do not send escaped regex snippets such as `fn handle_run\(` to the search
    tool. Search for a simple identifier like `handle_run`, or run
    `rg --fixed-strings 'fn handle_run(' src/commands_eval.rs`.

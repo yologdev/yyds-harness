@@ -35,6 +35,7 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("Follow the evolve skill rules", script)
         self.assertIn("Verify guessed file paths with \\`rg --files\\`", script)
         self.assertIn("literal/fixed-string search", script)
+        self.assertIn("rg --glob '!target/**'", script)
         self.assertIn("Do not send escaped regex snippets like \\`fn handle_run\\\\(\\`", script)
         self.assertIn("\\`rg --fixed-strings 'fn handle_run(' src/commands_eval.rs\\`", script)
 
@@ -78,6 +79,7 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("search for the owning module", text)
         self.assertIn("fixed-string/literal searches", text)
         self.assertIn("regex punctuation", text)
+        self.assertIn("rg --glob '!target/**'", text)
         self.assertIn("Do not send escaped regex snippets such as `fn handle_run\\(`", text)
         self.assertIn("`rg --fixed-strings 'fn handle_run(' src/commands_eval.rs`", text)
 
