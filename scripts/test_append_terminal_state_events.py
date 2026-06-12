@@ -103,6 +103,45 @@ class AppendTerminalStateEvents(unittest.TestCase):
             self.assertEqual(result["completed_runs"], [])
             self.assertEqual(len(events.read_text(encoding="utf-8").splitlines()), 4)
 
+    def test_closes_open_lifecycle_after_normal_agent_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            after_line = 0
+            write_event(events, "RunStarted", "agent-run")
+            write_event(events, "ModelCallStarted", "agent-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "FileEdited", "agent-run", {"path": "journals/JOURNAL.md"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                "session-1",
+                "trace-1",
+                "assess",
+                "completed",
+                "completed",
+                "agent_process_exited",
+                "",
+                "agent process exited with status 0",
+            )
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+            model_done = [
+                row
+                for row in rows
+                if row["event_type"] == "ModelCallCompleted" and row["run_id"] == "agent-run"
+            ][0]
+            run_done = [
+                row
+                for row in rows
+                if row["event_type"] == "RunCompleted" and row["run_id"] == "agent-run"
+            ][0]
+
+            self.assertEqual(result["completed_model_calls"], ["agent-run"])
+            self.assertEqual(result["completed_runs"], ["agent-run"])
+            self.assertEqual(model_done["payload"]["status"], "completed")
+            self.assertEqual(model_done["payload"]["terminal_reason"], "agent_process_exited")
+            self.assertEqual(run_done["payload"]["status"], "completed")
+            self.assertEqual(run_done["payload"]["stage"], "assess")
+
 
 if __name__ == "__main__":
     unittest.main()

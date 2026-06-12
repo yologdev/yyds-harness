@@ -629,6 +629,14 @@ run_agent_with_fallback() {
         record_agent_terminal_events \
             "$state_before_lines" "${STAGE_NAME:-agent}" "error" "timeout" \
             "timeout_after_seconds" "timeout" "agent timed out after ${timeout_val}s"
+    elif [ "$exit_code" -eq 0 ]; then
+        record_agent_terminal_events \
+            "$state_before_lines" "${STAGE_NAME:-agent}" "completed" "completed" \
+            "agent_process_exited" "" "agent process exited with status 0"
+    else
+        record_agent_terminal_events \
+            "$state_before_lines" "${STAGE_NAME:-agent}" "error" "error" \
+            "agent_process_exited_nonzero" "nonzero_exit" "agent process exited with code ${exit_code}"
     fi
 
     return "$exit_code"
@@ -784,6 +792,14 @@ PY
         record_agent_terminal_events \
             "$state_before_lines" "${STAGE_NAME:-agent}" "error" "timeout" \
             "timeout_after_seconds" "timeout" "agent timed out after ${timeout_val}s"
+    elif [ "$exit_code" -eq 0 ]; then
+        record_agent_terminal_events \
+            "$state_before_lines" "${STAGE_NAME:-agent}" "completed" "completed" \
+            "agent_process_exited" "" "agent process exited with status 0"
+    else
+        record_agent_terminal_events \
+            "$state_before_lines" "${STAGE_NAME:-agent}" "error" "error" \
+            "agent_process_exited_nonzero" "nonzero_exit" "agent process exited with code ${exit_code}"
     fi
     return "$exit_code"
 }
