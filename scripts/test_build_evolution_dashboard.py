@@ -759,11 +759,14 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["task_lineage"][0]["verification_status"], "strict_pass")
             self.assertEqual(work["task_lineage"][0]["verification_problems"], [])
             self.assertEqual(data["sessions"][0]["trace_quality"]["status"], "full")
-            self.assertEqual(data["sessions"][0]["health"], "passed")
-            self.assertEqual(data["sessions"][0]["health_reasons"], ["verified tasks and clean harness evidence"])
+            self.assertEqual(data["sessions"][0]["health"], "partial")
+            self.assertEqual(data["sessions"][0]["health_reasons"], ["state lifecycle not observed"])
             self.assertIn("Health reason:", html)
             self.assertIn("function healthReasonsOf(session)", html)
-            self.assertIn("const harnessAttention = failedTools.length > 0 || lifecycleUnhealthy || assessmentMissing", html)
+            self.assertIn(
+                "const harnessAttention = failedTools.length > 0 || lifecycleMissing || lifecycleUnhealthy || assessmentMissing",
+                html,
+            )
             self.assertIn("const evalRows = (task.evals || [])", html)
             self.assertIn("evalRow.reason", html)
 
@@ -776,6 +779,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             "work_summary": {
                 "task_manifest": {"planning_failed": False},
                 "task_verification": {"task_count": 1, "verified_task_count": 1},
+                "state_lifecycle": {"observed": True, "healthy": True},
             },
         }
 
@@ -786,6 +790,10 @@ class BuildEvolutionDashboard(unittest.TestCase):
             (
                 {"failed_tools": ["edit src/lib.rs: old_text did not match"]},
                 ["1 failed tool action(s)"],
+            ),
+            (
+                {"state_lifecycle": {"observed": False, "healthy": False}},
+                ["state lifecycle not observed"],
             ),
             (
                 {

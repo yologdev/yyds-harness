@@ -1995,8 +1995,11 @@ def harness_attention_reasons(work: dict[str, Any]) -> list[str]:
     if failed_tools:
         reasons.append(f"{len(failed_tools)} failed tool action(s)")
     lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
+    lifecycle_missing = lifecycle.get("observed") is not True
     lifecycle_unhealthy = lifecycle.get("observed") is True and lifecycle.get("healthy") is False
-    if lifecycle_unhealthy:
+    if lifecycle_missing:
+        reasons.append("state lifecycle not observed")
+    elif lifecycle_unhealthy:
         runs = lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {}
         model_calls = lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {}
         parts = [
@@ -3436,10 +3439,11 @@ HTML = r"""<!doctype html>
       const strictVerified = Number(verification.verified_task_count || 0);
       const failedTools = Array.isArray(work.failed_tools) ? work.failed_tools : [];
       const lifecycle = work.state_lifecycle || {};
+      const lifecycleMissing = lifecycle.observed !== true;
       const lifecycleUnhealthy = lifecycle.observed === true && lifecycle.healthy === false;
       const assessmentMissing = work.assessment_artifact_present === false
         && (work.assessment_transcript_present === true || work.assessment_diagnostic_present === true);
-      const harnessAttention = failedTools.length > 0 || lifecycleUnhealthy || assessmentMissing;
+      const harnessAttention = failedTools.length > 0 || lifecycleMissing || lifecycleUnhealthy || assessmentMissing;
       if (session.reverted) return "reverted";
       if (manifest.planning_failed) return "attention";
       if (strictTotal && strictVerified < strictTotal) return strictVerified ? "partial" : "attention";
@@ -3463,13 +3467,15 @@ HTML = r"""<!doctype html>
       const strictVerified = Number(verification.verified_task_count || 0);
       const failedTools = Array.isArray(work.failed_tools) ? work.failed_tools : [];
       const lifecycle = work.state_lifecycle || {};
+      const lifecycleMissing = lifecycle.observed !== true;
       const lifecycleUnhealthy = lifecycle.observed === true && lifecycle.healthy === false;
       const assessmentMissing = work.assessment_artifact_present === false
         && (work.assessment_transcript_present === true || work.assessment_diagnostic_present === true);
       const reasons = [];
       if (strictTotal && strictVerified < strictTotal) reasons.push(`${strictVerified}/${strictTotal} verified tasks`);
       if (failedTools.length) reasons.push(`${failedTools.length} failed tool action(s)`);
-      if (lifecycleUnhealthy) reasons.push("state lifecycle unhealthy");
+      if (lifecycleMissing) reasons.push("state lifecycle not observed");
+      else if (lifecycleUnhealthy) reasons.push("state lifecycle unhealthy");
       if (assessmentMissing) reasons.push("assessment artifact missing");
       return reasons.length ? reasons : ["no success evidence captured"];
     }
