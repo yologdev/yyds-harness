@@ -2700,8 +2700,16 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("10 failed tool action(s)", work["headline"])
             self.assertIn("10 failed tool action(s)", session_data["health_reasons"])
             self.assertEqual(session_data["latest_gnomes"]["tool_error_count"], 10)
+            self.assertEqual(work["corrected_gnome_lessons"][0]["kind"], "tool_error")
+            self.assertEqual(work["corrected_gnome_lessons"][0]["count"], 10)
+            self.assertEqual(work["corrected_gnome_lessons"][0]["source"], "corrected_gnomes")
             self.assertEqual(failed_tool_claim["expected"]["minimum_count"], 10)
             self.assertEqual(len(failed_tool_claim["evidence"]), 8)
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            data_json = (root / "out/data.json").read_text(encoding="utf-8")
+            self.assertIn("Feedback lessons", html)
+            self.assertIn("Corrected gnome pressure", html)
+            self.assertIn("failed tool actions were recovered from transcripts", data_json)
 
     def test_log_feedback_top_lessons_are_exposed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2757,7 +2765,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
             html = (root / "out/index.html").read_text(encoding="utf-8")
             data_json = (root / "out/data.json").read_text(encoding="utf-8")
-            self.assertIn("Log-feedback lessons", html)
+            self.assertIn("Feedback lessons", html)
+            self.assertIn("Raw log-feedback", html)
             self.assertIn("search tool or grep produced an error", data_json)
 
     def test_build_writes_structured_claims_projection(self):

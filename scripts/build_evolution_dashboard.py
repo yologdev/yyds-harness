@@ -75,6 +75,13 @@ def log_feedback_top_lessons(session_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def lesson_key(lesson: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(lesson.get("kind") or "").strip().lower(),
+        str(lesson.get("fingerprint") or "").strip().lower(),
+    )
+
+
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     if not path.is_file():
@@ -1846,6 +1853,98 @@ def numeric_value(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def metric_int(metrics: dict[str, Any], key: str, default: int = 0) -> int:
+    value = metrics.get(key)
+    return int(value) if numeric_value(value) else default
+
+
+def corrected_gnome_lessons(
+    gnomes: dict[str, Any],
+    existing_lessons: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    existing_keys = {lesson_key(lesson) for lesson in existing_lessons or [] if isinstance(lesson, dict)}
+    candidates = [
+        (
+            "tool_error_count",
+            "tool_error",
+            "failed tool actions were recovered from transcripts",
+            "inspect failed tool calls and add prompt/tool guards for the dominant failure class",
+        ),
+        (
+            "evaluator_unverified_count",
+            "evaluator_unverified",
+            "tasks lacked strict verifier evidence",
+            "require bounded verifier evidence before counting task success",
+        ),
+        (
+            "deepseek_model_call_incomplete_count",
+            "deepseek_model_call_incomplete",
+            "DeepSeek model call lifecycle was incomplete",
+            "close model-call lifecycle events on stream errors, timeouts, and abnormal completions",
+        ),
+        (
+            "state_run_incomplete_count",
+            "state_run_incomplete",
+            "state run lifecycle was incomplete",
+            "emit RunCompleted events for every started run, including timeout and API-error exits",
+        ),
+        (
+            "task_unlanded_source_count",
+            "task_unlanded_source",
+            "task source edits were not landed in source commits",
+            "verify task source edits are committed before marking task completion",
+        ),
+        (
+            "task_unverified_raw_success_count",
+            "task_unverified_raw_success",
+            "raw task success lacked strict task evidence",
+            "show raw success as unverified until task artifacts and verifier rows prove it",
+        ),
+        (
+            "planner_no_task_count",
+            "planner_no_task",
+            "planner produced no usable task",
+            "bound discovery and require a selected task artifact before implementation work starts",
+        ),
+        (
+            "state_live_baseline_shrink_count",
+            "state_baseline_shrink",
+            "live state baseline shrank during merge",
+            "preserve live baseline events when projecting session state into dashboard artifacts",
+        ),
+        (
+            "deepseek_cache_ratio_unverified_count",
+            "deepseek_cache_unverified",
+            "DeepSeek cache ratio was mentioned without token evidence",
+            "report cache ratios only from token-backed model-call metrics",
+        ),
+        (
+            "command_timeout_count",
+            "command_timeout",
+            "commands timed out during the session",
+            "prefer bounded targeted checks and record timeout-specific remediation",
+        ),
+    ]
+    lessons: list[dict[str, Any]] = []
+    for metric_key, kind, fingerprint, action in candidates:
+        count = metric_int(gnomes, metric_key)
+        if count <= 0:
+            continue
+        lesson = {
+            "kind": kind,
+            "fingerprint": fingerprint,
+            "action": action,
+            "count": count,
+            "source": "corrected_gnomes",
+            "metric": metric_key,
+        }
+        key = lesson_key(lesson)
+        if key in existing_keys:
+            continue
+        lessons.append(lesson)
+    return lessons[:6]
+
+
 def metric_float(metrics: dict[str, Any], key: str, default: float = 0.0) -> float:
     value = metrics.get(key)
     return float(value) if numeric_value(value) else default
@@ -2039,12 +2138,17 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         feedback_metrics = log_feedback_metrics(session_dir)
         feedback_lessons = log_feedback_top_lessons(session_dir)
         latest_gnomes = corrected_gnomes(summary, work, trace, outcome, feedback_metrics)
+        corrected_lessons = corrected_gnome_lessons(latest_gnomes, feedback_lessons)
         normalize_work_gnome_snapshots(work, latest_gnomes)
         evals, latest_eval, latest_eval_corrections = normalize_latest_eval_gnomes(evals, latest_gnomes)
         if feedback_lessons:
             work["log_feedback_top_lessons"] = feedback_lessons
         if latest_eval and feedback_lessons:
             latest_eval["top_lessons"] = feedback_lessons
+        if corrected_lessons:
+            work["corrected_gnome_lessons"] = corrected_lessons
+        if latest_eval and corrected_lessons:
+            latest_eval["corrected_gnome_lessons"] = corrected_lessons
         if latest_eval:
             work["latest_eval_status"] = latest_eval.get("status")
             work["latest_eval_score"] = latest_eval.get("score")
@@ -4371,13 +4475,18 @@ HTML = r"""<!doctype html>
 
     function renderLogFeedbackLessons(session, work) {
       const evalData = session.latest_eval || {};
-      const rows = (work.log_feedback_top_lessons || evalData.top_lessons || []).slice(0, 4);
-      if (!rows.length) return `<p class="muted">No log-feedback lessons recorded.</p>`;
-      return `<ul class="mini-list">${rows.map(row => {
-        const kind = row.kind ? `${text(row.kind)}: ` : "";
-        const count = row.count === undefined || row.count === null ? "" : ` (${text(row.count)}x)`;
-        return `<li><strong>${kind}${text(row.fingerprint || "lesson")}${count}</strong><br><span class="muted">${text(row.action || "")}</span></li>`;
-      }).join("")}</ul>`;
+      const rawRows = (work.log_feedback_top_lessons || evalData.top_lessons || []).slice(0, 4);
+      const correctedRows = (work.corrected_gnome_lessons || evalData.corrected_gnome_lessons || []).slice(0, 4);
+      if (!rawRows.length && !correctedRows.length) return `<p class="muted">No feedback lessons recorded.</p>`;
+      const renderRows = (title, rows) => {
+        if (!rows.length) return "";
+        return `<p class="muted">${text(title)}</p><ul class="mini-list">${rows.map(row => {
+          const kind = row.kind ? `${text(row.kind)}: ` : "";
+          const count = row.count === undefined || row.count === null ? "" : ` (${text(row.count)}x)`;
+          return `<li><strong>${kind}${text(row.fingerprint || "lesson")}${count}</strong><br><span class="muted">${text(row.action || "")}</span></li>`;
+        }).join("")}</ul>`;
+      };
+      return `${renderRows("Raw log-feedback", rawRows)}${renderRows("Corrected gnome pressure", correctedRows)}`;
     }
 
     function renderSessionWork(sessions) {
@@ -4434,7 +4543,7 @@ HTML = r"""<!doctype html>
                 <div><strong>Task lineage</strong>${renderTaskLineage(work)}</div>
                 <div><strong>Causal chains</strong>${renderCausalChains(work)}</div>
                 <div><strong>Next-task suggestions</strong>${renderEvolutionSuggestions(work)}</div>
-                <div><strong>Log-feedback lessons</strong>${renderLogFeedbackLessons(session, work)}</div>
+                <div><strong>Feedback lessons</strong>${renderLogFeedbackLessons(session, work)}</div>
                 <div><strong>Task decision evidence</strong>${renderTaskArtifacts(session, work)}</div>
                 <div><strong>Agent transcripts</strong>${renderTranscriptList(session, work)}</div>
                 <div><strong>State lifecycle</strong>${renderStateLifecycle(work)}</div>
