@@ -2301,8 +2301,8 @@ def cache_claim(gnomes: dict[str, Any]) -> dict[str, Any]:
         status = "missing"
         detail = "Completed DeepSeek model calls have token usage but no CacheMetricsRecorded token evidence was captured."
     else:
-        status = "missing"
-        detail = "No DeepSeek cache ratio evidence was captured."
+        status = "observed"
+        detail = "No trusted DeepSeek cache ratio or expected cache metric evidence was captured."
     return claim_row(
         "deepseek_cache_ratio_is_token_backed_or_marked_unverified",
         status,

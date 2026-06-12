@@ -1553,7 +1553,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 "journals/JOURNAL.md",
             )
             self.assertIn("do not pair by run_id", model_claim["detail"])
+            self.assertEqual(cache_claim["status"], "observed")
             self.assertEqual(cache_claim["actual"]["expected_metric_events"], 0)
+            self.assertIn("No trusted DeepSeek cache ratio", cache_claim["detail"])
             self.assertIn("Incomplete DeepSeek model calls", html)
             self.assertIn("started without a matching ModelCallCompleted", html)
 
