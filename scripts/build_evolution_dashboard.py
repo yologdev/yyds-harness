@@ -169,6 +169,15 @@ def compact_list(values: list[str], limit: int) -> list[str]:
     return out
 
 
+def compact_count(values: list[str]) -> int:
+    out: set[str] = set()
+    for value in values:
+        text = " ".join(str(value).split())
+        if text:
+            out.add(text)
+    return len(out)
+
+
 def evidence_text(value: Any, max_len: int = 220) -> str:
     text = " ".join(str(value or "").split())
     text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", text)
@@ -391,6 +400,12 @@ def summarize_transcript_actions(session_dir: Path) -> dict[str, Any]:
         "commands": compact_list(commands, 12),
         "failed_commands": compact_list(failed_commands, 8),
         "failed_tools": compact_list(failed_tools, 8),
+        "command_count": compact_count(commands),
+        "failed_command_count": compact_count(failed_commands),
+        "failed_tool_count": compact_count(failed_tools),
+        "_commands_all": commands,
+        "_failed_commands_all": failed_commands,
+        "_failed_tools_all": failed_tools,
         "read_files": compact_list(read_files, 12),
         "edited_files": compact_list(edited_files, 12),
     }
@@ -1353,7 +1368,12 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         "failed_commands": compact_list(failed_commands, 8),
         "failed_tools": compact_list(failed_tools, 8),
         "tool_counts": dict(sorted(tool_names.items(), key=lambda item: (-item[1], item[0]))[:8]),
-        "command_count": len(commands),
+        "command_count": compact_count(commands),
+        "failed_command_count": compact_count(failed_commands),
+        "failed_tool_count": compact_count(failed_tools),
+        "_commands_all": commands,
+        "_failed_commands_all": failed_commands,
+        "_failed_tools_all": failed_tools,
         "deepseek_cache_hit_ratio": cache_hit_ratio,
         "deepseek_cache_hit_tokens": cache_hit_tokens if cache_token_total > 0 else None,
         "deepseek_cache_miss_tokens": cache_miss_tokens if cache_token_total > 0 else None,
@@ -1397,12 +1417,30 @@ def work_summary(
         ],
         16,
     )
+    command_values = (
+        event_data.get("_commands_all", event_data["commands"])
+        + transcript_actions.get("_commands_all", transcript_actions["commands"])
+    )
+    failed_command_values = (
+        event_data.get("_failed_commands_all", event_data["failed_commands"])
+        + transcript_actions.get("_failed_commands_all", transcript_actions["failed_commands"])
+    )
+    failed_tool_values = (
+        event_data.get("_failed_tools_all", event_data["failed_tools"])
+        + transcript_actions.get("_failed_tools_all", transcript_actions["failed_tools"])
+    )
     edited_files = compact_list(event_data["edited_files"] + transcript_actions["edited_files"], 12)
     touched_source_files = compact_list([path for path in edited_files if source_file(path)] + source_files, 12)
     read_files = compact_list(event_data["read_files"] + transcript_actions["read_files"], 12)
-    commands = compact_list(event_data["commands"] + transcript_actions["commands"], 12)
-    failed_commands = compact_list(event_data["failed_commands"] + transcript_actions["failed_commands"], 8)
-    failed_tools = compact_list(event_data["failed_tools"] + transcript_actions["failed_tools"], 8)
+    commands = compact_list(command_values, 12)
+    failed_commands = compact_list(failed_command_values, 8)
+    failed_tools = compact_list(failed_tool_values, 8)
+    command_count = compact_count(command_values)
+    failed_command_count = compact_count(failed_command_values)
+    failed_tool_count = compact_count(failed_tool_values)
+    public_transcript_actions = {
+        key: value for key, value in transcript_actions.items() if not str(key).startswith("_")
+    }
     attempted = int(outcome.get("tasks_attempted") or 0)
     succeeded = int(outcome.get("tasks_succeeded") or 0)
     patches = summary.get("patches", []) if isinstance(summary.get("patches"), list) else []
@@ -1470,9 +1508,8 @@ def work_summary(
         labels.append(f"{len(touched_source_files)} source file(s) touched")
     elif edited_files:
         labels.append(f"{len(edited_files)} evidence/bookkeeping file(s) edited")
-    if failed_tools:
-        labels.append(f"{len(failed_tools)} failed tool action(s)")
-    command_count = len(commands)
+    if failed_tool_count:
+        labels.append(f"{failed_tool_count} failed tool action(s)")
     if command_count:
         labels.append(f"{command_count} command/check signal(s)")
     if evals:
@@ -1507,7 +1544,10 @@ def work_summary(
         "commands": commands,
         "failed_commands": failed_commands,
         "failed_tools": failed_tools,
-        "transcript_actions": transcript_actions,
+        "command_count": command_count,
+        "failed_command_count": failed_command_count,
+        "failed_tool_count": failed_tool_count,
+        "transcript_actions": public_transcript_actions,
         "tool_counts": event_data["tool_counts"],
         "deepseek_cache_hit_ratio": event_data["deepseek_cache_hit_ratio"],
         "deepseek_cache_hit_tokens": event_data["deepseek_cache_hit_tokens"],
@@ -1646,7 +1686,10 @@ def corrected_gnomes(
             if not isinstance(current, (int, float)) or isinstance(current, bool) or int(value) > int(current):
                 gnomes[gnome_key] = int(value)
                 recalc_score = True
-    failed_tool_count = len(work.get("failed_tools") or []) if isinstance(work.get("failed_tools"), list) else 0
+    failed_tool_count = int(
+        work.get("failed_tool_count")
+        or (len(work.get("failed_tools") or []) if isinstance(work.get("failed_tools"), list) else 0)
+    )
     if failed_tool_count > int(gnomes.get("tool_error_count") or 0):
         gnomes["tool_error_count"] = failed_tool_count
         recalc_score = True
@@ -1992,8 +2035,9 @@ def reason_count(value: Any) -> int:
 def harness_attention_reasons(work: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     failed_tools = work.get("failed_tools") if isinstance(work.get("failed_tools"), list) else []
-    if failed_tools:
-        reasons.append(f"{len(failed_tools)} failed tool action(s)")
+    failed_tool_count = reason_count(work.get("failed_tool_count")) or len(failed_tools)
+    if failed_tool_count:
+        reasons.append(f"{failed_tool_count} failed tool action(s)")
     lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
     lifecycle_missing = lifecycle.get("observed") is not True
     lifecycle_unhealthy = lifecycle.get("observed") is True and lifecycle.get("healthy") is False
@@ -2515,11 +2559,12 @@ def session_claims(session: dict[str, Any]) -> list[dict[str, Any]]:
     work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
     gnomes = session.get("latest_gnomes") if isinstance(session.get("latest_gnomes"), dict) else {}
     failed_tools = work.get("failed_tools") if isinstance(work.get("failed_tools"), list) else []
+    failed_tool_count = reason_count(work.get("failed_tool_count")) or len(failed_tools)
     unlanded = int(work.get("unlanded_source_task_count") or 0)
     return [
         count_claim(
             "failed_tool_actions_match_tool_error_gnome",
-            len(failed_tools),
+            failed_tool_count,
             gnomes.get("tool_error_count"),
             failed_tools[:8],
             "Structured failed tool actions should be reflected in tool_error_count.",
@@ -3438,12 +3483,13 @@ HTML = r"""<!doctype html>
       const strictTotal = Number(verification.task_count || 0);
       const strictVerified = Number(verification.verified_task_count || 0);
       const failedTools = Array.isArray(work.failed_tools) ? work.failed_tools : [];
+      const failedToolCount = Number(work.failed_tool_count ?? failedTools.length);
       const lifecycle = work.state_lifecycle || {};
       const lifecycleMissing = lifecycle.observed !== true;
       const lifecycleUnhealthy = lifecycle.observed === true && lifecycle.healthy === false;
       const assessmentMissing = work.assessment_artifact_present === false
         && (work.assessment_transcript_present === true || work.assessment_diagnostic_present === true);
-      const harnessAttention = failedTools.length > 0 || lifecycleMissing || lifecycleUnhealthy || assessmentMissing;
+      const harnessAttention = failedToolCount > 0 || lifecycleMissing || lifecycleUnhealthy || assessmentMissing;
       if (session.reverted) return "reverted";
       if (manifest.planning_failed) return "attention";
       if (strictTotal && strictVerified < strictTotal) return strictVerified ? "partial" : "attention";
@@ -3466,6 +3512,7 @@ HTML = r"""<!doctype html>
       const strictTotal = Number(verification.task_count || 0);
       const strictVerified = Number(verification.verified_task_count || 0);
       const failedTools = Array.isArray(work.failed_tools) ? work.failed_tools : [];
+      const failedToolCount = Number(work.failed_tool_count ?? failedTools.length);
       const lifecycle = work.state_lifecycle || {};
       const lifecycleMissing = lifecycle.observed !== true;
       const lifecycleUnhealthy = lifecycle.observed === true && lifecycle.healthy === false;
@@ -3473,7 +3520,7 @@ HTML = r"""<!doctype html>
         && (work.assessment_transcript_present === true || work.assessment_diagnostic_present === true);
       const reasons = [];
       if (strictTotal && strictVerified < strictTotal) reasons.push(`${strictVerified}/${strictTotal} verified tasks`);
-      if (failedTools.length) reasons.push(`${failedTools.length} failed tool action(s)`);
+      if (failedToolCount > 0) reasons.push(`${failedToolCount} failed tool action(s)`);
       if (lifecycleMissing) reasons.push("state lifecycle not observed");
       else if (lifecycleUnhealthy) reasons.push("state lifecycle unhealthy");
       if (assessmentMissing) reasons.push("assessment artifact missing");
@@ -4120,6 +4167,7 @@ HTML = r"""<!doctype html>
         const sourceFiles = (work.source_changed_files || []).length ? work.source_changed_files : (work.touched_source_files || []);
         const evidenceFiles = work.edited_files || [];
         const failedTools = work.failed_tools || [];
+        const failedToolCount = Number(work.failed_tool_count ?? failedTools.length);
         const phaseText = Object.entries(transcripts.phase_counts || {}).map(([phase, count]) => `${phase} ${count}`).join(", ");
         const healthReasons = healthReasonsOf(session).map(text).join("; ");
         return `<article class="item work-row">
@@ -4139,7 +4187,7 @@ HTML = r"""<!doctype html>
               <div class="fact"><strong>${text(work.eval_count || 0)}</strong>evals</div>
               <div class="fact"><strong>${work.assessment_artifact_present === true ? "yes" : work.assessment_artifact_present === false ? "no" : "-"}</strong>assessment artifact</div>
               <div class="fact"><strong>${text(work.source_commit_count || 0)}</strong>source commits</div>
-              <div class="fact"><strong>${text(failedTools.length || 0)}</strong>tool fails</div>
+              <div class="fact"><strong>${text(failedToolCount || 0)}</strong>tool fails</div>
               <div class="fact"><strong>${text(work.decision_count || 0)}</strong>decisions</div>
               <div class="fact"><strong>${text(trace.trace_event_count || 0)}</strong>trace events</div>
             </div>

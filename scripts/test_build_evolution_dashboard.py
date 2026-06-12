@@ -105,6 +105,27 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("search 'mark_run_completed_with_error' in src", actions["failed_commands"])
             self.assertIn("search 'mark_run_completed_with_error' in src", actions["failed_tools"])
 
+    def test_transcript_failed_tool_count_is_not_capped_by_sample(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "\n".join(
+                    f"  ▶ search 'needle_{index}' in src/file_{index}.rs ✗ (17ms)"
+                    for index in range(10)
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            actions = summarize_transcript_actions(session)
+
+            self.assertEqual(len(actions["failed_tools"]), 8)
+            self.assertEqual(actions["failed_tool_count"], 10)
+            self.assertEqual(actions["failed_command_count"], 10)
+
     def test_transcript_failed_edit_keeps_error_detail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -764,7 +785,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("Health reason:", html)
             self.assertIn("function healthReasonsOf(session)", html)
             self.assertIn(
-                "const harnessAttention = failedTools.length > 0 || lifecycleMissing || lifecycleUnhealthy || assessmentMissing",
+                "const harnessAttention = failedToolCount > 0 || lifecycleMissing || lifecycleUnhealthy || assessmentMissing",
                 html,
             )
             self.assertIn("const evalRows = (task.evals || [])", html)
@@ -2518,10 +2539,65 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("1 source file(s) touched", work["headline"])
             self.assertIn("1 failed tool action(s)", work["headline"])
             self.assertIn("2 command/check signal(s)", work["labels"])
+            self.assertEqual(work["command_count"], 2)
+            self.assertEqual(work["failed_command_count"], 2)
+            self.assertEqual(work["failed_tool_count"], 1)
+            self.assertEqual(work["transcript_actions"]["command_count"], 2)
+            self.assertEqual(work["transcript_actions"]["failed_command_count"], 2)
+            self.assertEqual(work["transcript_actions"]["failed_tool_count"], 1)
             self.assertEqual(session_data["latest_gnomes"]["tool_error_count"], 1)
             self.assertEqual(work["transcript_actions"]["edited_files"], ["src/state.rs"])
             html = (root / "out/index.html").read_text(encoding="utf-8")
             self.assertIn("tool fails", html)
+
+    def test_failed_tool_totals_use_uncapped_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {"tool_error_count": 0},
+                    "gnome_keys": ["tool_error_count"],
+                },
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "\n".join(
+                    f"  ▶ search 'needle_{index}' in src/file_{index}.rs ✗ (17ms)"
+                    for index in range(10)
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+            work = session_data["work_summary"]
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            failed_tool_claim = next(
+                claim
+                for claim in claims["sessions"][0]["claims"]
+                if claim["name"] == "failed_tool_actions_match_tool_error_gnome"
+            )
+
+            self.assertEqual(len(work["failed_tools"]), 8)
+            self.assertEqual(work["failed_tool_count"], 10)
+            self.assertIn("10 failed tool action(s)", work["headline"])
+            self.assertIn("10 failed tool action(s)", session_data["health_reasons"])
+            self.assertEqual(session_data["latest_gnomes"]["tool_error_count"], 10)
+            self.assertEqual(failed_tool_claim["expected"]["minimum_count"], 10)
+            self.assertEqual(len(failed_tool_claim["evidence"]), 8)
 
     def test_build_writes_structured_claims_projection(self):
         with tempfile.TemporaryDirectory() as tmp:
