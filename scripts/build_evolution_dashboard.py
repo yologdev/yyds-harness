@@ -3387,6 +3387,7 @@ def build_dashboard_claim_summary(claims_projection: dict[str, Any]) -> dict[str
         if not isinstance(session, dict):
             continue
         session_id = str(session.get("id") or "")
+        session_ts = session.get("ts")
         for claim in session.get("claims", []):
             if not isinstance(claim, dict):
                 continue
@@ -3402,18 +3403,30 @@ def build_dashboard_claim_summary(claims_projection: dict[str, Any]) -> dict[str
                     "status": status,
                     "count": 0,
                     "examples": [],
+                    "latest_examples": [],
+                    "first_session_id": None,
+                    "first_ts": None,
+                    "latest_session_id": None,
+                    "latest_ts": None,
                 },
             )
             row["count"] += 1
+            if row["first_session_id"] is None:
+                row["first_session_id"] = session_id
+                row["first_ts"] = session_ts
+            row["latest_session_id"] = session_id
+            row["latest_ts"] = session_ts
+            evidence = claim.get("evidence")
+            example = {
+                "session_id": session_id,
+                "ts": session_ts,
+                "detail": str(claim.get("detail") or ""),
+                "evidence": evidence[:3] if isinstance(evidence, list) else [],
+            }
             if len(row["examples"]) < 5:
-                evidence = claim.get("evidence")
-                row["examples"].append(
-                    {
-                        "session_id": session_id,
-                        "detail": str(claim.get("detail") or ""),
-                        "evidence": evidence[:3] if isinstance(evidence, list) else [],
-                    }
-                )
+                row["examples"].append(example)
+            row["latest_examples"].append(example)
+            row["latest_examples"] = row["latest_examples"][-5:]
     top_unresolved = sorted(
         grouped.values(),
         key=lambda row: (-int(row.get("count") or 0), str(row.get("name") or ""), str(row.get("status") or "")),
@@ -5412,12 +5425,13 @@ HTML = r"""<!doctype html>
       const claimSummary = state.data?.claims_summary || {};
       const claimClass = status => status === "missing" ? "warn" : (status === "conflict" ? "bad" : "info");
       (claimSummary.top_unresolved || []).slice(0, 6).forEach(row => {
-        const examples = (row.examples || [])
+        const examples = (row.latest_examples || row.examples || [])
           .slice(0, 2)
           .map(example => example.session_id || "")
           .filter(Boolean)
           .join(", ");
-        const detail = `${row.status || "unknown"}${examples ? ` / examples: ${examples}` : ""}`;
+        const recency = row.latest_session_id ? `latest: ${row.latest_session_id}` : "";
+        const detail = `${row.status || "unknown"}${recency ? ` / ${recency}` : ""}${examples ? ` / examples: ${examples}` : ""}`;
         items.push({
           kind: "Claim",
           className: claimClass(row.status),

@@ -224,6 +224,7 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("## Structured state snapshot", rendered)
             self.assertIn("claims:", rendered)
             self.assertIn("deepseek_model_call_lifecycle_balanced", rendered)
+            self.assertIn("latest=day-1", rendered)
             self.assertIn("task states:", rendered)
             self.assertIn("unlanded_source_edits=1", rendered)
             self.assertIn("tool failures:", rendered)

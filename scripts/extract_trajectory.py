@@ -786,9 +786,12 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
     for row in (claim_summary.get("top_unresolved") or [])[:3]:
         if not isinstance(row, dict):
             continue
+        latest = row.get("latest_session_id")
+        latest_text = f" latest={latest}" if latest else ""
         lines.append(
             f"- {row.get('status', 'unknown')} "
             f"{row.get('count', 0)}x {row.get('name', 'unknown_claim')}"
+            f"{latest_text}"
         )
     if state_counts:
         top_states = sorted(

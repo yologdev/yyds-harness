@@ -3120,8 +3120,17 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     for row in data["claims_summary"]["top_unresolved"]
                 )
             )
+            assessment_summary = next(
+                row
+                for row in data["claims_summary"]["top_unresolved"]
+                if row["name"] == "assessment_artifact_and_transcript_state"
+            )
+            self.assertEqual(assessment_summary["first_session_id"], "day-1")
+            self.assertEqual(assessment_summary["latest_session_id"], "day-1")
+            self.assertEqual(assessment_summary["latest_examples"][0]["session_id"], "day-1")
             self.assertIn("Claim health", html)
             self.assertIn("Unresolved claims", html)
+            self.assertIn("latest:", html)
 
     def test_count_claim_proves_zero_expected_when_metric_is_absent(self):
         claim = count_claim(
