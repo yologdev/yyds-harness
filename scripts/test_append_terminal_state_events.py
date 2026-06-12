@@ -142,6 +142,41 @@ class AppendTerminalStateEvents(unittest.TestCase):
             self.assertEqual(run_done["payload"]["status"], "completed")
             self.assertEqual(run_done["payload"]["stage"], "assess")
 
+    def test_scans_current_file_when_after_line_exceeds_reset_events_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            write_event(events, "RunStarted", "agent-run")
+            write_event(events, "ModelCallStarted", "agent-run", {"model": "deepseek-v4-pro"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                99,
+                "session-1",
+                "trace-1",
+                "task_01_attempt1",
+                "completed",
+                "completed",
+                "agent_process_exited",
+                "",
+                "agent process exited with status 0",
+            )
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            self.assertEqual(result["completed_model_calls"], ["agent-run"])
+            self.assertEqual(result["completed_runs"], ["agent-run"])
+            self.assertTrue(
+                any(
+                    row["event_type"] == "ModelCallCompleted" and row["run_id"] == "agent-run"
+                    for row in rows
+                )
+            )
+            self.assertTrue(
+                any(
+                    row["event_type"] == "RunCompleted" and row["run_id"] == "agent-run"
+                    for row in rows
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

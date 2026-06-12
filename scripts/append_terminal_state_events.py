@@ -66,7 +66,13 @@ def run_id(event: dict[str, Any], data: dict[str, Any]) -> str | None:
 
 
 def open_lifecycle(events: list[dict[str, Any]], after_line: int) -> tuple[dict[str, dict[str, Any]], set[str]]:
-    scoped = events[max(after_line, 0) :]
+    if after_line > len(events):
+        # The live state file can be reset/rebuilt during an agent invocation.
+        # In that case the saved pre-agent line number belongs to the old file,
+        # so scan the current file rather than silently missing open runs.
+        scoped = events
+    else:
+        scoped = events[max(after_line, 0) :]
     run_started: set[str] = set()
     run_completed: set[str] = set()
     model_started: dict[str, dict[str, Any]] = {}
