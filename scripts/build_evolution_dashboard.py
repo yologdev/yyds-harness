@@ -869,6 +869,32 @@ def eval_summary_from_artifacts(evals: list[dict[str, Any]]) -> dict[str, Any] |
     return {key: value for key, value in summary.items() if value is not None}
 
 
+def eval_attempt_summaries(evals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for index, eval_data in enumerate(evals, start=1):
+        if not isinstance(eval_data, dict):
+            continue
+        status = str(eval_data.get("status") or "").strip()
+        verdict = str(eval_data.get("verdict") or "").strip()
+        normalized_verdict = verdict.removeprefix("Verdict:").strip()
+        reason = str(eval_data.get("reason") or "").strip()
+        attempt = eval_data.get("attempt")
+        if attempt is None:
+            attempt = index
+        row: dict[str, Any] = {
+            "attempt": attempt,
+            "status": status or None,
+            "exit_code": eval_data.get("exit_code"),
+            "verdict": normalized_verdict or verdict or None,
+            "reason": reason or None,
+            "transcript_path": eval_data.get("transcript_path"),
+            "verdict_file": eval_data.get("verdict_file"),
+            "timed_out_after_verdict": eval_timed_out_after_verdict(eval_data),
+        }
+        summaries.append({key: value for key, value in row.items() if value is not None})
+    return summaries
+
+
 def eval_statuses_from_lineage(lineage_eval: Any) -> list[str]:
     if not isinstance(lineage_eval, dict):
         return []
@@ -976,14 +1002,26 @@ def task_verification_summary(
         ]
         overlap = file_overlap(planned, touched) if planned and touched else False
         artifact_evals = artifact.get("evals") or []
+        eval_attempts = eval_attempt_summaries(artifact_evals)
         timeout_with_verdict = any(
             isinstance(eval_data, dict) and eval_timed_out_after_verdict(eval_data)
             for eval_data in artifact_evals
         )
         artifact_eval_statuses = artifact.get("eval_statuses") or []
         lineage_eval_statuses = eval_statuses_from_lineage(lineage.get("eval"))
-        eval_statuses = artifact_eval_statuses or lineage_eval_statuses
-        eval_evidence_source = "task_artifact" if artifact_eval_statuses else "state_lineage" if lineage_eval_statuses else None
+        attempt_eval_statuses = [
+            str(attempt.get("status"))
+            for attempt in eval_attempts
+            if isinstance(attempt, dict) and attempt.get("status")
+        ]
+        eval_statuses = artifact_eval_statuses or attempt_eval_statuses or lineage_eval_statuses
+        eval_evidence_source = (
+            "task_artifact"
+            if artifact_eval_statuses or eval_attempts
+            else "state_lineage"
+            if lineage_eval_statuses
+            else None
+        )
         verified = eval_passed(artifact_evals, lineage.get("eval"))
         outcome_status = str(artifact.get("status") or lineage.get("status") or "")
         revert_reason = str(artifact.get("revert_reason") or lineage.get("revert_reason") or "").strip()
@@ -1015,6 +1053,9 @@ def task_verification_summary(
                 "landed_commit_shas": landed_commits,
                 "eval_statuses": eval_statuses,
                 "eval_evidence_source": eval_evidence_source,
+                "eval_attempt_count": len(eval_attempts),
+                "eval_attempts": eval_attempts,
+                "latest_eval_attempt": eval_attempts[-1] if eval_attempts else None,
                 "problems": problems,
                 "strict_success": outcome_status == "completed" and overlap and verified and not problems,
             }
@@ -4460,8 +4501,18 @@ HTML = r"""<!doctype html>
         const klass = row.strict_success ? "good" : "warn";
         const planned = text((row.planned_files || []).slice(0, 2).join(", ") || "none");
         const touched = text((row.touched_files || []).slice(0, 2).join(", ") || "none");
+        const latestEval = row.latest_eval_attempt || {};
+        const evalLabel = latestEval.transcript_path
+          ? auditLink(session, latestEval.transcript_path, `eval ${latestEval.attempt || ""}`.trim())
+          : (row.eval_attempt_count ? `eval ${text(latestEval.attempt || row.eval_attempt_count)}` : "no eval attempt");
+        const evalBits = [];
+        if (latestEval.status) evalBits.push(`status ${latestEval.status}`);
+        if (latestEval.verdict) evalBits.push(`verdict ${latestEval.verdict}`);
+        if (latestEval.exit_code !== undefined && latestEval.exit_code !== null) evalBits.push(`exit ${latestEval.exit_code}`);
+        if (latestEval.timed_out_after_verdict) evalBits.push("timed out after verdict");
+        const evalText = row.eval_attempt_count ? `${evalLabel}: ${text(evalBits.join(", ") || "recorded")}` : text(evalLabel);
         const reason = row.revert_reason ? `; ${text(row.revert_reason)}` : "";
-        return `<li><span class="${klass}">${text(row.task_id || "")}</span> ${text(row.title || "")}<br><span class="muted">planned ${planned} → touched ${touched} → ${text(problems)}${reason}</span></li>`;
+        return `<li><span class="${klass}">${text(row.task_id || "")}</span> ${text(row.title || "")}<br><span class="muted">planned ${planned} → touched ${touched} → ${text(problems)}; ${evalText}${reason}</span></li>`;
       }).join("");
       const manifestBlock = manifest.task_count !== undefined ? `<div class="task-evidence">
           <strong>Plan decision ${manifest.planning_failed ? "(planning failed)" : ""}</strong>

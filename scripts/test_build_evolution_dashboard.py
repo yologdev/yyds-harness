@@ -279,6 +279,50 @@ class BuildEvolutionDashboard(unittest.TestCase):
         self.assertEqual(row["eval_statuses"], ["pass"])
         self.assertEqual(row["eval_evidence_source"], "state_lineage")
 
+    def test_task_verification_surfaces_eval_attempt_details(self):
+        verification = task_verification_summary(
+            {
+                "tasks": [
+                    {
+                        "task_id": "task_01",
+                        "title": "Verify task attempt",
+                        "files": ["src/state.rs"],
+                    }
+                ]
+            },
+            [
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "source_files": ["src/state.rs"],
+                    "evals": [
+                        {
+                            "task_id": "task_01",
+                            "status": "timeout",
+                            "exit_code": 124,
+                            "reason": "Evaluator timed out before a trusted verdict.",
+                            "transcript_path": "transcripts/eval_task_1_attempt1.log",
+                        }
+                    ],
+                }
+            ],
+            [],
+        )
+
+        row = verification["rows"][0]
+        self.assertFalse(row["strict_success"])
+        self.assertEqual(row["eval_evidence_source"], "task_artifact")
+        self.assertEqual(row["eval_statuses"], ["timeout"])
+        self.assertEqual(row["eval_attempt_count"], 1)
+        self.assertEqual(row["latest_eval_attempt"]["attempt"], 1)
+        self.assertEqual(row["latest_eval_attempt"]["status"], "timeout")
+        self.assertEqual(row["latest_eval_attempt"]["exit_code"], 124)
+        self.assertEqual(
+            row["latest_eval_attempt"]["transcript_path"],
+            "transcripts/eval_task_1_attempt1.log",
+        )
+        self.assertIn("no_passing_verifier", row["problems"])
+
     def test_dashboard_normalizes_annotated_planned_files_from_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1312,6 +1356,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(verification["unverified_task_count"], 1)
             self.assertIn("evaluator_timed_out_after_verdict", verification["rows"][0]["problems"])
             self.assertIn("no_passing_verifier", verification["rows"][0]["problems"])
+            self.assertTrue(verification["rows"][0]["latest_eval_attempt"]["timed_out_after_verdict"])
+            self.assertEqual(verification["rows"][0]["latest_eval_attempt"]["exit_code"], 124)
             self.assertEqual(session_data["latest_gnomes"]["task_success_rate"], 0.0)
             self.assertEqual(session_data["latest_gnomes"]["session_success_rate"], 0.0)
             self.assertEqual(session_data["latest_gnomes"]["evaluator_timeout_with_verdict_count"], 1)
