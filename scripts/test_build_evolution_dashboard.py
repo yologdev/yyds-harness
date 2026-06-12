@@ -3056,7 +3056,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
 
             build(root / "sessions", root / "out")
+            data = json.loads((root / "out/data.json").read_text(encoding="utf-8"))
             claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            html = (root / "out/index.html").read_text(encoding="utf-8")
             session_claims = {
                 row["name"]: row
                 for row in claims["sessions"][0]["claims"]
@@ -3108,6 +3110,17 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 session_claims["task_state_counts_match_rows"]["actual"]["task_count"],
                 0,
             )
+            self.assertEqual(data["claims_summary"]["claim_count"], claims["summary"]["claim_count"])
+            self.assertEqual(data["claims_summary"]["status_counts"], claims["summary"]["status_counts"])
+            self.assertGreaterEqual(data["claims_summary"]["unresolved_count"], 1)
+            self.assertTrue(
+                any(
+                    row["name"] == "assessment_artifact_and_transcript_state"
+                    for row in data["claims_summary"]["top_unresolved"]
+                )
+            )
+            self.assertIn("Claim health", html)
+            self.assertIn("Unresolved claims", html)
 
     def test_count_claim_observes_zero_evidence_when_metric_is_absent(self):
         claim = count_claim(

@@ -3378,6 +3378,61 @@ def build_claims_projection(
     }
 
 
+def build_dashboard_claim_summary(claims_projection: dict[str, Any]) -> dict[str, Any]:
+    summary = claims_projection.get("summary") if isinstance(claims_projection, dict) else {}
+    status_counts = summary.get("status_counts") if isinstance(summary, dict) else {}
+    if not isinstance(status_counts, dict):
+        status_counts = {}
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    sessions = claims_projection.get("sessions", []) if isinstance(claims_projection, dict) else []
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        session_id = str(session.get("id") or "")
+        for claim in session.get("claims", []):
+            if not isinstance(claim, dict):
+                continue
+            status = str(claim.get("status") or "unknown")
+            if status == "proven":
+                continue
+            name = str(claim.get("name") or "unknown_claim")
+            key = (name, status)
+            row = grouped.setdefault(
+                key,
+                {
+                    "name": name,
+                    "status": status,
+                    "count": 0,
+                    "examples": [],
+                },
+            )
+            row["count"] += 1
+            if len(row["examples"]) < 5:
+                evidence = claim.get("evidence")
+                row["examples"].append(
+                    {
+                        "session_id": session_id,
+                        "detail": str(claim.get("detail") or ""),
+                        "evidence": evidence[:3] if isinstance(evidence, list) else [],
+                    }
+                )
+    top_unresolved = sorted(
+        grouped.values(),
+        key=lambda row: (-int(row.get("count") or 0), str(row.get("name") or ""), str(row.get("status") or "")),
+    )
+    unresolved_count = sum(
+        int(value or 0)
+        for status, value in status_counts.items()
+        if status != "proven"
+    )
+    return {
+        "claim_count": int(summary.get("claim_count") or 0) if isinstance(summary, dict) else 0,
+        "status_counts": dict(sorted(status_counts.items())),
+        "unresolved_count": unresolved_count,
+        "top_unresolved": top_unresolved,
+    }
+
+
 def session_state_projection(session: dict[str, Any]) -> dict[str, Any]:
     work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
     task_states = work.get("task_states") if isinstance(work.get("task_states"), dict) else {}
@@ -4535,6 +4590,11 @@ HTML = r"""<!doctype html>
       const verification = work.task_verification || {};
       const strictTotal = Number(verification.task_count || 0);
       const strictVerified = Number(verification.verified_task_count || 0);
+      const claims = state.data?.claims_summary || {};
+      const claimCounts = claims.status_counts || {};
+      const claimTotal = Number(claims.claim_count || 0);
+      const provenClaims = Number(claimCounts.proven || 0);
+      const unresolvedClaims = Number(claims.unresolved_count || 0);
       const score = latestMetric(agg, "coding_log_score");
       const stateCapture = latestMetric(agg, "state_capture_coverage");
       const heroTitle = session
@@ -4574,6 +4634,14 @@ HTML = r"""<!doctype html>
             <div>
               <div class="label">Audit evals</div>
               <strong>${text(agg.eval_count || 0)}</strong>
+            </div>
+            <div>
+              <div class="label">Claim health</div>
+              <strong>${claimTotal ? `${text(provenClaims)}/${text(claimTotal)}` : "-"}</strong>
+            </div>
+            <div>
+              <div class="label">Unresolved claims</div>
+              <strong>${text(unresolvedClaims)}</strong>
             </div>
           </div>
         </aside>`;
@@ -5343,6 +5411,23 @@ HTML = r"""<!doctype html>
 
     function renderEvidence(sessions) {
       const items = [];
+      const claimSummary = state.data?.claims_summary || {};
+      const claimClass = status => status === "missing" ? "warn" : (status === "conflict" ? "bad" : "info");
+      (claimSummary.top_unresolved || []).slice(0, 6).forEach(row => {
+        const examples = (row.examples || [])
+          .slice(0, 2)
+          .map(example => example.session_id || "")
+          .filter(Boolean)
+          .join(", ");
+        const detail = `${row.status || "unknown"}${examples ? ` / examples: ${examples}` : ""}`;
+        items.push({
+          kind: "Claim",
+          className: claimClass(row.status),
+          session: `${text(row.count || 0)} session(s)`,
+          title: row.name || "unresolved claim",
+          detail
+        });
+      });
       sessions.slice().reverse().forEach(session => {
         (session.blockers || []).forEach(blocker => {
           items.push({ kind: "Blocker", className: "bad", session: session.id, title: blocker.reason, detail: blocker.patch_id || blocker.event_id });
@@ -5452,6 +5537,7 @@ def build(audit_sessions: Path, output_dir: Path, repo_root: Path | None = None)
         "sessions": sessions,
     }
     claims = build_claims_projection(sessions, generated_at, audit_sessions)
+    data["claims_summary"] = build_dashboard_claim_summary(claims)
     states = build_states_projection(sessions, generated_at, audit_sessions)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "data.json").write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
