@@ -126,6 +126,54 @@ TASKS = [
     },
     {
         "keys": (
+            "state_run_incomplete",
+            "state_run_unmatched_non_validation_completed",
+            "deepseek_model_call_incomplete",
+            "deepseek_model_call_unmatched_completed",
+            "model call lifecycle",
+            "run lifecycle",
+            "state lifecycle unhealthy",
+            "runstarted",
+            "runcompleted",
+            "modelcallstarted",
+            "modelcallcompleted",
+        ),
+        "reject_keys": (
+            "state_run_incomplete_count=0",
+            "deepseek_model_call_incomplete_count=0",
+            "input-validation exits without runstarted only",
+            "input-validation-only unmatched",
+            "pre-agent input-validation exit",
+        ),
+        "title": "Close yyds state and model lifecycle gaps",
+        "files": (
+            "scripts/evolve.sh, scripts/append_terminal_state_events.py, "
+            "scripts/log_feedback.py, scripts/summarize_state_gnomes.py"
+        ),
+        "objective": (
+            "Ensure every yyds DeepSeek invocation and model-call path records paired terminal lifecycle "
+            "events, and keep feedback lessons precise when lifecycle imbalance is real."
+        ),
+        "why": (
+            "The assessment found incomplete run/model-call lifecycle gnomes. Those signals affect "
+            "state feedback, assessment trust, and future task selection more directly than dashboard display."
+        ),
+        "success": [
+            "Normal, timeout, error, and completion-file early-stop paths record terminal RunCompleted and ModelCallCompleted events.",
+            "Pre-agent input-validation exits stay classified separately from non-validation unmatched completions.",
+            "Log feedback and state summaries emit lifecycle lessons only for real incomplete or non-validation unmatched paths.",
+        ],
+        "verification": [
+            "python3 -m unittest scripts.test_append_terminal_state_events scripts.test_task_lineage_feedback",
+            "bash -n scripts/evolve.sh",
+        ],
+        "evidence": [
+            "Future structured state snapshots show lower `state_run_incomplete_count` and `deepseek_model_call_incomplete_count`.",
+            "Lifecycle repair tasks are selected from current assessment evidence instead of stale dashboard-only symptoms.",
+        ],
+    },
+    {
+        "keys": (
             "search_regex_error",
             "search_binary_match",
             "search/grep error",
@@ -309,6 +357,28 @@ def main() -> int:
 Top tool-failure categories:
 - `search_regex_error` = 57
 - `search_binary_match` = 19
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Reduce recurring search-tool friction before implementation", task
+        assessment = """# Assessment
+
+## Structured State Snapshot
+lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; state_run_incomplete_count=2; state_run_unmatched_completed_count=2; state_run_unmatched_non_validation_completed_count=0; state_run_unstarted_input_validation_error_count=2; deepseek_model_call_started_count=1; deepseek_model_call_completed_count=0; deepseek_model_call_incomplete_count=1
+
+## Bugs / Friction Found
+State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1.
+Tool failures: search_regex_error=57; search_binary_match=19
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Close yyds state and model lifecycle gaps", task
+        assessment = """# Assessment
+
+## Structured State Snapshot
+lifecycle gnomes: state_run_started_count=18; state_run_completed_count=20; state_run_incomplete_count=0; state_run_unmatched_completed_count=2; state_run_unmatched_non_validation_completed_count=0; state_run_unstarted_input_validation_error_count=2; deepseek_model_call_started_count=1; deepseek_model_call_completed_count=1; deepseek_model_call_incomplete_count=0
+
+## Bugs / Friction Found
+Only input-validation exits without RunStarted were found; pre-agent input-validation exit is classified.
+Tool failures: search_regex_error=57; search_binary_match=19
 """
         task = choose_task(assessment)
         assert task["title"] == "Reduce recurring search-tool friction before implementation", task

@@ -762,6 +762,7 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
     state_summary = states.get("summary") if isinstance(states.get("summary"), dict) else {}
     state_counts = state_summary.get("state_counts") if isinstance(state_summary.get("state_counts"), dict) else {}
     tool_failures: Counter[str] = Counter()
+    latest_lifecycle_counts: Counter[str] = Counter()
     for session in states.get("sessions", []) if isinstance(states.get("sessions"), list) else []:
         if not isinstance(session, dict):
             continue
@@ -775,14 +776,54 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
             if isinstance(failure_summary, dict)
             else {}
         )
-        if not isinstance(category_counts, dict):
-            continue
-        for category, count in category_counts.items():
-            tool_failures[str(category)] += int(count or 0)
+        if isinstance(category_counts, dict):
+            for category, count in category_counts.items():
+                tool_failures[str(category)] += int(count or 0)
+        lifecycle = session.get("lifecycle") if isinstance(session.get("lifecycle"), dict) else {}
+        runs = lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {}
+        model_calls = (
+            lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {}
+        )
+        session_lifecycle_counts: Counter[str] = Counter()
+        for prefix, source in (("state_run", runs), ("deepseek_model_call", model_calls)):
+            for key in (
+                "started",
+                "completed",
+                "incomplete",
+                "unmatched_completed",
+                "unmatched_non_validation_completed",
+                "unstarted_input_validation_error",
+                "abnormal_completed",
+            ):
+                value = source.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    session_lifecycle_counts[f"{prefix}_{key}_count"] += int(value)
+        if session_lifecycle_counts:
+            latest_lifecycle_counts = session_lifecycle_counts
 
     lines = ["## Structured state snapshot"]
     if claim_total:
         lines.append(f"claims: {proven}/{claim_total} proven; {unresolved} unresolved")
+    if latest_lifecycle_counts:
+        keys = (
+            "state_run_started_count",
+            "state_run_completed_count",
+            "state_run_incomplete_count",
+            "state_run_unmatched_completed_count",
+            "state_run_unmatched_non_validation_completed_count",
+            "state_run_unstarted_input_validation_error_count",
+            "deepseek_model_call_started_count",
+            "deepseek_model_call_completed_count",
+            "deepseek_model_call_incomplete_count",
+            "deepseek_model_call_unmatched_completed_count",
+            "deepseek_model_call_abnormal_completed_count",
+        )
+        lines.append(
+            "latest lifecycle gnomes: "
+            + "; ".join(
+                f"{key}={latest_lifecycle_counts[key]}" for key in keys if key in latest_lifecycle_counts
+            )
+        )
     for row in (claim_summary.get("top_unresolved") or [])[:3]:
         if not isinstance(row, dict):
             continue

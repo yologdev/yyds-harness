@@ -218,6 +218,20 @@ class ExtractTrajectoryTests(unittest.TestCase):
                 "  ▶ search 'fn handle_run\\(' in src/commands.rs ✗ (17ms)\n",
                 encoding="utf-8",
             )
+            events = [
+                {"kind": "RunStarted", "run_id": "run-open", "payload": {"status": "started"}},
+                {
+                    "kind": "ModelCallStarted",
+                    "run_id": "run-model-open",
+                    "payload": {"model": "deepseek-v4-pro"},
+                },
+            ]
+            state_dir = session / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            state_dir.joinpath("events.jsonl").write_text(
+                "\n".join(json.dumps(event) for event in events) + "\n",
+                encoding="utf-8",
+            )
 
             rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
 
@@ -229,6 +243,9 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("unlanded_source_edits=1", rendered)
             self.assertIn("tool failures:", rendered)
             self.assertIn("search_tool_error=1", rendered)
+            self.assertIn("lifecycle gnomes:", rendered)
+            self.assertIn("state_run_incomplete_count=1", rendered)
+            self.assertIn("deepseek_model_call_incomplete_count=1", rendered)
 
 
 if __name__ == "__main__":
