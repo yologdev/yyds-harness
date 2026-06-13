@@ -145,6 +145,44 @@ class AppendTerminalStateEvents(unittest.TestCase):
             self.assertEqual(run_done["payload"]["status"], "completed")
             self.assertEqual(run_done["payload"]["stage"], "assess")
 
+    def test_closes_run_when_model_completed_but_run_terminal_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            after_line = 0
+            write_event(events, "RunStarted", "agent-run")
+            write_event(events, "ModelCallStarted", "agent-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "agent-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "CacheMetricsRecorded", "agent-run", {"hit_tokens": 100})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "assess",
+                "completed",
+                "completed",
+                "agent_process_exited",
+                "",
+                "agent process exited with status 0",
+            )
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            self.assertEqual(result["completed_model_calls"], [])
+            self.assertEqual(result["completed_runs"], ["agent-run"])
+            self.assertEqual(
+                sum(1 for row in rows if row["event_type"] == "ModelCallCompleted"),
+                1,
+            )
+            run_done = [
+                row
+                for row in rows
+                if row["event_type"] == "RunCompleted" and row["run_id"] == "agent-run"
+            ][0]
+            self.assertEqual(run_done["payload"]["status"], "completed")
+            self.assertEqual(run_done["payload"]["stage"], "assess")
+
     def test_scans_current_file_when_after_line_exceeds_reset_events_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             events = Path(tmp) / "events.jsonl"

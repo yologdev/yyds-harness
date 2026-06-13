@@ -103,7 +103,8 @@ def lifecycle_for_scope(
             lifecycle_completion_count += 1
             model_completed.add(rid)
     open_models = {rid: data for rid, data in model_started.items() if rid not in model_completed}
-    open_runs = run_started - run_completed
+    active_runs = run_started | set(model_started) | model_completed
+    open_runs = active_runs - run_completed
     diagnostics = {
         "scan_start": max(scan_start, 0),
         "scanned_events": len(scoped),
