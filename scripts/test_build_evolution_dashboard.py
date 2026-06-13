@@ -1266,7 +1266,23 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(states["schema_version"], 1)
             self.assertEqual(states["summary"]["task_count"], 1)
             self.assertEqual(states["summary"]["state_counts"]["unlanded_source_edits"], 1)
+            self.assertEqual(states["summary"]["latest_session_id"], "day-1")
+            self.assertEqual(states["summary"]["latest_task_summary"]["task_count"], 1)
+            self.assertEqual(states["summary"]["latest_task_summary"]["strict_success_count"], 0)
+            self.assertEqual(
+                states["summary"]["latest_task_summary"]["state_counts"],
+                {"unlanded_source_edits": 1},
+            )
+            self.assertEqual(states["summary"]["recent_window_size"], 5)
+            self.assertEqual(states["summary"]["recent_task_summary"]["task_count"], 1)
+            self.assertEqual(
+                states["summary"]["recent_task_summary"]["state_counts"],
+                {"unlanded_source_edits": 1},
+            )
             self.assertEqual(states["sessions"][0]["tasks"][0]["state"], "unlanded_source_edits")
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            self.assertIn("Latest tasks", html)
+            self.assertIn("Recent tasks", html)
 
     def test_reverted_source_task_counts_as_unlanded_source_work(self):
         with tempfile.TemporaryDirectory() as tmp:

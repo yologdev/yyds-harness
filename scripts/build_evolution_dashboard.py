@@ -4112,36 +4112,56 @@ def session_state_projection(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def task_state_summary_for_sessions(session_states: list[dict[str, Any]]) -> dict[str, Any]:
+    state_counts: dict[str, int] = {}
+    task_count = 0
+    strict_success_count = 0
+    for row in session_states:
+        tasks = row.get("tasks") if isinstance(row.get("tasks"), list) else []
+        task_count += len(tasks)
+        strict_success_count += sum(
+            1
+            for task in tasks
+            if isinstance(task, dict) and task.get("strict_success")
+        )
+        for state, count in (row.get("task_summary", {}).get("state_counts") or {}).items():
+            state_counts[str(state)] = state_counts.get(str(state), 0) + int(count or 0)
+    return {
+        "session_count": len(session_states),
+        "task_count": task_count,
+        "strict_success_count": strict_success_count,
+        "unverified_count": task_count - strict_success_count,
+        "state_counts": dict(sorted(state_counts.items())),
+    }
+
+
 def build_states_projection(
     sessions: list[dict[str, Any]],
     generated_at: str,
     audit_sessions: Path,
 ) -> dict[str, Any]:
     session_states = [session_state_projection(session) for session in sessions]
-    task_count = sum(len(row.get("tasks") or []) for row in session_states)
-    strict_success_count = sum(
-        1
-        for row in session_states
-        for task in (row.get("tasks") or [])
-        if isinstance(task, dict) and task.get("strict_success")
-    )
-    state_counts: dict[str, int] = {}
-    for row in session_states:
-        for state, count in (row.get("task_summary", {}).get("state_counts") or {}).items():
-            state_counts[str(state)] = state_counts.get(str(state), 0) + int(count or 0)
+    summary = task_state_summary_for_sessions(session_states)
+    recent_window_size = 5
+    latest_session = session_states[-1] if session_states else {}
+    latest_task_summary = task_state_summary_for_sessions([latest_session]) if latest_session else {}
+    recent_task_summary = task_state_summary_for_sessions(session_states[-recent_window_size:])
     gnome_audit = aggregate_gnome_audit(sessions)
+    summary.update(
+        {
+            "latest_session_id": latest_session.get("id") if latest_session else None,
+            "latest_ts": latest_session.get("ts") if latest_session else None,
+            "latest_task_summary": latest_task_summary,
+            "recent_window_size": recent_window_size,
+            "recent_task_summary": recent_task_summary,
+            "gnome_audit": gnome_audit,
+        }
+    )
     return {
         "schema_version": 1,
         "generated_at": generated_at,
         "source": str(audit_sessions),
-        "summary": {
-            "session_count": len(session_states),
-            "task_count": task_count,
-            "strict_success_count": strict_success_count,
-            "unverified_count": task_count - strict_success_count,
-            "state_counts": dict(sorted(state_counts.items())),
-            "gnome_audit": gnome_audit,
-        },
+        "summary": summary,
         "sessions": session_states,
     }
 
@@ -5010,6 +5030,38 @@ HTML = r"""<!doctype html>
     function latestMetric(agg, key) {
       const value = (agg.latest_gnomes || {})[key];
       return value === undefined ? null : value;
+    }
+
+    function taskStateSummaryForSessions(sessions) {
+      const summary = { sessionCount: (sessions || []).length, taskCount: 0, strictSuccessCount: 0, stateCounts: {} };
+      (sessions || []).forEach(session => {
+        const taskStates = (session.work_summary || {}).task_states || {};
+        const tasks = Array.isArray(taskStates.tasks) ? taskStates.tasks : [];
+        if (tasks.length) {
+          summary.taskCount += tasks.length;
+          tasks.forEach(task => {
+            if (task.strict_success) summary.strictSuccessCount += 1;
+            const key = task.state || "unknown";
+            summary.stateCounts[key] = (summary.stateCounts[key] || 0) + 1;
+          });
+          return;
+        }
+        const counts = taskStates.state_counts || {};
+        Object.entries(counts).forEach(([key, count]) => {
+          const value = Number(count || 0);
+          summary.taskCount += value;
+          summary.stateCounts[key] = (summary.stateCounts[key] || 0) + value;
+        });
+        summary.strictSuccessCount += Number(taskStates.strict_success_count || 0);
+      });
+      summary.unverifiedCount = Math.max(0, summary.taskCount - summary.strictSuccessCount);
+      return summary;
+    }
+
+    function taskStateCountsText(summary) {
+      return Object.entries(summary.stateCounts || {})
+        .map(([state, count]) => `${state} ${count}`)
+        .join(", ");
     }
 
     function healthOf(session) {
@@ -6217,6 +6269,28 @@ HTML = r"""<!doctype html>
       const hasClaimSummary = Boolean(state.data?.claims_summary);
       const claimClass = status => status === "missing" ? "warn" : (status === "conflict" ? "bad" : "info");
       const latestUnresolved = hasClaimSummary ? (claimSummary.latest_unresolved || []) : [];
+      const latest = latestSession(sessions);
+      const latestTaskSummary = latest ? taskStateSummaryForSessions([latest]) : null;
+      if (latestTaskSummary && latestTaskSummary.taskCount) {
+        items.push({
+          kind: "Latest tasks",
+          className: latestTaskSummary.unverifiedCount ? "warn" : "good",
+          session: latest.id || "latest",
+          title: `${latestTaskSummary.strictSuccessCount}/${latestTaskSummary.taskCount} strict task(s) verified`,
+          detail: taskStateCountsText(latestTaskSummary) || "No task-state gaps in the latest session."
+        });
+      }
+      const recentTaskSessions = sessions.slice(-5);
+      const recentTaskSummary = taskStateSummaryForSessions(recentTaskSessions);
+      if (recentTaskSummary.taskCount) {
+        items.push({
+          kind: "Recent tasks",
+          className: recentTaskSummary.unverifiedCount ? "warn" : "good",
+          session: `last ${text(recentTaskSessions.length)}`,
+          title: `${recentTaskSummary.strictSuccessCount}/${recentTaskSummary.taskCount} strict task(s) verified`,
+          detail: taskStateCountsText(recentTaskSummary) || "No task-state gaps in recent sessions."
+        });
+      }
       if (hasClaimSummary) {
         items.push({
           kind: "Latest claims",
