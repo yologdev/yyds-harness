@@ -1488,6 +1488,54 @@ def task_manifest_summary(session_dir: Path) -> dict[str, Any]:
     }
 
 
+def assessment_artifact_state(
+    session_dir: Path,
+    task_manifest: dict[str, Any],
+    transcript_data: dict[str, Any],
+) -> dict[str, Any]:
+    artifacts = task_manifest.get("artifacts") if isinstance(task_manifest.get("artifacts"), dict) else {}
+    assessment_file_present = (session_dir / "tasks" / "assessment.md").is_file()
+    assessment_missing_file_present = (session_dir / "tasks" / "assessment_missing.md").is_file()
+    artifact_present = bool(task_manifest.get("assessment_present") or assessment_file_present)
+    diagnostic_present = bool(
+        task_manifest.get("assessment_missing_present")
+        or artifacts.get("assessment_missing")
+        or assessment_missing_file_present
+    )
+    transcript_present = bool((transcript_data.get("phase_counts") or {}).get("assess"))
+    manifest_present = bool(task_manifest)
+    if artifact_present:
+        classification = "assessment_present"
+        detail = "Assessment artifact is present."
+    elif diagnostic_present:
+        classification = "missing_with_diagnostic"
+        detail = "Assessment artifact is missing, and assessment_missing.md explains the missing output."
+    elif transcript_present:
+        classification = "missing_transcript_only"
+        detail = (
+            "Assessment transcript exists, but neither assessment.md nor assessment_missing.md "
+            "was preserved."
+        )
+    elif manifest_present:
+        classification = "missing_manifest_only"
+        detail = "Task manifest exists, but no assessment artifact, diagnostic, or transcript was preserved."
+    else:
+        classification = "missing_no_evidence"
+        detail = "No assessment artifact, diagnostic, manifest, or transcript was found."
+    return {
+        "classification": classification,
+        "detail": detail,
+        "artifact_present": artifact_present,
+        "transcript_present": transcript_present,
+        "diagnostic_present": diagnostic_present,
+        "manifest_present": manifest_present,
+        "assessment_path": "tasks/assessment.md" if assessment_file_present or artifacts.get("assessment") else None,
+        "assessment_missing_path": "tasks/assessment_missing.md"
+        if assessment_missing_file_present or artifacts.get("assessment_missing")
+        else None,
+    }
+
+
 def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     edited_files: list[str] = []
     read_files: list[str] = []
@@ -1857,21 +1905,10 @@ def work_summary(
     causal_chains = annotate_task_lineage_verification(causal_chains, task_verification)
     suggestions = augment_evolution_suggestions(suggestions, task_verification)
     source_patch_count = len(source_commits)
-    assessment_file_present = (session_dir / "tasks" / "assessment.md").is_file()
-    assessment_missing_file_present = (session_dir / "tasks" / "assessment_missing.md").is_file()
-    if task_manifest:
-        assessment_artifact_present = bool(task_manifest.get("assessment_present") or assessment_file_present)
-    else:
-        assessment_artifact_present = assessment_file_present
-    assessment_diagnostic_present = bool(
-        task_manifest.get("assessment_missing_present")
-        or (
-            isinstance(task_manifest.get("artifacts"), dict)
-            and task_manifest.get("artifacts", {}).get("assessment_missing")
-        )
-        or assessment_missing_file_present
-    )
-    assessment_transcript_present = bool((transcript_data.get("phase_counts") or {}).get("assess"))
+    assessment_state = assessment_artifact_state(session_dir, task_manifest, transcript_data)
+    assessment_artifact_present = bool(assessment_state.get("artifact_present"))
+    assessment_diagnostic_present = bool(assessment_state.get("diagnostic_present"))
+    assessment_transcript_present = bool(assessment_state.get("transcript_present"))
     verification_rows = task_verification.get("rows") if isinstance(task_verification.get("rows"), list) else []
     unlanded_source_task_count = sum(
         1
@@ -1899,7 +1936,7 @@ def work_summary(
         labels.append("planning produced no task files")
     if unlanded_source_task_count:
         labels.append(f"{unlanded_source_task_count} unlanded source task(s)")
-    if assessment_artifact_present is False and (task_manifest or assessment_transcript_present or assessment_missing_file_present):
+    if assessment_artifact_present is False and (task_manifest or assessment_transcript_present or assessment_diagnostic_present):
         if assessment_transcript_present:
             labels.append("assessment artifact missing (assess transcript present)")
         else:
@@ -1929,6 +1966,7 @@ def work_summary(
         "assessment_artifact_present": assessment_artifact_present,
         "assessment_diagnostic_present": assessment_diagnostic_present,
         "assessment_transcript_present": assessment_transcript_present,
+        "assessment_artifact_state": assessment_state,
         "unlanded_source_task_count": unlanded_source_task_count,
         "transcripts": transcript_data,
         "state_pipeline": state_pipeline,
@@ -2878,12 +2916,22 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     full_trace_sessions = 0
     lifecycle_trace_sessions = 0
     feedback_only_sessions = 0
+    assessment_artifact_state_counts: dict[str, int] = {}
 
     for session in sessions:
         evals += 1 if session.get("latest_eval") else 0
         blockers += len(session.get("blockers") or [])
         events += int(session.get("event_count") or 0)
         work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
+        assessment_state = (
+            work.get("assessment_artifact_state")
+            if isinstance(work.get("assessment_artifact_state"), dict)
+            else {}
+        )
+        assessment_classification = str(assessment_state.get("classification") or "unknown")
+        assessment_artifact_state_counts[assessment_classification] = (
+            assessment_artifact_state_counts.get(assessment_classification, 0) + 1
+        )
         verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
         strict_total = int(verification.get("task_count") or 0)
         raw_attempted = int(session.get("tasks_attempted") or 0)
@@ -2942,6 +2990,7 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         "unverified_raw_task_outcome_attempted": unverified_raw_task_attempted,
         "unverified_raw_task_outcome_succeeded": unverified_raw_task_succeeded,
         "health": health,
+        "assessment_artifact_state_counts": dict(sorted(assessment_artifact_state_counts.items())),
         "event_counts": event_counts,
         "latest_gnomes": latest_gnomes,
         "gnome_keys": gnome_keys,
@@ -3154,6 +3203,11 @@ def failed_tool_summary_count_claim(work: dict[str, Any]) -> dict[str, Any]:
 
 def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
     manifest = work.get("task_manifest") if isinstance(work.get("task_manifest"), dict) else {}
+    assessment_state = (
+        work.get("assessment_artifact_state")
+        if isinstance(work.get("assessment_artifact_state"), dict)
+        else {}
+    )
     artifact_present = work.get("assessment_artifact_present")
     transcript_present = work.get("assessment_transcript_present")
     manifest_artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), dict) else {}
@@ -3164,16 +3218,22 @@ def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
     )
     if artifact_present is True:
         status = "proven"
-        detail = "Assessment artifact is present."
+        detail = str(assessment_state.get("detail") or "Assessment artifact is present.")
     elif diagnostic_present and transcript_present:
         status = "observed"
-        detail = "Assessment transcript and missing-assessment diagnostic artifact exist, but assessment.md is missing."
+        detail = str(
+            assessment_state.get("detail")
+            or "Assessment transcript and missing-assessment diagnostic artifact exist, but assessment.md is missing."
+        )
     elif transcript_present:
         status = "observed"
-        detail = "Assessment phase transcript exists but the assessment artifact is missing."
+        detail = str(
+            assessment_state.get("detail")
+            or "Assessment phase transcript exists but the assessment artifact is missing."
+        )
     elif artifact_present is False:
         status = "missing"
-        detail = "No assessment artifact or assessment transcript was found."
+        detail = str(assessment_state.get("detail") or "No assessment artifact or assessment transcript was found.")
     else:
         status = "missing"
         detail = "Assessment artifact state is unknown."
@@ -3192,6 +3252,7 @@ def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
             "artifact_present": artifact_present,
             "transcript_present": transcript_present,
             "diagnostic_present": diagnostic_present,
+            "classification": assessment_state.get("classification"),
         },
         evidence,
         detail,
@@ -3644,6 +3705,9 @@ def session_state_projection(session: dict[str, Any]) -> dict[str, Any]:
             "unverified_task_count": verification.get("unverified_task_count"),
             "state_counts": task_states.get("state_counts") or {},
         },
+        "assessment": work.get("assessment_artifact_state")
+        if isinstance(work.get("assessment_artifact_state"), dict)
+        else {},
         "tasks": task_states.get("tasks") if isinstance(task_states.get("tasks"), list) else [],
         "tool_failures": {
             "failed_tool_count": work.get("failed_tool_count"),
@@ -4574,6 +4638,7 @@ HTML = r"""<!doctype html>
       const succeeded = Number(session.tasks_succeeded || 0);
       const work = session.work_summary || {};
       const manifest = work.task_manifest || {};
+      const assessmentState = work.assessment_artifact_state || {};
       const verification = work.task_verification || {};
       const strictTotal = Number(verification.task_count || 0);
       const strictVerified = Number(verification.verified_task_count || 0);
@@ -5287,11 +5352,13 @@ HTML = r"""<!doctype html>
         : work.assessment_artifact_present === false
           ? "assessment missing"
           : "assessment unknown";
-      const evidenceSummary = `<p class="muted">Task evidence: raw outcome ${text(succeeded)}/${text(attempted)}; manifest ${text(manifestTaskCount)} task(s); artifact bundles ${text(artifactCount)}; strict verification ${text(strictVerified)}/${text(strictTotal)}; ${text(assessmentText)}.</p>`;
+      const assessmentDetail = assessmentState.detail ? ` ${text(assessmentState.detail)}` : "";
+      const evidenceSummary = `<p class="muted">Task evidence: raw outcome ${text(succeeded)}/${text(attempted)}; manifest ${text(manifestTaskCount)} task(s); artifact bundles ${text(artifactCount)}; strict verification ${text(strictVerified)}/${text(strictTotal)}; ${text(assessmentText)}.${assessmentDetail}</p>`;
       const manifestArtifacts = manifest.artifacts || {};
       const manifestLinks = [
         manifestArtifacts.manifest ? auditLink(session, manifestArtifacts.manifest, "manifest.json") : "",
         manifestArtifacts.assessment ? auditLink(session, manifestArtifacts.assessment, "assessment.md") : "",
+        manifestArtifacts.assessment_missing ? auditLink(session, manifestArtifacts.assessment_missing, "assessment_missing.md") : "",
         manifestArtifacts.planning_failure ? auditLink(session, manifestArtifacts.planning_failure, "planning_failure.md") : "",
         manifestArtifacts.issue_responses ? auditLink(session, manifestArtifacts.issue_responses, "issue_responses.md") : ""
       ].filter(Boolean).join(" · ");

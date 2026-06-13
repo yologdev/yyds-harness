@@ -2773,11 +2773,15 @@ class BuildEvolutionDashboard(unittest.TestCase):
 
             data = build(root / "sessions", root / "out")
             work = data["sessions"][0]["work_summary"]
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
             html = (root / "out/index.html").read_text(encoding="utf-8")
 
             self.assertIn("assessment artifact missing (assess transcript present)", work["headline"])
             self.assertFalse(work["assessment_artifact_present"])
             self.assertTrue(work["assessment_transcript_present"])
+            self.assertEqual(work["assessment_artifact_state"]["classification"], "missing_with_diagnostic")
+            self.assertEqual(data["aggregate"]["assessment_artifact_state_counts"], {"missing_with_diagnostic": 1})
+            self.assertEqual(states["sessions"][0]["assessment"]["classification"], "missing_with_diagnostic")
             self.assertFalse(work["task_manifest"]["assessment_present"])
             self.assertTrue(work["task_manifest"]["assessment_missing_present"])
             self.assertEqual(
@@ -2797,6 +2801,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 "Task scope mismatch: task produced no git-visible file changes",
             )
             self.assertIn("assessment artifact", html)
+            self.assertIn("assessment_missing.md", html)
             self.assertIn("revert_reason", html)
 
             claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
@@ -2807,7 +2812,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
             self.assertEqual(assessment_claim["status"], "observed")
             self.assertTrue(assessment_claim["actual"]["diagnostic_present"])
-            self.assertIn("diagnostic artifact", assessment_claim["detail"])
+            self.assertEqual(assessment_claim["actual"]["classification"], "missing_with_diagnostic")
+            self.assertIn("assessment_missing.md explains", assessment_claim["detail"])
             self.assertIn("tasks/assessment_missing.md", assessment_claim["evidence"])
 
     def test_assessment_transcript_without_manifest_marks_artifact_missing(self):
@@ -2841,11 +2847,14 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertFalse(work["assessment_artifact_present"])
             self.assertTrue(work["assessment_transcript_present"])
             self.assertFalse(work["assessment_diagnostic_present"])
+            self.assertEqual(work["assessment_artifact_state"]["classification"], "missing_transcript_only")
+            self.assertEqual(data["aggregate"]["assessment_artifact_state_counts"], {"missing_transcript_only": 1})
             self.assertIn("assessment artifact missing (assess transcript present)", work["headline"])
             self.assertEqual(assessment_claim["status"], "observed")
             self.assertEqual(assessment_claim["actual"]["artifact_present"], False)
             self.assertTrue(assessment_claim["actual"]["transcript_present"])
-            self.assertIn("assessment artifact is missing", assessment_claim["detail"])
+            self.assertEqual(assessment_claim["actual"]["classification"], "missing_transcript_only")
+            self.assertIn("neither assessment.md nor assessment_missing.md", assessment_claim["detail"])
             self.assertEqual(assessment_claim["evidence"], ["transcripts/assess.log"])
 
     def test_assessment_claim_evidence_excludes_absent_diagnostic_artifact(self):
