@@ -3136,6 +3136,39 @@ def run_health(session: dict[str, Any]) -> str:
     return "attention"
 
 
+def aggregate_gnome_audit(sessions: list[dict[str, Any]]) -> dict[str, Any]:
+    correction_count = 0
+    corrected_session_count = 0
+    raw_state_gnome_count = 0
+    corrected_gnome_count = 0
+    source_counts: dict[str, int] = {}
+    for session in sessions:
+        audit = session.get("state_gnome_audit") if isinstance(session.get("state_gnome_audit"), dict) else {}
+        session_corrections = int(audit.get("correction_count") or 0)
+        correction_count += session_corrections
+        if session_corrections:
+            corrected_session_count += 1
+        raw_state_gnome_count += int(audit.get("raw_state_gnome_count") or 0)
+        corrected_gnome_count += int(audit.get("corrected_gnome_count") or 0)
+        source_counts_raw = audit.get("corrections_by_source")
+        if not isinstance(source_counts_raw, dict):
+            continue
+        for source, count in source_counts_raw.items():
+            source_counts[str(source)] = source_counts.get(str(source), 0) + int(count or 0)
+    top_sources = [
+        {"source": source, "count": count}
+        for source, count in sorted(source_counts.items(), key=lambda row: (-row[1], row[0]))[:8]
+    ]
+    return {
+        "correction_count": correction_count,
+        "corrected_session_count": corrected_session_count,
+        "raw_state_gnome_count": raw_state_gnome_count,
+        "corrected_gnome_count": corrected_gnome_count,
+        "corrections_by_source": dict(sorted(source_counts.items())),
+        "top_sources": top_sources,
+    }
+
+
 def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     promoted = 0
     rejected = 0
@@ -3157,6 +3190,7 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     lifecycle_trace_sessions = 0
     feedback_only_sessions = 0
     assessment_artifact_state_counts: dict[str, int] = {}
+    gnome_audit = aggregate_gnome_audit(sessions)
 
     for session in sessions:
         evals += 1 if session.get("latest_eval") else 0
@@ -3234,6 +3268,10 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         "event_counts": event_counts,
         "latest_gnomes": latest_gnomes,
         "gnome_keys": gnome_keys,
+        "gnome_audit": gnome_audit,
+        "gnome_audit_correction_count": gnome_audit["correction_count"],
+        "gnome_audit_correction_sessions": gnome_audit["corrected_session_count"],
+        "gnome_audit_corrections_by_source": gnome_audit["corrections_by_source"],
         "latest_ts": sessions[-1].get("ts") if sessions else None,
     }
 
@@ -4022,6 +4060,7 @@ def build_states_projection(
     for row in session_states:
         for state, count in (row.get("task_summary", {}).get("state_counts") or {}).items():
             state_counts[str(state)] = state_counts.get(str(state), 0) + int(count or 0)
+    gnome_audit = aggregate_gnome_audit(sessions)
     return {
         "schema_version": 1,
         "generated_at": generated_at,
@@ -4032,6 +4071,7 @@ def build_states_projection(
             "strict_success_count": strict_success_count,
             "unverified_count": task_count - strict_success_count,
             "state_counts": dict(sorted(state_counts.items())),
+            "gnome_audit": gnome_audit,
         },
         "sessions": session_states,
     }
@@ -5037,6 +5077,11 @@ HTML = r"""<!doctype html>
       let fullTraceSessions = 0;
       let lifecycleTraceSessions = 0;
       let feedbackOnlySessions = 0;
+      let gnomeAuditCorrectionCount = 0;
+      let gnomeAuditCorrectionSessions = 0;
+      let gnomeAuditRawCount = 0;
+      let gnomeAuditCorrectedCount = 0;
+      const gnomeAuditSources = {};
 
       sessions.forEach(session => {
         const healthKey = healthOf(session);
@@ -5062,6 +5107,15 @@ HTML = r"""<!doctype html>
         if (trace.status === "full") fullTraceSessions += 1;
         if (trace.status === "lifecycle") lifecycleTraceSessions += 1;
         if (trace.status === "feedback_only") feedbackOnlySessions += 1;
+        const gnomeAudit = session.state_gnome_audit || {};
+        const correctionCount = Number(gnomeAudit.correction_count || 0);
+        gnomeAuditCorrectionCount += correctionCount;
+        if (correctionCount) gnomeAuditCorrectionSessions += 1;
+        gnomeAuditRawCount += Number(gnomeAudit.raw_state_gnome_count || 0);
+        gnomeAuditCorrectedCount += Number(gnomeAudit.corrected_gnome_count || 0);
+        Object.entries(gnomeAudit.corrections_by_source || {}).forEach(([source, count]) => {
+          gnomeAuditSources[source] = (gnomeAuditSources[source] || 0) + Number(count || 0);
+        });
         Object.entries(session.event_counts || {}).forEach(([kind, count]) => {
           eventCounts[kind] = (eventCounts[kind] || 0) + Number(count || 0);
         });
@@ -5100,7 +5154,21 @@ HTML = r"""<!doctype html>
         rejected_decisions: rejected,
         health,
         latest_gnomes: latestGnomes,
-        gnome_keys: gnomeKeys
+        gnome_keys: gnomeKeys,
+        gnome_audit: {
+          correction_count: gnomeAuditCorrectionCount,
+          corrected_session_count: gnomeAuditCorrectionSessions,
+          raw_state_gnome_count: gnomeAuditRawCount,
+          corrected_gnome_count: gnomeAuditCorrectedCount,
+          corrections_by_source: gnomeAuditSources,
+          top_sources: Object.entries(gnomeAuditSources)
+            .sort((a, b) => Number(b[1]) - Number(a[1]) || String(a[0]).localeCompare(String(b[0])))
+            .slice(0, 8)
+            .map(([source, count]) => ({ source, count }))
+        },
+        gnome_audit_correction_count: gnomeAuditCorrectionCount,
+        gnome_audit_correction_sessions: gnomeAuditCorrectionSessions,
+        gnome_audit_corrections_by_source: gnomeAuditSources
       };
     }
 
@@ -5251,6 +5319,7 @@ HTML = r"""<!doctype html>
         ["Sessions", agg.session_count || 0, "audit-backed runs"],
         ["Strict task success", rate === null || rate === undefined ? "-" : percent(rate), `${text(agg.tasks_succeeded || 0)}/${text(agg.tasks_attempted || 0)} verified tasks${rawHint}`],
         ["Operational traces", agg.full_trace_sessions || 0, `${text(agg.lifecycle_trace_sessions || 0)} lifecycle-only / ${text(agg.feedback_only_sessions || 0)} feedback-only`],
+        ["Gnome corrections", agg.gnome_audit_correction_count || 0, `${text(agg.gnome_audit_correction_sessions || 0)} corrected session(s)`],
         ["Blockers", agg.blocker_count || 0, "real blocking signals"],
       ];
       document.getElementById("summary").innerHTML = cards.map(([label, value, hint]) => `
@@ -5353,6 +5422,22 @@ HTML = r"""<!doctype html>
           kind: "State evidence",
           className: "warn",
           text: `State replay evidence exists, but the latest visible session did not capture yyds/tool operational events.${lineageText} Treat its trace as thin until a fresh run emits model/tool/cache events.`
+        });
+      }
+      const gnomeAudit = agg.gnome_audit || {};
+      const gnomeCorrectionCount = Number(gnomeAudit.correction_count || agg.gnome_audit_correction_count || 0);
+      if (gnomeCorrectionCount > 0) {
+        const topSources = Array.isArray(gnomeAudit.top_sources)
+          ? gnomeAudit.top_sources
+          : Object.entries(agg.gnome_audit_corrections_by_source || {})
+            .sort((a, b) => Number(b[1]) - Number(a[1]) || String(a[0]).localeCompare(String(b[0])))
+            .slice(0, 3)
+            .map(([source, count]) => ({ source, count }));
+        const sourceText = topSources.slice(0, 3).map(row => `${text(row.source || "unknown")} ${text(row.count || 0)}`).join(", ");
+        notes.push({
+          kind: "Gnome audit",
+          className: "info",
+          text: `${text(gnomeCorrectionCount)} dashboard gnome correction(s) across ${text(gnomeAudit.corrected_session_count || agg.gnome_audit_correction_sessions || 0)} session(s).${sourceText ? ` Top sources: ${sourceText}.` : ""}`
         });
       }
       document.getElementById("metricNotes").innerHTML = notes.length

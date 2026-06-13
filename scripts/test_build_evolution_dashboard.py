@@ -3328,6 +3328,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             session_data = data["sessions"][0]
             work = session_data["work_summary"]
             audit = session_data["state_gnome_audit"]
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
             claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
             failed_tool_claim = next(
                 claim
@@ -3345,6 +3346,11 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["corrected_gnome_lessons"][0]["source"], "corrected_gnomes")
             self.assertGreaterEqual(audit["correction_count"], 1)
             self.assertEqual(audit["corrections_by_source"].get("transcripts"), 1)
+            self.assertGreaterEqual(data["aggregate"]["gnome_audit_correction_count"], 1)
+            self.assertEqual(data["aggregate"]["gnome_audit_correction_sessions"], 1)
+            self.assertEqual(data["aggregate"]["gnome_audit_corrections_by_source"].get("transcripts"), 1)
+            self.assertEqual(states["summary"]["gnome_audit"]["corrected_session_count"], 1)
+            self.assertEqual(states["summary"]["gnome_audit"]["corrections_by_source"].get("transcripts"), 1)
             tool_error_audit = next(row for row in audit["corrections"] if row["key"] == "tool_error_count")
             self.assertEqual(
                 tool_error_audit,
@@ -3716,6 +3722,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("coding_log_score", data["aggregate"]["gnome_keys"])
             self.assertIn("task_unlanded_source_count", data["aggregate"]["gnome_keys"])
             self.assertEqual(data["aggregate"]["latest_gnomes"]["task_unlanded_source_count"], 1)
+            self.assertEqual(data["aggregate"]["gnome_audit"]["corrected_session_count"], 1)
+            self.assertGreaterEqual(data["aggregate"]["gnome_audit_corrections_by_source"].get("task_artifacts", 0), 1)
 
     def test_dashboard_merges_log_feedback_metrics_missing_from_state_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
