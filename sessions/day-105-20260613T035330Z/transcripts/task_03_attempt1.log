@@ -1,0 +1,476 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill to understand the canonical implementation contract, then examine the search tool code in `src/tools.rs` to understand the current error handling.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/tools.rs:220..280 ✓ (14ms)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the full context around the error handling and the search tool. I need to:
+1. See the full search tool struct and how `regex` parameter is tracked
+2. Look at the error handling at lines 243-248 more carefully
+3. Find the test module for the search tool
+
+Let me read more of the file to understand the search tool structure and the test module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:150..230  ▶ search 'mod tests' in src/tools.rs ✓ (10ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the test module to understand the existing test patterns, and also look at how the `regex` variable is accessible in the error handler scope.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1437.. ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the search tool test functions in the test module to understand the test patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'search_tool' in src/tools.rs  ▶ search 'fn test_tool_context' in src/tools.rs ✓ (10ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There don't seem to be any search tool tests in the test module. Let me look for them more specifically, maybe under different naming.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'SearchTool' in src/tools.rs  ▶ search 'test_search' in src/tools.rs ✓ (12ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Ok there are tests for `ProjectSearchTool` at lines 1680, 1713, 1750. Let me look at those tests to understand the pattern. Let me also look at the `ProjectSearchTool` struct and its default.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:119..169  ▶ read src/tools.rs:1680..1720 ✓ (5ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at all the search tool tests to understand the test patterns and where to add the new test:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1657..1717 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the search tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1716..1816 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also look at the `test_tool_context` helper to understand its signature:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1638..1658 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear understanding of the codebase. Let me plan the implementation:
+
+1. **In the error handler at lines 243-248**: When `code != Some(0) && code != Some(1)` AND `regex` is true AND stderr contains regex-related error keywords, append a recovery hint to the error message.
+
+2. **Add a test**: Create a test that runs `ProjectSearchTool` with `regex=true` and an invalid regex pattern like `(` and verifies the error message contains the hint.
+
+The `regex` variable is already in scope (line 196), and `stderr` is available at line 240. The error handler is at lines 243-248.
+
+Let me implement this:
+
+```rust
+if code != Some(0) && code != Some(1) {
+    let mut error_msg = format!("Search error: {}", stderr.trim());
+    if regex && stderr.to_lowercase().contains(/* regex error pattern */) ... {
+        error_msg.push_str(" Hint: try regex=false for literal search, or escape regex metacharacters with \\.");
+    }
+    return Err(ToolError::Failed(error_msg));
+}
+```
+
+Wait, I need to be careful. The stderr might contain regex error messages. Let me think about what keywords to check for. The task says: "unmatched", "invalid", "regex parse", "unclosed", "empty pattern", "repetition".
+
+For ripgrep, common errors when `--regexp` is used with invalid regex:
+- "regex parse error"
+- "unclosed"
+- "repetition"
+- "empty pattern"
+
+For grep:
+- "Unmatched" (in parentheses/brackets)
+- "Invalid"
+- "unmatched"
+
+Let me handle this generically - check stderr (case-insensitive) for any of these keywords.
+
+Now the hint format: "Hint: try regex=false for literal search, or escape regex metacharacters with \\."
+
+Wait, the `\\.` is confusing - let me re-read the task. It says: "escape regex metacharacters with \\." This means with a backslash. So the hint should say: `escape regex metacharacters with \.`
+
+Actually, in Rust a backslash is `\\`. Since this is a format string or push_str, I need to think about this. The actual message should show a backslash to the user. So in Rust literal: `escape regex metacharacters with \\.`
+
+Wait, let me re-read: "escape regex metacharacters with \\." - that looks like two backslashes then a period, which would render as "\\." in the output. Actually the task says `\\` - I think they mean a single backslash in the output. Let me use `\\.` in the Rust string to produce `\.` in the output. Hmm, actually `\\.` in Rust is `\.` in the output (escape sequence `\\` produces a single backslash, then `.`). So the message would read: "escape regex metacharacters with \."
+
+Let me just implement it simply. Here's my plan:
+
+```rust
+if code != Some(0) && code != Some(1) {
+    let stderr_lower = stderr.to_lowercase();
+    let is_regex_error = regex && (
+        stderr_lower.contains("unmatched") ||
+        stderr_lower.contains("invalid") ||
+        stderr_lower.contains("regex parse") ||
+        stderr_lower.contains("unclosed") ||
+        stderr_lower.contains("empty pattern") ||
+        stderr_lower.contains("repetition")
+    );
+    let mut error_msg = format!("Search error: {}", stderr.trim());
+    if is_regex_error {
+        error_msg.push_str(" Hint: try regex=false for literal search, or escape regex metacharacters with \\.");
+    }
+    return Err(ToolError::Failed(error_msg));
+}
+```
+
+Now for the test, I need to create a test that triggers a regex error. I can use `(` as a pattern with `regex=true` and search in a temp directory. ripgrep should return exit code 2 with a regex parse error.
+
+Let me write the test:
+
+```rust
+#[tokio::test]
+async fn test_project_search_regex_error_includes_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "fn example() {}\n").unwrap();
+
+    let tool = ProjectSearchTool::default();
+    let params = serde_json::json!({
+        "pattern": "(",
+        "regex": true,
+        "path": dir.path().to_string_lossy(),
+    });
+    let result = tool.execute(params, test_tool_context(None)).await;
+    assert!(result.is_err(), "Invalid regex should produce an error");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("Hint:"),
+        "Error should include a recovery hint, got: {err}"
+    );
+    assert!(
+        err.contains("regex=false"),
+        "Hint should mention regex=false, got: {err}"
+    );
+}
+```
+
+This looks clean. Let me also verify that non-regex errors don't get the hint - I could add a separate test or just check in the same test that normal path-not-found errors don't get the hint. But let me keep it simple - the task says to add a test verifying the hint appears.
+
+Actually, let me also think about the case where `regex` is false (default) and there's some error. In that case, the hint shouldn't appear. But the condition already checks `regex && ...` so it's fine.
+
+Let me also check: will `(` with `regex=true` actually trigger a regex error with `rg`? ripgrep uses the Rust regex engine. An unclosed parenthesis `(` should trigger: "regex parse error: ... unclosed group". Let me verify by running it.
+
+Actually, I'm confident enough. Let me implement this now.
+
+One more thing: the task says `\\.` in the implementation note. Let me use `\\.` in the Rust string to produce `\.` in output. Actually that's weird. Let me use just `\\` to produce a single backslash: "escape regex metacharacters with \\" - hmm that reads as "escape regex metacharacters with \" which isn't quite right either.
+
+Let me re-read: "escape regex metacharacters with \\." - I think they literally want: "escape regex metacharacters with \." showing a literal backslash followed by a period. In Rust: `escape regex metacharacters with \\.`
+
+In Rust strings, `\\.` is: `\\` = literal backslash `\`, then `.` = literal `.`. So the output would be `\.`. That makes sense - it shows the user to use `\.` to escape a literal period in regex.
+
+OK, let me implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the change. The `regex` variable is already in scope at line 196, `stderr` at line 240, and the error handler is at lines 243-248. I need to:
+
+1. Add regex error detection in the error handler
+2. Append a recovery hint when a regex parse error is detected with `regex=true`
+3. Add a test
+
+Let me make the surgical edit:
+            if code != Some(0) && code != Some(1) {
+  -             return Err(ToolError::Failed(format!(
+  -                 "Search error: {}",
+  -                 stderr.trim()
+  -             )));
+  +             let stderr_lower = stderr.to_lowercase();
+  +             let is_regex_error = regex
+  +                 && (stderr_lower.contains("unmatched")
+  +                     || stderr_lower.contains("invalid")
+  +                     || stderr_lower.contains("regex parse")
+  +                     || stderr_lower.contains("unclosed")
+  +                     || stderr_lower.contains("empty pattern")
+  +                     || stderr_lower.contains("repetition"));
+  +             let mut error_msg = format!("Search error: {}", stderr.trim());
+  +             if is_regex_error {
+  +                 error_msg.push_str(
+  +                     " Hint: try regex=false for literal search, or escape regex metacharacters with \\.",
+  +                 );
+  +             }
+  +             return Err(ToolError::Failed(error_msg));
+  ... (1 more lines)
+  ✓ Auto-approved: edit: src/tools.rs (6 → 17 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (6 → 17 lines)
+            if code != Some(0) && code != Some(1) {
+  -             return Err(ToolError::Failed(format!(
+  -                 "Search error: {}",
+  -                 stderr.trim()
+  -             )));
+  +             let stderr_lower = stderr.to_lowercase();
+  +             let is_regex_error = regex
+  +                 && (stderr_lower.contains("unmatched")
+  +                     || stderr_lower.contains("invalid")
+  +                     || stderr_lower.contains("regex parse")
+  +                     || stderr_lower.contains("unclosed")
+  +                     || stderr_lower.contains("empty pattern")
+  +                     || stderr_lower.contains("repetition"));
+  +             let mut error_msg = format!("Search error: {}", stderr.trim());
+  +             if is_regex_error {
+  +                 error_msg.push_str(
+  +                     " Hint: try regex=false for literal search, or escape regex metacharacters with \\.",
+  +                 );
+  +             }
+  +             return Err(ToolError::Failed(error_msg));
+  ... (1 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add the test. I'll add it after the existing search tool tests (after line 1771, before the `test_streaming_bash_deny_patterns` test).
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the test. I'll insert it after the last search tool test:
+  +     #[tokio::test]
+  +     async fn test_project_search_regex_error_includes_hint() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let src = dir.path().join("src");
+  +         std::fs::create_dir_all(&src).unwrap();
+  +         std::fs::write(src.join("lib.rs"), "fn example() {}\n").unwrap();
+  + 
+  +         let tool = ProjectSearchTool::default();
+  +         let params = serde_json::json!({
+  +             "pattern": "(",
+  +             "regex": true,
+  +             "path": dir.path().to_string_lossy(),
+  +         });
+  +         let result = tool.execute(params, test_tool_context(None)).await;
+  +         assert!(result.is_err(), "Invalid regex should produce an error");
+  +         let err = result.unwrap_err().to_string();
+  +         assert!(
+  +             err.contains("Hint:"),
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/tools.rs (2 → 47 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (2 → 47 lines)
+  +     #[tokio::test]
+  +     async fn test_project_search_regex_error_includes_hint() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let src = dir.path().join("src");
+  +         std::fs::create_dir_all(&src).unwrap();
+  +         std::fs::write(src.join("lib.rs"), "fn example() {}\n").unwrap();
+  + 
+  +         let tool = ProjectSearchTool::default();
+  +         let params = serde_json::json!({
+  +             "pattern": "(",
+  +             "regex": true,
+  +             "path": dir.path().to_string_lossy(),
+  +         });
+  +         let result = tool.execute(params, test_tool_context(None)).await;
+  +         assert!(result.is_err(), "Invalid regex should produce an error");
+  +         let err = result.unwrap_err().to_string();
+  +         assert!(
+  +             err.contains("Hint:"),
+  +             "Error should include a recovery hint, got: {err}"
+  +         );
+  ... (27 more lines)
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the changes look correct by reading the modified areas, then run the build and tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let's verify the changes and run the checks:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:243..273  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (15ms)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+cargo fmt passed. Now let me run clippy and the tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo clippy --all-targets -- … ✓ (19.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clippy passes. Now build and test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (12.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now run the relevant tests - the search tool tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- test_proje… ✓ (23.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test failed because `(` with `regex=true` didn't produce an error. Let me check what `rg` does with that pattern. Let me run a quick test to see what happens.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ echo "fn example() {}" | rg --regexp '(' 2>&1; echo "exit: $?" ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`rg` is not installed. That means the test will use `grep`. Let me check what grep does with `(` as a regex.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ echo "fn example() {}" | grep -E '(' 2>&1; echo "exit: $?" ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `grep -E '('` returns exit code 2 with "Unmatched ( or \(". The test should catch that. Let me look at how `build_project_grep_args` constructs the args. The issue might be something else. Let me check how the args are built.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'build_project_grep_ar… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:341..391 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - when `regex` is true, `grep` doesn't get `-F` (for fixed strings). So it runs in regex mode. But `grep` by default uses basic regex, not extended regex. In basic regex, `(` is literal - only `\(` is a grouping metacharacter. So `grep -r '(' file` should find literal `(` and not error.
+
+The issue is that `grep` uses basic regex by default and `(` is literal in basic regex. I need `-E` for extended regex mode. Let me check: does `build_project_grep_args` add `-E`? No, it doesn't. So when `regex=true`, it's using basic POSIX regex where `(` is not a metacharacter.
+
+Let me verify:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ echo "fn example() {}" | grep '(' 2>&1; echo "exit: $?" ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Right - basic grep does not treat `(` specially. The test used `(` as the regex pattern but grep in basic mode treats it as literal. I need a different regex pattern that actually fails. Let me try something that fails in basic regex mode.
+
+Basic regex metacharacters: `.`, `*`, `[`, `\`, `^`, `$`. Parentheses are only special when escaped: `\(`, `\)`.
+
+So `[` is a metacharacter in basic regex. Let me try that:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ echo "fn example() {}" | grep '[' 2>&1; echo "exit: $?" ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`grep '['` returns exit code 2 with "Invalid regular expression" and stderr contains "Invalid". That matches our "invalid" check. Let me update the test to use `[` as the pattern instead of `(`.
+────────────────────────────────────────────────────────────────────────────────
+
+The test pattern `(` doesn't fail with basic grep (it's literal there). Let me fix the test to use `[` which reliably triggers a regex error:
+            std::fs::write(src.join("lib.rs"), "fn example() {}\n").unwrap();
+    
+            let tool = ProjectSearchTool::default();
+  +         // Use an unclosed character class which reliably fails regex parsing
+            let params = serde_json::json!({
+  -             "pattern": "(",
+  +             "pattern": "[",
+                "regex": true,
+                "path": dir.path().to_string_lossy(),
+            });
+  ✓ Auto-approved: edit: src/tools.rs (25 → 26 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (25 → 26 lines)
+            std::fs::write(src.join("lib.rs"), "fn example() {}\n").unwrap();
+    
+            let tool = ProjectSearchTool::default();
+  +         // Use an unclosed character class which reliably fails regex parsing
+            let params = serde_json::json!({
+  -             "pattern": "(",
+  +             "pattern": "[",
+                "regex": true,
+                "path": dir.path().to_string_lossy(),
+            });
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- test_proje… ✓ (22.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 5 search tool tests pass. Let me now run the full test suite as required by the evolve skill.
+────────────────────────────────────────────────────────────────────────────────
+
+All search tests pass. Now run the full suite:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 ✓ (1m 45s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The tests appear to be running. Let me check the final result. The output was truncated but it appears to be passing. Let me wait and check the final exit code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | tail -5 ✓ (1m 15s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test output only shows doc-tests. The previous run was cut off. Let me specifically check the test exit code by looking at the full tail of the test run.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 | grep -E "^(t… ✓ (1m 20s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 4207 tests pass, 0 failures. Let me check git diff to see what changed:
+────────────────────────────────────────────────────────────────────────────────
+
+All 4207 tests pass, 0 failures. Let me check the diff and commit:
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Only `src/tools.rs` changed. Let me also run cargo fmt one more time to be safe, then commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt && cargo clippy --al… ✓ (20.7s)
+
+

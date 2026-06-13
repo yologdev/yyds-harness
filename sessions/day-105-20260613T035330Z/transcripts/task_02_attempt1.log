@@ -1,0 +1,783 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and reading the evolve skill first, then examine the relevant section of `scripts/evolve.sh`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/evolve.sh:1050..1200 ✓ (13ms)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of the evolve.sh to understand the full assessment flow, including the guard logic after the assessment phase.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1196..  ▶ read scripts/evolve.sh:1020..1070 ✓ (13ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The task is to restructure the assessment prompt so that the agent writes `session_plan/assessment.md` as its FIRST action (with a placeholder), then fills in sections incrementally as it completes each step.
+
+Currently, step 10 says "Write your assessment to session_plan/assessment.md" — this is the last step. The problem is that the agent might run through all steps but fail to write the file (e.g., due to context window pressure, step ordering, or just forgetting). By moving the file creation to step 1 (or a preamble), we guarantee the file exists early.
+
+Let me also check the `run_agent_with_completion_watch` function since the completion watch pattern `^# Assessment\b` is relevant.
+
+Let me now plan the edit:
+
+1. In the heredoc (ASSESSEOF), restructure:
+   - Add a "WRITE FIRST" instruction before step 0
+   - Tell the agent to create the file with a placeholder header first
+   - Move step 10's file writing to be step 1
+   - Keep all existing steps but renumber them
+   - Note that sections can be filled incrementally
+
+2. The completion watch pattern `^# Assessment\b` should still fire when the file is first created with the `# Assessment — Day N` header.
+
+Let me construct the new prompt text.
+
+Current structure:
+```
+Steps:
+
+0. **Tool and command discipline** — ...
+1. **Read your source architecture** — ...
+2. **Read recent history** — ...
+3. **Read memory files** — ...
+4. **Self-test** — ...
+5. **Analyze your evolution history** — ...
+6. **Read yoagent-state feedback** — ...
+7. **Audit upstream dependency boundaries** — ...
+8. **Research competitors** — ...
+9. **Check your own backlog** — ...
+10. **Write your assessment** to `session_plan/assessment.md` in this exact format:
+[template]
+```
+
+New structure:
+```
+Steps:
+
+Before any step: **CREATE THE ASSESSMENT FILE FIRST** — write a placeholder to
+`session_plan/assessment.md` with the header `# Assessment — Day $DAY`. You will
+fill in each section incrementally as you complete the corresponding step below.
+This guarantees the file exists even if you run out of time or context.
+
+After each step, update the relevant section of `session_plan/assessment.md`.
+Use `edit_file` for surgical section updates; do not rewrite the whole file each time.
+
+0. **Tool and command discipline** — ...
+1. **Read your source architecture** — ...
+... (same steps 2-9)
+10. **Finalize your assessment** — review `session_plan/assessment.md` and ensure
+    all sections are complete. The file should already exist and contain your
+    incremental work. This step is for final review, not first creation.
+```
+
+Wait, I need to be more careful. The format template should still be there. Let me think about this differently.
+
+The key change is: instead of "write at step 10", we need "create a placeholder first, then fill in incrementally."
+
+Let me draft the exact edit:
+
+1. Before step 0, add the "create file first" instruction
+2. Keep the format template but modify step 10 to be "finalize" instead of "write"
+3. Add a note that sections can be filled incrementally
+
+Let me also check the `run_agent_with_completion_watch` function to understand how the completion watch works.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.2s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'run_agent_with_completion_watch' in scripts/evolve.sh ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `run_agent_with_completion_watch` function to understand how the completion watch works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:649.. ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the completion watch mechanism:
+- `run_agent_with_completion_watch` takes `completion_file` (session_plan/assessment.md) and `completion_pattern` (`^# Assessment\b`)
+- The Python script watches the completion file periodically (every 0.5s) and checks if the pattern matches
+- If it matches, it sends SIGTERM to the agent process
+
+So if the agent creates the file early with `# Assessment — Day N`, the completion watch will fire immediately after that. That's a problem — we don't want the agent to be killed before it fills in the sections.
+
+Wait, let me re-read the task description:
+
+> The harness-side completion watch (`^# Assessment\b`) still fires correctly on the partial file.
+
+The task says this should still work. But looking at the code, the completion watch kills the process when it matches. So if the file is created early with the `# Assessment` header, the agent would be killed before it can do any research or fill in sections.
+
+Hmm, but the task says "still fires correctly on the partial file" — maybe the intent is that the completion watch fires on the first matching pattern, and the harness sees the file as "good enough" because it has some content. But this would kill the agent early.
+
+Wait, let me re-read the task more carefully:
+
+> - The assessment prompt instructs the agent to write `session_plan/assessment.md` as its FIRST action (with a placeholder), not as step 10 of 10.
+> - The harness-side completion watch (`^# Assessment\b`) still fires correctly on the partial file.
+> - The assessment phase continues to produce full assessments in the normal case.
+
+So the task expects the completion watch to fire on the partial file. The idea is: the file gets created early with the header, and even if the agent gets killed/sidetracked, the file exists. But the completion watch fires every 0.5s — so it would fire immediately after the file is created.
+
+Actually wait — looking more carefully at the completion watch logic:
+
+```python
+if completion_matches():
+    completion_seen = True
+    kill_process_group(proc, signal.SIGTERM)
+    break
+```
+
+So yes, as soon as the file contains `# Assessment`, the agent gets killed. This means we can't just create the file with the header as step 1 — the agent would be killed before doing anything else.
+
+But the task description says this is what we should do. Let me re-read...
+
+> The harness-side completion watch (`^# Assessment\b`) still fires correctly on the partial file.
+
+Maybe the intention is that the completion watch should still fire *eventually* — not immediately. Perhaps the idea is that the agent creates the file with a different initial header that doesn't match the pattern, then at the end changes it?
+
+Wait, let me look more carefully. What if we change the approach slightly: have the agent write the file early but with a marker that doesn't match the `^# Assessment\b` pattern yet? Like `# Assessment Draft — Day N` or something. Then at step 10, change it to `# Assessment — Day N`.
+
+But the task says the completion watch should still fire correctly. Let me re-read the success criteria:
+
+> - The assessment prompt instructs the agent to write `session_plan/assessment.md` as its FIRST action (with a placeholder), not as step 10 of 10.
+> - The harness-side completion watch (`^# Assessment\b`) still fires correctly on the partial file.
+
+Hmm, I think the task might want us to use a different initial header, like `# Assessment — Day N (in progress)`, which wouldn't match `^# Assessment\b` because of the `(in progress)` suffix. Then at the end, the agent changes it to `# Assessment — Day N` which matches.
+
+Actually wait, `^# Assessment\b` — the `\b` is a word boundary. So `# Assessment — Day N` matches, and `# Assessment (in progress)` would also match because `\b` means word boundary after "Assessment". Let me check... `# Assessment —` — the `—` is an em dash which is not a word character, so `\b` would match after "Assessment". Actually, `^# Assessment\b` would match `# Assessment — Day N` because after "Assessment" comes ` —` and the space is a non-word character. And `^# Assessment\b` would also match `# Assessment (in progress)` because `(` is a non-word character.
+
+So any header starting with `# Assessment` followed by a non-word character would match. This means if we create the file with `# Assessment` header first, the completion watch fires immediately.
+
+The only way to avoid this is to NOT include `# Assessment` in the initial placeholder. Maybe use something like `# Draft Assessment — Day N` or `# (draft) Assessment — Day N`.
+
+Actually, let me reconsider. Maybe the task is fine with the completion watch firing early — it just means the agent's time gets truncated but the file exists with partial content. The key goal is: "the file exists" vs "the file doesn't exist." A partial assessment is better than no assessment.
+
+But wait, that would prevent the agent from doing steps 1-9...
+
+Let me re-read the task description more carefully:
+
+> Objective:
+> Make the assessment phase reliably produce `session_plan/assessment.md` by restructuring the prompt so the file is created first, then populated — eliminating the "agent ran but didn't write the file" failure mode.
+
+The completion watch issue is addressed in the success criteria:
+
+> - The harness-side completion watch (`^# Assessment\b`) still fires correctly on the partial file.
+
+I think the answer is: yes, the completion watch fires early, but that's OK because the harness already handles the partial file case (it checks `[ -s session_plan/assessment.md ]` which just needs the file to exist and have some content). The completion watch was designed to detect when the agent has produced its output — if the output is produced incrementally, detecting it early is fine.
+
+Wait, but the completion watch *kills* the agent. So if it fires after step 0 (create file), the agent never does steps 1-9. That seems wrong.
+
+Let me look at this differently. Maybe I should change the completion pattern to only match when the assessment is "complete" — e.g., change the pattern from `^# Assessment\b` to something like `^## Capability Gaps` or `^## Research Findings` (a later section). But the task says:
+
+> - Do not change the completion watch pattern or the harness guard logic.
+
+So I can't change the pattern. The task explicitly says to keep it.
+
+OK, so the approach must be: create the file early with a header that does NOT match `^# Assessment\b`, then at the end, update the header to match. Let me think about what header would not match...
+
+`^# Assessment\b` — in regex, `\b` is a word boundary. So this matches lines that start with `# Assessment` followed by a non-word character. Space, punctuation, em-dash — all non-word characters.
+
+What if we use `# ASSESSMENT` (all caps)? No, the regex flag is `re.IGNORECASE`.
+
+What if we use `## Assessment` (double hash)? No, `^# Assessment\b` only matches single `#`.
+
+What about `#Assess ment` (no space)? No, `\b` would match between "Assess" and " ment".
+
+What if we use a completely different heading like `# Session Assessment`? The `\b` after `Assessment` wouldn't match because there's no "Assessment" string.
+
+Wait, `\b` in `^# Assessment\b` — the regex is `re.compile(sys.argv[6], re.IGNORECASE)`. So the pattern is `^# Assessment\b`. This matches any line starting with `# Assessment` where `Assessment` is followed by a word boundary (i.e., the end of the word "Assessment").
+
+So `# Assessment — Day N` matches because after "Assessment" there's a space (non-word char, so word boundary).
+`# Assessment Draft` matches.
+`# Assessment:` matches.
+
+But `# AssessmentDraft` would NOT match because after "Assessment" there's "D" which is a word character.
+
+What if I use `# AssessmentDraft — Day N` as the initial header, and then at the end, the agent changes it to `# Assessment — Day N`? The word "AssessmentDraft" would not match `^# Assessment\b`.
+
+Actually wait, hmm. Let me re-think. The task says:
+
+> - The harness-side completion watch (`^# Assessment\b`) still fires correctly on the partial file.
+
+Maybe "fires correctly on the partial file" means: when the agent finishes and the file is complete, the completion watch fires on the final `# Assessment — Day N` header. The file being created early doesn't prevent the pattern from matching later.
+
+But no — the completion watch checks the file every 0.5 seconds. If the file is created with `# Assessment — Day N` as its first line, the watch fires immediately and kills the agent.
+
+I think the cleanest solution that respects all constraints is:
+
+1. Have the agent create the file early with a "safe" header like `# AssessmentDraft — Day N` (doesn't match `^# Assessment\b`)
+2. The agent fills in sections incrementally
+3. At the final step, the agent changes the header to `# Assessment — Day N`, at which point the completion watch fires
+4. The harness sees the file exists and treats it as a valid assessment
+
+This approach:
+- Creates the file early (guarantees artifact exists)
+- Doesn't change the completion watch pattern
+- Doesn't change harness guard logic
+- Completion watch still fires on the final version
+
+But... the task explicitly says the completion watch should fire on the "partial file." Maybe I'm overthinking this. Perhaps the intent is simpler than I think.
+
+Let me re-read: "The harness-side completion watch (`^# Assessment\b`) still fires correctly on the partial file."
+
+I think "partial file" here means: the file is partially filled in, not fully complete — but the `# Assessment` header is present. The idea is that the completion watch detects the header and terminates the agent, and that's fine because the file exists with whatever content was written. The harness doesn't need a fully-complete assessment; it just needs the file to exist.
+
+But this means the agent gets killed early... which would prevent steps 1-9 from being done...
+
+Unless the idea is: the agent writes the file with header FIRST, then does steps 1-9 filling in sections, then at step 10 finalizes. The completion watch fires after step 0 (when the file first appears with `# Assessment`), killing the agent. The harness sees the file exists but with barely any content.
+
+That seems worse than the current situation — at least now, when the agent fails to write the file, it might have done all the research. With this change, the agent would be killed after step 0 with nothing.
+
+I must be misunderstanding something. Let me re-read the task one more time...
+
+OK I think there might be an important detail I'm missing. Let me look at the completion watch again:
+
+```python
+deadline = time.monotonic() + timeout_val
+completion_seen = False
+last_completion_check = 0.0
+
+def completion_matches() -> bool:
+    try:
+        return bool(completion_re.search(completion_file.read_text(encoding="utf-8", errors="replace")))
+    except OSError:
+        return False
+```
+
+The `completion_matches` function reads the file and searches for the pattern. But wait — what if the file is created empty first? `read_text()` would return an empty string, and `completion_re.search("")` returns `None`, so `bool(None)` is `False`. 
+
+So the agent could create an empty file first, then write the header. But as soon as the header is written, the watch fires.
+
+Hmm, actually the watch fires every 0.5 seconds. If the agent creates the file and writes the header in a single tool call (write_file), the file would contain the header immediately after the tool call completes. The watch would fire within 0.5 seconds.
+
+I think the answer is: the task is asking me to create the file with the header, accept that the completion watch fires earlier than before, and this is considered acceptable because a partial assessment is better than no assessment. The harness already handles partial assessments (it checks `[ -s session_plan/assessment.md ]`).
+
+But this still seems wrong from a practical standpoint. Let me think about what actually happens in practice...
+
+Actually, I think I need to look at this from a different angle. Let me check: does the completion watch fire the MOMENT the file contains the pattern, or does it fire on the NEXT check? The check happens every 0.5 seconds. So if the agent writes the file in step 0 and then immediately starts step 1, there's a 0-0.5 second window before the watch fires. The agent might get one or two more tool calls in before being killed.
+
+But this is still not great. Let me just implement what the task asks and see. The task is clear: create file first, keep pattern unchanged. Let me use a different initial header that won't match the pattern, then finalize at step 10.
+
+Actually, you know what, let me re-read one more time:
+
+> - The harness-side completion watch (`^# Assessment\b`) still fires correctly on the partial file.
+
+Maybe "partial file" doesn't mean "the file at step 0" — maybe it means "the file as it exists at the end of the agent's run, which might be partial." The key point is that the pattern still works for detection purposes. The file gets created at step 0 with a header that doesn't match, gets filled incrementally, and at step 10 the header is updated to match the pattern, at which point the watch fires and the agent is done.
+
+YES, I think that's the right interpretation. The flow would be:
+
+1. Step 0 (new): Create file with `# Assessment Draft — Day N` (doesn't match `^# Assessment\b`)
+2. Steps 1-9: Do research, fill sections incrementally
+3. Step 10 (modified): Replace `# Assessment Draft` with `# Assessment` (matches pattern, watch fires, agent done)
+
+This way:
+- File exists from step 0 (artifact guarantee)
+- Completion watch still fires on the final header
+- No harness changes needed
+- Agent can do all steps before being terminated
+
+But wait, "Assessment Draft" — does this match `^# Assessment\b`? Let me check: `# Assessment Draft` — after "Assessment" there's a space (non-word char), so `\b` (word boundary) matches. Yes, `^# Assessment\b` WOULD match `# Assessment Draft` because the word boundary is between "Assessment" and the space.
+
+So I need a header where "Assessment" is NOT followed by a word boundary. Options:
+- `# AssessmentDraft — Day N` (no space, "D" is a word char, no word boundary after "Assessment")
+- `# Assess — Day N` (different word)
+- `# [Draft] Assessment — Day N` — no, `# [Draft] Assessment` — after "Assessment" comes " —" which is non-word, so word boundary exists. But the `\b` is after "Assessment", so `[Draft] Assessment` — "[" is non-word, so the "A" starts "Assessment" with a word boundary before it. Then after "Assessment" comes " —" — word boundary. So this matches.
+
+OK the simplest solution: `# AssessmentDraft — Day $DAY` — "AssessmentDraft" is a single "word" from regex perspective, so `^# Assessment\b` won't match (there's no word boundary after "Assessment" since "D" follows).
+
+Then at step 10, change `# AssessmentDraft — Day $DAY` to `# Assessment — Day $DAY`. The `\b` after "Assessment" now matches because " —" follows.
+
+This works. Let me implement this.
+
+But wait, I also need to keep the format template. The template starts with `# Assessment — Day $DAY`. I need to modify the prompt so that:
+- The initial creation uses `# AssessmentDraft — Day $DAY` 
+- The format template shows `# Assessment — Day $DAY`
+- Step 10 says to finalize by changing the header
+
+Actually, let me reconsider. Maybe I should just use TWO headers: a draft one initially, then replace it. Or better yet, just tell the agent to use a different initial heading.
+
+Let me draft the exact change:
+
+Current (lines 1064-1176):
+```
+=== YOUR TASK: ASSESSMENT ===
+
+You are the ASSESSMENT agent — the first of two planning phases.
+Your job: understand the current state of your codebase, test yourself, and research the landscape.
+You do NOT write task files. You produce a single structured assessment document.
+
+First read and follow `skills/self-assess/SKILL.md`. That skill is the
+canonical assessment contract for yyds: DeepSeek harness behavior, yoagent-state
+evidence, gnome metrics, task artifacts, dashboard projections, transcripts,
+and source code are all part of what you are assessing. The steps below are the
+session-specific checklist for this run; the skill defines the assessment
+standard.
+
+Steps:
+
+0. **Tool and command discipline** — ...
+...
+9. **Check your own backlog** — ...
+10. **Write your assessment** to `session_plan/assessment.md` in this exact format:
+...
+```
+
+New:
+```
+=== YOUR TASK: ASSESSMENT ===
+
+You are the ASSESSMENT agent — the first of two planning phases.
+Your job: understand the current state of your codebase, test yourself, and research the landscape.
+You do NOT write task files. You produce a single structured assessment document.
+
+First read and follow `skills/self-assess/SKILL.md`. That skill is the
+canonical assessment contract for yyds: DeepSeek harness behavior, yoagent-state
+evidence, gnome metrics, task artifacts, dashboard projections, transcripts,
+and source code are all part of what you are assessing. The steps below are the
+session-specific checklist for this run; the skill defines the assessment
+standard.
+
+**CRITICAL: Create the file FIRST.** Before running any diagnostic steps, write
+a placeholder to `session_plan/assessment.md` using the exact header
+`# AssessmentDraft — Day $DAY`. This guarantees the artifact exists even if you
+run out of time or context. You will fill in each section as you complete the
+corresponding step below. Use `edit_file` for surgical section updates; do not
+rewrite the whole file each time.
+
+Steps:
+
+0. **Create assessment file** — write `session_plan/assessment.md` with the
+   placeholder header `# AssessmentDraft — Day $DAY` and empty section stubs
+   from the format template below. This must be your first tool call.
+
+1. **Tool and command discipline** — ...
+...
+10. **Finalize your assessment** — review all sections for completeness. Then
+    edit the file to replace the header `# AssessmentDraft — Day $DAY` with
+    `# Assessment — Day $DAY`. The file should already exist with your
+    incremental work. This step is for final review and header change, not
+    first creation.
+...
+```
+
+Wait, but this changes step numbering (0 becomes "create file", old 0 becomes 1, etc. up to old 9 becomes 10, and old 10 becomes 11). The task says "Keep all existing steps (0-9) but renumber them." So:
+
+Old: 0-9 (discipline through backlog), 10 (write)
+New: 0 (create file), 1-10 (discipline through backlog), 11 (finalize)
+
+Actually, let me just use a PREAMBLE before step 0, as the task suggests:
+
+> 1. Move the file-writing instruction (currently step 10) to step 1 or a preamble before step 1.
+
+Let me use a preamble approach:
+
+```
+**CRITICAL: Create the assessment file first.** Before step 0 below, write a
+placeholder to `session_plan/assessment.md` using the header
+`# AssessmentDraft — Day $DAY` and the section stubs from the format template.
+You will fill in each section incrementally as you complete the steps below.
+This guarantees the artifact exists even if you run out of time or context.
+Use `edit_file` for surgical section updates; do not rewrite the whole file.
+
+Steps:
+
+0. **Tool and command discipline** — ...
+...
+9. **Check your own backlog** — ...
+10. **Finalize your assessment** — ...
+```
+
+And step 10 becomes:
+
+```
+10. **Finalize your assessment** — review all sections you filled in during
+    steps 0-9 for completeness. Then edit the file header: replace
+    `# AssessmentDraft — Day $DAY` with `# Assessment — Day $DAY`.
+    Do NOT rewrite the whole file — the sections should already exist from
+    your incremental work. This step is for final review and header change,
+    not first creation.
+```
+
+The format template stays the same, but I should add a note about the draft header.
+
+Let me now write the exact edit. I'll use `edit_file` to make the surgical change.
+
+Actually, let me reconsider the `AssessmentDraft` approach. Let me check if `\b` in Python's `re` module really means word boundary. Yes, `\b` matches at a position between a word character (`\w` = `[a-zA-Z0-9_]`) and a non-word character.
+
+So `# AssessmentDraft — Day 105`:
+- `# ` matches
+- `A` of `AssessmentDraft` — word character, preceded by space (non-word), so word boundary here
+- But the pattern is `^# Assessment\b` — it requires `#` then space then `Assessment` then word boundary
+- In `# AssessmentDraft`, the regex engine tries: `# ` matches `# `, then `A`... yes "Assessment" matches the first 10 characters of "AssessmentDraft". Then `\b`: is there a word boundary after "Assessment" within "AssessmentDraft"? `t` is a word character, `D` is a word character — no word boundary between them. So `\b` FAILS.
+- The regex backtracks but there's no other match. So `^# Assessment\b` does NOT match `# AssessmentDraft — Day 105`.
+
+Great, confirmed.
+
+Now, what about `# Assessment — Day 105`? `# ` matches, `Assessment` matches, ` — ` — space is non-word, so `\b` matches between `t` (word) and ` ` (non-word). YES, this matches.
+
+OK so the plan is solid. Let me also think about what happens with `edit_file` vs `write_file`. The task says "write a placeholder" — the agent would use `write_file` to create the initial file. Then for each section, use `edit_file` to fill in content. At step 10, use `edit_file` to change the header.
+
+Actually, I realize I should also make sure the format template in the prompt still shows the final header `# Assessment — Day $DAY`, not the draft header. The draft header is only for the initial creation; the template should still show the final format.
+
+Let me draft the full edit now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the full picture. Let me read the exact block I need to edit more carefully, then plan the change.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1062.. ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also read lines 1160-1176 to see the end of the assessment template.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1160.. ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me plan the edit:
+
+Key insight: The completion watch pattern is `^# Assessment\b`. If I have the agent create the file with `# AssessmentDraft — Day N` (no word boundary after "Assessment"), the watch won't fire. At step 10, the agent changes it to `# Assessment — Day N`, which matches the pattern and the watch fires.
+
+This is a prompt-only change. The plan:
+
+1. Add a CRITICAL preamble before "Steps:" instructing the agent to create the file first with `# AssessmentDraft — Day $DAY`
+2. Keep steps 0-9 exactly as they are
+3. Change step 10 from "Write your assessment" to "Finalize your assessment" — edit the header from `AssessmentDraft` to `Assessment`
+4. Add a note that sections should be filled incrementally using `edit_file`
+
+Let me now craft the exact edit using `edit_file`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. Let me plan the edit carefully.
+
+**Key constraint**: The completion watch pattern is `^# Assessment\b` (Python regex). If the agent creates the file with `# Assessment — Day N`, the watch fires immediately and kills the agent. To avoid this, the initial header will use `# AssessmentDraft — Day $DAY` — "AssessmentDraft" has no word boundary after "Assessment" so the regex won't match. At the final step, the agent changes it to `# Assessment — Day $DAY`, which triggers the watch.
+
+Now let me implement the change:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (4ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now craft the edit. I need to change lines 1068-1176 of scripts/evolve.sh. The key changes:
+
+1. After "You produce a single structured assessment document." and before "First read and follow...", add the CRITICAL preamble.
+2. Change the "Steps:" heading to include the preamble.
+3. Change step 10 from "Write your assessment" to "Finalize your assessment".
+4. Update the format template header note.
+5. Update the "After writing, STOP" to reflect the new flow.
+
+Let me do this with multiple `edit_file` calls for surgical precision.
+
+First edit: Add the CRITICAL preamble before "First read and follow".
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.8s (4 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me make the first edit: add the CRITICAL preamble after "You produce a single structured assessment document." and before "First read and follow".
+────────────────────────────────────────────────────────────────────────────────
+
+
+    You do NOT write task files. You produce a single structured assessment document.
+  + 
+  + **CRITICAL: Create the assessment file FIRST.** Before running any diagnostic
+  + step below, write a placeholder to \`session_plan/assessment.md\` using the
+  + header \`# AssessmentDraft — Day $DAY\` and the section stubs from the format
+  + template further down. This guarantees the assessment artifact exists even if
+  + you run out of time or context. You will fill in each section incrementally as
+  + you complete the corresponding step. Use \`edit_file\` for surgical section
+  + updates; do not rewrite the whole file each time. The draft header
+  + \`AssessmentDraft\` (one word) is intentional — it prevents an early completion
+  + signal while you are still working.
+    
+    First read and follow \`skills/self-assess/SKILL.md\`. That skill is the
+  ✓ Auto-approved: edit: scripts/evolve.sh (3 → 13 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/evolve.sh (3 → 13 lines)
+    You do NOT write task files. You produce a single structured assessment document.
+  + 
+  + **CRITICAL: Create the assessment file FIRST.** Before running any diagnostic
+  + step below, write a placeholder to \`session_plan/assessment.md\` using the
+  + header \`# AssessmentDraft — Day $DAY\` and the section stubs from the format
+  + template further down. This guarantees the assessment artifact exists even if
+  + you run out of time or context. You will fill in each section incrementally as
+  + you complete the corresponding step. Use \`edit_file\` for surgical section
+  + updates; do not rewrite the whole file each time. The draft header
+  + \`AssessmentDraft\` (one word) is intentional — it prevents an early completion
+  + signal while you are still working.
+    
+    First read and follow \`skills/self-assess/SKILL.md\`. That skill is the
+ ✗ (24ms)
+    │ old_text not found in scripts/evolve.sh.
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me re-read the exact text to get the whitespace right.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1064.. ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the exact content. Let me make the edits carefully. I'll do several surgical edits:
+
+1. First: Insert the CRITICAL preamble between line 1066 and 1068
+2. Second: Change step 10 from "Write your assessment" to "Finalize" with the header-change instruction
+3. Third: Update the "After writing, STOP" text
+
+Let me do them one at a time.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I can see the exact content. Let me make three surgical edits.
+
+**Edit 1**: Insert CRITICAL preamble between "You produce..." and "First read...":
+    You do NOT write task files. You produce a single structured assessment document.
+  + 
+  + **CRITICAL: Create the assessment file FIRST.** Before running any diagnostic
+  + step below, write a placeholder to \`session_plan/assessment.md\` using the
+  + header \`# AssessmentDraft — Day $DAY\` and the section stubs from the format
+  + template further down. This guarantees the assessment artifact exists even if
+  + you run out of time or context. You will fill in each section incrementally as
+  + you complete the corresponding step. Use \`edit_file\` for surgical section
+  + updates; do not rewrite the whole file each time. The draft header
+  + \`AssessmentDraft\` (one word) is intentional — it prevents an early completion
+  + signal while you are still working.
+    
+    First read and follow \`skills/self-assess/SKILL.md\`. That skill is the
+    canonical assessment contract for yyds: DeepSeek harness behavior, yoagent-state
+  ✓ Auto-approved: edit: scripts/evolve.sh (8 → 18 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/evolve.sh (8 → 18 lines)
+    You do NOT write task files. You produce a single structured assessment document.
+  + 
+  + **CRITICAL: Create the assessment file FIRST.** Before running any diagnostic
+  + step below, write a placeholder to \`session_plan/assessment.md\` using the
+  + header \`# AssessmentDraft — Day $DAY\` and the section stubs from the format
+  + template further down. This guarantees the assessment artifact exists even if
+  + you run out of time or context. You will fill in each section incrementally as
+  + you complete the corresponding step. Use \`edit_file\` for surgical section
+  + updates; do not rewrite the whole file each time. The draft header
+  + \`AssessmentDraft\` (one word) is intentional — it prevents an early completion
+  + signal while you are still working.
+    
+    First read and follow \`skills/self-assess/SKILL.md\`. That skill is the
+    canonical assessment contract for yyds: DeepSeek harness behavior, yoagent-state
+ ✗ (10ms)
+    │ old_text not found in scripts/evolve.sh.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue is the backtick escaping. In the heredoc, backticks are literal (not escaped). Let me use the exact text from the file. The file has literal backticks around `skills/self-assess/SKILL.md`, not escaped ones. Let me read the exact bytes.
+────────────────────────────────────────────────────────────────────────────────
+
+The backticks in the heredoc are literal, not escaped. Let me get the exact text:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '1066,1073p' scripts/evolve.sh | cat -A ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - the backticks in the file are regular backtick characters (0x60). My `edit_file` call used `\`` which should work but maybe the tool is doing something weird. Let me try a different approach - use a larger chunk of text to make the match more reliable.
+────────────────────────────────────────────────────────────────────────────────
+
+I see the issue — let me use a larger unique chunk that includes line context:
+    Your job: understand the current state of your codebase, test yourself, and research the landscape.
+    You do NOT write task files. You produce a single structured assessment document.
+  + 
+  + **CRITICAL: Create the assessment file FIRST.** Before running any diagnostic
+  + step below, write a placeholder to \`session_plan/assessment.md\` using the
+  + header \`# AssessmentDraft — Day $DAY\` and the section stubs from the format
+  + template further down. This guarantees the assessment artifact exists even if
+  + you run out of time or context. You will fill in each section incrementally as
+  + you complete the corresponding step. Use \`edit_file\` for surgical section
+  + updates; do not rewrite the whole file each time. The draft header
+  + \`AssessmentDraft\` (one word) is intentional — it prevents an early completion
+  + signal while you are still working.
+    
+    First read and follow \`skills/self-assess/SKILL.md\`. That skill is the
+    canonical assessment contract for yyds: DeepSeek harness behavior, yoagent-state
+  ✓ Auto-approved: edit: scripts/evolve.sh (13 → 23 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/evolve.sh (13 → 23 lines)
+    Your job: understand the current state of your codebase, test yourself, and research the landscape.
+    You do NOT write task files. You produce a single structured assessment document.
+  + 
+  + **CRITICAL: Create the assessment file FIRST.** Before running any diagnostic
+  + step below, write a placeholder to \`session_plan/assessment.md\` using the
+  + header \`# AssessmentDraft — Day $DAY\` and the section stubs from the format
+  + template further down. This guarantees the assessment artifact exists even if
+  + you run out of time or context. You will fill in each section incrementally as
+  + you complete the corresponding step. Use \`edit_file\` for surgical section
+  + updates; do not rewrite the whole file each time. The draft header
+  + \`AssessmentDraft\` (one word) is intentional — it prevents an early completion
+  + signal while you are still working.
+    
+    First read and follow \`skills/self-assess/SKILL.md\`. That skill is the
+    canonical assessment contract for yyds: DeepSeek harness behavior, yoagent-state
+ ✗ (10ms)
+    │ old_text not found in scripts/evolve.sh.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edit_file tool is having trouble matching. The issue might be that the file content has literal backticks but the edit_file tool might be interpreting them differently. Let me try a completely different approach - use bash to do the edit directly, or use write_file for the whole file.
+
+Actually, let me try using sed to do the edit since it's a script file.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me use a direct bash approach to make the edit:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cp scripts/evolve.sh scripts/e… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me use Python to make the edit safely, since the heredoc content with backticks might be confusing the edit_file tool.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 <<… (91 lines) ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the exact text around step 10.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -n '1128,1131p' scripts/ev… ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see! The `$DAY` variable is being expanded by bash when the heredoc is written. So it's not literally `$DAY` in the file — it's the actual day number! And the `—` is an em dash (3 bytes in UTF-8). Let me check what the actual content is.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -n '1128,1132p' scripts/ev… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so in the file, it's literally `$DAY` — the variable is not expanded in the heredoc because the heredoc delimiter `ASSESSEOF` is not quoted. Wait, actually it IS expanded. Let me check more carefully.
+
+Actually, looking at the heredoc: `<<ASSESSEOF` — the delimiter is NOT quoted (no quotes around `ASSESSEOF`), so variable expansion DOES happen. But `$DAY` gets expanded to the day number...
+
+Wait, let me check again. In the file content I'm reading with `read_file`, I see `$DAY` literally. But when I read with `sed` I see `$DAY`. Let me check if `$DAY` is actually a literal dollar sign or if it got expanded.
+
+Looking at line 1131: `# Assessment — Day $DAY` — if `$DAY` was expanded, it would say `# Assessment — Day 105`. Let me just check the raw bytes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -n '1131p' scripts/evolve.… ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the file literally contains `$DAY` (0x24 0x44 0x41 0x59). So it IS `$DAY` literally. The heredoc expands `${DAY}` style variables but `$DAY` is safe because there's no word boundary issue... wait, actually `$DAY` in a heredoc without quoted delimiter WILL be expanded. Let me check — in bash, `<<ASSESSEOF` with unquoted delimiter does expand variables. But `$DAY` is a valid variable name... 
+
+Hmm, but the file shows `$DAY` literally. Maybe the heredoc was written at a time when `$DAY` was not set? Or maybe there's something else going on.
+
+Actually wait, let me re-examine. In the heredoc, `$DAY` is inside backticks in the markdown code block. But backticks in heredocs don't prevent variable expansion in bash. However, looking at the actual heredoc content, `$DAY` appears in multiple places and they're all showing as `$DAY` literally. 
+
+Wait, let me look at the heredoc definition again. The heredoc is written at line 1049:
+```
+cat > "$ASSESS_PROMPT" <<ASSESSEOF
+```
+
+And the heredoc ends at line 1176 with `ASSESSEOF`. Since the delimiter is not quoted, bash should expand variables. But `$DAY` IS expanded in other parts of the heredoc — e.g., line 1054 has `Day $DAY ($DATE $SESSION_TIME)` which would become `Day 105 (...)`.
+
+So `$DAY` inside the markdown code block at line 1131... Let me check: is `$DAY` inside backticks? No, it's inside a markdown code fence (` ```markdown `). Bash doesn't care about markdown — it will still expand `$DAY`.
+
+But the file shows `$DAY` literally. This means that when the file was written, `$DAY` was either empty or unset at that point. But no, earlier in the script, `$DAY` is definitely set.
+
+Actually wait — the variable expansion happens at the time `cat > "$ASSESS_PROMPT"` runs, which is during `evolve.sh` execution. At that time, `$DAY` is set to the current day number. So the ASSESS_PROMPT file would contain `Day 105` not `Day $DAY`. But the evolve.sh file itself (which is what I'm editing) contains the heredoc source with `$DAY` literally.
+
+AH, I see the confusion now. I'm reading `scripts/evolve.sh` — the SCRIPT file. The heredoc text `<<ASSESSEOF ... ASSESSEOF` is part of the script. In the script, `$DAY` is literally `$DAY` because it's in a heredoc that will expand at runtime. But the file content I'm reading IS the script file, so I see `$DAY`.
+
+The Python script I wrote tries to match against the script file content. Let me check — yes, the `sed -n '1131p' scripts/evolve.sh` showed `$DAY` literally. So the old2 string in my Python code should work...
+
+But the error says "old2 not found". Let me check what happened with edit 1 first. After edit 1, the content changed. Maybe edit 1 changed the content in a way that affected the old2 match.
+
+Let me restore the backup and try again more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cp scripts/evolve.sh.bak scrip… ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue was that edit 1 succeeded but then the content was modified and old2 didn't match the modified content. But the Python script applied edit 1 first, then tried old2 on the modified content. Let me debug by just checking if old1 was found.
+
+Wait, actually the error message says "ERROR: old2 not found!" — but edit 1 was applied successfully (no "ERROR: old1 not found!" message). So the content was modified, and now old2 doesn't match. But old2 should still be there since I only inserted text before it.
+
+Actually wait, let me check — the error output says "ERROR: old2 not found!" but not "ERROR: old1 not found!" which means old1 WAS found and replaced. But then old2 wasn't found in the modified content. That's strange because I only added text before old2.
+
+Let me check if the modification changed the line structure in a way that old2's exact text differs. Actually, maybe the issue is simpler — the backticks in the Python string. Let me check the exact content of old2 vs the file.
+
+Actually, I bet the issue is that `$DAY` in the Python triple-quoted string is being treated as... no, triple quotes don't do variable expansion in Python.
+
+Let me try a different approach. Instead of matching the exact text of step 10, let me read the file after edit 1 and check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 <<… (43 lines) ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the issue now! The `read_file` tool displayed the file with `\`` for backticks — but the actual file has literal backticks. However, when Python reads the file, the backticks are literal backtick characters. But in my Python string, I used `` ` `` (literal backtick) which should match.
+
+Wait, the `repr` output shows `\\`` which means there are escaped backslashes? No, that's `repr` — `\\` represents a single `\` character in the repr. But wait, why would there be a `\` before the backtick? 
+
+Actually, looking again: the repr shows `\\` followed by `` ` `` — that means the file contains `\`` — a backslash followed by a backtick! That's because the heredoc in the script file has `\`` to escape the backtick for... hmm, that's odd. In a bash heredoc with unquoted delimiter, backticks trigger command substitution. So `\`` is used to escape the backtick from command substitution.
+
+Now I understand — the file literally contains `\` followed by `` ` ``, not just a backtick. But the `read_file` tool displayed it as `\`` which I misinterpreted as just an escaped backtick in the display.
+
+So in the actual file content, the line is:
+```
+10. **Write your assessment** to \`session_plan/assessment.md\` in this exact format:
+```
+
+with literal backslash-backtick sequences. In my Python strings, I used `` ` `` (just backtick, no backslash). That's why the match failed.
+
+Let me fix my Python script to use `\`` (backslash-backtick) as the actual file content has it.
+
+Actually wait — looking at the `cat -A` output earlier: `10. **Write your assessment** to \`session_plan/assessment.md\` in this exact format:$` — the `\`` sequences are present. So yes, the file has `\`` (backslash-backtick).
+
+Let me fix the Python script.
+────────────────────────────────────────────────────────────────────────────────
+
+I see — the file has `\ (backslash-backtick) escape sequences because the heredoc uses unquoted delimiter. Let me fix the Python script:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 <<… (91 lines) ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So old1 was NOT found (because it has literal backticks, not backslash-backtick), but old2 WAS found. And old3 was NOT found. But the script continued anyway (no exit on error). So only edit 2 was applied.
+
+I need to reset the file and try again with the right old1 text. Let me check what old1 actually looks like in the file. The repr output shows: `First read and follow \`skills/self-assess/SKILL.md\`` — WAIT, that shows backslash-backtick! But I used raw string `r"""..."""` which should treat `\`` literally as backslash-backtick.
+
+Hmm, let me debug more carefully. The `r"""..."""` should work. But the error says old1 was not found. Let me check if there are other characters involved.
+
+Actually wait, looking at the repr output more carefully:
+```
+'You do NOT write task files. You produce a single structured assessment document.\n\nFirst read and follow `skills/self-assess/SKILL.md`. That skill is the\ncanonical...'
+```
+
+This shows `\`skills/self-assess/SKILL.md\`` — with backslash-backtick! That means the file DOES have `\``. But my old1 with `r"""...\`skills..."""` should match.
+
+Wait, the repr shows `\`` but let me check if these are literal backslash-backtick or just backtick. In Python repr, `\`` displays as `\`` because backslash is escaped in repr. But the actual string is: `\` + `` ` `` = two characters: backslash and backtick.
+
+So the file has backslash-backtick (two chars). My raw string has backslash-backtick (two chars). They should match!
+
+Let me verify by checking the exact bytes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cp scripts… (18 lines) ✓ (16ms)
+
+

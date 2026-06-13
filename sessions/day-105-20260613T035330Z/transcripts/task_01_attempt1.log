@@ -1,0 +1,541 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to read the evolve skill first, then understand the current state of the files that need to be modified, and then implement the changes.
+
+Let me begin by reading the evolve skill and the files mentioned in the task.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read skills/self-assess/SKILL.md  ▶ read scripts/task_manifest.py ✓ (23ms)
+ ✓ (20ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the current state of the task manifest and understand what needs to be changed:
+
+1. **Task manifest (`scripts/task_manifest.py`)**: Currently it detects `planning_failed` when `--planning-failed` flag is set, when `failure_text` exists, or when `tasks` list is empty. It adds `planner_produced_no_task_files` warning when `planning_failed` is true.
+
+2. **Self-assess skill (`skills/self-assess/SKILL.md`)**: Already calls out "Planner failures: no `session_plan/task_*.md`, assessment text treated as planning instructions" as something to look for. But it could be stronger about requiring task artifacts to be written.
+
+3. **Evolve skill (`skills/evolve/SKILL.md`)**: The evolve skill's rules say "Read the current task file and stay inside its scope." This already implies task files exist, but could be stronger.
+
+The task says:
+- The planning skill explicitly prioritizes writing task artifacts before extra exploration.
+- Task manifest warnings make no-task planning failures visible.
+- Future planning failures preserve enough evidence to select a repair task.
+
+Let me now look at what tests exist for task_manifest.py:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.4s (3 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ find scripts -name "test_task_manifest*" -o -name "test*task_manifest*" 2>/dev/n…  ▶ $ git diff --name-only ✓ (18ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a test file. Let me read it and also check the current state of the task manifest more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_manifest.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now understand the full picture:
+
+1. **task_manifest.py** already has pretty good support for detecting no-task planning failures. It already:
+   - Detects `planning_failed` when `--planning-failed` flag is set, when failure_text exists, or when there are no task files
+   - Adds `planner_produced_no_task_files` warning
+   - Records assessment presence/absence
+   - Handles missing assessment diagnostic
+
+2. **test_task_manifest.py** already tests these scenarios.
+
+3. The task asks me to:
+   - The planning skill explicitly prioritizes writing task artifacts before extra exploration
+   - Task manifest warnings make no-task planning failures visible
+   - Future planning failures preserve enough evidence to select a repair task
+
+Looking at the current code, the task_manifest.py already does a good job. But I need to:
+
+a) Check if there's something missing in the manifest that would help "preserve enough evidence to select a repair task" when planning fails. Currently when tasks is empty, the manifest just has `planning_failed: true` and an empty tasks list. The assessment text is captured as present/absent but the actual content isn't preserved in the manifest (only a path reference). When planning fails, the assessment text is arguably the most important evidence for selecting a repair task - it tells us what was found.
+
+b) Check the evolve skill - does it explicitly say "write task files before exploration"? Let me re-read it... The evolve skill at line 40 says "Read the current task file and stay inside its scope." This is about implementation, not planning. The self-assess skill at line 88-91 says "Then summarize which findings should become this session's task candidates. Do not implement during assessment unless the active prompt explicitly changes phase." This is close but doesn't explicitly say "write task files."
+
+Let me think about what concrete changes are needed:
+
+1. **self-assess/SKILL.md**: Add explicit guidance that when assessment produces findings, the assessor must write task files to `session_plan/`. The assessment phase should prioritize writing task artifacts before any extra exploration. The current text says "Then summarize which findings should become this session's task candidates" but doesn't explicitly say to write `session_plan/task_*.md` files.
+
+2. **evolve/SKILL.md**: The evolve skill could add a planning rule that explicitly states: write task artifacts first, before any extra exploration. But wait - the evolve skill is for implementation, not planning. The self-assess skill is the assessment/planning phase skill.
+
+3. **task_manifest.py**: The manifest already captures planning failure. But maybe we need to preserve more evidence when planning fails. When tasks is empty but assessment exists, the manifest should capture the assessment text (or a preview) so a repair task can be selected. Currently it only records whether assessment was present.
+
+Let me check what the actual gap is more carefully. The task says:
+- "The planning skill explicitly prioritizes writing task artifacts before extra exploration." → self-assess/SKILL.md needs a stronger statement
+- "Task manifest warnings make no-task planning failures visible." → already done, but can be improved
+- "Future planning failures preserve enough evidence to select a repair task." → need to preserve assessment text in the manifest when planning fails
+
+Let me look at what evolve.sh does with the task_manifest:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check how `evolve.sh` calls `task_manifest.py` and how the planning failure path works:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'task_manifest.py' in scripts/evolve.sh  ▶ search 'planning_failed' in scripts (*.py) ✓ (10ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the evolve.sh call site to understand the context better:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1540..1600 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the preseed_session_plan.py which seems to seed tasks:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'planning_failed' in scripts/preseed_session_plan.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check how `PLANNING_FAILED` gets set in evolve.sh before the task manifest call:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'PLANNING_FAILED' in scripts/evolve.sh ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the broader context of lines around 1518-1543 to understand the planning failure condition:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1510..1560 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me summarize what I need to do:
+
+1. **`skills/self-assess/SKILL.md`**: Add explicit guidance that after assessment findings are produced, the assessor MUST write task files to `session_plan/task_*.md` before any extra exploration. The assessment should prioritize producing concrete task artifacts.
+
+2. **`skills/evolve/SKILL.md`**: Not the planning skill itself - evolve is the implementation skill. But maybe add a note in the "Before Any Code Change" section or "Making Changes" about ensuring task artifacts exist.
+
+3. **`scripts/task_manifest.py`**: When planning fails and assessment text exists, preserve assessment evidence in the manifest so a repair task can be selected from it. Currently it just records whether assessment was present, not what it found.
+
+4. **`scripts/test_task_manifest.py`**: Add a test for the new behavior of preserving assessment evidence when planning fails.
+
+Let me plan the changes:
+
+### task_manifest.py changes:
+- When `planning_failed` is true and assessment text is present, include the assessment text (or a preview) in the manifest so future sessions can use it to select a repair task.
+- Add a field like `planning_failure_evidence` with the assessment body preview.
+
+### self-assess/SKILL.md changes:
+- Add explicit rule: "Write task files before extra exploration. When assessment findings are complete, write `session_plan/task_*.md` files FIRST, then do any additional exploration."
+- Make the output section say to write task files.
+
+### test_task_manifest.py changes:
+- Add a test that verifies assessment evidence is preserved in the manifest when planning fails.
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me plan my changes:
+
+1. **`scripts/task_manifest.py`**: When planning fails but assessment exists, preserve assessment evidence in the manifest so a repair task can be selected
+2. **`skills/self-assess/SKILL.md`**: Add explicit guidance to write task artifacts before extra exploration
+3. **`skills/evolve/SKILL.md`**: Add planning guard rule about task artifact priority
+4. **`scripts/test_task_manifest.py`**: Add test for assessment evidence preservation on planning failure
+
+Let me start implementing:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (15ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (4ms)
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with task #1: modify task_manifest.py to preserve assessment evidence when planning fails.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.3s (5 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The key change to task_manifest.py: when planning failed and assessment text exists, preserve the assessment body text (preview) in the manifest so a repair task can be selected. Let me add a `planning_failure_evidence` field to the planner section, and also include the assessment body preview.
+
+Looking at the current manifest structure:
+```python
+"planner": {
+    "planning_failed": planning_failed,
+    "task_count": len(tasks),
+    "selected_task_count": min(len(tasks), args.selected_limit),
+    "assessment_present": bool(assessment_text.strip()),
+    "assessment_missing_present": bool(assessment_missing_text.strip()),
+    "issue_responses_present": bool(issue_text.strip()),
+    "planning_failure_present": bool(failure_text.strip()),
+},
+```
+
+I should add a `planning_failure_evidence` field that captures the assessment text (or a preview) when planning fails. This evidence is what a future session uses to select a repair task.
+
+Also, the decision_payload should include this evidence.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                warnings.append(f"{task['task_id']}:missing_files")
+            if float(quality.get("score") or 0.0) < 0.75:
+                warnings.append(f"{task['task_id']}:thin_task_spec")
+  + 
+  +     # When planning fails, preserve assessment evidence so a repair task can
+  +     # be selected from the next session without re-reading full transcripts.
+  +     planning_failure_evidence: dict[str, str] | None = None
+  +     if planning_failed and assessment_text.strip():
+  +         preview = " ".join(assessment_text.split())[:1200]
+  +         planning_failure_evidence = {
+  +             "source": "assessment",
+  +             "body_preview": preview,
+  +         }
+  +     elif planning_failed and failure_text.strip():
+  +         preview = " ".join(failure_text.split())[:1200]
+  +         planning_failure_evidence = {
+  +             "source": "planning_failure",
+  +             "body_preview": preview,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/task_manifest.py (24 → 41 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (24 → 41 lines)
+                warnings.append(f"{task['task_id']}:missing_files")
+            if float(quality.get("score") or 0.0) < 0.75:
+                warnings.append(f"{task['task_id']}:thin_task_spec")
+  + 
+  +     # When planning fails, preserve assessment evidence so a repair task can
+  +     # be selected from the next session without re-reading full transcripts.
+  +     planning_failure_evidence: dict[str, str] | None = None
+  +     if planning_failed and assessment_text.strip():
+  +         preview = " ".join(assessment_text.split())[:1200]
+  +         planning_failure_evidence = {
+  +             "source": "assessment",
+  +             "body_preview": preview,
+  +         }
+  +     elif planning_failed and failure_text.strip():
+  +         preview = " ".join(failure_text.split())[:1200]
+  +         planning_failure_evidence = {
+  +             "source": "planning_failure",
+  +             "body_preview": preview,
+  +         }
+    
+  ... (8 more lines)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the decision_payload to include the planning_failure_evidence:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `decision_payload` to include the planning failure evidence:
+                if planner.get("planning_failed")
+                else "planning phase selected implementation tasks for this evolution session"
+            ),
+  +         "planning_failure_evidence": planner.get("planning_failure_evidence"),
+            "tasks": [
+  ✓ Auto-approved: edit: scripts/task_manifest.py (16 → 17 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (16 → 17 lines)
+                if planner.get("planning_failed")
+                else "planning phase selected implementation tasks for this evolution session"
+            ),
+  +         "planning_failure_evidence": planner.get("planning_failure_evidence"),
+            "tasks": [
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify task_manifest.py is syntactically correct:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c "import scripts.task_manifest; print('import ok')" ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run the existing tests to make sure they still pass:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (88ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Existing tests pass. Now let me add the test for assessment evidence preservation on planning failure. Let me also verify --help works:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/task_manifest.… ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add the test for assessment evidence preservation. I need to add a test that verifies the planning_failure_evidence field appears in the manifest when planning fails and assessment exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.8s (2 ✓)
+
+
+                task_manifest.write_task_decisions(manifest, out)
+                decision = json.loads((root / "tasks/task_01/decision.json").read_text(encoding="utf-8"))
+                self.assertEqual(decision["title"], "Keep evidence")
+  + 
+  +     def test_manifest_preserves_assessment_evidence_when_planning_fails(self):
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             root = Path(tmp)
+  +             plan = root / "session_plan"
+  +             plan.mkdir()
+  +             (plan / "assessment.md").write_text(
+  +                 "# Assessment\nCompetitive gaps need closing. Evaluator timeouts hide true verification state.\n",
+  +                 encoding="utf-8",
+  +             )
+  +             (plan / "planning_failure.md").write_text("planner produced no tasks\n", encoding="utf-8")
+  +             args = type(
+  +                 "Args",
+  +                 (),
+  +                 {
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_task_manifest.py (18 → 82 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_task_manifest.py (18 → 82 lines)
+                task_manifest.write_task_decisions(manifest, out)
+                decision = json.loads((root / "tasks/task_01/decision.json").read_text(encoding="utf-8"))
+                self.assertEqual(decision["title"], "Keep evidence")
+  + 
+  +     def test_manifest_preserves_assessment_evidence_when_planning_fails(self):
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             root = Path(tmp)
+  +             plan = root / "session_plan"
+  +             plan.mkdir()
+  +             (plan / "assessment.md").write_text(
+  +                 "# Assessment\nCompetitive gaps need closing. Evaluator timeouts hide true verification state.\n",
+  +                 encoding="utf-8",
+  +             )
+  +             (plan / "planning_failure.md").write_text("planner produced no tasks\n", encoding="utf-8")
+  +             args = type(
+  +                 "Args",
+  +                 (),
+  +                 {
+  +                     "session_plan_dir": plan,
+  +                     "assessment_file": plan / "assessment.md",
+  ... (47 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run the tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 9 tests pass (2 new tests). Now let me update the skills.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update self-assess/SKILL.md. I need to add explicit guidance that writing task files comes before extra exploration. Let me review the current output section and the process section.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+Now update `skills/self-assess/SKILL.md` to explicitly prioritize writing task artifacts before exploration:
+    ## Output
+  + 
+  + **Write task files before extra exploration.** When assessment findings are complete,
+  + write `session_plan/task_*.md` files first, then do any additional exploration.
+  + An assessment without task files leaves the harness with evidence but no
+  + implementation surface, which looks healthy while skipping real work.
+    
+    Write findings as prioritized evidence, not guesses:
+    
+  ···
+    ```
+    
+    Then summarize which findings should become this session's task candidates.
+  + **After writing the assessment, write at least one `session_plan/task_*.md` file**
+  + for each selected candidate before any extra exploration or research.
+    Do not implement during assessment unless the active prompt explicitly changes
+    phase. If the active prompt asks you to write `session_plan/assessment.md`, write
+    that file and stop; `session_plan/` is ephemeral harness state and should not be
+  ✓ Auto-approved: edit: skills/self-assess/SKILL.md (19 → 26 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit skills/self-assess/SKILL.md (19 → 26 lines)
+    ## Output
+  + 
+  + **Write task files before extra exploration.** When assessment findings are complete,
+  + write `session_plan/task_*.md` files first, then do any additional exploration.
+  + An assessment without task files leaves the harness with evidence but no
+  + implementation surface, which looks healthy while skipping real work.
+    
+    Write findings as prioritized evidence, not guesses:
+    
+  ···
+    ```
+    
+    Then summarize which findings should become this session's task candidates.
+  + **After writing the assessment, write at least one `session_plan/task_*.md` file**
+  + for each selected candidate before any extra exploration or research.
+    Do not implement during assessment unless the active prompt explicitly changes
+    phase. If the active prompt asks you to write `session_plan/assessment.md`, write
+    that file and stop; `session_plan/` is ephemeral harness state and should not be
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the "What To Look For" section in self-assess to add stronger language about no-task planning:
+────────────────────────────────────────────────────────────────────────────────
+
+Also update the "What To Look For" section to be more explicit:
+    - Planner failures: no `session_plan/task_*.md`, assessment text treated as
+  -    planning instructions, or selected tasks that cannot be attempted.
+  +    planning instructions, selected tasks that cannot be attempted, or assessment
+  +    that stops at analysis without writing concrete task files. **An assessment
+  +    without task files is a planning failure, not a successful assessment.**
+    - Fake completion: task success without evaluator verdict, touched files that do
+  ✓ Auto-approved: edit: skills/self-assess/SKILL.md (3 → 5 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit skills/self-assess/SKILL.md (3 → 5 lines)
+    - Planner failures: no `session_plan/task_*.md`, assessment text treated as
+  -    planning instructions, or selected tasks that cannot be attempted.
+  +    planning instructions, selected tasks that cannot be attempted, or assessment
+  +    that stops at analysis without writing concrete task files. **An assessment
+  +    without task files is a planning failure, not a successful assessment.**
+    - Fake completion: task success without evaluator verdict, touched files that do
+    - Planner failures: no `session_plan/task_*.md`, assessment text treated as
+  -   planning instructions, or selected tasks that cannot be attempted.
+  +    planning instructions, selected tasks that cannot be attempted, or assessment
+  +    that stops at analysis without writing concrete task files. **An assessment
+  +    without task files is a planning failure, not a successful assessment.**
+    - Fake completion: task success without evaluator verdict, touched files that do
+  ✓ Auto-approved: edit: skills/self-assess/SKILL.md (3 → 5 lines)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the evolve skill with explicit task-artifact-first guidance. The evolve skill is the implementation skill, but the task says "The planning skill explicitly prioritizes writing task artifacts before extra exploration." The planning skill is the self-assess skill (which does assessment + planning). The evolve skill is for implementation. Let me add a rule in the evolve skill's "Before Any Code Change" section about ensuring task artifacts exist.
+
+But actually, looking at the task description more carefully: "The planning skill explicitly prioritizes writing task artifacts before extra exploration." - I already updated self-assess/SKILL.md. Now for evolve/SKILL.md, I should add a similar rule about not proceeding without task files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+For the evolve skill, I need to add a rule about task artifact priority. The evolve skill is for implementation - the agent reads the task file and implements it. Let me add a point in the "Before Any Code Change" section about the importance of task artifacts, and a note in the safety rules about not starting implementation without task files.
+
+Actually, the evolve skill already says "Read the current task file and stay inside its scope." That's about implementation. The planning is done by self-assess. But the evolve skill manages the overall self-evolution process, so it should also emphasize that tasks need concrete files.
+
+Let me add a point in the "Before Any Code Change" section:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.3s (2 ✓)
+
+
+    ## Before Any Code Change
+    
+    1. Read the current task file and stay inside its scope.
+  - 2. Read the relevant source before editing. For evolution tasks, also read the
+  + 2. **Task files come first.** If the session has no `session_plan/task_*.md` files,
+  +    write them before any extra exploration, research, or code reading beyond what
+  +    evidence-backed task selection requires. An assessment that produces analysis
+  +    without task files is a planning failure, not a completed phase.
+  + 3. Read the relevant source before editing. For evolution tasks, also read the
+  ✓ Auto-approved: edit: skills/evolve/SKILL.md (4 → 8 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit skills/evolve/SKILL.md (4 → 8 lines)
+    ## Before Any Code Change
+    
+    1. Read the current task file and stay inside its scope.
+  - 2. Read the relevant source before editing. For evolution tasks, also read the
+  + 2. **Task files come first.** If the session has no `session_plan/task_*.md` files,
+  +    write them before any extra exploration, research, or code reading beyond what
+  +    evidence-backed task selection requires. An assessment that produces analysis
+  +    without task files is a planning failure, not a completed phase.
+  + 3. Read the relevant source before editing. For evolution tasks, also read the
+ ✓ (113ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to renumber the items since I added a new step 2. Let me look at the current state:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the renumbering is clean by reading the current state:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read skills/evolve/SKILL.md:37..62 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The numbers are wrong - I have two "3." items. I need to fix the numbering. Let me renumber all items after the new step 2.
+────────────────────────────────────────────────────────────────────────────────
+
+I need to fix the duplicate numbering:
+    3. Read the relevant source before editing. For evolution tasks, also read the
+       relevant dashboard, transcript, state, gnome, or audit artifact that motivated
+       the task.
+  - 3. Check `journals/JOURNAL.md`, `memory/active_learnings.md`, and recent commits
+  + 4. Check `journals/JOURNAL.md`, `memory/active_learnings.md`, and recent commits
+       when they can tell you whether this was attempted before.
+  - 4. Understand the expected evidence: task lineage, commit, eval verdict, state
+  + 5. Understand the expected evidence: task lineage, commit, eval verdict, state
+       event, gnome movement, dashboard change, or user-visible behavior.
+  - 5. If the task cannot be completed honestly, say why in the task artifact or
+  + 6. If the task cannot be completed honestly, say why in the task artifact or
+       issue response. Do not fake completion.
+  - 6. If current code already satisfies the task, do not finish with analysis
+  + 7. If current code already satisfies the task, do not finish with analysis
+       alone. Either add or strengthen a focused regression test, docs, or state
+       evidence that makes the satisfied behavior mechanically verifiable, or write
+       a clear obsolete-task note explaining the proof and stop without claiming a
+       landed implementation.
+  ... (3 more lines)
+  ✓ Auto-approved: edit: skills/evolve/SKILL.md (31 → 31 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit skills/evolve/SKILL.md (31 → 31 lines)
+    3. Read the relevant source before editing. For evolution tasks, also read the
+       relevant dashboard, transcript, state, gnome, or audit artifact that motivated
+       the task.
+  - 3. Check `journals/JOURNAL.md`, `memory/active_learnings.md`, and recent commits
+  + 4. Check `journals/JOURNAL.md`, `memory/active_learnings.md`, and recent commits
+       when they can tell you whether this was attempted before.
+  - 4. Understand the expected evidence: task lineage, commit, eval verdict, state
+  + 5. Understand the expected evidence: task lineage, commit, eval verdict, state
+       event, gnome movement, dashboard change, or user-visible behavior.
+  - 5. If the task cannot be completed honestly, say why in the task artifact or
+  + 6. If the task cannot be completed honestly, say why in the task artifact or
+       issue response. Do not fake completion.
+  - 6. If current code already satisfies the task, do not finish with analysis
+  + 7. If current code already satisfies the task, do not finish with analysis
+       alone. Either add or strengthen a focused regression test, docs, or state
+       evidence that makes the satisfied behavior mechanically verifiable, or write
+       a clear obsolete-task note explaining the proof and stop without claiming a
+       landed implementation.
+  - 7. Before reading or searching a guessed file path, verify it exists with
+  + 8. Before reading or searching a guessed file path, verify it exists with
+  ... (13 more lines)
+ ✓ (2.7s)
+
+

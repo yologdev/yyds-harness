@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The implementation adds regex-error detection (checking stderr for "unmatched", "invalid", "regex parse", "unclosed", "empty pattern", "repetition" when `regex=true`) and appends the recovery hint exactly as specified. Two focused tests are added — one verifies the hint appears for a regex error (unclosed `[`), the other verifies the hint is absent for non-regex errors. Both tests pass.
