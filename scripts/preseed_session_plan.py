@@ -9,11 +9,20 @@ from pathlib import Path
 
 
 LIFECYCLE_TASK_TITLE = "Close yyds state and model lifecycle gaps"
+SEARCH_FRICTION_TASK_TITLE = "Reduce recurring search-tool friction before implementation"
 ACTIONABLE_LIFECYCLE_METRICS = (
     "state_run_incomplete_count",
     "state_run_unmatched_non_validation_completed_count",
     "deepseek_model_call_incomplete_count",
     "deepseek_model_call_unmatched_completed_count",
+)
+SEARCH_FRICTION_KEYS = (
+    "search_regex_error",
+    "search_binary_match",
+    "search/grep error",
+    "search/grep errors",
+    "broken regex",
+    "binary file matches",
 )
 
 
@@ -182,14 +191,9 @@ TASKS = [
     },
     {
         "keys": (
-            "search_regex_error",
-            "search_binary_match",
-            "search/grep error",
-            "search/grep errors",
-            "broken regex",
-            "binary file matches",
+            *SEARCH_FRICTION_KEYS,
         ),
-        "title": "Reduce recurring search-tool friction before implementation",
+        "title": SEARCH_FRICTION_TASK_TITLE,
         "files": "src/tools.rs, scripts/log_feedback.py, scripts/evolve.sh",
         "objective": (
             "Turn recurring search failure evidence into safer search behavior or sharper planning "
@@ -297,6 +301,23 @@ def has_actionable_lifecycle_gap(metrics: dict[str, int]) -> bool:
     return any(metrics.get(key, 0) > 0 for key in ACTIONABLE_LIFECYCLE_METRICS)
 
 
+def has_actionable_search_friction(text: str) -> bool:
+    """Return true only for current search friction, not cumulative snapshot counts."""
+
+    for line in text.splitlines():
+        lower = line.lower().strip()
+        if not any(key in lower for key in SEARCH_FRICTION_KEYS):
+            continue
+        if "historical tool failures" in lower or "recent verified task" in lower:
+            continue
+        if lower.startswith("tool failures:") or lower.startswith("top tool-failure categories:"):
+            continue
+        if re.fullmatch(r"[-*]?\s*`?search_(?:regex_error|binary_match)`?\s*[=:]\s*\d+", lower):
+            continue
+        return True
+    return False
+
+
 def choose_task(assessment: str) -> dict[str, object]:
     current = current_evidence_text(assessment)
     lower = (current if current.strip() else assessment).lower()
@@ -309,6 +330,10 @@ def choose_task(assessment: str) -> dict[str, object]:
             continue
         if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
             if not has_actionable_lifecycle_gap(metrics):
+                continue
+            return task
+        if task["title"] == SEARCH_FRICTION_TASK_TITLE:
+            if not has_actionable_search_friction(lower):
                 continue
             return task
         return task
@@ -393,7 +418,7 @@ Top tool-failure categories:
 - `search_binary_match` = 19
 """
         task = choose_task(assessment)
-        assert task["title"] == "Reduce recurring search-tool friction before implementation", task
+        assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
         assessment = """# Assessment
 
 ## Structured State Snapshot
@@ -436,7 +461,7 @@ Only input-validation exits without RunStarted were found; pre-agent input-valid
 Tool failures: search_regex_error=57; search_binary_match=19
 """
         task = choose_task(assessment)
-        assert task["title"] == "Reduce recurring search-tool friction before implementation", task
+        assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
         assessment = "Cache metrics absent. deepseek cache-report shows nothing."
         task = choose_task(assessment)
         assert task["title"] == "Record DeepSeek prompt cache metrics during prompt runs", task
@@ -466,7 +491,17 @@ Tool failures: search_regex_error=57; search_binary_match=19
 Tool failures: search_regex_error=57; search_binary_match=19
 """
         task = choose_task(assessment)
-        assert task["title"] == "Reduce recurring search-tool friction before implementation", task
+        assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
+        assessment = """# Assessment
+
+## Structured State Snapshot
+historical tool failures: search_regex_error=57 (recent verified task: Add regex-error recovery hint to search tool err...); search_binary_match=19 (recent verified task: Extend search tool with binary-match recovery hi...)
+
+## Bugs / Friction Found
+No clunky friction found in quick tool checks.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
         assessment = """# Assessment
 
 ## Recent Changes

@@ -309,8 +309,8 @@ fn build_project_rg_args(
     let mut args = vec![
         "--line-number".to_string(),
         "--no-heading".to_string(),
+        "--with-filename".to_string(),
         "--color=never".to_string(),
-        "-I".to_string(),
         format!("--max-count={max_results}"),
     ];
     if !case_sensitive {
@@ -350,6 +350,7 @@ fn build_project_grep_args(
     let mut args = vec![
         "-r".to_string(),
         "-n".to_string(),
+        "-H".to_string(),
         "-I".to_string(),
         "--color=never".to_string(),
         format!("-m{max_results}"),

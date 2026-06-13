@@ -47,6 +47,9 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("canonical assessment contract for yyds", script)
         self.assertIn("Structured state snapshot", script)
         self.assertIn("claim health, latest lifecycle gnomes, unresolved claim families", script)
+        self.assertIn("historical tool failures", script)
+        self.assertIn("recent verified\n   task", script)
+        self.assertIn("do not promote it into\n   Bugs / Friction Found", script)
         self.assertIn("Graph-derived next-task pressure", script)
         self.assertIn("top recommendation and metric", script)
 

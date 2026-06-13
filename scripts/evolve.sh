@@ -1132,9 +1132,13 @@ Steps:
    If the trajectory includes a "Structured state snapshot", copy its compact
    claim health, latest lifecycle gnomes, unresolved claim families, task-state
    counts, and tool-failure categories into your assessment before choosing
-   candidate tasks. If it includes "Graph-derived next-task pressure", copy the
-   top recommendation and metric too; treat it as current harness evidence, not
-   dashboard-only display.
+   candidate tasks. Treat lines labeled "historical tool failures" as cumulative
+   history, not automatically current bugs; if a category says "recent verified
+   task", mention that it was recently addressed and do not promote it into
+   Bugs / Friction Found unless fresh self-test or graph evidence shows the
+   failure still reproduces. If the trajectory includes "Graph-derived next-task pressure",
+   copy the top recommendation and metric too; treat it as current harness
+   evidence, not dashboard-only display.
 
 7. **Audit upstream dependency boundaries** — yoagent and yoagent-state are foundation dependencies, not code to patch inside this harness. $YOAGENT_UPSTREAM_TARGET If DeepSeek harness evidence points to a yoagent defect or missing capability, identify the smallest upstream change and whether it needs a yyds help issue or an upstream yoagent PR.
 
@@ -1170,7 +1174,7 @@ Steps:
 [state tail / state why / graph hotspots / cache report — concrete harness signals and what they imply]
 
 ## Structured State Snapshot
-[claim health; top unresolved claim families; task-state counts; top tool-failure categories]
+[claim health; top unresolved claim families; task-state counts; top tool-failure categories; note historical/recently addressed categories separately from current bugs]
 
 ## Upstream Dependency Signals
 [any evidence that yoagent / yoagent-state needs upstream work; include whether to file help-wanted or propose a PR]
