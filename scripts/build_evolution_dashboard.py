@@ -5783,7 +5783,7 @@ HTML = r"""<!doctype html>
         ["Sessions", agg.session_count || 0, "audit-backed runs"],
         ["Strict task success", rate === null || rate === undefined ? "-" : percent(rate), `${text(agg.tasks_succeeded || 0)}/${text(agg.tasks_attempted || 0)} verified tasks${rawHint}`],
         ["Operational traces", agg.full_trace_sessions || 0, `${text(agg.lifecycle_trace_sessions || 0)} lifecycle-only / ${text(agg.feedback_only_sessions || 0)} feedback-only`],
-        ["Gnome corrections", agg.gnome_audit_correction_count || 0, `${text(agg.gnome_audit_correction_sessions || 0)} corrected session(s)`],
+        ["Metric backfills", agg.gnome_audit_correction_count || 0, `${text(agg.gnome_audit_correction_sessions || 0)} session(s) recomputed`],
         ["Blockers", agg.blocker_count || 0, "real blocking signals"],
       ];
       document.getElementById("summary").innerHTML = cards.map(([label, value, hint]) => `
@@ -5899,9 +5899,9 @@ HTML = r"""<!doctype html>
             .map(([source, count]) => ({ source, count }));
         const sourceText = topSources.slice(0, 3).map(row => `${text(row.source || "unknown")} ${text(row.count || 0)}`).join(", ");
         notes.push({
-          kind: "Gnome audit",
+          kind: "Metric audit",
           className: "info",
-          text: `${text(gnomeCorrectionCount)} dashboard gnome correction(s) across ${text(gnomeAudit.corrected_session_count || agg.gnome_audit_correction_sessions || 0)} session(s).${sourceText ? ` Top sources: ${sourceText}.` : ""}`
+          text: `${text(gnomeCorrectionCount)} gnome metric value(s) were backfilled or corrected from stronger dashboard evidence across ${text(gnomeAudit.corrected_session_count || agg.gnome_audit_correction_sessions || 0)} session(s); this is a mix of historical backfill and real stale-metric fixes, not a raw bug count.${sourceText ? ` Top sources: ${sourceText}.` : ""}`
         });
       }
       document.getElementById("metricNotes").innerHTML = notes.length
