@@ -3277,22 +3277,32 @@ def cache_claim(gnomes: dict[str, Any]) -> dict[str, Any]:
     )
     if ratio is not None and token_backed:
         status = "proven"
+        classification = "trusted_ratio_token_backed"
         detail = "Trusted cache ratio is backed by hit/miss token counts."
     elif ratio is not None:
         status = "conflict"
+        classification = "trusted_ratio_without_tokens"
         detail = "Trusted cache ratio is present without token evidence."
     elif prose_mentions and unverified >= prose_mentions:
         status = "proven"
+        classification = "prose_ratio_marked_unverified"
         detail = "Prose-only cache ratio claims are withheld from trusted KPI and counted as unverified."
     elif prose_mentions:
         status = "conflict"
+        classification = "prose_ratio_not_marked_unverified"
         detail = "Prose-only cache ratio claims exist but are not counted as unverified."
     elif expected_events and missing_events:
         status = "missing"
+        classification = "expected_metric_events_missing"
         detail = "Completed DeepSeek model calls have token usage but no CacheMetricsRecorded token evidence was captured."
+    elif expected_events and metric_events >= expected_events:
+        status = "proven"
+        classification = "expected_metric_events_present"
+        detail = "Expected DeepSeek cache metric events were captured."
     else:
-        status = "observed"
-        detail = "No trusted DeepSeek cache ratio or expected cache metric evidence was captured."
+        status = "proven"
+        classification = "no_cache_metric_expected"
+        detail = "No trusted cache ratio was claimed and no completed DeepSeek model call required cache metrics."
     return claim_row(
         "deepseek_cache_ratio_is_token_backed_or_marked_unverified",
         status,
@@ -3310,6 +3320,7 @@ def cache_claim(gnomes: dict[str, Any]) -> dict[str, Any]:
             "expected_metric_events": expected_events,
             "metric_events": metric_events,
             "missing_metric_events": missing_events,
+            "classification": classification,
         },
         [
             "deepseek_cache_hit_ratio",

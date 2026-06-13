@@ -1773,6 +1773,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             latest = data["sessions"][0]["latest_gnomes"]
             self.assertEqual(latest["deepseek_cache_metric_missing_count"], 1)
             self.assertEqual(cache_claim["status"], "missing")
+            self.assertEqual(cache_claim["actual"]["classification"], "expected_metric_events_missing")
             self.assertEqual(cache_claim["actual"]["expected_metric_events"], 1)
             self.assertEqual(cache_claim["actual"]["metric_events"], 0)
             self.assertIn("Completed DeepSeek model calls", cache_claim["detail"])
@@ -1839,6 +1840,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(latest["deepseek_cache_metric_event_count"], 1)
             self.assertEqual(latest["deepseek_cache_metric_missing_count"], 0)
             self.assertEqual(cache_claim["status"], "proven")
+            self.assertEqual(cache_claim["actual"]["classification"], "trusted_ratio_token_backed")
             self.assertEqual(cache_claim["session_id"], "day-1")
             self.assertTrue(
                 all(claim["session_id"] == "day-1" for claim in claims["sessions"][0]["claims"])
@@ -1927,9 +1929,10 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 "journals/JOURNAL.md",
             )
             self.assertIn("do not pair by run_id", model_claim["detail"])
-            self.assertEqual(cache_claim["status"], "observed")
+            self.assertEqual(cache_claim["status"], "proven")
+            self.assertEqual(cache_claim["actual"]["classification"], "no_cache_metric_expected")
             self.assertEqual(cache_claim["actual"]["expected_metric_events"], 0)
-            self.assertIn("No trusted DeepSeek cache ratio", cache_claim["detail"])
+            self.assertIn("no completed DeepSeek model call required cache metrics", cache_claim["detail"])
             self.assertIn("Incomplete DeepSeek model calls", html)
             self.assertIn("started without a matching ModelCallCompleted", html)
 
