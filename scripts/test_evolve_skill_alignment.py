@@ -30,7 +30,7 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn("YOYO_SKILL_FLAGS=(--skills ./skills)", script)
-        self.assertIn("First read and follow `skills/evolve/SKILL.md`", script)
+        self.assertIn("First read and follow \\`skills/evolve/SKILL.md\\`", script)
         self.assertIn("canonical\nimplementation contract for yyds self-evolution", script)
         self.assertIn("Follow the evolve skill rules", script)
         self.assertIn("Verify guessed file paths with \\`list_files\\` or \\`git ls-files <path>\\`", script)
@@ -43,7 +43,7 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
     def test_assessment_phase_uses_self_assess_skill(self):
         script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn("First read and follow `skills/self-assess/SKILL.md`", script)
+        self.assertIn("First read and follow \\`skills/self-assess/SKILL.md\\`", script)
         self.assertIn("canonical assessment contract for yyds", script)
         self.assertIn("Structured state snapshot", script)
         self.assertIn("claim health, latest lifecycle gnomes, unresolved claim families", script)

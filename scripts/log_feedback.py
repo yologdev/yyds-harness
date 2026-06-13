@@ -51,6 +51,12 @@ SEARCH_ERROR_RE = re.compile(
     r"\bSearch error:\s*|\bfatal:\s+no pattern given\b",
     re.IGNORECASE,
 )
+PROMPT_HEREDOC_EXPANSION_RE = re.compile(
+    r"\./scripts/evolve\.sh:\s+line\s+\d+:\s+"
+    r"(?:[^:]+:\s+command not found|[^:]+:\s+Permission denied|"
+    r"[^:]+:\s+No such file or directory|[^:]+:\s+Is a directory)",
+    re.IGNORECASE,
+)
 PLANNER_NO_TASK_RE = re.compile(r"Planning agent produced 0 tasks", re.IGNORECASE)
 PROTECTED_FILE_RE = re.compile(r"modified protected files(?:\s*:|\s+[—-]\s+reverting)", re.IGNORECASE)
 TASK_STARTED_RE = re.compile(r"(?:→|->)\s*Task\s+\d+:", re.IGNORECASE)
@@ -135,6 +141,7 @@ GNOME_KEYS = [
     "audit_capture_coverage",
     "closed_loop_fix_rate",
     "evolution_friction_count",
+    "prompt_heredoc_expansion_error_count",
     "command_timeout_count",
     "evaluator_timeout_count",
     "search_error_count",
@@ -486,6 +493,8 @@ def parse_log(log_text: str) -> dict[str, Any]:
     command_timeouts = 0
     evaluator_timeouts = 0
     search_errors = 0
+    prompt_heredoc_expansion_errors = 0
+    prompt_heredoc_context_lines = 0
     protected_file_reverts = 0
     seed_task_contradictions = 0
     task_started = 0
@@ -508,6 +517,11 @@ def parse_log(log_text: str) -> dict[str, Any]:
         message = log_message(line)
         lower = message.lower()
         noise = is_noise_failure_message(message)
+        if prompt_heredoc_context_lines > 0:
+            prompt_heredoc_context_lines -= 1
+        if PROMPT_HEREDOC_EXPANSION_RE.search(message):
+            prompt_heredoc_expansion_errors += 1
+            prompt_heredoc_context_lines = 12
         if not noise and COMMAND_TIMEOUT_RE.search(message):
             command_timeouts += 1
         if not noise and EVALUATOR_TIMEOUT_RE.search(message):
@@ -517,7 +531,7 @@ def parse_log(log_text: str) -> dict[str, Any]:
             current_task_eval_infra_failed = True
         if PLANNER_NO_TASK_RE.search(message):
             planner_no_tasks += 1
-        if not noise and SEARCH_ERROR_RE.search(message):
+        if not noise and SEARCH_ERROR_RE.search(message) and prompt_heredoc_context_lines <= 0:
             search_errors += 1
         if not noise and PROTECTED_FILE_RE.search(message):
             protected_file_reverts += 1
@@ -600,6 +614,7 @@ def parse_log(log_text: str) -> dict[str, Any]:
         command_timeouts
         + evaluator_timeouts
         + search_errors
+        + prompt_heredoc_expansion_errors
         + protected_file_reverts
         + task_reverts
     )
@@ -616,6 +631,7 @@ def parse_log(log_text: str) -> dict[str, Any]:
         "command_timeout_count": command_timeouts,
         "evaluator_timeout_count": evaluator_timeouts,
         "search_error_count": search_errors,
+        "prompt_heredoc_expansion_error_count": prompt_heredoc_expansion_errors,
         "protected_file_revert_count": protected_file_reverts,
         "task_seed_contradiction_count": seed_task_contradictions,
         "task_started_count": task_started,
@@ -1517,6 +1533,14 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "action": "prefer bounded diagnostics and targeted commands before broad cargo/state scans",
             }
         )
+    if int(metrics.get("prompt_heredoc_expansion_error_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "prompt_heredoc_expansion_error",
+                "fingerprint": "evolve prompt heredoc executed Markdown code spans before yyds started",
+                "action": "escape prompt Markdown backticks or render prompts from quoted templates with explicit variable substitution",
+            }
+        )
     if int(metrics.get("search_error_count") or 0) > 0:
         lessons.append(
             {
@@ -1807,6 +1831,33 @@ def run_self_tests() -> int:
         "cache hit ratio parsed from tokens",
         abs(float(operational["deepseek_cache_hit_ratio"]) - 0.843842) < 0.00001,
         operational,
+    )
+    prompt_expansion = parse_log(
+        "\n".join(
+            [
+                "evolve\tRun evolution session\t2026-06-13T17:28:20Z ./scripts/evolve.sh: line 1049: skills/self-assess/SKILL.md: Permission denied",
+                "evolve\tRun evolution session\t2026-06-13T17:28:20Z ./scripts/evolve.sh: line 1049: list_files: command not found",
+                "evolve\tRun evolution session\t2026-06-13T17:28:20Z fatal: no pattern given",
+                "evolve\tRun evolution session\t2026-06-13T17:28:20Z Usage: grep [OPTION]... PATTERNS [FILE]...",
+                "evolve\tRun evolution session\t2026-06-13T17:28:20Z ./scripts/evolve.sh: line 1049: .yoyo/state: Is a directory",
+            ]
+        )
+    )
+    check(
+        "prompt heredoc expansion counted separately",
+        prompt_expansion["prompt_heredoc_expansion_error_count"] == 3,
+        prompt_expansion,
+    )
+    check(
+        "prompt heredoc fatal pattern is not search friction",
+        prompt_expansion["search_error_count"] == 0,
+        prompt_expansion,
+    )
+    prompt_lessons = [lesson["kind"] for lesson in top_lessons(prompt_expansion)]
+    check(
+        "prompt heredoc expansion emits actionable lesson",
+        "prompt_heredoc_expansion_error" in prompt_lessons,
+        prompt_lessons,
     )
     yyds_usage = parse_log(
         "evolve\tRun evolution session\t2026-06-09T12:00:00Z "

@@ -1083,7 +1083,7 @@ You are the ASSESSMENT agent — the first of two planning phases.
 Your job: understand the current state of your codebase, test yourself, and research the landscape.
 You do NOT write task files. You produce a single structured assessment document.
 
-First read and follow `skills/self-assess/SKILL.md`. That skill is the
+First read and follow \`skills/self-assess/SKILL.md\`. That skill is the
 canonical assessment contract for yyds: DeepSeek harness behavior, yoagent-state
 evidence, gnome metrics, task artifacts, dashboard projections, transcripts,
 and source code are all part of what you are assessing. The steps below are the
@@ -1093,22 +1093,22 @@ standard.
 Steps:
 
 0. **Tool and command discipline** — keep assessment evidence bounded. Prefer
-   `list_files` for path discovery and the `search` tool for simple identifiers;
+   \`list_files\` for path discovery and the \`search\` tool for simple identifiers;
    both stay closer to the harness tool model than broad shell scans. Do not
-   send regex-punctuation snippets or flag-like literals such as `--json` to the
+   send regex-punctuation snippets or flag-like literals such as \`--json\` to the
    search tool. If you need a literal snippet or flag, use a bounded file read or
    bash fixed-string search with an option terminator, for example
-   `grep -R -F -- '--json' src/commands_state.rs`. If you use bash search, first
-   check `command -v rg`; otherwise use `git ls-files`, `git grep -n --`, or
-   `grep -R -F --` with scoped paths. Do not search `.git`, `target`, or
-   `.yoyo/state`. Do not assume `src/main.rs` exists; discover the binary entry
+   \`grep -R -F -- '--json' src/commands_state.rs\`. If you use bash search, first
+   check \`command -v rg\`; otherwise use \`git ls-files\`, \`git grep -n --\`, or
+   \`grep -R -F --\` with scoped paths. Do not search \`.git\`, \`target\`, or
+   \`.yoyo/state\`. Do not assume \`src/main.rs\` exists; discover the binary entry
    point first.
 
-1. **Read your source architecture, not every source file** — use `list_files src`
-   or `git ls-files 'src/*.rs'`, `wc -l`, module declarations, and a few key
+1. **Read your source architecture, not every source file** — use \`list_files src\`
+   or \`git ls-files 'src/*.rs'\`, \`wc -l\`, module declarations, and a few key
    entry points to summarize module structure, line counts, and ownership. Read
    focused files only when the trajectory/state evidence points at them. Do not
-   read all `.rs` files under `src/`.
+   read all \`.rs\` files under \`src/\`.
 
 2. **Read recent history** — journals/JOURNAL.md (last 10 entries), git log (last 10 commits). Summarize what changed recently. Also check journals/ for any external project journals (e.g., journals/llm-wiki.md) and briefly note recent external work.
 
@@ -1190,7 +1190,7 @@ Steps:
 
 Keep the assessment to ~3 pages max. Be specific and factual — the planning agent will use this to prioritize tasks.
 
-After writing, STOP. Do not commit `session_plan/assessment.md`: `session_plan/`
+After writing, STOP. Do not commit \`session_plan/assessment.md\`: \`session_plan/\`
 is intentionally gitignored ephemeral planning state, and the harness will copy
 the assessment into the audit-log session artifact. Do not write task files. Do
 not implement anything.
@@ -1511,7 +1511,7 @@ TASK SIZING RULES — follow these strictly:
 Also create session_plan/issue_responses.md with your planned response for each issue:
 - #N: [what you'll do — implement as task, won't fix because X, already resolved, need more time, etc.]
 
-After writing all files, STOP. Do not commit `session_plan/`: it is
+After writing all files, STOP. Do not commit \`session_plan/\`: it is
 intentionally gitignored ephemeral planning state, and the harness will copy the
 plan artifacts into the audit-log session artifact. Do not implement anything.
 Your job is planning only.
@@ -1701,7 +1701,7 @@ $TASK_DESC
 ${CHECKPOINT_SECTION:+
 $CHECKPOINT_SECTION
 }
-First read and follow `skills/evolve/SKILL.md`. That skill is the canonical
+First read and follow \`skills/evolve/SKILL.md\`. That skill is the canonical
 implementation contract for yyds self-evolution.
 
 Follow the evolve skill rules:
