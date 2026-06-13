@@ -1518,7 +1518,7 @@ fi
 
 # Check if planning agent produced tasks
 TASK_COUNT=0
-for _f in session_plan/task_*.md; do [ -f "$_f" ] && TASK_COUNT=$((TASK_COUNT + 1)); done
+for _f in session_plan/task_[0-9][0-9].md; do [ -f "$_f" ] && TASK_COUNT=$((TASK_COUNT + 1)); done
 PLANNING_FAILED=false
 if [ "$TASK_COUNT" -eq 0 ]; then
     echo "  Planning guard failed: planning agent produced 0 tasks — recording planning failure; no fake task will run."
@@ -1550,6 +1550,12 @@ mkdir -p "$SESSION_STAGING/tasks"
 [ -f session_plan/assessment_missing.md ] && cp session_plan/assessment_missing.md "$SESSION_STAGING/tasks/assessment_missing.md" 2>/dev/null || true
 [ -f session_plan/issue_responses.md ] && cp session_plan/issue_responses.md "$SESSION_STAGING/tasks/issue_responses.md" 2>/dev/null || true
 [ -f session_plan/planning_failure.md ] && cp session_plan/planning_failure.md "$SESSION_STAGING/tasks/planning_failure.md" 2>/dev/null || true
+for _obsolete_note in session_plan/task_[0-9][0-9]_obsolete.md; do
+    [ -f "$_obsolete_note" ] || continue
+    _obsolete_task_id=$(basename "$_obsolete_note" _obsolete.md)
+    mkdir -p "$SESSION_STAGING/tasks/$_obsolete_task_id"
+    cp "$_obsolete_note" "$SESSION_STAGING/tasks/$_obsolete_task_id/obsolete.md" 2>/dev/null || true
+done
 TASK_MANIFEST_ARGS=(
     --session-plan-dir session_plan
     --assessment-file session_plan/assessment.md
@@ -1577,7 +1583,7 @@ echo "  Phase B: Implementation..."
 IMPL_TIMEOUT=1200
 TASK_NUM=0
 TASK_FAILURES=0
-for TASK_FILE in session_plan/task_*.md; do
+for TASK_FILE in session_plan/task_[0-9][0-9].md; do
     [ -f "$TASK_FILE" ] || continue
     TASK_NUM=$((TASK_NUM + 1))
 
@@ -1602,6 +1608,45 @@ for TASK_FILE in session_plan/task_*.md; do
     cp "$TASK_FILE" "$TASK_EVIDENCE_DIR/task.md" 2>/dev/null || true
 
     echo "  → Task $TASK_NUM: $task_title"
+
+    TASK_CONTRADICTION_REASON=$(TASK_DECISION_JSON="$TASK_EVIDENCE_DIR/decision.json" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+try:
+    task = json.loads(Path(os.environ["TASK_DECISION_JSON"]).read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError, KeyError):
+    task = {}
+quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
+alignment = (
+    quality.get("assessment_alignment")
+    if isinstance(quality.get("assessment_alignment"), dict)
+    else {}
+)
+if alignment.get("contradicted_by_assessment"):
+    evidence = alignment.get("evidence") if isinstance(alignment.get("evidence"), list) else []
+    print("; ".join(str(item) for item in evidence if item) or "assessment contradicts task premise")
+PY
+)
+    if [ -n "$TASK_CONTRADICTION_REASON" ]; then
+        echo "    Skipping Task $TASK_NUM — fresh assessment contradicts the task premise."
+        if ! PRE_TASK_SHA=$(git rev-parse HEAD 2>&1); then
+            PRE_TASK_SHA=""
+        fi
+        cat > "$TASK_EVIDENCE_DIR/obsolete.md" <<OBSOLETE
+# Task skipped before implementation
+
+Reason: $TASK_CONTRADICTION_REASON
+
+The manifest marked this task as contradicted by the fresh assessment, so the harness skipped the implementation agent instead of spending a DeepSeek task attempt on stale work.
+OBSOLETE
+        TASK_LINEAGE_PAYLOAD=$(task_lineage_payload "reverted" "$PRE_TASK_SHA" "Task contradicted by fresh assessment: $TASK_CONTRADICTION_REASON")
+        write_task_outcome_evidence "$TASK_ID" "$TASK_LINEAGE_PAYLOAD" || true
+        record_state_event "TaskLineageLinked" "$TASK_LINEAGE_PAYLOAD"
+        TASK_FAILURES=$((TASK_FAILURES + 1))
+        continue
+    fi
 
     # Save pre-task state for rollback
     if ! PRE_TASK_SHA=$(git rev-parse HEAD 2>&1); then
@@ -2380,7 +2425,7 @@ if [ "$TASK_FAILURES" -eq "$TASK_NUM" ] && [ "$TASK_NUM" -gt 0 ]; then
     echo "  WARNING: All $TASK_NUM tasks were reverted — planning-only session."
     if command -v gh &>/dev/null; then
         PLAN_TASK_LIST=""
-        for f in session_plan/task_*.md; do
+        for f in session_plan/task_[0-9][0-9].md; do
             [ -f "$f" ] || continue
             t=$(grep '^Title:' "$f" | head -1 | sed 's/^Title:[[:space:]]*//' || true)
             PLAN_TASK_LIST="$PLAN_TASK_LIST

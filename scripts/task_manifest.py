@@ -13,11 +13,42 @@ from typing import Any
 
 FIELD_RE = re.compile(r"^([A-Za-z][A-Za-z 0-9_-]*):\s*(.*)$")
 GOAL_RE = re.compile(r"(?im)^(?:#+\s*)?(?:goal|objective)\s*:?\s*$|^(?:goal|objective)\s*:")
+TASK_FILE_RE = re.compile(r"^task_\d{2}\.md$")
 FILE_ANNOTATION_RE = re.compile(
     r"\s+\((?:new|new file|new module|existing|modified|created|generated|optional)[^)]*\)\s*$",
     re.IGNORECASE,
 )
 FILE_TRAILING_NOTE_RE = re.compile(r"\s+(?:-|--|—)\s+.*$")
+
+
+def assessment_alignment(task_text: str, assessment_text: str) -> dict[str, Any]:
+    task_lower = task_text.lower()
+    assessment_lower = assessment_text.lower()
+    contradicted = False
+    evidence: list[str] = []
+
+    cold_start_task = "state why last-failure" in task_lower and "no state event found" in task_lower
+    cold_start_healthy = "state why last-failure" in assessment_lower and any(
+        phrase in assessment_lower
+        for phrase in (
+            "no failure found",
+            "healthy state",
+            "shows diagnostic guidance",
+            "now properly explains cold-start",
+            "returned nothing - meaning no",
+            "returned nothing — meaning no",
+        )
+    )
+    if cold_start_task and cold_start_healthy:
+        contradicted = True
+        evidence.append(
+            "task says state why last-failure returns no state event, but assessment reports healthy diagnostic output"
+        )
+
+    return {
+        "contradicted_by_assessment": contradicted,
+        "evidence": evidence,
+    }
 
 
 def normalize_file_entry(value: object) -> str:
@@ -47,7 +78,7 @@ def read_text(path: Path | None) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def parse_task(path: Path, task_number: int) -> dict[str, Any]:
+def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[str, Any]:
     text = read_text(path)
     fields: dict[str, str] = {}
     body_lines: list[str] = []
@@ -73,7 +104,10 @@ def parse_task(path: Path, task_number: int) -> dict[str, Any]:
         fields.get("title", "").strip().lower() == "self-improvement"
         and "identify the most impactful improvement" in lower
     )
+    alignment = assessment_alignment(text, assessment_text)
     quality_score = sum([has_success, has_verification, has_goal, not generic]) / 4.0
+    if alignment["contradicted_by_assessment"]:
+        quality_score = min(quality_score, 0.5)
     title = fields.get("title") or f"Task {task_number}"
     files = split_list(fields.get("files", ""))
     return {
@@ -91,6 +125,7 @@ def parse_task(path: Path, task_number: int) -> dict[str, Any]:
             "has_success_criteria": has_success,
             "has_verification": has_verification,
             "generic_self_improvement": generic,
+            "assessment_alignment": alignment,
             "score": round(quality_score, 4),
         },
     }
@@ -98,10 +133,14 @@ def parse_task(path: Path, task_number: int) -> dict[str, Any]:
 
 def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = args.session_plan_dir
-    task_paths = sorted(plan_dir.glob("task_*.md")) if plan_dir.is_dir() else []
-    tasks = [parse_task(path, index + 1) for index, path in enumerate(task_paths)]
-    selected = tasks[: args.selected_limit]
+    task_paths = (
+        sorted(path for path in plan_dir.glob("task_*.md") if TASK_FILE_RE.match(path.name))
+        if plan_dir.is_dir()
+        else []
+    )
     assessment_text = read_text(args.assessment_file)
+    tasks = [parse_task(path, index + 1, assessment_text) for index, path in enumerate(task_paths)]
+    selected = tasks[: args.selected_limit]
     assessment_missing_text = read_text(getattr(args, "assessment_missing_file", None))
     issue_text = read_text(args.issue_responses_file)
     failure_text = read_text(args.planning_failure_file)
@@ -113,6 +152,9 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
         if quality.get("generic_self_improvement"):
             warnings.append(f"{task['task_id']}:generic_self_improvement")
+        alignment = quality.get("assessment_alignment") if isinstance(quality, dict) else {}
+        if isinstance(alignment, dict) and alignment.get("contradicted_by_assessment"):
+            warnings.append(f"{task['task_id']}:assessment_contradiction")
         if not task.get("files"):
             warnings.append(f"{task['task_id']}:missing_files")
         if float(quality.get("score") or 0.0) < 0.75:
