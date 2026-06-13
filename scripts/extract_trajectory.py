@@ -679,7 +679,32 @@ def load_log_feedback(audit_dir: Path) -> list[dict]:
     return [t[2] for t in triples[:WINDOW_SESSIONS]]
 
 
-def render_log_feedback(feedbacks: list[dict]) -> str:
+def load_corrected_log_feedback_lessons(audit_dir: Path) -> list[dict[str, Any]]:
+    if not audit_dir.exists() or not audit_dir.is_dir():
+        return []
+    try:
+        from build_evolution_dashboard import load_sessions
+    except Exception as e:  # pragma: no cover - defensive degradation for cron
+        warn(f"could not import dashboard lessons for trajectory feedback: {e}")
+        return []
+    try:
+        sessions = load_sessions(audit_dir, Path.cwd())
+    except Exception as e:  # pragma: no cover - defensive degradation for cron
+        warn(f"could not build corrected trajectory feedback lessons: {e}")
+        return []
+    if not sessions:
+        return []
+    work = sessions[-1].get("work_summary") if isinstance(sessions[-1].get("work_summary"), dict) else {}
+    lessons = work.get("corrected_gnome_lessons")
+    if not isinstance(lessons, list):
+        return []
+    return [lesson for lesson in lessons if isinstance(lesson, dict)]
+
+
+def render_log_feedback(
+    feedbacks: list[dict],
+    corrected_lessons: Optional[list[dict[str, Any]]] = None,
+) -> str:
     if not feedbacks:
         return ""
     latest = feedbacks[0]
@@ -693,9 +718,12 @@ def render_log_feedback(feedbacks: list[dict]) -> str:
         f"latest score={score} confidence={confidence} recurring_failures={recurring} state_capture={capture}",
     ]
 
-    lessons = latest.get("top_lessons")
+    lessons = corrected_lessons if corrected_lessons else latest.get("top_lessons")
     if isinstance(lessons, list) and lessons:
-        lines.append("Top lessons for next run:")
+        if corrected_lessons:
+            lines.append("Corrected top lessons for next run:")
+        else:
+            lines.append("Top lessons for next run:")
         for lesson in lessons[:3]:
             if not isinstance(lesson, dict):
                 continue
@@ -908,6 +936,7 @@ def main() -> int:
     sessions_audited, provider_hits = collect_provider_errors(audit_dir)
     ci_clusters = collect_failed_ci_fingerprints(repo)
     log_feedback = load_log_feedback(audit_dir)
+    corrected_feedback_lessons = load_corrected_log_feedback_lessons(audit_dir)
 
     sections: list[str] = []
     s = render_outcomes(outcomes)
@@ -931,7 +960,7 @@ def main() -> int:
     s = render_graph_suggestions(audit_dir)
     if s:
         sections.append(s)
-    s = render_log_feedback(log_feedback)
+    s = render_log_feedback(log_feedback, corrected_feedback_lessons)
     if s:
         sections.append(s)
 

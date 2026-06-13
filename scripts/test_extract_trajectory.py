@@ -58,6 +58,36 @@ class ExtractTrajectoryTests(unittest.TestCase):
 
             self.assertEqual(feedbacks[0]["metrics"]["coding_log_score"], 0.9)
 
+    def test_log_feedback_prefers_corrected_lessons(self) -> None:
+        rendered = extract_trajectory.render_log_feedback(
+            [
+                {
+                    "metrics": {
+                        "coding_log_score": 0.9,
+                        "coding_log_confidence": 1.0,
+                        "recurring_failure_count": 1,
+                        "state_capture_coverage": 1.0,
+                    },
+                    "top_lessons": [
+                        {
+                            "fingerprint": "seeded task was contradicted by fresh assessment evidence",
+                            "action": "replace stale seed",
+                        }
+                    ],
+                }
+            ],
+            [
+                {
+                    "fingerprint": "DeepSeek model call lifecycle was incomplete",
+                    "action": "close model-call lifecycle events",
+                }
+            ],
+        )
+
+        self.assertIn("Corrected top lessons for next run:", rendered)
+        self.assertIn("DeepSeek model call lifecycle was incomplete", rendered)
+        self.assertNotIn("seeded task was contradicted", rendered)
+
     def test_raw_success_without_task_artifacts_is_not_rendered_as_verified(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)
