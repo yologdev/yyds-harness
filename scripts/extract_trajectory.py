@@ -955,11 +955,12 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
     for session in states.get("sessions", []) if isinstance(states.get("sessions"), list) else []:
         if not isinstance(session, dict):
             continue
-        failure_summary = (
-            (session.get("tool_failures") or {}).get("summary")
-            if isinstance(session.get("tool_failures"), dict)
-            else {}
-        )
+        tool_failure_data = session.get("tool_failures") if isinstance(session.get("tool_failures"), dict) else {}
+        failure_summary = {}
+        if isinstance(tool_failure_data.get("unrecovered_summary"), dict):
+            failure_summary = tool_failure_data.get("unrecovered_summary") or {}
+        elif isinstance(tool_failure_data.get("summary"), dict):
+            failure_summary = tool_failure_data.get("summary") or {}
         category_counts = (
             failure_summary.get("category_counts")
             if isinstance(failure_summary, dict)
@@ -1024,7 +1025,7 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
             for category, count in top_tool_failures[:3]:
                 suffix = " addressed" if category in addressed_tool_failures else ""
                 tool_summary.append(f"{category}={count}{suffix}")
-            summary_parts.append("historical tool failures: " + ", ".join(tool_summary))
+            summary_parts.append("historical unrecovered tool failures: " + ", ".join(tool_summary))
         lines.append("; ".join(summary_parts))
     if latest_lifecycle_counts:
         keys = (
@@ -1068,7 +1069,7 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                 part += f" (recent verified task: {title})"
             failure_parts.append(part)
         lines.append(
-            "historical tool failures: "
+            "historical unrecovered tool failures: "
             + "; ".join(failure_parts)
         )
     if len(lines) == 1:

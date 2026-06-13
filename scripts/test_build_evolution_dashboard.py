@@ -3428,6 +3428,13 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["latest_eval_score"], None)
             self.assertEqual(session_data["latest_gnomes"].get("tool_error_count"), None)
             self.assertNotIn("failed tool action", " ".join(session_data["health_reasons"]))
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+            tool_failures = states["sessions"][0]["tool_failures"]
+            self.assertEqual(tool_failures["failed_tool_count"], 1)
+            self.assertEqual(tool_failures["recovered_failed_tool_count"], 1)
+            self.assertEqual(tool_failures["unrecovered_failed_tool_count"], 0)
+            self.assertEqual(tool_failures["summary"]["category_counts"], {"bash_tool_error": 1})
+            self.assertEqual(tool_failures["unrecovered_summary"]["category_counts"], {})
             html = (root / "out/index.html").read_text(encoding="utf-8")
             self.assertIn("recovered tool fails", html)
 

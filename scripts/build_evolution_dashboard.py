@@ -4536,8 +4536,13 @@ def session_state_projection(session: dict[str, Any]) -> dict[str, Any]:
         "tasks": task_states.get("tasks") if isinstance(task_states.get("tasks"), list) else [],
         "tool_failures": {
             "failed_tool_count": work.get("failed_tool_count"),
+            "recovered_failed_tool_count": work.get("recovered_failed_tool_count"),
+            "unrecovered_failed_tool_count": work.get("unrecovered_failed_tool_count"),
             "failed_command_count": work.get("failed_command_count"),
             "summary": work.get("failed_tool_summary") if isinstance(work.get("failed_tool_summary"), dict) else {},
+            "unrecovered_summary": work.get("unrecovered_failed_tool_summary")
+            if isinstance(work.get("unrecovered_failed_tool_summary"), dict)
+            else {},
         },
         "lifecycle": {
             "runs": lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {},

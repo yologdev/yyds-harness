@@ -460,9 +460,58 @@ class ExtractTrajectoryTests(unittest.TestCase):
 
             rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
 
-            self.assertIn("historical tool failures:", rendered)
+            self.assertIn("historical unrecovered tool failures:", rendered)
             self.assertIn("search_regex_error=1", rendered)
             self.assertIn("(recent verified task: Add regex-error recovery hint", rendered)
+
+    def test_structured_state_snapshot_omits_recovered_tool_failures_from_pressure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            command = "git show abc123 --stat"
+            write_json(
+                session / "outcome.json",
+                {"day": 1, "ts": "2026-01-01T00:00:00Z", "tasks_attempted": 0, "tasks_succeeded": 0},
+            )
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            state_dir = session / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            state_dir.joinpath("events.jsonl").write_text(
+                "\n".join(
+                    json.dumps(row)
+                    for row in [
+                        {
+                            "kind": "ToolCallStarted",
+                            "payload": {
+                                "tool_call_id": "tool-1",
+                                "tool_name": "bash",
+                                "args": {"command": command},
+                            },
+                        },
+                        {
+                            "kind": "ToolCallCompleted",
+                            "payload": {
+                                "tool_call_id": "tool-1",
+                                "tool_name": "bash",
+                                "is_error": False,
+                                "result_preview": "Exit code: 128",
+                            },
+                        },
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            session.joinpath("audit.jsonl").write_text(
+                json.dumps({"tool": "bash", "success": True, "args": {"command": command}}) + "\n",
+                encoding="utf-8",
+            )
+
+            rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
+
+            self.assertIn("## Structured state snapshot", rendered)
+            self.assertNotIn("historical unrecovered tool failures:", rendered)
+            self.assertNotIn("bash_tool_error", rendered)
 
     def test_recently_addressed_tool_failures_prefer_title_over_context_body(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
