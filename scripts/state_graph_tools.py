@@ -346,6 +346,21 @@ def bare_fatal_pattern_only(metrics: dict[str, Any]) -> bool:
     return all("fatal: no pattern given" in line.lower() for line in search_evidence)
 
 
+def fully_verified_success_metrics(metrics: dict[str, Any]) -> bool:
+    selected = int_metric(metrics, "selected_task_count")
+    if selected <= 0:
+        return False
+    return bool(
+        int_metric(metrics, "task_strict_verified_count") >= selected
+        and int_metric(metrics, "tasks_succeeded") >= selected
+        and int_metric(metrics, "task_revert_count") == 0
+        and int_metric(metrics, "task_scope_mismatch_count") == 0
+        and int_metric(metrics, "task_unlanded_source_count") == 0
+        and int_metric(metrics, "task_api_error_count") == 0
+        and int_metric(metrics, "evaluator_unverified_count") == 0
+    )
+
+
 def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
     """Return graph-facing gnomes corrected from stronger session artifacts.
 
@@ -515,7 +530,17 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
         add("tooling", "Prefer bounded diagnostics before broad commands", "Command timeouts slowed the coding loop.", "command_timeout_count", gnomes.get("command_timeout_count"), 75)
     max_turns = gnomes.get("max_task_turn_count")
     if isinstance(max_turns, (int, float)) and not isinstance(max_turns, bool) and max_turns >= 25:
-        add("planning", "Split high-turn tasks into narrower plans", "A task used many turns, suggesting the task was too broad or under-specified.", "max_task_turn_count", max_turns, 70)
+        if fully_verified_success_metrics(gnomes):
+            add(
+                "planning",
+                "Reduce successful-task turn overhead",
+                "A verified task still used many turns, suggesting discovery or verification expanded beyond the scoped task.",
+                "max_task_turn_count",
+                max_turns,
+                70,
+            )
+        else:
+            add("planning", "Split high-turn tasks into narrower plans", "A task used many turns, suggesting the task was too broad or under-specified.", "max_task_turn_count", max_turns, 70)
     if gnomes.get("task_artifact_coverage") == 0:
         add("state", "Restore task artifact coverage", "Task decisions or artifacts were missing from the audit bundle.", "task_artifact_coverage", 0, 95)
     if isinstance(gnomes.get("deepseek_cache_hit_ratio"), (int, float)) and gnomes.get("deepseek_cache_hit_ratio") < 0.5:

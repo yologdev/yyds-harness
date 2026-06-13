@@ -1127,6 +1127,21 @@ def suppress_resolved_seed_replacement(metrics: dict[str, Any]) -> int:
     return seed_contradictions
 
 
+def fully_verified_success_metrics(metrics: dict[str, Any]) -> bool:
+    selected = int(metrics.get("selected_task_count") or 0)
+    if selected <= 0:
+        return False
+    return bool(
+        int(metrics.get("task_strict_verified_count") or 0) >= selected
+        and int(metrics.get("tasks_succeeded") or 0) >= selected
+        and int(metrics.get("task_revert_count") or 0) == 0
+        and int(metrics.get("task_scope_mismatch_count") or 0) == 0
+        and int(metrics.get("task_unlanded_source_count") or 0) == 0
+        and int(metrics.get("task_api_error_count") or 0) == 0
+        and int(metrics.get("evaluator_unverified_count") or 0) == 0
+    )
+
+
 def gnome_deltas(metrics: dict[str, Any], previous: list[dict[str, Any]]) -> dict[str, Any]:
     current = gnome_values(metrics)
     previous_metrics: dict[str, Any] = {}
@@ -1551,13 +1566,22 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
         )
     max_turns = metrics.get("max_task_turn_count")
     if isinstance(max_turns, (int, float)) and max_turns >= 16:
-        lessons.append(
-            {
-                "kind": "high_task_turn_count",
-                "fingerprint": f"max task turn count is high: {int(max_turns)}",
-                "action": "split broad tasks earlier or add task-specific context so implementation converges in fewer turns",
-            }
-        )
+        if fully_verified_success_metrics(metrics):
+            lessons.append(
+                {
+                    "kind": "high_verified_task_turn_count",
+                    "fingerprint": f"verified task used many turns: {int(max_turns)}",
+                    "action": "reduce successful-task overhead with tighter discovery and task-specified focused checks before optional broad verification",
+                }
+            )
+        else:
+            lessons.append(
+                {
+                    "kind": "high_task_turn_count",
+                    "fingerprint": f"max task turn count is high: {int(max_turns)}",
+                    "action": "split broad tasks earlier or add task-specific context so implementation converges in fewer turns",
+                }
+            )
     cache_ratio = metrics.get("deepseek_cache_hit_ratio")
     if isinstance(cache_ratio, (int, float)) and cache_ratio < 0.70:
         lessons.append(
@@ -1962,6 +1986,39 @@ def run_self_tests() -> int:
         check("max task turn gnome counted", turns["max_task_turn_count"] == 18, turns)
         check("avg task turn gnome counted", turns["avg_task_turn_count"] == 13.0, turns)
         check("total task turn gnome counted", turns["total_task_turn_count"] == 26, turns)
+        high_turn_lessons = [
+            lesson["kind"]
+            for lesson in top_lessons(
+                {
+                    "max_task_turn_count": 18,
+                    "selected_task_count": 1,
+                    "task_strict_verified_count": 0,
+                }
+            )
+        ]
+        check("unverified high-turn task asks to split", "high_task_turn_count" in high_turn_lessons, high_turn_lessons)
+        verified_turn_lessons = [
+            lesson["kind"]
+            for lesson in top_lessons(
+                {
+                    "max_task_turn_count": 18,
+                    "selected_task_count": 1,
+                    "task_strict_verified_count": 1,
+                    "tasks_succeeded": 1,
+                    "task_revert_count": 0,
+                    "task_scope_mismatch_count": 0,
+                    "task_unlanded_source_count": 0,
+                    "task_api_error_count": 0,
+                    "evaluator_unverified_count": 0,
+                }
+            )
+        ]
+        check(
+            "verified high-turn task asks to reduce overhead",
+            "high_verified_task_turn_count" in verified_turn_lessons
+            and "high_task_turn_count" not in verified_turn_lessons,
+            verified_turn_lessons,
+        )
 
         task_dir = session / "tasks" / "task_01"
         task_dir.mkdir(parents=True)

@@ -166,6 +166,32 @@ class StateGraphTools(unittest.TestCase):
                 [item["title"] for item in suggestions],
             )
 
+    def test_evolution_suggestions_reframe_verified_high_turn_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "max_task_turn_count": 30,
+                        "selected_task_count": 1,
+                        "task_strict_verified_count": 1,
+                        "tasks_succeeded": 1,
+                        "task_revert_count": 0,
+                        "task_scope_mismatch_count": 0,
+                        "task_unlanded_source_count": 0,
+                        "task_api_error_count": 0,
+                        "evaluator_unverified_count": 0,
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+            titles = [item["title"] for item in suggestions]
+
+            self.assertIn("Reduce successful-task turn overhead", titles)
+            self.assertNotIn("Split high-turn tasks into narrower plans", titles)
+
     def test_evolution_suggestions_keep_explicit_search_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
