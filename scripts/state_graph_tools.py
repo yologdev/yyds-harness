@@ -35,6 +35,10 @@ GNOME_COMPARE_KEYS = [
     "search_error_count",
     "max_task_turn_count",
     "deepseek_cache_hit_ratio",
+    "state_run_incomplete_count",
+    "state_run_unmatched_non_validation_completed_count",
+    "deepseek_model_call_incomplete_count",
+    "deepseek_model_call_unmatched_completed_count",
 ]
 
 
@@ -374,6 +378,28 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
 
     if int(gnomes.get("planner_no_task_count") or 0) > 0 or (manifest and (manifest.get("planner") or {}).get("planning_failed")):
         add("planner", "Make planning failure actionable", "The planner produced no concrete task files.", "planner_no_task_count", gnomes.get("planner_no_task_count"), 100)
+    lifecycle_metrics = (
+        ("deepseek_model_call_incomplete_count", "model calls incomplete"),
+        ("deepseek_model_call_unmatched_completed_count", "model calls unmatched"),
+        ("state_run_incomplete_count", "runs incomplete"),
+        ("state_run_unmatched_non_validation_completed_count", "runs unmatched"),
+    )
+    lifecycle_gaps = [
+        (metric, label, int(gnomes.get(metric) or 0))
+        for metric, label in lifecycle_metrics
+        if int(gnomes.get(metric) or 0) > 0
+    ]
+    if lifecycle_gaps:
+        metric, _label, value = lifecycle_gaps[0]
+        detail = "; ".join(f"{label}={count}" for _metric, label, count in lifecycle_gaps)
+        add(
+            "state",
+            "Close yyds state and model lifecycle gaps",
+            f"Lifecycle gnomes show unpaired terminal events: {detail}.",
+            metric,
+            value,
+            96,
+        )
     if int(gnomes.get("evaluator_unverified_count") or 0) > 0:
         add("eval", "Bound evaluator checks so verdicts are not skipped", "Some task evals were unverified or timed out.", "evaluator_unverified_count", gnomes.get("evaluator_unverified_count"), 90)
     if int(gnomes.get("evaluator_timeout_with_verdict_count") or 0) > 0:

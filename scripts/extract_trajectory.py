@@ -925,13 +925,13 @@ def main() -> int:
     s = render_provider_health(sessions_audited, provider_hits)
     if s:
         sections.append(s)
-    s = render_log_feedback(log_feedback)
-    if s:
-        sections.append(s)
     s = render_structured_state_snapshot(audit_dir)
     if s:
         sections.append(s)
     s = render_graph_suggestions(audit_dir)
+    if s:
+        sections.append(s)
+    s = render_log_feedback(log_feedback)
     if s:
         sections.append(s)
 

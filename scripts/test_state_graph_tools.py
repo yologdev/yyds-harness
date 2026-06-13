@@ -99,6 +99,35 @@ class StateGraphTools(unittest.TestCase):
             self.assertIn("Bound evaluator checks so verdicts are not skipped", titles)
             self.assertIn("Split high-turn tasks into narrower plans", titles)
 
+    def test_evolution_suggestions_prioritize_lifecycle_gaps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "deepseek_model_call_incomplete_count": 1,
+                        "state_run_incomplete_count": 0,
+                        "state_run_unmatched_non_validation_completed_count": 0,
+                        "search_error_count": 4,
+                        "max_task_turn_count": 30,
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+
+            self.assertEqual(
+                suggestions[0]["title"],
+                "Close yyds state and model lifecycle gaps",
+            )
+            self.assertEqual(suggestions[0]["metric"], "deepseek_model_call_incomplete_count")
+            self.assertIn("model calls incomplete=1", suggestions[0]["reason"])
+            self.assertIn(
+                "Harden search commands and pattern escaping",
+                [item["title"] for item in suggestions],
+            )
+
     def test_compare_previous_session(self):
         with tempfile.TemporaryDirectory() as tmp:
             sessions = Path(tmp) / "sessions"
