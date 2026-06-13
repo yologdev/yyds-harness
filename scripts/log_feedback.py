@@ -1461,6 +1461,30 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "action": "inspect concurrent state writers and keep live state append-only before merging session evidence",
             }
         )
+    if int(metrics.get("state_run_incomplete_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "state_run_incomplete",
+                "fingerprint": "state run lifecycle was incomplete",
+                "action": "route every yyds invocation through the lifecycle wrapper so each RunStarted has a terminal RunCompleted",
+            }
+        )
+    if int(metrics.get("state_run_unmatched_non_validation_completed_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "state_run_unmatched_completed",
+                "fingerprint": "RunCompleted events appeared without matching RunStarted outside input validation exits",
+                "action": "preserve run_id pairing for terminal events and keep input-validation exits in their own bucket",
+            }
+        )
+    if int(metrics.get("deepseek_model_call_incomplete_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "deepseek_model_call_incomplete",
+                "fingerprint": "DeepSeek model call lifecycle was incomplete",
+                "action": "append ModelCallCompleted on normal exits, timeout exits, and completion-file early stops before scoring cache or task outcomes",
+            }
+        )
     if int(metrics.get("protected_file_revert_count") or 0) > 0:
         lessons.append(
             {

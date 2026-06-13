@@ -1584,6 +1584,37 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["state_run_unmatched_non_validation_completed_count"], 0)
             self.assertEqual(metrics["state_run_unstarted_input_validation_error_count"], 1)
 
+    def test_log_feedback_lifecycle_gnomes_emit_actionable_lessons(self):
+        lessons = log_feedback.top_lessons(
+            {
+                "coding_log_available": True,
+                "state_run_incomplete_count": 2,
+                "state_run_unmatched_completed_count": 2,
+                "state_run_unmatched_non_validation_completed_count": 0,
+                "state_run_unstarted_input_validation_error_count": 2,
+                "deepseek_model_call_incomplete_count": 1,
+                "search_error_count": 1,
+            }
+        )
+
+        kinds = [lesson["kind"] for lesson in lessons]
+        self.assertIn("state_run_incomplete", kinds)
+        self.assertIn("deepseek_model_call_incomplete", kinds)
+        self.assertNotIn("state_run_unmatched_completed", kinds)
+        self.assertLess(kinds.index("state_run_incomplete"), kinds.index("search_error"))
+
+    def test_log_feedback_non_validation_unmatched_run_gets_lesson(self):
+        lessons = log_feedback.top_lessons(
+            {
+                "coding_log_available": True,
+                "state_run_unmatched_completed_count": 1,
+                "state_run_unmatched_non_validation_completed_count": 1,
+                "state_run_unstarted_input_validation_error_count": 0,
+            }
+        )
+
+        self.assertIn("state_run_unmatched_completed", [lesson["kind"] for lesson in lessons])
+
     def test_state_summary_keeps_new_log_feedback_gnomes(self):
         with tempfile.TemporaryDirectory() as tmp:
             events = Path(tmp) / "state/events.jsonl"
