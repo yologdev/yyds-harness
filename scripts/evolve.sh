@@ -218,6 +218,7 @@ record_agent_terminal_events() {
     local args=(
         --events "$STATE_EVENTS"
         --after-line "$after_line"
+        --fallback-after-line "$STATE_BASE_LINES"
         --session-id "$STATE_SESSION_ID"
         --trace-id "$STATE_TRACE_ID"
         --stage "$stage"

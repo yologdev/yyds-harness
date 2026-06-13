@@ -41,6 +41,7 @@ class AppendTerminalStateEvents(unittest.TestCase):
             result = append_terminal_state_events.append_terminal_events(
                 events,
                 after_line,
+                None,
                 "session-1",
                 "trace-1",
                 "task_01_attempt1",
@@ -89,6 +90,7 @@ class AppendTerminalStateEvents(unittest.TestCase):
             result = append_terminal_state_events.append_terminal_events(
                 events,
                 after_line,
+                None,
                 "session-1",
                 "trace-1",
                 "task_01_attempt1",
@@ -114,6 +116,7 @@ class AppendTerminalStateEvents(unittest.TestCase):
             result = append_terminal_state_events.append_terminal_events(
                 events,
                 after_line,
+                None,
                 "session-1",
                 "trace-1",
                 "assess",
@@ -151,6 +154,7 @@ class AppendTerminalStateEvents(unittest.TestCase):
             result = append_terminal_state_events.append_terminal_events(
                 events,
                 99,
+                None,
                 "session-1",
                 "trace-1",
                 "task_01_attempt1",
@@ -173,6 +177,41 @@ class AppendTerminalStateEvents(unittest.TestCase):
             self.assertTrue(
                 any(
                     row["event_type"] == "RunCompleted" and row["run_id"] == "agent-run"
+                    for row in rows
+                )
+            )
+
+    def test_fallback_after_line_closes_open_agent_run_without_closing_session_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            write_event(events, "RunStarted", "session-run", {"phase": "session"})
+            write_event(events, "RunStarted", "agent-run")
+            write_event(events, "ModelCallStarted", "agent-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "FileEdited", "agent-run", {"path": "journals/JOURNAL.md"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                0,
+                "session-1",
+                "trace-1",
+                "task_01_attempt1",
+                "completed",
+                "completed",
+                "agent_process_exited",
+                "",
+                "agent process exited with status 0",
+            )
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            self.assertEqual(result["diagnostics"]["scope"], "fallback_after_line")
+            self.assertEqual(result["diagnostics"]["session_run_ignored_count"], 1)
+            self.assertEqual(result["completed_model_calls"], ["agent-run"])
+            self.assertEqual(result["completed_runs"], ["agent-run"])
+            self.assertFalse(
+                any(
+                    row["event_type"] == "RunCompleted" and row["run_id"] == "session-run"
                     for row in rows
                 )
             )
