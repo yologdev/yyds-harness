@@ -2500,11 +2500,11 @@ Steps:
 5. Commit:
      git add -A && git commit -m "Day $DAY ($SESSION_TIME): fix build errors" || true
 FIXEOF
-        ${TIMEOUT_CMD:+$TIMEOUT_CMD 300} "$YOYO_BIN" \
-            --model "$MODEL" \
-            "${YOYO_SKILL_FLAGS[@]}" \
-            < "$FIX_PROMPT" || true
+        FIX_LOG=$(mktemp)
+        STAGE_NAME="post_build_fix_${FIX_ROUND}" run_agent_with_fallback \
+            300 "$FIX_PROMPT" "$FIX_LOG" "--no-auto-watch" || true
         rm -f "$FIX_PROMPT"
+        rm -f "$FIX_LOG"
     else
         echo "  Build: FAIL after $FIX_ATTEMPTS fix attempts — reverting to pre-session state"
         RESTORE_PATHS=(src/ Cargo.toml)
@@ -2589,11 +2589,11 @@ Be specific and honest. Then commit:
   git add journals/JOURNAL.md && git commit -m "Day $DAY ($SESSION_TIME): journal entry" || true
 JEOF
 
-    ${TIMEOUT_CMD:+$TIMEOUT_CMD 120} "$YOYO_BIN" \
-        --model "$MODEL" \
-        "${YOYO_SKILL_FLAGS[@]}" \
-        < "$JOURNAL_PROMPT" || true
+    JOURNAL_LOG=$(mktemp)
+    STAGE_NAME=journal run_agent_with_fallback \
+        120 "$JOURNAL_PROMPT" "$JOURNAL_LOG" "--no-auto-watch" || true
     rm -f "$JOURNAL_PROMPT"
+    rm -f "$JOURNAL_LOG"
 
     # Final fallback if agent still didn't write it
     if ! grep -q "## Day $DAY.*$SESSION_TIME" journals/JOURNAL.md 2>/dev/null; then
@@ -2666,11 +2666,11 @@ Then commit:
 If nothing non-obvious came up, do nothing. Not every session produces a lesson.
 REOF
 
-    ${TIMEOUT_CMD:+$TIMEOUT_CMD 120} "$YOYO_BIN" \
-        --model "$MODEL" \
-        "${YOYO_SKILL_FLAGS[@]}" \
-        < "$REFLECT_PROMPT" || true
+    REFLECT_LOG=$(mktemp)
+    STAGE_NAME=reflect run_agent_with_fallback \
+        120 "$REFLECT_PROMPT" "$REFLECT_LOG" "--no-auto-watch" || true
     rm -f "$REFLECT_PROMPT"
+    rm -f "$REFLECT_LOG"
 fi
 
 # ── Step 7: Agent-driven issue responses ──
@@ -2774,21 +2774,8 @@ ${ALREADY_RESPONDED:+- SKIP these issues (already responded today):${ALREADY_RES
 RESPONDEOF
 
     RESPOND_EXIT=0
-    RESPOND_STAGE_PATH=""
-    if [ -d "${SESSION_STAGING:-}/transcripts" ]; then
-        RESPOND_STAGE_PATH="${SESSION_STAGING}/transcripts/respond.log"
-    fi
-    if [ -n "$RESPOND_STAGE_PATH" ]; then
-        ${TIMEOUT_CMD:+$TIMEOUT_CMD 180} "$YOYO_BIN" \
-            --model "$MODEL" \
-            "${YOYO_SKILL_FLAGS[@]}" \
-            < "$RESPOND_PROMPT" 2>&1 | tee "$RESPOND_LOG" "$RESPOND_STAGE_PATH" || RESPOND_EXIT=$?
-    else
-        ${TIMEOUT_CMD:+$TIMEOUT_CMD 180} "$YOYO_BIN" \
-            --model "$MODEL" \
-            "${YOYO_SKILL_FLAGS[@]}" \
-            < "$RESPOND_PROMPT" 2>&1 | tee "$RESPOND_LOG" || RESPOND_EXIT=$?
-    fi
+    STAGE_NAME=respond run_agent_with_fallback \
+        180 "$RESPOND_PROMPT" "$RESPOND_LOG" "--no-auto-watch" || RESPOND_EXIT=$?
     rm -f "$RESPOND_PROMPT"
 
     # Check for API errors in the agent output

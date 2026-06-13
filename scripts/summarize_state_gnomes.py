@@ -288,6 +288,16 @@ def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
         for run in run_unmatched_completed
         if is_input_validation_completion(run.get("last_event"))
     ]
+    run_unstarted_input_validation_error_ids = {
+        str(run.get("run_id") or "")
+        for run in run_unstarted_input_validation_errors
+        if isinstance(run, dict)
+    }
+    run_unmatched_non_validation_completed = [
+        run
+        for run in run_unmatched_completed
+        if str(run.get("run_id") or "") not in run_unstarted_input_validation_error_ids
+    ]
     model_incomplete_ids = sorted(
         run_id for run_id in model_call_started_runs if run_id not in model_call_completed_runs
     )
@@ -310,6 +320,7 @@ def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
             "incomplete": len(run_incomplete_ids),
             "unmatched_completed": len(run_unmatched_completed_ids),
             "unstarted_input_validation_error": len(run_unstarted_input_validation_errors),
+            "unmatched_non_validation_completed": len(run_unmatched_non_validation_completed),
             "incomplete_runs": [
                 {"run_id": run_id, "last_event": run_last_events.get(run_id)}
                 for run_id in run_incomplete_ids[:8]
@@ -317,6 +328,7 @@ def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
             "unmatched_completed_runs": run_unmatched_completed_ids[:8],
             "unmatched_completed_details": run_unmatched_completed,
             "unstarted_input_validation_error_runs": run_unstarted_input_validation_errors,
+            "unmatched_non_validation_completed_details": run_unmatched_non_validation_completed,
         },
         "model_calls": {
             "started": model_call_started,
@@ -343,7 +355,7 @@ def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
     lifecycle["balanced"] = (
         len(run_incomplete_ids) == 0
-        and len(run_unmatched_completed_ids) == 0
+        and len(run_unmatched_non_validation_completed) == 0
         and model_incomplete_count == 0
         and model_unmatched_completed_count == 0
     )

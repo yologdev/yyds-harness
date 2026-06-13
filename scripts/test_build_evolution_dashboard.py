@@ -1018,6 +1018,24 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 ],
             ),
             (
+                {
+                    "state_lifecycle": {
+                        "observed": True,
+                        "healthy": False,
+                        "runs": {
+                            "incomplete": 2,
+                            "unmatched_completed": 3,
+                            "unmatched_non_validation_completed": 1,
+                            "unstarted_input_validation_error": 2,
+                        },
+                        "model_calls": {"incomplete": 3, "unmatched_completed": 4},
+                    }
+                },
+                [
+                    "state lifecycle unhealthy (runs incomplete 2; runs unmatched 1; model calls incomplete 3; model calls unmatched 4)"
+                ],
+            ),
+            (
                 {"assessment_artifact_present": False, "assessment_transcript_present": True},
                 ["assessment artifact missing"],
             ),

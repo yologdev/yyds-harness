@@ -3337,9 +3337,14 @@ def harness_attention_reasons(work: dict[str, Any]) -> list[str]:
     elif lifecycle_unhealthy:
         runs = lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {}
         model_calls = lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {}
+        run_unmatched = (
+            runs.get("unmatched_non_validation_completed")
+            if "unmatched_non_validation_completed" in runs
+            else runs.get("unmatched_completed")
+        )
         parts = [
             f"runs incomplete {reason_count(runs.get('incomplete'))}",
-            f"runs unmatched {reason_count(runs.get('unmatched_completed'))}",
+            f"runs unmatched {reason_count(run_unmatched)}",
             f"model calls incomplete {reason_count(model_calls.get('incomplete'))}",
             f"model calls unmatched {reason_count(model_calls.get('unmatched_completed'))}",
         ]
