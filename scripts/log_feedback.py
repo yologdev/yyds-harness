@@ -53,6 +53,11 @@ PROTECTED_FILE_RE = re.compile(r"modified protected files(?:\s*:|\s+[—-]\s+rev
 TASK_STARTED_RE = re.compile(r"(?:→|->)\s*Task\s+\d+:", re.IGNORECASE)
 TASK_VERIFIED_RE = re.compile(r"\bTask\s+\d+:\s+verified OK\b", re.IGNORECASE)
 TASK_REVERT_RE = re.compile(r"\bReverting Task\s+\d+\b", re.IGNORECASE)
+SEED_TASK_CONTRADICTION_RE = re.compile(
+    r"\bseed(?:ed)? task[\w.-]*\b.*\b(factual error|assessment clearly shows|contradict\w*)\b"
+    r"|\b(factual error|assessment clearly shows|contradict\w*)\b.*\bseed(?:ed)? task[\w.-]*\b",
+    re.IGNORECASE,
+)
 CACHE_PERCENT_RE = re.compile(
     r"(?:cache(?: hit)? ratio(?: is)?|Cache:)\D{0,24}(\d+(?:\.\d+)?)\s*%\s*(?:hit ratio)?",
     re.IGNORECASE,
@@ -107,6 +112,10 @@ def file_overlap(planned: list[str], touched: list[str]) -> bool:
     return any(path_matches(planned_file, touched_file) for planned_file in planned for touched_file in touched)
 
 
+def seed_task_contradiction_text(text: str) -> bool:
+    return bool(SEED_TASK_CONTRADICTION_RE.search(str(text or "")))
+
+
 GNOME_KEYS = [
     "coding_log_score",
     "coding_log_confidence",
@@ -141,6 +150,7 @@ GNOME_KEYS = [
     "evaluator_unverified_count",
     "evaluator_timeout_with_verdict_count",
     "task_obsolete_count",
+    "task_seed_contradiction_count",
     "task_api_error_count",
     "task_scope_mismatch_count",
     "task_unlanded_source_count",
@@ -451,6 +461,7 @@ def parse_log(log_text: str) -> dict[str, Any]:
     evaluator_timeouts = 0
     search_errors = 0
     protected_file_reverts = 0
+    seed_task_contradictions = 0
     task_started = 0
     task_mechanical_verified = 0
     task_evaluator_verified = 0
@@ -493,6 +504,8 @@ def parse_log(log_text: str) -> dict[str, Any]:
                 task_evaluator_verified += 1
         if TASK_REVERT_RE.search(message):
             task_reverts += 1
+        if seed_task_contradiction_text(message):
+            seed_task_contradictions = 1
         token_match = CACHE_TOKENS_RE.search(message)
         if token_match:
             try:
@@ -578,6 +591,7 @@ def parse_log(log_text: str) -> dict[str, Any]:
         "evaluator_timeout_count": evaluator_timeouts,
         "search_error_count": search_errors,
         "protected_file_revert_count": protected_file_reverts,
+        "task_seed_contradiction_count": seed_task_contradictions,
         "task_started_count": task_started,
         "task_verified_count": task_evaluator_verified,
         "task_mechanical_verified_count": task_mechanical_verified,
@@ -1098,6 +1112,7 @@ def score_assessment(metrics: dict[str, Any]) -> float:
             + float(metrics.get("planner_no_task_count") or 0) * 3.0
             + float(metrics.get("task_unattempted_count") or 0) * 2.0
             + float(metrics.get("task_obsolete_count") or 0)
+            + float(metrics.get("task_seed_contradiction_count") or 0) * 2.0
             + float(metrics.get("task_api_error_count") or 0) * 2.0
             + float(metrics.get("task_scope_mismatch_count") or 0) * 2.0
             + float(metrics.get("evaluator_unverified_count") or 0)
@@ -1213,6 +1228,12 @@ def build_assessment(
         **cache_metrics,
         **recurrences,
     }
+    if int(metrics.get("task_seed_contradiction_count") or 0) > 0:
+        metrics["evaluator_unverified_count"] = max(
+            int(metrics.get("evaluator_unverified_count") or 0)
+            - int(metrics.get("task_seed_contradiction_count") or 0),
+            0,
+        )
     metrics["coding_log_score"] = score_assessment(metrics)
     deltas = gnome_deltas(metrics, previous)
 
@@ -1255,6 +1276,14 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "task_obsolete",
                 "fingerprint": "implementation found the selected task was already satisfied or stale",
                 "action": "replace stale tasks during planning or land a small verification/docs improvement instead of analysis-only work",
+            }
+        )
+    if int(metrics.get("task_seed_contradiction_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "task_seed_contradiction",
+                "fingerprint": "seeded task was contradicted by fresh assessment evidence",
+                "action": "validate seeded tasks against the fresh assessment before implementation and replace contradicted seeds",
             }
         )
     if int(metrics.get("task_api_error_count") or 0) > 0:

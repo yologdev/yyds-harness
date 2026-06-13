@@ -4374,6 +4374,87 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_unlanded_source_count"], 0)
             self.assertEqual(data["sessions"][0]["latest_gnomes"]["evaluator_unverified_count"], 0)
 
+    def test_log_feedback_reclassifies_contradicted_seed_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {"latest_gnomes": {"evaluator_unverified_count": 1}, "gnome_keys": []},
+            )
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "failure_fingerprints": [
+                            {
+                                "fingerprint": (
+                                    "The seed task_01.md has a factual error: the assessment clearly shows "
+                                    "DeepSeek cache metrics."
+                                ),
+                                "count": 1,
+                            }
+                        ],
+                    }
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Record cache metrics",
+                            "origin": "harness-seed",
+                            "files": ["scripts/deepseek_cache.py"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            (session / "tasks/task_01/task.md").write_text("Title: Record cache metrics\n", encoding="utf-8")
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Record cache metrics",
+                    "status": "reverted",
+                    "revert_reason": "Task scope mismatch: task produced no git-visible file changes",
+                    "planned_files": ["scripts/deepseek_cache.py"],
+                    "source_files": [],
+                    "touched_files": [],
+                    "commit_shas": [],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            work = data["sessions"][0]["work_summary"]
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+
+            task_state = work["task_states"]["tasks"][0]
+            self.assertEqual(task_state["state"], "reverted_seed_contradicted")
+            self.assertTrue(task_state["seed_contradicted"])
+            self.assertIn("log_feedback", task_state["evidence_sources"])
+            self.assertEqual(states["summary"]["state_counts"], {"reverted_seed_contradicted": 1})
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_seed_contradiction_count"], 1)
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["evaluator_unverified_count"], 0)
+
     def test_missing_optional_artifacts_do_not_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

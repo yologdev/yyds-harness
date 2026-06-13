@@ -835,6 +835,60 @@ class TaskLineageFeedback(unittest.TestCase):
                 any(lesson["kind"] == "task_api_error" for lesson in assessment["top_lessons"])
             )
 
+    def test_log_feedback_counts_seed_task_contradictions_separately(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {"task_id": "task_01", "origin": "harness-seed"},
+                    ],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Task scope mismatch: task produced no git-visible file changes",
+                    "source_files": [],
+                    "commit_shas": [],
+                },
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text=(
+                    "The seed task_01.md has a factual error: the assessment clearly shows "
+                    "deepseek cache-report returning metrics.\n"
+                ),
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["task_seed_contradiction_count"], 1)
+            self.assertEqual(metrics["evaluator_unverified_count"], 0)
+            self.assertIn("task_seed_contradiction_count", log_feedback.gnome_values(metrics))
+            self.assertTrue(
+                any(lesson["kind"] == "task_seed_contradiction" for lesson in assessment["top_lessons"])
+            )
+
     def test_log_feedback_separates_protected_and_backup_reverts_from_unlanded_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

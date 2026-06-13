@@ -45,6 +45,11 @@ ASSESSMENT_NOTE_RE = re.compile(
     r"(key findings|interesting findings|tests pass|tests failed|state tail|state failures|ci run|failure|crash|cache)",
     re.IGNORECASE,
 )
+SEED_TASK_CONTRADICTION_RE = re.compile(
+    r"\bseed(?:ed)? task[\w.-]*\b.*\b(factual error|assessment clearly shows|contradict\w*)\b"
+    r"|\b(factual error|assessment clearly shows|contradict\w*)\b.*\bseed(?:ed)? task[\w.-]*\b",
+    re.IGNORECASE,
+)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -58,11 +63,31 @@ def load_json(path: Path) -> dict[str, Any]:
 def log_feedback_metrics(session_dir: Path) -> dict[str, Any]:
     feedback = load_json(session_dir / "log_feedback.json")
     metrics = feedback.get("metrics") if isinstance(feedback.get("metrics"), dict) else {}
-    return {
+    scalar_metrics = {
         str(key): value
         for key, value in metrics.items()
         if value is None or isinstance(value, (bool, int, float))
     }
+    if (
+        int(scalar_metrics.get("task_seed_contradiction_count") or 0) == 0
+        and log_feedback_has_seed_task_contradiction(feedback)
+    ):
+        scalar_metrics["task_seed_contradiction_count"] = 1
+    return scalar_metrics
+
+
+def seed_task_contradiction_text(text: str) -> bool:
+    return bool(SEED_TASK_CONTRADICTION_RE.search(str(text or "")))
+
+
+def log_feedback_has_seed_task_contradiction(value: Any) -> bool:
+    if isinstance(value, str):
+        return seed_task_contradiction_text(value)
+    if isinstance(value, dict):
+        return any(log_feedback_has_seed_task_contradiction(item) for item in value.values())
+    if isinstance(value, list):
+        return any(log_feedback_has_seed_task_contradiction(item) for item in value)
+    return False
 
 
 def log_feedback_top_lessons(session_dir: Path) -> list[dict[str, Any]]:
@@ -1449,6 +1474,7 @@ def structured_task_states(
                 "task_id": task_id,
                 "title": row.get("title") or manifest_task.get("title") or lineage.get("task_title"),
                 "state": classify_task_state(row, attempted),
+                "origin": manifest_task.get("origin"),
                 "attempted": attempted,
                 "planned_files": row.get("planned_files") or [],
                 "touched_files": row.get("touched_files") or [],
@@ -1489,6 +1515,55 @@ def structured_task_states(
         "state_counts": dict(sorted(state_counts.items())),
         "tasks": states,
     }
+
+
+def refresh_task_state_counts(task_states: dict[str, Any]) -> None:
+    rows = task_states.get("tasks") if isinstance(task_states.get("tasks"), list) else []
+    state_counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("state") or "unknown")
+        state_counts[key] = state_counts.get(key, 0) + 1
+    task_states["state_counts"] = dict(sorted(state_counts.items()))
+    task_states["task_count"] = len([row for row in rows if isinstance(row, dict)])
+    task_states["strict_success_count"] = sum(
+        1 for row in rows if isinstance(row, dict) and row.get("strict_success")
+    )
+    task_states["unverified_count"] = sum(
+        1 for row in rows if isinstance(row, dict) and not row.get("strict_success")
+    )
+
+
+def annotate_seed_contradicted_task_states(work: dict[str, Any], count: int) -> None:
+    if count <= 0:
+        return
+    task_states = work.get("task_states") if isinstance(work.get("task_states"), dict) else {}
+    rows = task_states.get("tasks") if isinstance(task_states.get("tasks"), list) else []
+    remaining = count
+    preferred_states = {"reverted_no_git_visible_changes", "reverted_unverified", "no_git_visible_changes"}
+    for prefer_seed_origin in (True, False):
+        for row in rows:
+            if remaining <= 0:
+                break
+            if not isinstance(row, dict) or row.get("seed_contradicted"):
+                continue
+            if prefer_seed_origin and row.get("origin") != "harness-seed":
+                continue
+            if str(row.get("state") or "") not in preferred_states:
+                continue
+            row["state"] = "reverted_seed_contradicted" if row.get("reverted") else "seed_contradicted"
+            row["seed_contradicted"] = True
+            evidence_sources = row.get("evidence_sources") if isinstance(row.get("evidence_sources"), list) else []
+            if "log_feedback" not in evidence_sources:
+                row["evidence_sources"] = evidence_sources + ["log_feedback"]
+            failure_reasons = row.get("failure_reasons") if isinstance(row.get("failure_reasons"), list) else []
+            if "seed_task_contradicted_by_assessment" not in failure_reasons:
+                row["failure_reasons"] = failure_reasons + ["seed_task_contradicted_by_assessment"]
+            remaining -= 1
+        if remaining <= 0:
+            break
+    refresh_task_state_counts(task_states)
 
 
 def annotate_task_lineage_verification(
@@ -2516,6 +2591,7 @@ def corrected_gnomes(
             if isinstance(row, dict)
             and (row.get("api_error") or "implementation_api_error" in (row.get("problems") or []))
         )
+        seed_contradictions = int(gnomes.get("task_seed_contradiction_count") or 0)
         gnomes["task_success_rate"] = verified / task_count
         gnomes["session_success_rate"] = 1.0 if verified == task_count else 0.0
         recalc_score = True
@@ -2527,6 +2603,8 @@ def corrected_gnomes(
             int(gnomes.get("task_api_error_count") or 0),
             api_error,
         )
+        if seed_contradictions:
+            gnomes["task_seed_contradiction_count"] = seed_contradictions
         explained_unverified = sum(
             1
             for row in (verification.get("rows") or [])
@@ -2542,7 +2620,7 @@ def corrected_gnomes(
                 or task_scope_mismatch(row)
             )
         )
-        gnomes["evaluator_unverified_count"] = max(unverified - explained_unverified, 0)
+        gnomes["evaluator_unverified_count"] = max(unverified - explained_unverified - seed_contradictions, 0)
         gnomes["evaluator_timeout_with_verdict_count"] = max(
             int(gnomes.get("evaluator_timeout_with_verdict_count") or 0),
             timeout_with_verdict,
@@ -2695,6 +2773,12 @@ def corrected_gnome_lessons(
             "preserve API-error evidence and retry with provider recovery instead of treating the task as a no-change revert",
         ),
         (
+            "task_seed_contradiction_count",
+            "task_seed_contradiction",
+            "seeded tasks contradicted the fresh assessment",
+            "validate seeded tasks against fresh assessment evidence and replace contradicted seeds before implementation",
+        ),
+        (
             "task_scope_mismatch_count",
             "task_scope_mismatch",
             "implementation touched files outside the selected task surface",
@@ -2815,6 +2899,7 @@ def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
             + metric_float(metrics, "planner_no_task_count") * 3.0
             + metric_float(metrics, "task_unattempted_count") * 2.0
             + metric_float(metrics, "task_obsolete_count")
+            + metric_float(metrics, "task_seed_contradiction_count") * 2.0
             + metric_float(metrics, "task_api_error_count") * 2.0
             + metric_float(metrics, "task_scope_mismatch_count") * 2.0
             + metric_float(metrics, "evaluator_unverified_count")
@@ -2866,6 +2951,7 @@ def gnome_correction_source(key: str, corrected_value: Any, feedback_metrics: di
         "evaluator_unverified_count",
         "evaluator_timeout_with_verdict_count",
         "task_obsolete_count",
+        "task_seed_contradiction_count",
         "task_api_error_count",
         "task_scope_mismatch_count",
         "task_unlanded_source_count",
@@ -3062,6 +3148,10 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         feedback_lessons = log_feedback_top_lessons(session_dir)
         raw_state_gnomes = summary.get("latest_gnomes") if isinstance(summary.get("latest_gnomes"), dict) else {}
         latest_gnomes = corrected_gnomes(summary, work, trace, outcome, feedback_metrics)
+        annotate_seed_contradicted_task_states(
+            work,
+            int(latest_gnomes.get("task_seed_contradiction_count") or 0),
+        )
         corrected_lessons = corrected_gnome_lessons(latest_gnomes, feedback_lessons, work)
         gnome_audit = state_gnome_audit(raw_state_gnomes, latest_gnomes, feedback_metrics)
         normalize_work_gnome_snapshots(work, latest_gnomes)
@@ -5045,6 +5135,7 @@ HTML = r"""<!doctype html>
       planner_no_task_count: "Planner no-task count",
       task_unattempted_count: "Unattempted selected tasks",
       task_obsolete_count: "Obsolete/stale tasks",
+      task_seed_contradiction_count: "Contradicted seed tasks",
       task_api_error_count: "Task API-error reverts",
       task_scope_mismatch_count: "Task scope mismatches",
       task_manifest_available: "Task manifest available",
@@ -6086,6 +6177,7 @@ HTML = r"""<!doctype html>
         "evaluator_unverified_count",
         "evaluator_timeout_with_verdict_count",
         "task_obsolete_count",
+        "task_seed_contradiction_count",
         "task_api_error_count",
         "task_scope_mismatch_count",
         "task_unlanded_source_count",
