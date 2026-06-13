@@ -624,6 +624,20 @@ def task_scope_mismatch(row: dict[str, Any]) -> bool:
     return "no_planned_file_overlap" in problems
 
 
+def task_protected_revert(row: dict[str, Any]) -> bool:
+    problems = row.get("problems") if isinstance(row.get("problems"), list) else []
+    return bool(row.get("protected_revert") or "modified_protected_files" in problems)
+
+
+def task_unlanded_source_problem(row: dict[str, Any]) -> bool:
+    problems = row.get("problems") if isinstance(row.get("problems"), list) else []
+    return (
+        ("source_edits_not_landed" in problems or "no_landed_source_commit" in problems)
+        and not task_protected_revert(row)
+        and not task_scope_mismatch(row)
+    )
+
+
 def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[str, Any]:
     counts = summary.get("event_counts") if isinstance(summary.get("event_counts"), dict) else {}
     total = int(summary.get("event_count") or 0)
@@ -2338,11 +2352,7 @@ def work_summary(
     unlanded_source_task_count = sum(
         1
         for row in verification_rows
-        if isinstance(row, dict)
-        and (
-            "source_edits_not_landed" in (row.get("problems") or [])
-            or "no_landed_source_commit" in (row.get("problems") or [])
-        )
+        if isinstance(row, dict) and task_unlanded_source_problem(row)
     )
     labels: list[str] = []
     if attempted:
@@ -2603,12 +2613,7 @@ def corrected_gnomes(
         unlanded = sum(
             1
             for row in (verification.get("rows") or [])
-            if isinstance(row, dict)
-            and not (row.get("protected_revert") or "modified_protected_files" in (row.get("problems") or []))
-            and (
-                "source_edits_not_landed" in (row.get("problems") or [])
-                or "no_landed_source_commit" in (row.get("problems") or [])
-            )
+            if isinstance(row, dict) and task_unlanded_source_problem(row)
         )
         protected_reverts = sum(
             1
@@ -3343,7 +3348,7 @@ def task_verification_problem_reasons(work: dict[str, Any]) -> list[str]:
         problems = set(row.get("problems") if isinstance(row.get("problems"), list) else [])
         if "no_passing_verifier" in problems:
             no_passing += 1
-        if "source_edits_not_landed" in problems or "no_landed_source_commit" in problems:
+        if task_unlanded_source_problem(row):
             unlanded += 1
         if "no_planned_file_overlap" in problems:
             no_overlap += 1
@@ -5414,9 +5419,11 @@ HTML = r"""<!doctype html>
         };
         rows.forEach(row => {
           const problems = new Set(Array.isArray(row.problems) ? row.problems : []);
+          const protectedRevert = row.protected_revert === true || problems.has("modified_protected_files");
+          const scopeMismatch = problems.has("no_planned_file_overlap");
           if (problems.has("no_passing_verifier")) counts.noPassing += 1;
           if (problems.has("timed_out_passing_verdict")) counts.timedOutPassing += 1;
-          if (problems.has("source_edits_not_landed") || problems.has("no_landed_source_commit")) counts.unlanded += 1;
+          if (!protectedRevert && !scopeMismatch && (problems.has("source_edits_not_landed") || problems.has("no_landed_source_commit"))) counts.unlanded += 1;
           if (problems.has("no_planned_file_overlap")) counts.noOverlap += 1;
           if (problems.has("no_edit_revert")) counts.noEdit += 1;
           if (problems.has("no_touched_files")) counts.noTouched += 1;

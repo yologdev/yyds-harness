@@ -1042,13 +1042,13 @@ class BuildEvolutionDashboard(unittest.TestCase):
                         "no_passing_verifier",
                         "source_edits_not_landed",
                         "no_landed_source_commit",
-                        "no_planned_file_overlap",
                     ],
                 },
                 {
                     "task_id": "task_02",
                     "problems": [
                         "no_passing_verifier",
+                        "no_planned_file_overlap",
                         "no_touched_files",
                         "evaluator_timed_out_after_verdict",
                     ],
@@ -1065,6 +1065,29 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 "1 task(s) without planned-file overlap",
                 "1 task(s) without touched files",
                 "1 evaluator timeout(s) after verdict",
+            ],
+        )
+        scoped_unlanded = json.loads(json.dumps(incomplete))
+        scoped_unlanded["work_summary"]["task_verification"] = {
+            "task_count": 1,
+            "verified_task_count": 0,
+            "rows": [
+                {
+                    "task_id": "task_scope",
+                    "problems": [
+                        "no_passing_verifier",
+                        "source_edits_not_landed",
+                        "no_landed_source_commit",
+                        "no_planned_file_overlap",
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(
+            task_verification_problem_reasons(scoped_unlanded["work_summary"]),
+            [
+                "1 task(s) without passing verifier",
+                "1 task(s) without planned-file overlap",
             ],
         )
         self.assertEqual(
@@ -1456,6 +1479,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(task_state["state"], "scope_mismatch")
             self.assertEqual(session_data["latest_gnomes"]["task_unlanded_source_count"], 0)
             self.assertEqual(session_data["work_summary"]["unlanded_source_task_count"], 0)
+            self.assertNotIn("unlanded source task(s)", session_data["work_summary"]["headline"])
+            self.assertNotIn("unlanded source task(s)", "; ".join(session_data["health_reasons"]))
 
     def test_corrects_selected_but_unattempted_task_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:
