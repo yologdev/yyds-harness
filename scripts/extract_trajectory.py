@@ -501,6 +501,62 @@ def summarize_task_problems(rows: list[dict[str, Any]]) -> str:
     )
 
 
+def task_state_summaries_for_sessions(session_dirs: list[Path]) -> dict[str, dict[str, Any]]:
+    if not session_dirs:
+        return {}
+    try:
+        from build_evolution_dashboard import build_states_projection, load_sessions
+    except Exception as e:  # pragma: no cover - defensive degradation for cron
+        warn(f"could not import task-state projection for outcome summary: {e}")
+        return {}
+    summaries: dict[str, dict[str, Any]] = {}
+    targets_by_parent: dict[Path, set[str]] = defaultdict(set)
+    for session_dir in session_dirs:
+        targets_by_parent[session_dir.parent].add(session_dir.name)
+    generated_at = (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    for parent, target_ids in targets_by_parent.items():
+        try:
+            sessions = load_sessions(parent, Path.cwd())
+            states = build_states_projection(sessions, generated_at, parent)
+        except Exception as e:  # pragma: no cover - defensive degradation for cron
+            warn(f"could not build task-state projection for outcome summary: {e}")
+            continue
+        for row in states.get("sessions", []) if isinstance(states.get("sessions"), list) else []:
+            if not isinstance(row, dict):
+                continue
+            session_id = str(row.get("id") or "")
+            if session_id not in target_ids:
+                continue
+            summary = row.get("task_summary") if isinstance(row.get("task_summary"), dict) else {}
+            summaries[session_id] = summary
+    return summaries
+
+
+def summarize_task_states(state_counts: dict[str, Any]) -> str:
+    if not state_counts:
+        return ""
+    rows: list[tuple[str, int]] = []
+    for state, count in state_counts.items():
+        state_name = str(state)
+        if state_name == "verified_landed":
+            continue
+        try:
+            count_int = int(count or 0)
+        except (TypeError, ValueError):
+            continue
+        if count_int > 0:
+            rows.append((state_name, count_int))
+    if not rows:
+        return ""
+    rows.sort(key=lambda item: (-item[1], item[0]))
+    return "task states: " + ", ".join(f"{state}={count}" for state, count in rows[:3])
+
+
 def render_outcomes(
     session_outcomes: Union[list[tuple[Path, dict[str, Any]]], list[dict[str, Any]]],
 ) -> str:
@@ -517,6 +573,9 @@ def render_outcomes(
         lines = [f"## Recent session outcomes (newest {len(display)} of {len(normalized)})"]
     else:
         lines = ["## Recent session outcomes (last {})".format(len(normalized))]
+    task_state_summaries = task_state_summaries_for_sessions(
+        [session_dir for session_dir, _ in display if session_dir is not None]
+    )
     for session_dir, o in display:
         day = o.get("day", "?")
         ts = (o.get("ts") or "").replace("T", " ").rstrip("Z")
@@ -528,6 +587,14 @@ def render_outcomes(
         verification = strict_task_verification(session_dir) if session_dir else {"task_count": 0}
         strict_total = int(verification.get("task_count") or 0)
         strict_verified = int(verification.get("verified_task_count") or 0)
+        projected_task_summary = (
+            task_state_summaries.get(session_dir.name) if session_dir is not None else {}
+        ) or {}
+        task_state_summary = summarize_task_states(
+            projected_task_summary.get("state_counts")
+            if isinstance(projected_task_summary.get("state_counts"), dict)
+            else {}
+        )
 
         if reverted:
             icon = "❌"
@@ -544,9 +611,12 @@ def render_outcomes(
                 issues = [f"{strict_verified}/{strict_total} strict verified"]
                 if succeeded != strict_verified:
                     issues.append(f"raw outcome {succeeded}/{attempted}")
-                problem_summary = summarize_task_problems(verification.get("rows") or [])
-                if problem_summary:
-                    issues.append(problem_summary)
+                if task_state_summary:
+                    issues.append(task_state_summary)
+                else:
+                    problem_summary = summarize_task_problems(verification.get("rows") or [])
+                    if problem_summary:
+                        issues.append(problem_summary)
                 if not build_ok:
                     issues.append("build broken")
                 if not test_ok:

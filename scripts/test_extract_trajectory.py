@@ -371,8 +371,79 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("tasks 1/1 ⚠️", rendered)
             self.assertIn("0/1 strict verified", rendered)
             self.assertIn("raw outcome 1/1", rendered)
-            self.assertIn("no planned-file overlap", rendered)
-            self.assertIn("no passing verifier", rendered)
+            self.assertIn("task states: unlanded_source_edits=1", rendered)
+            self.assertNotIn("no planned-file overlap", rendered)
+            self.assertNotIn("no passing verifier", rendered)
+
+    def test_recent_outcomes_surface_classified_seed_contradiction_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "failure_fingerprints": [
+                            {
+                                "fingerprint": (
+                                    "The seed task_01.md has a factual error: "
+                                    "the assessment clearly shows the opposite."
+                                ),
+                                "count": 1,
+                            }
+                        ],
+                    }
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Stale seeded task",
+                            "origin": "harness-seed",
+                            "files": ["src/lib.rs"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Task scope mismatch: task produced no git-visible file changes",
+                    "planned_files": ["src/lib.rs"],
+                    "source_files": [],
+                    "touched_files": [],
+                    "commit_shas": [],
+                },
+            )
+
+            rendered = extract_trajectory.render_outcomes(
+                extract_trajectory.load_recent_session_outcomes(audit_dir)
+            )
+
+            self.assertIn("task states: reverted_seed_contradicted=1", rendered)
+            self.assertNotIn("no touched files", rendered)
+            self.assertNotIn("no passing verifier", rendered)
 
     def test_structured_state_snapshot_surfaces_claims_task_states_and_tool_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
