@@ -113,7 +113,46 @@ TASKS = [
         ],
     },
     {
-        "keys": ("commands_state.rs", "23,216", "23216", "16.1%", "state cli"),
+        "keys": (
+            "search_regex_error",
+            "search_binary_match",
+            "search/grep error",
+            "search/grep errors",
+            "broken regex",
+            "binary file matches",
+        ),
+        "title": "Reduce recurring search-tool friction before implementation",
+        "files": "src/tools.rs, scripts/log_feedback.py, scripts/evolve.sh",
+        "objective": (
+            "Turn recurring search failure evidence into safer search behavior or sharper planning "
+            "guidance, after first verifying which search safeguards already exist in the current code."
+        ),
+        "why": (
+            "The assessment identified search regex and binary-match failures as top operational "
+            "friction. Those failures waste implementation turns before DeepSeek reaches the actual code change."
+        ),
+        "success": [
+            "The task verifies whether project search already defaults to literal matching before changing it.",
+            "Remaining regex, empty-pattern, or binary-match search failures get a concrete code or prompt mitigation.",
+            "Log-feedback lessons point future agents at the verified mitigation instead of stale generic advice.",
+        ],
+        "verification": [
+            "cargo test tools",
+            "python3 scripts/log_feedback.py --test",
+            "cargo check",
+        ],
+        "evidence": [
+            "A future assessment can cite fewer search_regex_error/search_binary_match failures or a more precise lesson.",
+            "Task lineage links the mitigation to the source or harness prompt that changed behavior.",
+        ],
+    },
+    {
+        "keys": (
+            "commands_state.rs still represents",
+            "structural bottleneck",
+            "state cli subsystem",
+            "extract another focused state cli",
+        ),
         "title": "Extract another focused state CLI module",
         "files": "src/commands_state.rs, src/lib.rs",
         "objective": (
@@ -141,8 +180,39 @@ TASKS = [
 ]
 
 
+def current_evidence_text(assessment: str) -> str:
+    """Return sections that describe current symptoms, not history tables."""
+
+    wanted = {
+        "self-test results",
+        "yoagent-state deepseek feedback",
+        "structured state snapshot",
+        "capability gaps",
+        "bugs / friction found",
+        "open issues summary",
+    }
+    sections: list[str] = []
+    current: list[str] = []
+    include = False
+    for line in assessment.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if include and current:
+                sections.append("\n".join(current))
+            heading = stripped[3:].strip().lower()
+            include = heading in wanted
+            current = [line] if include else []
+            continue
+        if include:
+            current.append(line)
+    if include and current:
+        sections.append("\n".join(current))
+    return "\n\n".join(sections)
+
+
 def choose_task(assessment: str) -> dict[str, object]:
-    lower = assessment.lower()
+    current = current_evidence_text(assessment)
+    lower = (current if current.strip() else assessment).lower()
     for task in TASKS:
         if any(key in lower for key in task["keys"]) and not any(
             key in lower for key in task.get("reject_keys", ())
@@ -238,6 +308,37 @@ def main() -> int:
         )
         task = choose_task(assessment)
         assert task["title"] != "Improve cold-start state failure diagnostics", task
+        assessment = """# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Structured State Snapshot
+Top tool-failure categories:
+- `search_regex_error` = 57
+- `search_binary_match` = 19
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Reduce recurring search-tool friction before implementation", task
+        assessment = """# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+No clunky friction found in quick tool checks.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
         text = render_task(task, "103", "12:53")
         assert "Title:" in text and "Success Criteria:" in text and "Origin: harness-seed" in text
         assessment = "Assessment phase produced a transcript but did not write session_plan/assessment.md."
