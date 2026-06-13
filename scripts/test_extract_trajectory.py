@@ -320,6 +320,138 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("state_run_incomplete_count=1", rendered)
             self.assertIn("deepseek_model_call_incomplete_count=1", rendered)
 
+    def test_structured_state_snapshot_qualifies_recently_addressed_tool_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            title = "Add regex-error recovery hint to search tool error messages"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "tasks": [
+                        {
+                            "task_id": "task_01",
+                            "title": title,
+                            "files": ["src/search.rs"],
+                        }
+                    ]
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "planned_files": ["src/search.rs"],
+                    "source_files": ["src/search.rs"],
+                    "commit_shas": ["abc123"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "Verdict: PASS"},
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "\n".join(
+                    [
+                        "  ▶ search 'fn handle_run\\(' in src/search.rs ✗ (17ms)",
+                        "      │ Search error: grep: Unmatched ( or \\(",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
+
+            self.assertIn("historical tool failures:", rendered)
+            self.assertIn("search_regex_error=1", rendered)
+            self.assertIn("(recent verified task: Add regex-error recovery hint", rendered)
+
+    def test_recently_addressed_tool_failures_prefer_title_over_context_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            regex_session = audit_dir / "day-1"
+            binary_session = audit_dir / "day-2"
+
+            for session, day, ts, title, body in (
+                (
+                    regex_session,
+                    1,
+                    "2026-01-01T00:00:00Z",
+                    "Add regex-error recovery hint to search tool error messages",
+                    "",
+                ),
+                (
+                    binary_session,
+                    2,
+                    "2026-01-02T00:00:00Z",
+                    "Extend search tool with binary-match recovery hints",
+                    "Extends Day 1 regex-error recovery to search_binary_match=19.",
+                ),
+            ):
+                write_json(
+                    session / "outcome.json",
+                    {
+                        "day": day,
+                        "ts": ts,
+                        "tasks_attempted": 1,
+                        "tasks_succeeded": 1,
+                    },
+                )
+                write_json(
+                    session / "tasks/manifest.json",
+                    {
+                        "tasks": [
+                            {
+                                "task_id": "task_01",
+                                "title": title,
+                                "body_preview": body,
+                                "files": ["src/search.rs"],
+                            }
+                        ]
+                    },
+                )
+                write_json(
+                    session / "tasks/task_01/outcome.json",
+                    {
+                        "task_id": "task_01",
+                        "status": "completed",
+                        "planned_files": ["src/search.rs"],
+                        "source_files": ["src/search.rs"],
+                        "commit_shas": ["abc123"],
+                    },
+                )
+                write_json(
+                    session / "tasks/task_01/eval_attempt_1.json",
+                    {"task_id": "task_01", "status": "pass", "verdict": "Verdict: PASS"},
+                )
+
+            addressed = extract_trajectory.recently_addressed_tool_failure_categories(audit_dir)
+
+            self.assertEqual(
+                addressed["search_regex_error"],
+                "Add regex-error recovery hint to search tool error messages",
+            )
+            self.assertEqual(
+                addressed["search_binary_match"],
+                "Extend search tool with binary-match recovery hints",
+            )
+
     def test_graph_suggestions_surface_lifecycle_pressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

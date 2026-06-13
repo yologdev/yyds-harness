@@ -37,6 +37,18 @@ GH_RUN_LIST_TIMEOUT = 10       # seconds for gh run list
 STUCK_ON_THRESHOLD = 3         # ≥N attempts AND 0 successes → flag
 TOTAL_LINE_CAP = 100
 TOTAL_BYTE_CAP = 3072
+TOOL_FAILURE_RECENT_TASK_PATTERNS: dict[str, tuple[str, ...]] = {
+    "search_regex_error": (
+        "regex-error",
+        "regex error",
+        "unmatched",
+    ),
+    "search_binary_match": (
+        "binary-match",
+        "binary match",
+        "binary file matches",
+    ),
+}
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -303,6 +315,65 @@ def task_manifest_tasks(session_dir: Path) -> list[dict[str, Any]]:
     if isinstance(selected, list):
         return [task for task in selected if isinstance(task, dict)]
     return []
+
+
+def task_descriptor_text(task: dict[str, Any]) -> str:
+    fields: list[str] = []
+    for key in (
+        "title",
+        "name",
+        "summary",
+        "body",
+        "body_preview",
+        "description",
+        "objective",
+        "why",
+    ):
+        value = task.get(key)
+        if isinstance(value, str):
+            fields.append(value)
+    return " ".join(fields).lower()
+
+
+def recently_addressed_tool_failure_categories(audit_dir: Path) -> dict[str, str]:
+    """Map historical tool-failure categories to recent strictly verified tasks.
+
+    The dashboard projection aggregates cumulative failure counts. When a recent
+    verified task already targeted a category, the trajectory should preserve the
+    count as history without making it look like fresh unresolved pressure.
+    """
+    addressed: dict[str, str] = {}
+    for session_dir, _ in load_recent_session_outcomes(audit_dir):
+        verification = strict_task_verification(session_dir)
+        verified_ids = {
+            str(row.get("task_id") or "")
+            for row in verification.get("rows", [])
+            if row.get("strict_success")
+        }
+        if not verified_ids:
+            continue
+        for task in task_manifest_tasks(session_dir):
+            task_id = str(task.get("task_id") or "")
+            if task_id not in verified_ids:
+                continue
+            title = str(task.get("title") or task_id)
+            title_text = title.lower()
+            matched_by_title = False
+            for category, patterns in TOOL_FAILURE_RECENT_TASK_PATTERNS.items():
+                if category in addressed:
+                    continue
+                if any(pattern in title_text for pattern in patterns):
+                    addressed[category] = title
+                    matched_by_title = True
+            if matched_by_title:
+                continue
+            text = task_descriptor_text(task)
+            for category, patterns in TOOL_FAILURE_RECENT_TASK_PATTERNS.items():
+                if category in addressed:
+                    continue
+                if any(pattern in text for pattern in patterns):
+                    addressed[category] = title
+    return addressed
 
 
 def strict_task_verification(session_dir: Path) -> dict[str, Any]:
@@ -851,6 +922,7 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
     state_summary = states.get("summary") if isinstance(states.get("summary"), dict) else {}
     state_counts = state_summary.get("state_counts") if isinstance(state_summary.get("state_counts"), dict) else {}
     tool_failures: Counter[str] = Counter()
+    addressed_tool_failures = recently_addressed_tool_failure_categories(audit_dir)
     latest_lifecycle_counts: Counter[str] = Counter()
     for session in states.get("sessions", []) if isinstance(states.get("sessions"), list) else []:
         if not isinstance(session, dict):
@@ -930,9 +1002,17 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
         )[:5]
         lines.append("task states: " + "; ".join(f"{state}={count}" for state, count in top_states))
     if tool_failures:
+        failure_parts = []
+        for category, count in tool_failures.most_common(5):
+            part = f"{category}={count}"
+            addressed_title = addressed_tool_failures.get(category)
+            if addressed_title:
+                title = addressed_title[:48] + ("..." if len(addressed_title) > 48 else "")
+                part += f" (recent verified task: {title})"
+            failure_parts.append(part)
         lines.append(
-            "tool failures: "
-            + "; ".join(f"{category}={count}" for category, count in tool_failures.most_common(5))
+            "historical tool failures: "
+            + "; ".join(failure_parts)
         )
     if len(lines) == 1:
         return ""
