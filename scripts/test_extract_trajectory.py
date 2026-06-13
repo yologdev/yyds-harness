@@ -388,6 +388,9 @@ class ExtractTrajectoryTests(unittest.TestCase):
 
             self.assertIn("## Structured state snapshot", rendered)
             self.assertIn("claims:", rendered)
+            self.assertIn("unresolved claims:", rendered)
+            self.assertIn("model_lifecycle=1 missing", rendered)
+            self.assertIn("run_lifecycle=1 missing", rendered)
             self.assertIn("lifecycle gaps:", rendered)
             self.assertIn("state_incomplete=1", rendered)
             self.assertIn("model_incomplete=1", rendered)
