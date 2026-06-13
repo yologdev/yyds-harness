@@ -4323,16 +4323,25 @@ def annotate_cross_session_lifecycle_reuse(sessions: list[dict[str, Any]]) -> di
 def session_claims(session: dict[str, Any]) -> list[dict[str, Any]]:
     work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
     gnomes = session.get("latest_gnomes") if isinstance(session.get("latest_gnomes"), dict) else {}
-    failed_tools = work.get("failed_tools") if isinstance(work.get("failed_tools"), list) else []
-    failed_tool_count = reason_count(work.get("failed_tool_count")) or len(failed_tools)
+    has_unrecovered_fields = (
+        "unrecovered_failed_tool_count" in work
+        or "unrecovered_failed_tools" in work
+        or "recovered_failed_tool_count" in work
+    )
+    if has_unrecovered_fields:
+        failed_tools = work.get("unrecovered_failed_tools") if isinstance(work.get("unrecovered_failed_tools"), list) else []
+        failed_tool_count = reason_count(work.get("unrecovered_failed_tool_count")) or len(failed_tools)
+    else:
+        failed_tools = work.get("failed_tools") if isinstance(work.get("failed_tools"), list) else []
+        failed_tool_count = reason_count(work.get("failed_tool_count")) or len(failed_tools)
     unlanded = int(work.get("unlanded_source_task_count") or 0)
     return [
         count_claim(
-            "failed_tool_actions_match_tool_error_gnome",
+            "unrecovered_failed_tool_actions_match_tool_error_gnome",
             failed_tool_count,
             gnomes.get("tool_error_count"),
             failed_tools[:8],
-            "Structured failed tool actions should be reflected in tool_error_count.",
+            "Unrecovered structured failed tool actions should be reflected in tool_error_count.",
         ),
         count_claim(
             "unlanded_source_tasks_match_gnome",

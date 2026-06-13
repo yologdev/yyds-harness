@@ -3435,6 +3435,13 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(tool_failures["unrecovered_failed_tool_count"], 0)
             self.assertEqual(tool_failures["summary"]["category_counts"], {"bash_tool_error": 1})
             self.assertEqual(tool_failures["unrecovered_summary"]["category_counts"], {})
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            session_claims = {claim["name"]: claim for claim in claims["sessions"][0]["claims"]}
+            tool_error_claim = session_claims["unrecovered_failed_tool_actions_match_tool_error_gnome"]
+            self.assertEqual(tool_error_claim["status"], "proven")
+            self.assertEqual(tool_error_claim["expected"]["minimum_count"], 0)
+            self.assertEqual(tool_error_claim["actual"]["count"], None)
+            self.assertEqual(tool_error_claim["actual"]["evidence_count"], 0)
             html = (root / "out/index.html").read_text(encoding="utf-8")
             self.assertIn("recovered tool fails", html)
 
@@ -3515,7 +3522,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
             failed_tool_claim = next(
                 claim
                 for claim in claims["sessions"][0]["claims"]
-                if claim["name"] == "failed_tool_actions_match_tool_error_gnome"
+                if claim["name"] == "unrecovered_failed_tool_actions_match_tool_error_gnome"
             )
 
             self.assertEqual(len(work["failed_tools"]), 8)
@@ -3769,23 +3776,23 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(claims["schema_version"], 1)
             self.assertEqual(claims["summary"]["session_count"], 1)
             self.assertEqual(
-                session_claims["failed_tool_actions_match_tool_error_gnome"]["status"],
+                session_claims["unrecovered_failed_tool_actions_match_tool_error_gnome"]["status"],
                 "proven",
             )
             self.assertEqual(
-                session_claims["failed_tool_actions_match_tool_error_gnome"]["expected"],
+                session_claims["unrecovered_failed_tool_actions_match_tool_error_gnome"]["expected"],
                 {"minimum_count": 1},
             )
             self.assertEqual(
-                session_claims["failed_tool_actions_match_tool_error_gnome"]["actual"]["count"],
+                session_claims["unrecovered_failed_tool_actions_match_tool_error_gnome"]["actual"]["count"],
                 1,
             )
             self.assertEqual(
-                session_claims["failed_tool_actions_match_tool_error_gnome"]["actual"]["raw"],
+                session_claims["unrecovered_failed_tool_actions_match_tool_error_gnome"]["actual"]["raw"],
                 1,
             )
             self.assertEqual(
-                session_claims["failed_tool_actions_match_tool_error_gnome"]["actual"]["evidence_count"],
+                session_claims["unrecovered_failed_tool_actions_match_tool_error_gnome"]["actual"]["evidence_count"],
                 1,
             )
             self.assertEqual(
