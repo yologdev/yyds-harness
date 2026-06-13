@@ -1321,6 +1321,8 @@ def task_verification_summary(
             problems.append("implementation_api_error")
         if protected_revert:
             problems.append("modified_protected_files")
+        if outcome_status == "reverted" and not touched and not obsolete and not api_error and not protected_revert:
+            problems.append("no_edit_revert")
         if source_touched and not landed_commits:
             problems.append("source_edits_not_landed")
         if source_touched and outcome_status == "completed" and not landed_commits:
@@ -1375,6 +1377,8 @@ def classify_task_state(row: dict[str, Any], attempted: bool | None = None) -> s
             return "reverted_api_error"
         if row.get("protected_revert") or "modified_protected_files" in problems:
             return "reverted_protected_file_edits"
+        if "no_edit_revert" in problems:
+            return "reverted_no_edit"
         if "source_edits_not_landed" in problems or "no_landed_source_commit" in problems:
             return "reverted_unlanded_source_edits"
         if "no_touched_files" in problems:
@@ -1580,7 +1584,12 @@ def annotate_seed_contradicted_task_states(work: dict[str, Any], count: int) -> 
     task_states = work.get("task_states") if isinstance(work.get("task_states"), dict) else {}
     rows = task_states.get("tasks") if isinstance(task_states.get("tasks"), list) else []
     remaining = count
-    preferred_states = {"reverted_no_git_visible_changes", "reverted_unverified", "no_git_visible_changes"}
+    preferred_states = {
+        "reverted_no_edit",
+        "reverted_no_git_visible_changes",
+        "reverted_unverified",
+        "no_git_visible_changes",
+    }
     for prefer_seed_origin in (True, False):
         for row in rows:
             if remaining <= 0:
@@ -2630,7 +2639,15 @@ def corrected_gnomes(
             if isinstance(row, dict)
             and (row.get("api_error") or "implementation_api_error" in (row.get("problems") or []))
         )
+        no_edit_reverts = sum(
+            1
+            for row in (verification.get("rows") or [])
+            if isinstance(row, dict) and "no_edit_revert" in (row.get("problems") or [])
+        )
         seed_contradictions = int(gnomes.get("task_seed_contradiction_count") or 0)
+        no_edit_reverts_after_seed = max(no_edit_reverts - seed_contradictions, 0)
+        additional_seed_explanations = max(seed_contradictions - no_edit_reverts, 0)
+        unattempted_explanations = int(gnomes.get("task_unattempted_count") or 0)
         gnomes["task_success_rate"] = verified / task_count
         gnomes["session_success_rate"] = 1.0 if verified == task_count else 0.0
         recalc_score = True
@@ -2644,6 +2661,10 @@ def corrected_gnomes(
         )
         if seed_contradictions:
             gnomes["task_seed_contradiction_count"] = seed_contradictions
+        gnomes["task_no_edit_revert_count"] = max(
+            int(gnomes.get("task_no_edit_revert_count") or 0),
+            no_edit_reverts_after_seed,
+        )
         explained_unverified = sum(
             1
             for row in (verification.get("rows") or [])
@@ -2657,9 +2678,13 @@ def corrected_gnomes(
                 or row.get("protected_revert")
                 or "modified_protected_files" in (row.get("problems") or [])
                 or task_scope_mismatch(row)
+                or "no_edit_revert" in (row.get("problems") or [])
             )
         )
-        gnomes["evaluator_unverified_count"] = max(unverified - explained_unverified - seed_contradictions, 0)
+        gnomes["evaluator_unverified_count"] = max(
+            unverified - explained_unverified - additional_seed_explanations - unattempted_explanations,
+            0,
+        )
         gnomes["evaluator_timeout_with_verdict_count"] = max(
             int(gnomes.get("evaluator_timeout_with_verdict_count") or 0),
             timeout_with_verdict,
@@ -2818,6 +2843,12 @@ def corrected_gnome_lessons(
             "validate seeded tasks against fresh assessment evidence and replace contradicted seeds before implementation",
         ),
         (
+            "task_no_edit_revert_count",
+            "task_no_edit_revert",
+            "implementation tasks reverted without edits",
+            "force implementation agents to either make an early scoped edit, write an obsolete note, or fail with a concrete blocker",
+        ),
+        (
             "task_scope_mismatch_count",
             "task_scope_mismatch",
             "implementation touched files outside the selected task surface",
@@ -2939,6 +2970,7 @@ def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
             + metric_float(metrics, "task_unattempted_count") * 2.0
             + metric_float(metrics, "task_obsolete_count")
             + metric_float(metrics, "task_seed_contradiction_count") * 2.0
+            + metric_float(metrics, "task_no_edit_revert_count") * 2.0
             + metric_float(metrics, "task_api_error_count") * 2.0
             + metric_float(metrics, "task_scope_mismatch_count") * 2.0
             + metric_float(metrics, "evaluator_unverified_count")
@@ -2991,6 +3023,7 @@ def gnome_correction_source(key: str, corrected_value: Any, feedback_metrics: di
         "evaluator_timeout_with_verdict_count",
         "task_obsolete_count",
         "task_seed_contradiction_count",
+        "task_no_edit_revert_count",
         "task_api_error_count",
         "task_scope_mismatch_count",
         "task_unlanded_source_count",
@@ -3300,6 +3333,7 @@ def task_verification_problem_reasons(work: dict[str, Any]) -> list[str]:
     no_passing = 0
     unlanded = 0
     no_overlap = 0
+    no_edit = 0
     no_touched = 0
     timeout_after_verdict = 0
     missing_planned = 0
@@ -3313,6 +3347,8 @@ def task_verification_problem_reasons(work: dict[str, Any]) -> list[str]:
             unlanded += 1
         if "no_planned_file_overlap" in problems:
             no_overlap += 1
+        if "no_edit_revert" in problems:
+            no_edit += 1
         if "no_touched_files" in problems:
             no_touched += 1
         if "evaluator_timed_out_after_verdict" in problems:
@@ -3326,6 +3362,8 @@ def task_verification_problem_reasons(work: dict[str, Any]) -> list[str]:
         reasons.append(f"{unlanded} unlanded source task(s)")
     if no_overlap:
         reasons.append(f"{no_overlap} task(s) without planned-file overlap")
+    if no_edit:
+        reasons.append(f"{no_edit} task(s) reverted without edits")
     if no_touched:
         reasons.append(f"{no_touched} task(s) without touched files")
     if timeout_after_verdict:
@@ -5175,6 +5213,7 @@ HTML = r"""<!doctype html>
       task_unattempted_count: "Unattempted selected tasks",
       task_obsolete_count: "Obsolete/stale tasks",
       task_seed_contradiction_count: "Contradicted seed tasks",
+      task_no_edit_revert_count: "No-edit task reverts",
       task_api_error_count: "Task API-error reverts",
       task_scope_mismatch_count: "Task scope mismatches",
       task_manifest_available: "Task manifest available",
@@ -5368,6 +5407,7 @@ HTML = r"""<!doctype html>
           timedOutPassing: 0,
           unlanded: 0,
           noOverlap: 0,
+          noEdit: 0,
           noTouched: 0,
           timeoutAfterVerdict: 0,
           missingPlanned: 0
@@ -5378,6 +5418,7 @@ HTML = r"""<!doctype html>
           if (problems.has("timed_out_passing_verdict")) counts.timedOutPassing += 1;
           if (problems.has("source_edits_not_landed") || problems.has("no_landed_source_commit")) counts.unlanded += 1;
           if (problems.has("no_planned_file_overlap")) counts.noOverlap += 1;
+          if (problems.has("no_edit_revert")) counts.noEdit += 1;
           if (problems.has("no_touched_files")) counts.noTouched += 1;
           if (problems.has("evaluator_timed_out_after_verdict")) counts.timeoutAfterVerdict += 1;
           if (problems.has("missing_planned_files")) counts.missingPlanned += 1;
@@ -5386,6 +5427,7 @@ HTML = r"""<!doctype html>
         if (counts.timedOutPassing) reasons.push(`${counts.timedOutPassing} task(s) with timed-out passing verifier`);
         if (counts.unlanded) reasons.push(`${counts.unlanded} unlanded source task(s)`);
         if (counts.noOverlap) reasons.push(`${counts.noOverlap} task(s) without planned-file overlap`);
+        if (counts.noEdit) reasons.push(`${counts.noEdit} task(s) reverted without edits`);
         if (counts.noTouched) reasons.push(`${counts.noTouched} task(s) without touched files`);
         if (counts.timeoutAfterVerdict) reasons.push(`${counts.timeoutAfterVerdict} evaluator timeout(s) after verdict`);
         if (counts.missingPlanned) reasons.push(`${counts.missingPlanned} task(s) missing planned files`);
@@ -6217,6 +6259,7 @@ HTML = r"""<!doctype html>
         "evaluator_timeout_with_verdict_count",
         "task_obsolete_count",
         "task_seed_contradiction_count",
+        "task_no_edit_revert_count",
         "task_api_error_count",
         "task_scope_mismatch_count",
         "task_unlanded_source_count",

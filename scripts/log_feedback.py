@@ -151,6 +151,7 @@ GNOME_KEYS = [
     "evaluator_timeout_with_verdict_count",
     "task_obsolete_count",
     "task_seed_contradiction_count",
+    "task_no_edit_revert_count",
     "task_api_error_count",
     "task_scope_mismatch_count",
     "task_unlanded_source_count",
@@ -913,6 +914,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     api_error_count = 0
     protected_file_revert_count = 0
     scope_mismatch_count = 0
+    no_edit_revert_count = 0
     explained_unverified_ids: set[str] = set()
     unlanded_source = 0
     for task_dir in task_dirs:
@@ -950,6 +952,17 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         if scope_mismatch:
             scope_mismatch_count += 1
             explained_unverified_ids.add(task_key)
+        no_edit_revert = (
+            outcome.get("status") == "reverted"
+            and not touched
+            and not obsolete
+            and not api_error
+            and not protected_revert
+            and not scope_mismatch
+        )
+        if no_edit_revert:
+            no_edit_revert_count += 1
+            explained_unverified_ids.add(task_key)
         landed = bool(outcome.get("commit_shas") or outcome.get("commits"))
         has_landed_source = not touched or landed
         if outcome.get("status") == "completed" and has_pass and has_landed_source:
@@ -966,7 +979,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     if verification_denominator:
         evaluator_unverified = max(
             evaluator_unverified,
-            verification_denominator - strict_verified - len(explained_unverified_ids),
+            verification_denominator - strict_verified - task_unattempted - len(explained_unverified_ids),
         )
     replay = replay_check_session(session_dir)
     return {
@@ -982,6 +995,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "evaluator_timeout_with_verdict_count": evaluator_timeout_with_verdict,
         "task_obsolete_count": obsolete_count,
         "task_api_error_count": api_error_count,
+        "task_no_edit_revert_count": no_edit_revert_count,
         "task_scope_mismatch_count": scope_mismatch_count,
         "protected_file_revert_count": protected_file_revert_count,
         "task_unlanded_source_count": unlanded_source,
@@ -1130,6 +1144,7 @@ def score_assessment(metrics: dict[str, Any]) -> float:
             + float(metrics.get("task_unattempted_count") or 0) * 2.0
             + float(metrics.get("task_obsolete_count") or 0)
             + float(metrics.get("task_seed_contradiction_count") or 0) * 2.0
+            + float(metrics.get("task_no_edit_revert_count") or 0) * 2.0
             + float(metrics.get("task_api_error_count") or 0) * 2.0
             + float(metrics.get("task_scope_mismatch_count") or 0) * 2.0
             + float(metrics.get("evaluator_unverified_count") or 0)
@@ -1245,10 +1260,15 @@ def build_assessment(
         **cache_metrics,
         **recurrences,
     }
-    if int(metrics.get("task_seed_contradiction_count") or 0) > 0:
+    seed_contradictions = int(metrics.get("task_seed_contradiction_count") or 0)
+    no_edit_reverts = int(metrics.get("task_no_edit_revert_count") or 0)
+    if seed_contradictions and no_edit_reverts:
+        metrics["task_no_edit_revert_count"] = max(no_edit_reverts - seed_contradictions, 0)
+        no_edit_reverts = int(metrics.get("task_no_edit_revert_count") or 0)
+    explained_evaluator_gaps = seed_contradictions + no_edit_reverts
+    if explained_evaluator_gaps > 0:
         metrics["evaluator_unverified_count"] = max(
-            int(metrics.get("evaluator_unverified_count") or 0)
-            - int(metrics.get("task_seed_contradiction_count") or 0),
+            int(metrics.get("evaluator_unverified_count") or 0) - explained_evaluator_gaps,
             0,
         )
     metrics["coding_log_score"] = score_assessment(metrics)
@@ -1301,6 +1321,14 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "task_seed_contradiction",
                 "fingerprint": "seeded task was contradicted by fresh assessment evidence",
                 "action": "validate seeded tasks against the fresh assessment before implementation and replace contradicted seeds",
+            }
+        )
+    if int(metrics.get("task_no_edit_revert_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "task_no_edit_revert",
+                "fingerprint": "implementation task reverted without touching files",
+                "action": "force implementation agents to either make an early scoped edit, write an obsolete note, or fail with a concrete blocker",
             }
         )
     if int(metrics.get("task_api_error_count") or 0) > 0:
@@ -1803,8 +1831,13 @@ def run_self_tests() -> int:
         )
         reverted_artifacts = task_artifact_metrics(session, attempted=1)
         check(
-            "reverted selected task without eval is evaluator-unverified",
-            reverted_artifacts["evaluator_unverified_count"] == 1,
+            "reverted selected task without edits is classified",
+            reverted_artifacts["task_no_edit_revert_count"] == 1,
+            reverted_artifacts,
+        )
+        check(
+            "reverted selected task without edits is not evaluator-unverified",
+            reverted_artifacts["evaluator_unverified_count"] == 0,
             reverted_artifacts,
         )
 
