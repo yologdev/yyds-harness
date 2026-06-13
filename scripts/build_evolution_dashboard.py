@@ -73,7 +73,42 @@ def log_feedback_metrics(session_dir: Path) -> dict[str, Any]:
         and log_feedback_has_seed_task_contradiction(feedback)
     ):
         scalar_metrics["task_seed_contradiction_count"] = 1
+    failure_fingerprints = metrics.get("failure_fingerprints")
+    if isinstance(failure_fingerprints, list):
+        active = [
+            item
+            for item in failure_fingerprints
+            if isinstance(item, dict) and not benign_log_failure_text(str(item.get("fingerprint") or ""))
+        ]
+        scalar_metrics["distinct_failure_count"] = len(active)
+        scalar_metrics["failure_count"] = sum(
+            int(item.get("count") or 0)
+            for item in active
+            if isinstance(item.get("count"), (int, float)) and not isinstance(item.get("count"), bool)
+        )
     return scalar_metrics
+
+
+def benign_log_failure_text(text: str) -> bool:
+    lower = str(text or "").strip().lower()
+    return lower.startswith(
+        (
+            "**edit ",
+            "**edit:",
+            "**step ",
+            "**step:",
+            "**check ",
+            "**check:",
+            "**verification ",
+            "**verification:",
+            "**change ",
+            "**change:",
+            "**implementation ",
+            "**implementation:",
+            "**result ",
+            "**result:",
+        )
+    )
 
 
 def seed_task_contradiction_text(text: str) -> bool:
@@ -98,6 +133,10 @@ def log_feedback_top_lessons(session_dir: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for lesson in lessons[:6]:
         if not isinstance(lesson, dict):
+            continue
+        if str(lesson.get("kind") or "") in {"failure", "recurring_failure"} and benign_log_failure_text(
+            str(lesson.get("fingerprint") or "")
+        ):
             continue
         rows.append(
             {

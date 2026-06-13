@@ -262,7 +262,24 @@ def is_noise_failure_message(message: str) -> bool:
         return True
     if lower.startswith(">"):
         return True
-    if lower.startswith(("**edit ", "**step ", "**check ", "**verification ")):
+    if lower.startswith(
+        (
+            "**edit ",
+            "**edit:",
+            "**step ",
+            "**step:",
+            "**check ",
+            "**check:",
+            "**verification ",
+            "**verification:",
+            "**change ",
+            "**change:",
+            "**implementation ",
+            "**implementation:",
+            "**result ",
+            "**result:",
+        )
+    ):
         return True
     if lower.startswith(('"', "'", "`")):
         return True
@@ -1577,6 +1594,7 @@ def run_self_tests() -> int:
                 "evolve\tRun evolution session\t2026-06-11T04:40:02Z These are quoted evaluator notes about failure evidence, not current command output.",
                 "evolve\tRun evolution session\t2026-06-11T08:23:53Z **Edit 1: Spawn failure (line 484-486)** — Wrap the `map_err` closure to stash before constructing the error:",
                 "evolve\tRun evolution session\t2026-06-11T08:23:59Z **Edit 2: Timeout (lines ~600-606)** — Stash before returning timeout error:",
+                "evolve\tRun evolution session\t2026-06-12T12:04:36Z **Change:** When `build_why_report` returns `Err` (target event not found), append the windowing hint.",
                 "evolve\tRun evolution session\t2026-06-11T08:23:59Z                         \"Command timed out after {}s\",",
                 "evolve\tRun evolution session\t2026-06-11T09:49:37Z Interesting! The `state crashes` command shows that this assessment session had 10 crash attempts before it successfully started.",
                 "evolve\tRun evolution session\t2026-06-11T09:52:38Z The crashes have exit code 1 or 2, and no diagnostic - meaning they happened in paths not covered by `stash_diagnostic_error`.",

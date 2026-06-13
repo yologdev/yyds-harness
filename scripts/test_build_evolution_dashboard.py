@@ -3512,6 +3512,66 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("Raw log-feedback", html)
             self.assertIn("search tool or grep produced an error", data_json)
 
+    def test_log_feedback_ignores_benign_change_summary_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "evals": [
+                        {
+                            "eval_id": "log-feedback-1",
+                            "suite": "log-feedback",
+                            "status": "passed",
+                            "score": 0.8,
+                            "gnomes": {"distinct_failure_count": 1, "failure_count": 1},
+                        }
+                    ],
+                    "latest_gnomes": {"distinct_failure_count": 1, "failure_count": 1},
+                    "gnome_keys": ["distinct_failure_count", "failure_count"],
+                },
+            )
+            benign = (
+                "**Change:** When `build_why_report` returns `Err` "
+                "(target event not found), append the windowing hint."
+            )
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "distinct_failure_count": 1,
+                        "failure_count": 1,
+                        "failure_fingerprints": [{"fingerprint": benign, "count": 1}],
+                    },
+                    "top_lessons": [
+                        {
+                            "kind": "failure",
+                            "fingerprint": benign,
+                            "action": "inspect the failing phase",
+                            "count": 1,
+                        }
+                    ],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+
+            self.assertEqual(session_data["latest_gnomes"]["distinct_failure_count"], 0)
+            self.assertEqual(session_data["latest_gnomes"]["failure_count"], 0)
+            self.assertNotIn("log_feedback_top_lessons", session_data["work_summary"])
+            self.assertNotIn("top_lessons", session_data["latest_eval"])
+
     def test_build_writes_structured_claims_projection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
