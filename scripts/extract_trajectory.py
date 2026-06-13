@@ -970,6 +970,7 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
     tool_failures: Counter[str] = Counter()
     addressed_tool_failures = recently_addressed_tool_failure_categories(audit_dir)
     latest_lifecycle_counts: Counter[str] = Counter()
+    latest_lifecycle_causes: list[dict[str, Any]] = []
     for session in states.get("sessions", []) if isinstance(states.get("sessions"), list) else []:
         if not isinstance(session, dict):
             continue
@@ -1008,6 +1009,11 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                     session_lifecycle_counts[f"{prefix}_{key}_count"] += int(value)
         if session_lifecycle_counts:
             latest_lifecycle_counts = session_lifecycle_counts
+            latest_lifecycle_causes = (
+                lifecycle.get("imbalance_causes")
+                if isinstance(lifecycle.get("imbalance_causes"), list)
+                else []
+            )
 
     recent_task_issue_states: list[tuple[str, int]] = []
     if recent_state_counts:
@@ -1070,6 +1076,36 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                     lifecycle_summary.append(f"{label}={latest_lifecycle_counts[key]}")
             if lifecycle_summary:
                 summary_parts.append("lifecycle gaps: " + ", ".join(lifecycle_summary))
+        if latest_lifecycle_causes:
+            category_labels = {
+                "run_incomplete": "state_incomplete",
+                "run_unmatched_completed": "state_unmatched",
+                "model_call_incomplete": "model_incomplete",
+                "model_call_unmatched_completed": "model_unmatched",
+            }
+            cause_summary = []
+            for row in latest_lifecycle_causes:
+                if not isinstance(row, dict):
+                    continue
+                category = str(row.get("category") or "")
+                cause = str(row.get("cause") or "")
+                if cause == "input_validation_exit_without_run_start":
+                    continue
+                label = category_labels.get(category, category or "lifecycle")
+                if cause.startswith("open_after_file_edit:"):
+                    cause_label = "open_after_file_edit"
+                else:
+                    cause_label = cause[:40] if cause else "unknown"
+                try:
+                    count = int(row.get("count") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    cause_summary.append(f"{label}/{cause_label}={count}")
+                if len(cause_summary) >= 3:
+                    break
+            if cause_summary:
+                summary_parts.append("lifecycle causes: " + ", ".join(cause_summary))
         if recent_task_issue_states:
             summary_parts.append(
                 "recent task issues: "

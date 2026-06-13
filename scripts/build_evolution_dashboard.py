@@ -4556,6 +4556,9 @@ def session_state_projection(session: dict[str, Any]) -> dict[str, Any]:
         "lifecycle": {
             "runs": lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {},
             "model_calls": lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {},
+            "imbalance_causes": lifecycle.get("imbalance_causes")
+            if isinstance(lifecycle.get("imbalance_causes"), list)
+            else [],
             "cross_session_reused_run_id_count": lifecycle.get("cross_session_reused_run_id_count", 0),
             "cross_session_reused_run_ids": lifecycle.get("cross_session_reused_run_ids")
             if isinstance(lifecycle.get("cross_session_reused_run_ids"), list)

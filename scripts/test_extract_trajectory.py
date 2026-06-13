@@ -376,8 +376,13 @@ class ExtractTrajectoryTests(unittest.TestCase):
                 {"kind": "RunStarted", "run_id": "run-open", "payload": {"status": "started"}},
                 {
                     "kind": "ModelCallStarted",
-                    "run_id": "run-model-open",
+                    "run_id": "run-open",
                     "payload": {"model": "deepseek-v4-pro"},
+                },
+                {
+                    "kind": "FileEdited",
+                    "run_id": "run-open",
+                    "payload": {"path": "/work/repo/src/lib.rs"},
                 },
             ]
             state_dir = session / "state"
@@ -398,6 +403,9 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("lifecycle gaps:", rendered)
             self.assertIn("state_incomplete=1", rendered)
             self.assertIn("model_incomplete=1", rendered)
+            self.assertIn("lifecycle causes:", rendered)
+            self.assertIn("model_incomplete/open_after_file_edit=1", rendered)
+            self.assertIn("state_incomplete/open_after_file_edit=1", rendered)
             self.assertIn("recent task issues:", rendered)
             self.assertIn("deepseek_model_call_lifecycle_balanced", rendered)
             self.assertIn("latest=day-1", rendered)
