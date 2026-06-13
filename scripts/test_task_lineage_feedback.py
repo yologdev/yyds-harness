@@ -888,9 +888,14 @@ class TaskLineageFeedback(unittest.TestCase):
 
             metrics = assessment["metrics"]
             self.assertEqual(metrics["protected_file_revert_count"], 1)
+            self.assertEqual(metrics["task_scope_mismatch_count"], 1)
             self.assertEqual(metrics["task_unlanded_source_count"], 0)
-            self.assertEqual(metrics["evaluator_unverified_count"], 2)
+            self.assertEqual(metrics["evaluator_unverified_count"], 0)
             self.assertIn("protected_file_revert_count", log_feedback.gnome_values(metrics))
+            self.assertIn("task_scope_mismatch_count", log_feedback.gnome_values(metrics))
+            self.assertTrue(
+                any(lesson["kind"] == "task_scope_mismatch" for lesson in assessment["top_lessons"])
+            )
 
     def test_log_feedback_counts_selected_but_unattempted_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:

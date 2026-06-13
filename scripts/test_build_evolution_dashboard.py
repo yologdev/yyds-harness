@@ -888,6 +888,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "task_api_error_count",
                     "task_artifact_coverage",
                     "task_obsolete_count",
+                    "task_scope_mismatch_count",
                     "task_success_rate",
                     "task_unlanded_source_count",
                     "total_task_turn_count",
@@ -907,6 +908,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "session_success_rate": 1.0,
                     "task_artifact_coverage": 1.0,
                     "task_obsolete_count": 0.0,
+                    "task_scope_mismatch_count": 0.0,
                     "task_success_rate": 1.0,
                     "task_unlanded_source_count": 0.0,
                     "total_task_turn_count": 4.0,
@@ -4306,6 +4308,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(states["summary"]["state_counts"], {"reverted_protected_file_edits": 1})
             self.assertEqual(data["sessions"][0]["latest_gnomes"]["protected_file_revert_count"], 1)
             self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_unlanded_source_count"], 0)
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_scope_mismatch_count"], 0)
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["evaluator_unverified_count"], 0)
 
     def test_backup_only_revert_is_scope_mismatch_not_unlanded_source(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4366,7 +4370,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             task_state = work["task_states"]["tasks"][0]
             self.assertEqual(task_state["state"], "reverted_scope_mismatch")
             self.assertEqual(states["summary"]["state_counts"], {"reverted_scope_mismatch": 1})
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_scope_mismatch_count"], 1)
             self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_unlanded_source_count"], 0)
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["evaluator_unverified_count"], 0)
 
     def test_missing_optional_artifacts_do_not_fail(self):
         with tempfile.TemporaryDirectory() as tmp:

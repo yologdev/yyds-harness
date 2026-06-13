@@ -95,6 +95,18 @@ def task_source_file(path: str) -> bool:
     return bool(path) and not str(path).endswith(".bak")
 
 
+def path_matches(planned: str, touched: str) -> bool:
+    planned = str(planned or "").strip().strip("/")
+    touched = str(touched or "").strip().strip("/")
+    if not planned or not touched:
+        return False
+    return touched == planned or touched.startswith(f"{planned}/")
+
+
+def file_overlap(planned: list[str], touched: list[str]) -> bool:
+    return any(path_matches(planned_file, touched_file) for planned_file in planned for touched_file in touched)
+
+
 GNOME_KEYS = [
     "coding_log_score",
     "coding_log_confidence",
@@ -130,6 +142,7 @@ GNOME_KEYS = [
     "evaluator_timeout_with_verdict_count",
     "task_obsolete_count",
     "task_api_error_count",
+    "task_scope_mismatch_count",
     "task_unlanded_source_count",
     "max_task_turn_count",
     "avg_task_turn_count",
@@ -868,8 +881,11 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     obsolete_count = 0
     api_error_count = 0
     protected_file_revert_count = 0
+    scope_mismatch_count = 0
+    explained_unverified_ids: set[str] = set()
     unlanded_source = 0
     for task_dir in task_dirs:
+        task_key = task_dir.name
         outcome = load_json(task_dir / "outcome.json")
         evals = [load_json(path) for path in sorted(task_dir.glob("eval_attempt_*.json"))]
         evals = [row for row in evals if row]
@@ -879,23 +895,37 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             outcome.get("revert_reason") or ""
         ).lower()
         api_error = "api error" in str(outcome.get("revert_reason") or "").lower()
-        protected_revert = "modified protected files" in str(outcome.get("revert_reason") or "").lower()
+        revert_reason = str(outcome.get("revert_reason") or "").lower()
+        protected_revert = "modified protected files" in revert_reason
         if obsolete:
             obsolete_count += 1
+            explained_unverified_ids.add(task_key)
         if api_error:
             api_error_count += 1
+            explained_unverified_ids.add(task_key)
         if protected_revert:
             protected_file_revert_count += 1
+            explained_unverified_ids.add(task_key)
+        planned = [str(path) for path in (outcome.get("planned_files") or []) if path]
         touched = [
             str(path)
             for path in (outcome.get("source_files") or outcome.get("touched_files") or [])
             if task_source_file(str(path))
         ]
+        scope_mismatch = (
+            "do not overlap planned" in revert_reason
+            or (bool(planned and touched) and not file_overlap(planned, touched))
+        )
+        if scope_mismatch:
+            scope_mismatch_count += 1
+            explained_unverified_ids.add(task_key)
         landed = bool(outcome.get("commit_shas") or outcome.get("commits"))
         has_landed_source = not touched or landed
         if outcome.get("status") == "completed" and has_pass and has_landed_source:
             strict_verified += 1
-        elif not obsolete and not api_error and (outcome.get("status") == "completed" or evals):
+        elif not obsolete and not api_error and not protected_revert and not scope_mismatch and (
+            outcome.get("status") == "completed" or evals
+        ):
             evaluator_unverified += 1
         if has_timeout_with_verdict:
             evaluator_timeout_with_verdict += 1
@@ -905,7 +935,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     if verification_denominator:
         evaluator_unverified = max(
             evaluator_unverified,
-            verification_denominator - strict_verified - obsolete_count - api_error_count,
+            verification_denominator - strict_verified - len(explained_unverified_ids),
         )
     replay = replay_check_session(session_dir)
     return {
@@ -921,6 +951,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "evaluator_timeout_with_verdict_count": evaluator_timeout_with_verdict,
         "task_obsolete_count": obsolete_count,
         "task_api_error_count": api_error_count,
+        "task_scope_mismatch_count": scope_mismatch_count,
         "protected_file_revert_count": protected_file_revert_count,
         "task_unlanded_source_count": unlanded_source,
         "task_spec_quality_score": round(sum(quality_scores) / len(quality_scores), 4)
@@ -1068,6 +1099,7 @@ def score_assessment(metrics: dict[str, Any]) -> float:
             + float(metrics.get("task_unattempted_count") or 0) * 2.0
             + float(metrics.get("task_obsolete_count") or 0)
             + float(metrics.get("task_api_error_count") or 0) * 2.0
+            + float(metrics.get("task_scope_mismatch_count") or 0) * 2.0
             + float(metrics.get("evaluator_unverified_count") or 0)
             + float(metrics.get("evaluator_timeout_with_verdict_count") or 0) * 2.0
             + float(metrics.get("task_unlanded_source_count") or 0) * 2.0
@@ -1231,6 +1263,14 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "task_api_error",
                 "fingerprint": "implementation agent hit an API error before producing landed work",
                 "action": "preserve API-error evidence and retry with provider recovery instead of treating the task as a generic no-change revert",
+            }
+        )
+    if int(metrics.get("task_scope_mismatch_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "task_scope_mismatch",
+                "fingerprint": "implementation changed files outside the selected task surface",
+                "action": "tighten task Files entries and implementation prompts so the planned surface matches the actual edit target",
             }
         )
     if int(metrics.get("state_live_baseline_shrink_count") or 0) > 0:

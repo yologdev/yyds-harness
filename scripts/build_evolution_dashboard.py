@@ -555,6 +555,11 @@ def protected_file_revert(reason: str) -> bool:
     return "modified protected files" in str(reason or "").lower()
 
 
+def task_scope_mismatch(row: dict[str, Any]) -> bool:
+    problems = row.get("problems") if isinstance(row.get("problems"), list) else []
+    return "no_planned_file_overlap" in problems
+
+
 def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[str, Any]:
     counts = summary.get("event_counts") if isinstance(summary.get("event_counts"), dict) else {}
     total = int(summary.get("event_count") or 0)
@@ -2488,6 +2493,11 @@ def corrected_gnomes(
             if isinstance(row, dict)
             and (row.get("protected_revert") or "modified_protected_files" in (row.get("problems") or []))
         )
+        scope_mismatches = sum(
+            1
+            for row in (verification.get("rows") or [])
+            if isinstance(row, dict) and task_scope_mismatch(row)
+        )
         timeout_with_verdict = sum(
             1
             for row in (verification.get("rows") or [])
@@ -2517,7 +2527,22 @@ def corrected_gnomes(
             int(gnomes.get("task_api_error_count") or 0),
             api_error,
         )
-        gnomes["evaluator_unverified_count"] = max(unverified - obsolete - api_error, 0)
+        explained_unverified = sum(
+            1
+            for row in (verification.get("rows") or [])
+            if isinstance(row, dict)
+            and not row.get("strict_success")
+            and (
+                row.get("obsolete")
+                or "task_marked_obsolete" in (row.get("problems") or [])
+                or row.get("api_error")
+                or "implementation_api_error" in (row.get("problems") or [])
+                or row.get("protected_revert")
+                or "modified_protected_files" in (row.get("problems") or [])
+                or task_scope_mismatch(row)
+            )
+        )
+        gnomes["evaluator_unverified_count"] = max(unverified - explained_unverified, 0)
         gnomes["evaluator_timeout_with_verdict_count"] = max(
             int(gnomes.get("evaluator_timeout_with_verdict_count") or 0),
             timeout_with_verdict,
@@ -2527,6 +2552,7 @@ def corrected_gnomes(
             int(gnomes.get("protected_file_revert_count") or 0),
             protected_reverts,
         )
+        gnomes["task_scope_mismatch_count"] = scope_mismatches
     elif attempted:
         succeeded = int(outcome.get("tasks_succeeded") or 0)
         gnomes["task_success_rate"] = None
@@ -2669,6 +2695,12 @@ def corrected_gnome_lessons(
             "preserve API-error evidence and retry with provider recovery instead of treating the task as a no-change revert",
         ),
         (
+            "task_scope_mismatch_count",
+            "task_scope_mismatch",
+            "implementation touched files outside the selected task surface",
+            "tighten task files and implementation prompts so planned Files entries match the intended edit surface",
+        ),
+        (
             "deepseek_model_call_incomplete_count",
             "deepseek_model_call_incomplete",
             "DeepSeek model call lifecycle was incomplete",
@@ -2784,6 +2816,7 @@ def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
             + metric_float(metrics, "task_unattempted_count") * 2.0
             + metric_float(metrics, "task_obsolete_count")
             + metric_float(metrics, "task_api_error_count") * 2.0
+            + metric_float(metrics, "task_scope_mismatch_count") * 2.0
             + metric_float(metrics, "evaluator_unverified_count")
             + metric_float(metrics, "evaluator_timeout_with_verdict_count") * 2.0
             + metric_float(metrics, "task_unlanded_source_count") * 2.0
@@ -2834,6 +2867,7 @@ def gnome_correction_source(key: str, corrected_value: Any, feedback_metrics: di
         "evaluator_timeout_with_verdict_count",
         "task_obsolete_count",
         "task_api_error_count",
+        "task_scope_mismatch_count",
         "task_unlanded_source_count",
         "protected_file_revert_count",
         "task_unverified_raw_attempt_count",
@@ -5012,6 +5046,7 @@ HTML = r"""<!doctype html>
       task_unattempted_count: "Unattempted selected tasks",
       task_obsolete_count: "Obsolete/stale tasks",
       task_api_error_count: "Task API-error reverts",
+      task_scope_mismatch_count: "Task scope mismatches",
       task_manifest_available: "Task manifest available",
       task_artifact_coverage: "Task artifact coverage",
       task_lineage_capture_coverage: "Task lineage capture",
@@ -6052,6 +6087,7 @@ HTML = r"""<!doctype html>
         "evaluator_timeout_with_verdict_count",
         "task_obsolete_count",
         "task_api_error_count",
+        "task_scope_mismatch_count",
         "task_unlanded_source_count",
         "max_task_turn_count",
         "state_operational_capture_coverage",
