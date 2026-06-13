@@ -10,6 +10,15 @@ from pathlib import Path
 TASKS = [
     {
         "keys": ("sub-agent", "sub agent", "api_key_present", "api key", "worker agents"),
+        "reject_keys": (
+            "ci/automation noise",
+            "ci automation noise",
+            "empty_input",
+            "empty input",
+            "automation noise",
+            "expected for ci",
+            "expected in ci",
+        ),
         "title": "Verify and fix sub-agent API key propagation",
         "files": "src/tools.rs, src/agent_builder.rs, src/lib.rs",
         "objective": (
@@ -87,6 +96,9 @@ TASKS = [
             "no failure found. the state system",
             "returned nothing — meaning no",
             "returned nothing - meaning no",
+            "expected for fresh state",
+            "expected for a freshly initialized",
+            "clean output",
         ),
         "title": "Improve cold-start state failure diagnostics",
         "files": "src/commands_state.rs, src/state.rs",
@@ -288,6 +300,18 @@ def main() -> int:
         assessment = "Bugs / Friction Found\nSub-agent spawn failures with api_key_present: false"
         task = choose_task(assessment)
         assert task["title"] == "Verify and fix sub-agent API key propagation", task
+        assessment = """# Assessment
+
+## Self-Test Results
+- `yyds state crashes --json` shows 10 crashes, all `empty_input` with `api_key_present: false` (CI/automation noise)
+
+## Structured State Snapshot
+Top tool-failure categories:
+- `search_regex_error` = 57
+- `search_binary_match` = 19
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Reduce recurring search-tool friction before implementation", task
         assessment = "Cache metrics absent. deepseek cache-report shows nothing."
         task = choose_task(assessment)
         assert task["title"] == "Record DeepSeek prompt cache metrics during prompt runs", task
@@ -308,6 +332,16 @@ def main() -> int:
         )
         task = choose_task(assessment)
         assert task["title"] != "Improve cold-start state failure diagnostics", task
+        assessment = """# Assessment
+
+## Self-Test Results
+- `./target/debug/yyds state why last-failure` - clean output: "no state event found for 'last-failure'" (expected for fresh state)
+
+## Structured State Snapshot
+Tool failures: search_regex_error=57; search_binary_match=19
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Reduce recurring search-tool friction before implementation", task
         assessment = """# Assessment
 
 ## Recent Changes

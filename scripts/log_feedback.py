@@ -1032,6 +1032,29 @@ def promote_manifest_seed_contradictions(metrics: dict[str, Any]) -> int:
     return seed_contradictions
 
 
+def suppress_resolved_seed_replacement(metrics: dict[str, Any]) -> int:
+    seed_contradictions = int(metrics.get("task_seed_contradiction_count") or 0)
+    if seed_contradictions <= 0:
+        return 0
+    manifest_seed_contradictions = int(metrics.get("task_manifest_seed_contradiction_count") or 0)
+    if manifest_seed_contradictions > 0:
+        return seed_contradictions
+    selected = int(metrics.get("selected_task_count") or 0)
+    strict_verified = int(metrics.get("task_strict_verified_count") or 0)
+    succeeded = int(metrics.get("tasks_succeeded") or 0)
+    if (
+        selected > 0
+        and strict_verified >= selected
+        and succeeded >= selected
+        and int(metrics.get("task_revert_count") or 0) == 0
+        and int(metrics.get("task_obsolete_count") or 0) == 0
+    ):
+        metrics["task_seed_replacement_count"] = seed_contradictions
+        metrics["task_seed_contradiction_count"] = 0
+        return 0
+    return seed_contradictions
+
+
 def gnome_deltas(metrics: dict[str, Any], previous: list[dict[str, Any]]) -> dict[str, Any]:
     current = gnome_values(metrics)
     previous_metrics: dict[str, Any] = {}
@@ -1286,7 +1309,8 @@ def build_assessment(
         **cache_metrics,
         **recurrences,
     }
-    seed_contradictions = promote_manifest_seed_contradictions(metrics)
+    promote_manifest_seed_contradictions(metrics)
+    seed_contradictions = suppress_resolved_seed_replacement(metrics)
     no_edit_reverts = int(metrics.get("task_no_edit_revert_count") or 0)
     if seed_contradictions and no_edit_reverts:
         metrics["task_no_edit_revert_count"] = max(no_edit_reverts - seed_contradictions, 0)
@@ -1910,6 +1934,29 @@ def run_self_tests() -> int:
             "manifest contradiction promotes seed contradiction gnome",
             combined["task_seed_contradiction_count"] == 1,
             combined,
+        )
+        suppress_resolved_seed_replacement(combined)
+        check(
+            "manifest contradiction is not suppressed as replacement",
+            combined["task_seed_contradiction_count"] == 1,
+            combined,
+        )
+
+        resolved_seed = {
+            "selected_task_count": 1,
+            "task_strict_verified_count": 1,
+            "tasks_succeeded": 1,
+            "task_revert_count": 0,
+            "task_obsolete_count": 0,
+            "task_seed_contradiction_count": 1,
+            "task_manifest_seed_contradiction_count": 0,
+        }
+        suppress_resolved_seed_replacement(resolved_seed)
+        check(
+            "successful seed replacement is not counted as contradiction",
+            resolved_seed["task_seed_contradiction_count"] == 0
+            and resolved_seed["task_seed_replacement_count"] == 1,
+            resolved_seed,
         )
 
         (session / "state").mkdir(exist_ok=True)
