@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from build_evolution_dashboard import (  # noqa: E402
     build,
+    build_dashboard_claim_summary,
     count_claim,
     failed_tool_summary_count_claim,
     failed_tool_pattern_summary,
@@ -3595,10 +3596,90 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(assessment_summary["latest_examples"][0]["session_id"], "day-1")
             self.assertIn("Claim health", html)
             self.assertIn("Unresolved claims", html)
+            self.assertIn("Latest claims", html)
+            self.assertIn("Recent claims", html)
             self.assertIn("latest:", html)
             self.assertIn("Dataset schema warning", html)
             self.assertIn("claims_summary is missing", html)
             self.assertIn("schema 2 evidence model", html)
+
+    def test_claim_summary_separates_latest_recent_and_historical_unresolved(self):
+        projection = {
+            "summary": {
+                "claim_count": 6,
+                "status_counts": {"missing": 1, "observed": 1, "proven": 4},
+            },
+            "sessions": [
+                {
+                    "id": "day-1",
+                    "ts": "2026-06-01T00:00:00Z",
+                    "claims": [
+                        {
+                            "name": "historical_lifecycle_gap",
+                            "status": "missing",
+                            "detail": "old failure",
+                            "evidence": ["RunStarted"],
+                        }
+                    ],
+                },
+                {
+                    "id": "day-2",
+                    "ts": "2026-06-02T00:00:00Z",
+                    "claims": [{"name": "clean_2", "status": "proven", "detail": "", "evidence": []}],
+                },
+                {
+                    "id": "day-3",
+                    "ts": "2026-06-03T00:00:00Z",
+                    "claims": [{"name": "clean_3", "status": "proven", "detail": "", "evidence": []}],
+                },
+                {
+                    "id": "day-4",
+                    "ts": "2026-06-04T00:00:00Z",
+                    "claims": [{"name": "clean_4", "status": "proven", "detail": "", "evidence": []}],
+                },
+                {
+                    "id": "day-5",
+                    "ts": "2026-06-05T00:00:00Z",
+                    "claims": [
+                        {
+                            "name": "recent_assessment_gap",
+                            "status": "observed",
+                            "detail": "recent weak evidence",
+                            "evidence": ["transcripts/assess.log"],
+                        }
+                    ],
+                },
+                {
+                    "id": "day-6",
+                    "ts": "2026-06-06T00:00:00Z",
+                    "claims": [
+                        {
+                            "name": "latest_claims_clean",
+                            "status": "proven",
+                            "detail": "latest clean",
+                            "evidence": ["state.events"],
+                        }
+                    ],
+                },
+            ],
+        }
+
+        summary = build_dashboard_claim_summary(projection)
+
+        self.assertEqual(summary["unresolved_count"], 2)
+        self.assertEqual(summary["latest_session_id"], "day-6")
+        self.assertEqual(summary["latest_unresolved_count"], 0)
+        self.assertEqual(summary["latest_unresolved"], [])
+        self.assertEqual(summary["recent_window_size"], 5)
+        self.assertEqual(summary["recent_unresolved_count"], 1)
+        self.assertEqual(
+            [row["name"] for row in summary["recent_top_unresolved"]],
+            ["recent_assessment_gap"],
+        )
+        self.assertEqual(
+            [row["name"] for row in summary["top_unresolved"]],
+            ["historical_lifecycle_gap", "recent_assessment_gap"],
+        )
 
     def test_count_claim_proves_zero_expected_when_metric_is_absent(self):
         claim = count_claim(

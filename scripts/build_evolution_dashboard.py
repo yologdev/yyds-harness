@@ -3967,56 +3967,81 @@ def build_dashboard_claim_summary(claims_projection: dict[str, Any]) -> dict[str
     status_counts = summary.get("status_counts") if isinstance(summary, dict) else {}
     if not isinstance(status_counts, dict):
         status_counts = {}
-    grouped: dict[tuple[str, str], dict[str, Any]] = {}
     sessions = claims_projection.get("sessions", []) if isinstance(claims_projection, dict) else []
-    for session in sessions:
-        if not isinstance(session, dict):
-            continue
-        session_id = str(session.get("id") or "")
-        session_ts = session.get("ts")
-        for claim in session.get("claims", []):
-            if not isinstance(claim, dict):
+    if not isinstance(sessions, list):
+        sessions = []
+
+    def unresolved_example(session: dict[str, Any], claim: dict[str, Any]) -> dict[str, Any]:
+        evidence = claim.get("evidence")
+        return {
+            "session_id": str(session.get("id") or claim.get("session_id") or ""),
+            "ts": session.get("ts"),
+            "detail": str(claim.get("detail") or ""),
+            "evidence": evidence[:3] if isinstance(evidence, list) else [],
+        }
+
+    def unresolved_claim_rows(window: list[Any]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        for session in window:
+            if not isinstance(session, dict):
                 continue
-            status = str(claim.get("status") or "unknown")
-            if status == "proven":
-                continue
-            name = str(claim.get("name") or "unknown_claim")
-            key = (name, status)
-            row = grouped.setdefault(
-                key,
-                {
-                    "name": name,
-                    "status": status,
-                    "count": 0,
-                    "examples": [],
-                    "latest_examples": [],
-                    "first_session_id": None,
-                    "first_ts": None,
-                    "latest_session_id": None,
-                    "latest_ts": None,
-                },
-            )
-            row["count"] += 1
-            if row["first_session_id"] is None:
-                row["first_session_id"] = session_id
-                row["first_ts"] = session_ts
-            row["latest_session_id"] = session_id
-            row["latest_ts"] = session_ts
-            evidence = claim.get("evidence")
-            example = {
-                "session_id": session_id,
-                "ts": session_ts,
-                "detail": str(claim.get("detail") or ""),
-                "evidence": evidence[:3] if isinstance(evidence, list) else [],
+            session_id = str(session.get("id") or "")
+            session_ts = session.get("ts")
+            for claim in session.get("claims", []):
+                if not isinstance(claim, dict):
+                    continue
+                status = str(claim.get("status") or "unknown")
+                if status == "proven":
+                    continue
+                name = str(claim.get("name") or "unknown_claim")
+                key = (name, status)
+                row = grouped.setdefault(
+                    key,
+                    {
+                        "name": name,
+                        "status": status,
+                        "count": 0,
+                        "examples": [],
+                        "latest_examples": [],
+                        "first_session_id": None,
+                        "first_ts": None,
+                        "latest_session_id": None,
+                        "latest_ts": None,
+                    },
+                )
+                row["count"] += 1
+                if row["first_session_id"] is None:
+                    row["first_session_id"] = session_id
+                    row["first_ts"] = session_ts
+                row["latest_session_id"] = session_id
+                row["latest_ts"] = session_ts
+                example = unresolved_example(session, claim)
+                if len(row["examples"]) < 5:
+                    row["examples"].append(example)
+                row["latest_examples"].append(example)
+                row["latest_examples"] = row["latest_examples"][-5:]
+        return sorted(
+            grouped.values(),
+            key=lambda row: (-int(row.get("count") or 0), str(row.get("name") or ""), str(row.get("status") or "")),
+        )
+
+    latest_session = next((session for session in reversed(sessions) if isinstance(session, dict)), {})
+    latest_unresolved = []
+    if isinstance(latest_session, dict):
+        latest_unresolved = [
+            {
+                "name": str(claim.get("name") or "unknown_claim"),
+                "status": str(claim.get("status") or "unknown"),
+                **unresolved_example(latest_session, claim),
             }
-            if len(row["examples"]) < 5:
-                row["examples"].append(example)
-            row["latest_examples"].append(example)
-            row["latest_examples"] = row["latest_examples"][-5:]
-    top_unresolved = sorted(
-        grouped.values(),
-        key=lambda row: (-int(row.get("count") or 0), str(row.get("name") or ""), str(row.get("status") or "")),
-    )
+            for claim in latest_session.get("claims", [])
+            if isinstance(claim, dict) and str(claim.get("status") or "unknown") != "proven"
+        ]
+    recent_window_size = 5
+    recent_sessions = sessions[-recent_window_size:]
+    top_unresolved = unresolved_claim_rows(sessions)
+    recent_top_unresolved = unresolved_claim_rows(recent_sessions)
+    recent_unresolved_count = sum(int(row.get("count") or 0) for row in recent_top_unresolved)
     unresolved_count = sum(
         int(value or 0)
         for status, value in status_counts.items()
@@ -4026,6 +4051,13 @@ def build_dashboard_claim_summary(claims_projection: dict[str, Any]) -> dict[str
         "claim_count": int(summary.get("claim_count") or 0) if isinstance(summary, dict) else 0,
         "status_counts": dict(sorted(status_counts.items())),
         "unresolved_count": unresolved_count,
+        "latest_session_id": latest_session.get("id") if isinstance(latest_session, dict) else None,
+        "latest_ts": latest_session.get("ts") if isinstance(latest_session, dict) else None,
+        "latest_unresolved_count": len(latest_unresolved),
+        "latest_unresolved": latest_unresolved,
+        "recent_window_size": recent_window_size,
+        "recent_unresolved_count": recent_unresolved_count,
+        "recent_top_unresolved": recent_top_unresolved,
         "top_unresolved": top_unresolved,
     }
 
@@ -6182,7 +6214,30 @@ HTML = r"""<!doctype html>
     function renderEvidence(sessions) {
       const items = [];
       const claimSummary = state.data?.claims_summary || {};
+      const hasClaimSummary = Boolean(state.data?.claims_summary);
       const claimClass = status => status === "missing" ? "warn" : (status === "conflict" ? "bad" : "info");
+      const latestUnresolved = hasClaimSummary ? (claimSummary.latest_unresolved || []) : [];
+      if (hasClaimSummary) {
+        items.push({
+          kind: "Latest claims",
+          className: latestUnresolved.length ? "warn" : "good",
+          session: claimSummary.latest_session_id || "latest",
+          title: latestUnresolved.length
+            ? `${latestUnresolved.length} unresolved in latest session`
+            : "Latest session claims all proven",
+          detail: latestUnresolved.slice(0, 3).map(row => `${row.name} (${row.status})`).join(", ") || "No active claim gaps in the latest session."
+        });
+        const recentRows = claimSummary.recent_top_unresolved || [];
+        if (recentRows.length) {
+          items.push({
+            kind: "Recent claims",
+            className: "warn",
+            session: `last ${text(claimSummary.recent_window_size || 5)}`,
+            title: `${text(claimSummary.recent_unresolved_count || 0)} unresolved claim(s) in recent sessions`,
+            detail: recentRows.slice(0, 3).map(row => `${row.name} ${row.count}`).join(", ")
+          });
+        }
+      }
       (claimSummary.top_unresolved || []).slice(0, 6).forEach(row => {
         const examples = (row.latest_examples || row.examples || [])
           .slice(0, 2)
