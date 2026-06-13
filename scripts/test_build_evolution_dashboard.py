@@ -2013,6 +2013,11 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["error_detail"], "empty_input")
             self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["last_event"]["kind"], "RunCompleted")
             self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["last_event"]["error_detail"], "empty_input")
+            self.assertEqual(work["deepseek_model_call_unmatched_completed_details"][0]["run_id"], "run-b")
+            self.assertEqual(
+                work["deepseek_model_call_unmatched_completed_details"][0]["last_event"]["kind"],
+                "ModelCallCompleted",
+            )
             self.assertEqual(model_claim["status"], "missing")
             self.assertEqual(model_claim["actual"]["started"], 1)
             self.assertEqual(model_claim["actual"]["completed"], 1)
@@ -2020,6 +2025,16 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(model_claim["actual"]["unmatched_completed"], 1)
             self.assertEqual(model_claim["actual"]["incomplete_runs"][0]["run_id"], "run-a")
             self.assertEqual(model_claim["actual"]["unmatched_completed_runs"], ["run-b"])
+            self.assertEqual(model_claim["actual"]["unmatched_completed_details"][0]["run_id"], "run-b")
+            self.assertIn(
+                {
+                    "category": "model_call_unmatched_completed",
+                    "cause": "model_completion_without_start",
+                    "count": 1,
+                    "examples": ["run-b"],
+                },
+                model_claim["actual"]["imbalance_causes"],
+            )
 
     def test_model_call_lifecycle_pairs_wrapped_yoyo_run_ids(self):
         work = summarize_events_for_work(
@@ -2095,6 +2110,24 @@ class BuildEvolutionDashboard(unittest.TestCase):
         self.assertEqual(lifecycle["model_calls"]["completed"], 0)
         self.assertEqual(lifecycle["model_calls"]["incomplete"], 1)
         self.assertEqual(lifecycle["model_calls"]["incomplete_runs"][0]["run_id"], "run-open")
+        self.assertIn(
+            {
+                "category": "run_incomplete",
+                "cause": "open_after_file_edit:src/lib.rs",
+                "count": 1,
+                "examples": ["run-open"],
+            },
+            lifecycle["imbalance_causes"],
+        )
+        self.assertIn(
+            {
+                "category": "run_unmatched_completed",
+                "cause": "completion_without_run_start",
+                "count": 1,
+                "examples": ["run-closed-without-start"],
+            },
+            lifecycle["imbalance_causes"],
+        )
 
     def test_dashboard_marks_lifecycle_run_ids_reused_across_sessions(self):
         with tempfile.TemporaryDirectory() as tmp:

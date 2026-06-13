@@ -1719,6 +1719,13 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         }
         for run_id in incomplete_run_ids[:8]
     ]
+    unmatched_completed_runs = [
+        {
+            "run_id": run_id,
+            "last_event": run_last_events.get(run_id),
+        }
+        for run_id in unmatched_completed_run_ids[:8]
+    ]
     incomplete_count = len(incomplete_run_ids) + max(unkeyed_model_call_starts - unkeyed_model_call_completions, 0)
     unmatched_completed_count = len(unmatched_completed_run_ids) + max(unkeyed_model_call_completions - unkeyed_model_call_starts, 0)
     cache_token_total = cache_hit_tokens + cache_miss_tokens
@@ -1769,6 +1776,7 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
             "incomplete_runs": incomplete_runs,
             "abnormal_completed_runs": model_call_abnormal_completed_runs[:8],
             "unmatched_completed_runs": unmatched_completed_run_ids[:8],
+            "unmatched_completed_details": unmatched_completed_runs,
         },
     }
     state_lifecycle["balanced"] = (
@@ -1790,6 +1798,7 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         and state_lifecycle["balanced"]
         and deepseek_model_call_abnormal_completed == 0
     )
+    state_lifecycle["imbalance_causes"] = lifecycle_imbalance_causes(state_lifecycle)
     return {
         "edited_files": compact_list(edited_files, 12),
         "read_files": compact_list(read_files, 12),
@@ -1821,6 +1830,7 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         "deepseek_model_call_incomplete_runs": incomplete_runs,
         "deepseek_model_call_abnormal_completed_runs": model_call_abnormal_completed_runs[:8],
         "deepseek_model_call_unmatched_completed_runs": unmatched_completed_run_ids[:8],
+        "deepseek_model_call_unmatched_completed_details": unmatched_completed_runs,
         "state_lifecycle": state_lifecycle,
     }
 
@@ -1834,6 +1844,83 @@ def is_input_validation_completion(last_event: Any) -> bool:
         return False
     detail = str(last_event.get("error_detail") or "")
     return detail == "empty_input" or detail.startswith("invalid_input:")
+
+
+def lifecycle_cause(last_event: Any) -> str:
+    if not isinstance(last_event, dict):
+        return "unknown_last_event"
+    kind = str(last_event.get("kind") or "")
+    if kind == "FileEdited":
+        path = str(last_event.get("path") or "")
+        if path:
+            return f"open_after_file_edit:{path}"
+        return "open_after_file_edit"
+    if kind == "CacheMetricsRecorded":
+        return "open_after_cache_metrics"
+    if kind == "RunCompleted":
+        if is_input_validation_completion(last_event):
+            return "input_validation_exit_without_run_start"
+        status = str(last_event.get("status") or "")
+        if status == "completed":
+            return "completion_without_run_start"
+        if status == "error":
+            return "run_error_without_start"
+        return "run_completion_without_start"
+    if kind == "ModelCallCompleted":
+        return "model_completion_without_start"
+    if kind == "ToolCallCompleted":
+        return "open_after_tool_call"
+    if kind == "CommandCompleted":
+        return "open_after_command"
+    if kind:
+        return f"open_after_{kind}"
+    return "unknown_last_event"
+
+
+def lifecycle_imbalance_causes(state_lifecycle: dict[str, Any]) -> list[dict[str, Any]]:
+    rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def add(category: str, items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if isinstance(item, str):
+                run_id = item
+                last_event: Any = None
+            elif isinstance(item, dict):
+                run_id = str(item.get("run_id") or "")
+                last_event = item.get("last_event")
+            else:
+                continue
+            cause = lifecycle_cause(last_event)
+            key = (category, cause)
+            row = rows_by_key.setdefault(
+                key,
+                {
+                    "category": category,
+                    "cause": cause,
+                    "count": 0,
+                    "examples": [],
+                },
+            )
+            row["count"] += 1
+            if run_id and len(row["examples"]) < 4:
+                row["examples"].append(run_id)
+
+    runs = state_lifecycle.get("runs") if isinstance(state_lifecycle.get("runs"), dict) else {}
+    model_calls = (
+        state_lifecycle.get("model_calls")
+        if isinstance(state_lifecycle.get("model_calls"), dict)
+        else {}
+    )
+    add("run_incomplete", runs.get("incomplete_runs"))
+    add("run_unmatched_completed", runs.get("unmatched_completed_details"))
+    add("model_call_incomplete", model_calls.get("incomplete_runs"))
+    add("model_call_unmatched_completed", model_calls.get("unmatched_completed_details"))
+    return sorted(
+        rows_by_key.values(),
+        key=lambda row: (-int(row.get("count") or 0), str(row.get("category") or ""), str(row.get("cause") or "")),
+    )
 
 
 def work_summary(
@@ -2053,6 +2140,7 @@ def work_summary(
         "deepseek_model_call_incomplete_runs": event_data["deepseek_model_call_incomplete_runs"],
         "deepseek_model_call_abnormal_completed_runs": event_data["deepseek_model_call_abnormal_completed_runs"],
         "deepseek_model_call_unmatched_completed_runs": event_data["deepseek_model_call_unmatched_completed_runs"],
+        "deepseek_model_call_unmatched_completed_details": event_data["deepseek_model_call_unmatched_completed_details"],
         "state_lifecycle": event_data["state_lifecycle"],
         "patch_count": len(patches),
         "state_patch_count": len(patches),
@@ -3391,6 +3479,15 @@ def model_call_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> 
     unmatched_completed_runs = work.get("deepseek_model_call_unmatched_completed_runs")
     if not isinstance(unmatched_completed_runs, list):
         unmatched_completed_runs = []
+    unmatched_completed_details = work.get("deepseek_model_call_unmatched_completed_details")
+    if not isinstance(unmatched_completed_details, list):
+        unmatched_completed_details = []
+    state_lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
+    imbalance_causes = (
+        state_lifecycle.get("imbalance_causes")
+        if isinstance(state_lifecycle.get("imbalance_causes"), list)
+        else []
+    )
     if started == 0 and completed == 0:
         status = "missing"
         detail = "No DeepSeek model call lifecycle events were captured."
@@ -3416,6 +3513,10 @@ def model_call_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> 
             "incomplete_runs": incomplete_runs[:8],
             "abnormal_completed_runs": abnormal_completed_runs[:8],
             "unmatched_completed_runs": unmatched_completed_runs[:8],
+            "unmatched_completed_details": unmatched_completed_details[:8],
+            "imbalance_causes": [
+                row for row in imbalance_causes if row.get("category", "").startswith("model_call_")
+            ][:8],
         },
         [
             "ModelCallStarted",
@@ -3472,6 +3573,9 @@ def state_run_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> d
             "unmatched_completed_runs": unmatched_runs[:8],
             "unmatched_completed_details": unmatched_details[:8],
             "unstarted_input_validation_error_runs": unstarted_input_validation_error_runs[:8],
+            "imbalance_causes": [
+                row for row in state_lifecycle.get("imbalance_causes", []) if row.get("category", "").startswith("run_")
+            ][:8],
         },
         [
             "RunStarted",
@@ -5345,6 +5449,17 @@ HTML = r"""<!doctype html>
       });
     }
 
+    function renderLifecycleCauses(rows) {
+      const values = Array.isArray(rows) ? rows.slice(0, 6) : [];
+      if (!values.length) return [];
+      return values.map(row => {
+        const examples = Array.isArray(row.examples) && row.examples.length
+          ? `; e.g. ${row.examples.slice(0, 2).map(value => text(value)).join(", ")}`
+          : "";
+        return `cause ${text(row.category || "-")} / ${text(row.cause || "-")}: ${text(row.count || 0)}${examples}`;
+      });
+    }
+
     function renderStateLifecycle(work) {
       const lifecycle = work.state_lifecycle || {};
       const runs = lifecycle.runs || {};
@@ -5360,7 +5475,8 @@ HTML = r"""<!doctype html>
       rows.push(...renderLifecycleRuns("incomplete run", runs.incomplete_runs));
       rows.push(...renderLifecycleRuns("unmatched completed run", runs.unmatched_completed_runs));
       rows.push(...renderLifecycleRuns("incomplete model call", modelCalls.incomplete_runs));
-      rows.push(...renderLifecycleRuns("unmatched completed model call", modelCalls.unmatched_completed_runs));
+      rows.push(...renderLifecycleRuns("unmatched completed model call", modelCalls.unmatched_completed_details || modelCalls.unmatched_completed_runs));
+      rows.push(...renderLifecycleCauses(lifecycle.imbalance_causes));
       const reused = Array.isArray(lifecycle.cross_session_reused_run_ids) ? lifecycle.cross_session_reused_run_ids : [];
       if (reused.length) {
         rows.push(`cross-session reused lifecycle run IDs: ${text(lifecycle.cross_session_reused_run_id_count || reused.length)}`);
