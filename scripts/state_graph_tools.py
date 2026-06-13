@@ -272,6 +272,107 @@ def latest_gnomes(session_dir: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def numeric_metric(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def int_metric(metrics: dict[str, Any], key: str) -> int:
+    value = metrics.get(key)
+    if numeric_metric(value):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return 0
+    return 0
+
+
+def latest_log_feedback_metrics(session_dir: Path) -> dict[str, Any]:
+    feedback = load_json(session_dir / "log_feedback.json")
+    metrics = feedback.get("metrics") if isinstance(feedback.get("metrics"), dict) else {}
+    if metrics:
+        return metrics
+
+    summary = load_json(session_dir / "state" / "summary.json")
+    latest_eval = summary.get("latest_eval") if isinstance(summary.get("latest_eval"), dict) else {}
+    if latest_eval.get("suite") != "log-feedback":
+        return {}
+    eval_metrics = latest_eval.get("gnomes") if isinstance(latest_eval.get("gnomes"), dict) else {}
+    return eval_metrics
+
+
+def resolved_seed_replacement_metrics(metrics: dict[str, Any]) -> bool:
+    seed_contradictions = int_metric(metrics, "task_seed_contradiction_count")
+    if seed_contradictions <= 0:
+        return False
+    if int_metric(metrics, "task_manifest_seed_contradiction_count") > 0:
+        return False
+    selected = int_metric(metrics, "selected_task_count")
+    strict_verified = int_metric(metrics, "task_strict_verified_count")
+    succeeded = int_metric(metrics, "tasks_succeeded")
+    return bool(
+        selected > 0
+        and strict_verified >= selected
+        and succeeded >= selected
+        and int_metric(metrics, "task_revert_count") == 0
+        and int_metric(metrics, "task_obsolete_count") == 0
+    )
+
+
+def bare_fatal_pattern_only(metrics: dict[str, Any]) -> bool:
+    if int_metric(metrics, "search_error_count") <= 0:
+        return False
+    evidence: list[str] = []
+    for item in metrics.get("evidence") or []:
+        if isinstance(item, str):
+            evidence.append(item)
+    for item in metrics.get("failure_fingerprints") or []:
+        if not isinstance(item, dict):
+            continue
+        for key in ("fingerprint", "example"):
+            value = item.get(key)
+            if isinstance(value, str):
+                evidence.append(value)
+    search_evidence = [
+        line
+        for line in evidence
+        if "fatal: no pattern given" in line.lower() or "search error" in line.lower()
+    ]
+    if not search_evidence:
+        return False
+    if any("search error" in line.lower() for line in search_evidence):
+        return False
+    return all("fatal: no pattern given" in line.lower() for line in search_evidence)
+
+
+def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
+    """Return graph-facing gnomes corrected from stronger session artifacts.
+
+    State summaries are durable audit artifacts, so old sessions can retain stale
+    log-feedback gnomes after the parser learns a better classification. Graph
+    pressure feeds future prompts directly; prefer conservative corrections over
+    repeating ambiguous old labels.
+    """
+    gnomes = dict(latest_gnomes(session_dir))
+    feedback_metrics = latest_log_feedback_metrics(session_dir)
+    if feedback_metrics:
+        gnomes.update(feedback_metrics)
+
+    if resolved_seed_replacement_metrics(gnomes):
+        seed_contradictions = int_metric(gnomes, "task_seed_contradiction_count")
+        gnomes["task_seed_contradiction_count"] = 0
+        gnomes["task_seed_replacement_count"] = max(
+            int_metric(gnomes, "task_seed_replacement_count"),
+            seed_contradictions,
+        )
+
+    if bare_fatal_pattern_only(gnomes):
+        gnomes["search_error_count"] = 0
+
+    return gnomes
+
+
 def compare_sessions(sessions_dir: Path, baseline: str, candidate: str) -> dict[str, Any]:
     sessions = ordered_sessions(sessions_dir)
     by_name = {path.name: path for path in sessions}
@@ -292,8 +393,8 @@ def compare_sessions(sessions_dir: Path, baseline: str, candidate: str) -> dict[
     if baseline_dir is None:
         raise ValueError(f"baseline session not found: {baseline}")
 
-    base_gnomes = latest_gnomes(baseline_dir)
-    cand_gnomes = latest_gnomes(candidate_dir)
+    base_gnomes = corrected_latest_gnomes(baseline_dir)
+    cand_gnomes = corrected_latest_gnomes(candidate_dir)
     deltas: dict[str, Any] = {}
     for key in GNOME_COMPARE_KEYS:
         before = base_gnomes.get(key)
@@ -360,7 +461,7 @@ def session_for_git_ref(sessions: list[Path], ref: str) -> tuple[Path | None, st
 
 
 def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, Any]]:
-    gnomes = latest_gnomes(session_dir)
+    gnomes = corrected_latest_gnomes(session_dir)
     manifest = task_manifest(session_dir)
     suggestions: list[dict[str, Any]] = []
 

@@ -128,6 +128,95 @@ class StateGraphTools(unittest.TestCase):
                 [item["title"] for item in suggestions],
             )
 
+    def test_evolution_suggestions_suppress_ambiguous_bare_fatal_search_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "search_error_count": 1,
+                        "max_task_turn_count": 30,
+                    }
+                },
+            )
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "search_error_count": 1,
+                        "evidence": [
+                            "evolve\tRun evolution session\t2026-06-13T17:28:20Z fatal: no pattern given"
+                        ],
+                        "failure_fingerprints": [
+                            {"fingerprint": "fatal: no pattern given", "count": 1}
+                        ],
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+
+            self.assertNotIn(
+                "Harden search commands and pattern escaping",
+                [item["title"] for item in suggestions],
+            )
+            self.assertIn(
+                "Split high-turn tasks into narrower plans",
+                [item["title"] for item in suggestions],
+            )
+
+    def test_evolution_suggestions_keep_explicit_search_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {"latest_gnomes": {"search_error_count": 1}},
+            )
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "search_error_count": 1,
+                        "evidence": ["Search error: regex parse error near --json"],
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+
+            self.assertIn(
+                "Harden search commands and pattern escaping",
+                [item["title"] for item in suggestions],
+            )
+
+    def test_corrected_latest_gnomes_records_resolved_seed_replacement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {"latest_gnomes": {"task_seed_contradiction_count": 1}},
+            )
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "selected_task_count": 1,
+                        "task_strict_verified_count": 1,
+                        "tasks_succeeded": 1,
+                        "task_revert_count": 0,
+                        "task_obsolete_count": 0,
+                        "task_manifest_seed_contradiction_count": 0,
+                        "task_seed_contradiction_count": 1,
+                    }
+                },
+            )
+
+            gnomes = state_graph_tools.corrected_latest_gnomes(session)
+
+            self.assertEqual(gnomes["task_seed_contradiction_count"], 0)
+            self.assertEqual(gnomes["task_seed_replacement_count"], 1)
+
     def test_compare_previous_session(self):
         with tempfile.TemporaryDirectory() as tmp:
             sessions = Path(tmp) / "sessions"
