@@ -957,7 +957,16 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
         if status != "proven" and int(count or 0) > 0
     ]
     state_summary = states.get("summary") if isinstance(states.get("summary"), dict) else {}
-    state_counts = state_summary.get("state_counts") if isinstance(state_summary.get("state_counts"), dict) else {}
+    recent_task_summary = (
+        state_summary.get("recent_task_summary")
+        if isinstance(state_summary.get("recent_task_summary"), dict)
+        else {}
+    )
+    recent_state_counts = (
+        recent_task_summary.get("state_counts")
+        if isinstance(recent_task_summary.get("state_counts"), dict)
+        else {}
+    )
     tool_failures: Counter[str] = Counter()
     addressed_tool_failures = recently_addressed_tool_failure_categories(audit_dir)
     latest_lifecycle_counts: Counter[str] = Counter()
@@ -1000,11 +1009,22 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
         if session_lifecycle_counts:
             latest_lifecycle_counts = session_lifecycle_counts
 
-    top_states: list[tuple[str, Any]] = []
-    if state_counts:
-        top_states = sorted(
-            state_counts.items(),
-            key=lambda item: (-int(item[1] or 0), str(item[0])),
+    recent_task_issue_states: list[tuple[str, int]] = []
+    if recent_state_counts:
+        non_issue_states = {"verified_landed", "obsolete_already_satisfied"}
+        for state, count in recent_state_counts.items():
+            state_name = str(state)
+            if state_name in non_issue_states:
+                continue
+            try:
+                count_int = int(count or 0)
+            except (TypeError, ValueError):
+                continue
+            if count_int > 0:
+                recent_task_issue_states.append((state_name, count_int))
+        recent_task_issue_states = sorted(
+            recent_task_issue_states,
+            key=lambda item: (-item[1], item[0]),
         )[:5]
     top_tool_failures = tool_failures.most_common(5)
 
@@ -1050,10 +1070,10 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                     lifecycle_summary.append(f"{label}={latest_lifecycle_counts[key]}")
             if lifecycle_summary:
                 summary_parts.append("lifecycle gaps: " + ", ".join(lifecycle_summary))
-        if top_states:
+        if recent_task_issue_states:
             summary_parts.append(
-                "top task states: "
-                + ", ".join(f"{state}={count}" for state, count in top_states[:3])
+                "recent task issues: "
+                + ", ".join(f"{state}={count}" for state, count in recent_task_issue_states[:3])
             )
         if top_tool_failures:
             tool_summary = []
@@ -1092,8 +1112,11 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
             f"{row.get('count', 0)}x {row.get('name', 'unknown_claim')}"
             f"{latest_text}"
         )
-    if top_states:
-        lines.append("task states: " + "; ".join(f"{state}={count}" for state, count in top_states))
+    if recent_task_issue_states:
+        lines.append(
+            "recent task issues: "
+            + "; ".join(f"{state}={count}" for state, count in recent_task_issue_states)
+        )
     if top_tool_failures:
         failure_parts = []
         for category, count in top_tool_failures:

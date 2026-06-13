@@ -398,16 +398,99 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("lifecycle gaps:", rendered)
             self.assertIn("state_incomplete=1", rendered)
             self.assertIn("model_incomplete=1", rendered)
-            self.assertIn("top task states:", rendered)
+            self.assertIn("recent task issues:", rendered)
             self.assertIn("deepseek_model_call_lifecycle_balanced", rendered)
             self.assertIn("latest=day-1", rendered)
-            self.assertIn("task states:", rendered)
             self.assertIn("unlanded_source_edits=1", rendered)
             self.assertIn("tool failures:", rendered)
             self.assertIn("search_tool_error=1", rendered)
             self.assertIn("lifecycle gnomes:", rendered)
             self.assertIn("state_run_incomplete_count=1", rendered)
             self.assertIn("deepseek_model_call_incomplete_count=1", rendered)
+
+    def test_structured_state_snapshot_uses_recent_task_issues_not_global_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            for index in range(6):
+                session = audit_dir / f"day-{index + 1}"
+                write_json(
+                    session / "outcome.json",
+                    {
+                        "day": index + 1,
+                        "ts": f"2026-01-0{index + 1}T00:00:00Z",
+                        "tasks_attempted": 1,
+                        "tasks_succeeded": 1 if index > 0 else 0,
+                        "build_ok": index > 0,
+                        "test_ok": index > 0,
+                        "reverted": index == 0,
+                    },
+                )
+                write_json(
+                    session / "tasks/manifest.json",
+                    {
+                        "planner": {
+                            "planning_failed": False,
+                            "task_count": 1,
+                            "selected_task_count": 1,
+                        },
+                        "selected_tasks": [
+                            {
+                                "task_id": "task_01",
+                                "task_number": 1,
+                                "title": "Keep task pressure recent",
+                                "origin": "planner",
+                                "files": ["src/lib.rs"],
+                                "artifact_path": "tasks/task_01/task.md",
+                            }
+                        ],
+                        "warnings": [],
+                        "artifacts": {"manifest": "tasks/manifest.json"},
+                    },
+                )
+                (session / "tasks/task_01").mkdir(parents=True, exist_ok=True)
+                (session / "tasks/task_01/task.md").write_text(
+                    "Title: Keep task pressure recent\n",
+                    encoding="utf-8",
+                )
+                if index == 0:
+                    write_json(
+                        session / "tasks/task_01/outcome.json",
+                        {
+                            "task_id": "task_01",
+                            "status": "reverted",
+                            "planned_files": ["src/lib.rs"],
+                            "touched_files": ["scripts/other.py"],
+                            "source_files": ["scripts/other.py"],
+                            "commit_shas": ["old123"],
+                        },
+                    )
+                    write_json(
+                        session / "tasks/task_01/eval_attempt_1.json",
+                        {"task_id": "task_01", "status": "fail", "verdict": "Verdict: FAIL"},
+                    )
+                else:
+                    write_json(
+                        session / "tasks/task_01/outcome.json",
+                        {
+                            "task_id": "task_01",
+                            "status": "completed",
+                            "planned_files": ["src/lib.rs"],
+                            "touched_files": ["src/lib.rs"],
+                            "source_files": ["src/lib.rs"],
+                            "commit_shas": [f"abc{index}"],
+                        },
+                    )
+                    write_json(
+                        session / "tasks/task_01/eval_attempt_1.json",
+                        {"task_id": "task_01", "status": "pass", "verdict": "Verdict: PASS"},
+                    )
+
+            rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
+            first_line = next(line for line in rendered.splitlines() if line.startswith("claims:"))
+
+            self.assertNotIn("top task states:", first_line)
+            self.assertNotIn("recent task issues:", first_line)
+            self.assertNotIn("reverted_scope_mismatch", rendered)
 
     def test_structured_state_snapshot_prioritizes_recent_unresolved_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
