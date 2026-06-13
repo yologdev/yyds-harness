@@ -2660,6 +2660,24 @@ def corrected_gnomes(
             if isinstance(row, dict) and "no_edit_revert" in (row.get("problems") or [])
         )
         seed_contradictions = int(gnomes.get("task_seed_contradiction_count") or 0)
+        manifest_seed_contradictions = int(gnomes.get("task_manifest_seed_contradiction_count") or 0)
+        succeeded_count = max(
+            int(gnomes.get("tasks_succeeded") or 0),
+            int(outcome.get("tasks_succeeded") or 0),
+        )
+        if (
+            seed_contradictions
+            and manifest_seed_contradictions == 0
+            and task_count > 0
+            and verified == task_count
+            and succeeded_count >= task_count
+            and int(gnomes.get("task_revert_count") or 0) == 0
+            and obsolete == 0
+        ):
+            gnomes["task_seed_replacement_count"] = seed_contradictions
+            gnomes["task_seed_contradiction_count"] = 0
+            seed_contradictions = 0
+            recalc_score = True
         no_edit_reverts_after_seed = max(no_edit_reverts - seed_contradictions, 0)
         additional_seed_explanations = max(seed_contradictions - no_edit_reverts, 0)
         unattempted_explanations = int(gnomes.get("task_unattempted_count") or 0)

@@ -4624,6 +4624,104 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertNotIn("reverted without edits", health_text)
             self.assertNotIn("without touched files", health_text)
 
+    def test_successful_seed_replacement_is_not_seed_contradiction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "reverted": False,
+                },
+            )
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "task_seed_contradiction_count": 1,
+                        "task_manifest_seed_contradiction_count": 0,
+                        "failure_fingerprints": [
+                            {
+                                "fingerprint": (
+                                    "The seed task was contradicted by fresh assessment evidence, "
+                                    "then replaced with a verified search task."
+                                ),
+                                "count": 1,
+                            }
+                        ],
+                    },
+                    "top_lessons": [
+                        {
+                            "kind": "task_seed_contradiction",
+                            "fingerprint": "seeded task was contradicted by fresh assessment evidence",
+                        }
+                    ],
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Extend search tool",
+                            "origin": "planner (refined from harness-seed)",
+                            "files": ["src/tools.rs"],
+                            "artifact_path": "tasks/task_01/task.md",
+                            "quality": {
+                                "score": 1.0,
+                                "assessment_alignment": {
+                                    "contradicted_by_assessment": False,
+                                    "evidence": [],
+                                },
+                            },
+                        }
+                    ],
+                    "warnings": [],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            (session / "tasks/task_01/task.md").write_text("Title: Extend search tool\n", encoding="utf-8")
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Extend search tool",
+                    "status": "completed",
+                    "planned_files": ["src/tools.rs"],
+                    "source_files": ["src/tools.rs"],
+                    "touched_files": ["src/tools.rs"],
+                    "commit_shas": ["abc123"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "attempt": 1, "status": "pass", "verdict": "PASS"},
+            )
+
+            data = build(root / "sessions", root / "out")
+            latest = data["sessions"][0]["latest_gnomes"]
+            work = data["sessions"][0]["work_summary"]
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(latest["task_seed_contradiction_count"], 0)
+            self.assertEqual(latest["task_seed_replacement_count"], 1)
+            self.assertEqual(latest["task_success_rate"], 1.0)
+            self.assertEqual(work["task_states"]["tasks"][0]["state"], "verified_landed")
+            self.assertFalse(work["task_states"]["tasks"][0].get("seed_contradicted", False))
+            self.assertEqual(states["summary"]["state_counts"], {"verified_landed": 1})
+            self.assertNotIn("seeded task(s) contradicted", work["headline"])
+
     def test_missing_optional_artifacts_do_not_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
