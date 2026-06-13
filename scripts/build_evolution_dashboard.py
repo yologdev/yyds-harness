@@ -2571,6 +2571,7 @@ def corrected_gnomes(
         "state_run_completed_count": "completed",
         "state_run_incomplete_count": "incomplete",
         "state_run_unmatched_completed_count": "unmatched_completed",
+        "state_run_unmatched_non_validation_completed_count": "unmatched_non_validation_completed",
         "state_run_unstarted_input_validation_error_count": "unstarted_input_validation_error",
     }
     if any(int(run_lifecycle.get(source_key) or 0) > 0 for source_key in run_lifecycle_keys.values()):
@@ -5263,6 +5264,7 @@ HTML = r"""<!doctype html>
       state_run_completed_count: "State runs completed",
       state_run_incomplete_count: "Incomplete state runs",
       state_run_unmatched_completed_count: "Unmatched completed state runs",
+      state_run_unmatched_non_validation_completed_count: "Non-validation unmatched completed state runs",
       state_run_unstarted_input_validation_error_count: "Input-validation completions without starts",
       audit_capture_coverage: "Audit capture",
       state_trace_event_count: "Trace events",

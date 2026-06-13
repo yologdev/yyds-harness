@@ -173,6 +173,11 @@ GNOME_KEYS = [
     "deepseek_model_call_abnormal_completed_count",
     "deepseek_model_call_incomplete_count",
     "deepseek_model_call_unmatched_completed_count",
+    "state_run_started_count",
+    "state_run_completed_count",
+    "state_run_incomplete_count",
+    "state_run_unmatched_completed_count",
+    "state_run_unmatched_non_validation_completed_count",
     "state_run_unstarted_input_validation_error_count",
 ]
 NORMAL_MODEL_COMPLETION_STATUSES = {"completed", "success", "ok", "stopped_after_completion_file"}
@@ -813,6 +818,26 @@ def abnormal_model_completion_status(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def run_lifecycle_event_summary(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "status": payload.get("status"),
+        "error": payload.get("error"),
+        "error_detail": payload.get("error_detail"),
+    }
+
+
+def is_input_validation_completion(last_event: Any) -> bool:
+    if not isinstance(last_event, dict):
+        return False
+    if last_event.get("kind") != "RunCompleted":
+        return False
+    if last_event.get("status") != "error":
+        return False
+    detail = str(last_event.get("error_detail") or "")
+    return detail == "empty_input" or detail.startswith("invalid_input:")
+
+
 def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
     hit_tokens = 0
     miss_tokens = 0
@@ -825,12 +850,21 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
     completed_runs: set[str] = set()
     unkeyed_starts = 0
     unkeyed_completions = 0
+    run_started: set[str] = set()
+    run_completed: set[str] = set()
+    run_last_events: dict[str, dict[str, Any]] = {}
     for event in load_events(session_dir / "state" / "events.jsonl"):
         kind = event_kind(event)
         payload = event_payload(event)
+        run_id = event_run_id(event, payload)
+        if run_id:
+            run_last_events[run_id] = run_lifecycle_event_summary(kind, payload)
+        if kind == "RunStarted" and run_id:
+            run_started.add(run_id)
+        elif kind == "RunCompleted" and run_id:
+            run_completed.add(run_id)
         if kind == "ModelCallStarted" and deepseek_model_payload(payload):
             started_count += 1
-            run_id = event_run_id(event, payload)
             if run_id:
                 started_runs.add(run_id)
             else:
@@ -839,7 +873,6 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
             completed_count += 1
             if abnormal_model_completion_status(payload):
                 abnormal_completed_count += 1
-            run_id = event_run_id(event, payload)
             if run_id:
                 completed_runs.add(run_id)
             else:
@@ -857,7 +890,24 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
         event_count += 1
     incomplete_count = len(started_runs - completed_runs) + max(unkeyed_starts - unkeyed_completions, 0)
     unmatched_completed_count = len(completed_runs - started_runs) + max(unkeyed_completions - unkeyed_starts, 0)
-    if event_count == 0 and expected_count == 0 and started_count == 0 and completed_count == 0:
+    run_incomplete_ids = run_started - run_completed
+    run_unmatched_completed_ids = run_completed - run_started
+    run_unstarted_input_validation_error_count = sum(
+        1
+        for run_id in run_unmatched_completed_ids
+        if is_input_validation_completion(run_last_events.get(run_id))
+    )
+    run_unmatched_non_validation_completed_count = (
+        len(run_unmatched_completed_ids) - run_unstarted_input_validation_error_count
+    )
+    if (
+        event_count == 0
+        and expected_count == 0
+        and started_count == 0
+        and completed_count == 0
+        and not run_started
+        and not run_completed
+    ):
         return {}
     total = hit_tokens + miss_tokens
     metrics: dict[str, Any] = {
@@ -870,6 +920,12 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
         "deepseek_model_call_abnormal_completed_count": abnormal_completed_count,
         "deepseek_model_call_incomplete_count": incomplete_count,
         "deepseek_model_call_unmatched_completed_count": unmatched_completed_count,
+        "state_run_started_count": len(run_started),
+        "state_run_completed_count": len(run_completed),
+        "state_run_incomplete_count": len(run_incomplete_ids),
+        "state_run_unmatched_completed_count": len(run_unmatched_completed_ids),
+        "state_run_unmatched_non_validation_completed_count": run_unmatched_non_validation_completed_count,
+        "state_run_unstarted_input_validation_error_count": run_unstarted_input_validation_error_count,
     }
     if event_count:
         metrics.update(

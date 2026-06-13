@@ -84,6 +84,11 @@ GNOME_KEYS = [
     "deepseek_model_call_abnormal_completed_count",
     "deepseek_model_call_incomplete_count",
     "deepseek_model_call_unmatched_completed_count",
+    "state_run_started_count",
+    "state_run_completed_count",
+    "state_run_incomplete_count",
+    "state_run_unmatched_completed_count",
+    "state_run_unmatched_non_validation_completed_count",
     "state_run_unstarted_input_validation_error_count",
 ]
 NORMAL_MODEL_COMPLETION_STATUSES = {"completed", "success", "ok", "stopped_after_completion_file"}
@@ -204,6 +209,30 @@ def select_gnomes(metrics: Any) -> dict[str, Any]:
     if not isinstance(metrics, dict):
         return {}
     return {key: metrics[key] for key in GNOME_KEYS if key in metrics}
+
+
+def lifecycle_gnomes(lifecycle: dict[str, Any]) -> dict[str, Any]:
+    if lifecycle.get("observed") is not True:
+        return {}
+    runs = lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {}
+    model_calls = lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {}
+    return {
+        "state_run_started_count": int(runs.get("started") or 0),
+        "state_run_completed_count": int(runs.get("completed") or 0),
+        "state_run_incomplete_count": int(runs.get("incomplete") or 0),
+        "state_run_unmatched_completed_count": int(runs.get("unmatched_completed") or 0),
+        "state_run_unmatched_non_validation_completed_count": int(
+            runs.get("unmatched_non_validation_completed") or 0
+        ),
+        "state_run_unstarted_input_validation_error_count": int(
+            runs.get("unstarted_input_validation_error") or 0
+        ),
+        "deepseek_model_call_started_count": int(model_calls.get("started") or 0),
+        "deepseek_model_call_completed_count": int(model_calls.get("completed") or 0),
+        "deepseek_model_call_abnormal_completed_count": int(model_calls.get("abnormal_completed") or 0),
+        "deepseek_model_call_incomplete_count": int(model_calls.get("incomplete") or 0),
+        "deepseek_model_call_unmatched_completed_count": int(model_calls.get("unmatched_completed") or 0),
+    }
 
 
 def state_metrics(value: dict[str, Any]) -> dict[str, Any]:
@@ -700,6 +729,8 @@ def summarize(events: list[dict[str, Any]], source: Path) -> dict[str, Any]:
     latest_eval = evals[-1] if evals else None
     latest_decision = decisions[-1] if decisions else None
     task_lineage = summarize_task_lineage(events)
+    state_lifecycle = summarize_state_lifecycle(events)
+    latest_gnomes.update(lifecycle_gnomes(state_lifecycle))
     return {
         "schema_version": 1,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -708,7 +739,7 @@ def summarize(events: list[dict[str, Any]], source: Path) -> dict[str, Any]:
         "event_counts": counts,
         "gnome_keys": GNOME_KEYS,
         "latest_gnomes": latest_gnomes,
-        "state_lifecycle": summarize_state_lifecycle(events),
+        "state_lifecycle": state_lifecycle,
         "patches": patches[-20:],
         "evals": evals[-20:],
         "decisions": decisions[-20:],

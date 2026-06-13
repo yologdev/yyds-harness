@@ -1541,6 +1541,49 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["deepseek_model_call_incomplete_count"], 0)
             self.assertEqual(metrics["deepseek_model_call_unmatched_completed_count"], 0)
 
+    def test_log_feedback_exports_state_run_lifecycle_gnomes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            events = session / "state/events.jsonl"
+            append_event(events, "RunStarted", {}, run_id="run-open")
+            append_event(events, "RunStarted", {}, run_id="run-ok")
+            append_event(events, "RunCompleted", {"status": "completed"}, run_id="run-ok")
+            append_event(
+                events,
+                "RunCompleted",
+                {"status": "error", "error": "exit code 1", "error_detail": "empty_input"},
+                run_id="run-empty",
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["state_run_started_count"], 2)
+            self.assertEqual(metrics["state_run_completed_count"], 2)
+            self.assertEqual(metrics["state_run_incomplete_count"], 1)
+            self.assertEqual(metrics["state_run_unmatched_completed_count"], 1)
+            self.assertEqual(metrics["state_run_unmatched_non_validation_completed_count"], 0)
+            self.assertEqual(metrics["state_run_unstarted_input_validation_error_count"], 1)
+
     def test_state_summary_keeps_new_log_feedback_gnomes(self):
         with tempfile.TemporaryDirectory() as tmp:
             events = Path(tmp) / "state/events.jsonl"
@@ -1573,6 +1616,7 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(latest["deepseek_model_call_abnormal_completed_count"], 4)
             self.assertIn("state_live_baseline_shrink_count", summary["gnome_keys"])
             self.assertIn("deepseek_model_call_abnormal_completed_count", summary["gnome_keys"])
+            self.assertIn("state_run_incomplete_count", summary["gnome_keys"])
 
     def test_state_summary_exports_structured_lifecycle(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1629,6 +1673,13 @@ class TaskLineageFeedback(unittest.TestCase):
                 lifecycle["model_calls"]["abnormal_completed_runs"][0]["run_id"],
                 "run-closed-without-start",
             )
+            latest = summary["latest_gnomes"]
+            self.assertEqual(latest["state_run_started_count"], 1)
+            self.assertEqual(latest["state_run_completed_count"], 1)
+            self.assertEqual(latest["state_run_incomplete_count"], 1)
+            self.assertEqual(latest["state_run_unmatched_completed_count"], 1)
+            self.assertEqual(latest["state_run_unmatched_non_validation_completed_count"], 1)
+            self.assertEqual(latest["state_run_unstarted_input_validation_error_count"], 0)
 
     def test_summarize_state_lifecycle_buckets_empty_input_without_start(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1659,6 +1710,8 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(lifecycle["runs"]["unmatched_completed"], 1)
             self.assertEqual(lifecycle["runs"]["unstarted_input_validation_error"], 1)
             self.assertEqual(lifecycle["runs"]["unmatched_non_validation_completed"], 0)
+            self.assertEqual(summary["latest_gnomes"]["state_run_unmatched_non_validation_completed_count"], 0)
+            self.assertEqual(summary["latest_gnomes"]["state_run_unstarted_input_validation_error_count"], 1)
             self.assertEqual(
                 lifecycle["runs"]["unstarted_input_validation_error_runs"][0]["run_id"],
                 "run-empty",
