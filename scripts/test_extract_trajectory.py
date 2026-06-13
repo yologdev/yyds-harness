@@ -881,7 +881,17 @@ class ExtractTrajectoryTests(unittest.TestCase):
                     "latest_gnomes": {
                         "deepseek_model_call_incomplete_count": 1,
                         "search_error_count": 3,
-                    }
+                    },
+                    "state_lifecycle": {
+                        "model_calls": {
+                            "incomplete_runs": [
+                                {
+                                    "run_id": "run-open",
+                                    "last_event": {"kind": "CommandCompleted"},
+                                }
+                            ]
+                        }
+                    },
                 },
             )
 
@@ -890,6 +900,7 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("## Graph-derived next-task pressure", rendered)
             self.assertIn("Close yyds state and model lifecycle gaps", rendered)
             self.assertIn("deepseek_model_call_incomplete_count=1", rendered)
+            self.assertIn("model_incomplete/open_after_command=1", rendered)
 
 
 if __name__ == "__main__":

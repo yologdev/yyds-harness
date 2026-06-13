@@ -128,6 +128,80 @@ class StateGraphTools(unittest.TestCase):
                 [item["title"] for item in suggestions],
             )
 
+    def test_evolution_suggestions_include_lifecycle_cause_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "deepseek_model_call_incomplete_count": 1,
+                        "state_run_incomplete_count": 1,
+                    },
+                    "state_lifecycle": {
+                        "runs": {
+                            "incomplete_runs": [
+                                {
+                                    "run_id": "run-open",
+                                    "last_event": {"kind": "CacheMetricsRecorded"},
+                                }
+                            ]
+                        },
+                        "model_calls": {
+                            "incomplete_runs": [
+                                {
+                                    "run_id": "run-model",
+                                    "last_event": {"kind": "CommandCompleted"},
+                                }
+                            ]
+                        },
+                    },
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=1)
+
+            self.assertEqual(suggestions[0]["title"], "Close yyds state and model lifecycle gaps")
+            self.assertIn("causes:", suggestions[0]["reason"])
+            self.assertIn("model_incomplete/open_after_command=1", suggestions[0]["reason"])
+            self.assertIn("state_incomplete/open_after_cache_metrics=1", suggestions[0]["reason"])
+
+    def test_lifecycle_cause_summary_skips_input_validation_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "state_lifecycle": {
+                        "runs": {
+                            "unmatched_completed_details": [
+                                {
+                                    "run_id": "run-empty",
+                                    "last_event": {
+                                        "kind": "RunCompleted",
+                                        "status": "error",
+                                        "error_detail": "empty_input",
+                                    },
+                                },
+                                {
+                                    "run_id": "run-real",
+                                    "last_event": {
+                                        "kind": "RunCompleted",
+                                        "status": "error",
+                                        "error_detail": "tool_failed",
+                                    },
+                                },
+                            ]
+                        }
+                    },
+                },
+            )
+
+            summary = state_graph_tools.lifecycle_cause_summary(session)
+
+            self.assertNotIn("input_validation_exit_without_run_start", summary)
+            self.assertIn("state_unmatched/run_error_without_start=1", summary)
+
     def test_evolution_suggestions_suppress_ambiguous_bare_fatal_search_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

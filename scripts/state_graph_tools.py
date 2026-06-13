@@ -361,6 +361,112 @@ def fully_verified_success_metrics(metrics: dict[str, Any]) -> bool:
     )
 
 
+def lifecycle_cause(last_event: Any) -> str:
+    if not isinstance(last_event, dict):
+        return "unknown_last_event"
+    kind = str(last_event.get("kind") or "")
+    if kind == "FileEdited":
+        path = str(last_event.get("path") or "")
+        if path:
+            return f"open_after_file_edit:{path}"
+        return "open_after_file_edit"
+    if kind == "CacheMetricsRecorded":
+        return "open_after_cache_metrics"
+    if kind == "RunCompleted":
+        detail = str(last_event.get("error_detail") or "")
+        if detail == "empty_input" or detail.startswith("invalid_input:"):
+            return "input_validation_exit_without_run_start"
+        status = str(last_event.get("status") or "")
+        if status == "completed":
+            return "completion_without_run_start"
+        if status == "error":
+            return "run_error_without_start"
+        return "run_completion_without_start"
+    if kind == "ModelCallCompleted":
+        return "model_completion_without_start"
+    if kind == "ToolCallCompleted":
+        return "open_after_tool_call"
+    if kind == "CommandCompleted":
+        return "open_after_command"
+    if kind:
+        return f"open_after_{kind}"
+    return "unknown_last_event"
+
+
+def lifecycle_imbalance_causes(session_dir: Path) -> list[dict[str, Any]]:
+    summary = load_json(session_dir / "state" / "summary.json")
+    lifecycle = summary.get("state_lifecycle") if isinstance(summary.get("state_lifecycle"), dict) else {}
+    existing = lifecycle.get("imbalance_causes")
+    if isinstance(existing, list):
+        return [row for row in existing if isinstance(row, dict)]
+
+    rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def add(category: str, items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if isinstance(item, str):
+                run_id = item
+                last_event: Any = None
+            elif isinstance(item, dict):
+                run_id = str(item.get("run_id") or "")
+                last_event = item.get("last_event")
+            else:
+                continue
+            cause = lifecycle_cause(last_event)
+            key = (category, cause)
+            row = rows_by_key.setdefault(
+                key,
+                {"category": category, "cause": cause, "count": 0, "examples": []},
+            )
+            row["count"] += 1
+            if run_id and len(row["examples"]) < 4:
+                row["examples"].append(run_id)
+
+    runs = lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {}
+    model_calls = lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {}
+    add("run_incomplete", runs.get("incomplete_runs"))
+    add("run_unmatched_completed", runs.get("unmatched_completed_details"))
+    add("model_call_incomplete", model_calls.get("incomplete_runs"))
+    add("model_call_unmatched_completed", model_calls.get("unmatched_completed_details"))
+    return sorted(
+        rows_by_key.values(),
+        key=lambda row: (
+            -int(row.get("count") or 0),
+            str(row.get("category") or ""),
+            str(row.get("cause") or ""),
+        ),
+    )
+
+
+def lifecycle_cause_summary(session_dir: Path, limit: int = 3) -> str:
+    category_labels = {
+        "run_incomplete": "state_incomplete",
+        "run_unmatched_completed": "state_unmatched",
+        "model_call_incomplete": "model_incomplete",
+        "model_call_unmatched_completed": "model_unmatched",
+    }
+    parts: list[str] = []
+    for row in lifecycle_imbalance_causes(session_dir):
+        category = str(row.get("category") or "")
+        cause = str(row.get("cause") or "")
+        if cause == "input_validation_exit_without_run_start":
+            continue
+        label = category_labels.get(category, category or "lifecycle")
+        cause_label = "open_after_file_edit" if cause.startswith("open_after_file_edit:") else (cause or "unknown")
+        try:
+            count = int(row.get("count") or 0)
+        except (TypeError, ValueError):
+            continue
+        if count <= 0:
+            continue
+        parts.append(f"{label}/{cause_label}={count}")
+        if len(parts) >= limit:
+            break
+    return "; ".join(parts)
+
+
 def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
     """Return graph-facing gnomes corrected from stronger session artifacts.
 
@@ -508,10 +614,16 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
     if lifecycle_gaps:
         metric, _label, value = lifecycle_gaps[0]
         detail = "; ".join(f"{label}={count}" for _metric, label, count in lifecycle_gaps)
+        cause_detail = lifecycle_cause_summary(session_dir)
+        reason = (
+            f"Lifecycle causes: {cause_detail}; gaps: {detail}."
+            if cause_detail
+            else f"Lifecycle gnomes show unpaired terminal events: {detail}."
+        )
         add(
             "state",
             "Close yyds state and model lifecycle gaps",
-            f"Lifecycle gnomes show unpaired terminal events: {detail}.",
+            reason,
             metric,
             value,
             96,
