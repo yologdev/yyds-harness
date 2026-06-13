@@ -1637,6 +1637,8 @@ Follow the evolve skill rules:
 - Use \`rg\` for code discovery and literal/fixed-string search for snippets with regex punctuation; keep searches scoped away from .git, target, and generated state files. For broad searches, add scoped paths or globs such as \`rg --glob '!target/**'\`.
 - Do not send escaped regex snippets like \`fn handle_run\\(\` to the search tool. Search for a simple identifier such as \`handle_run\`, or run \`rg --fixed-strings 'fn handle_run(' src/commands_eval.rs\`.
 - Treat yoagent as upstream foundation code. If this task reveals that yoagent itself must change, do not patch around it in this repo. $YOAGENT_UPSTREAM_TARGET When you cannot safely make an upstream PR, create an agent-help-wanted issue in $REPO with the evidence and proposed upstream change, then stop this task or choose a harness-only mitigation that stays honest about the upstream dependency.
+- Do not finish with analysis only. If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion in the listed task surface. If no honest code/test/docs improvement exists, write session_plan/${TASK_ID}_obsolete.md explaining the exact evidence and stop without claiming the task landed.
+- Before your final answer, run \`git diff --name-only\`. If it is empty and you did not write an obsolete-task note, the task is not complete.
 - Run cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test after changes
 - If any check fails, read the error and fix it. Keep trying until it passes.
 - Only if you've tried 3+ times and are stuck, revert with: git checkout -- . (keeps previous commits)
@@ -1761,6 +1763,10 @@ and commit if needed."
 
     # Clean up checkpoint file if any
     rm -f "session_plan/checkpoint_task_${TASK_NUM}.md"
+    TASK_OBSOLETE_NOTE="session_plan/${TASK_ID}_obsolete.md"
+    if [ -s "$TASK_OBSOLETE_NOTE" ]; then
+        cp "$TASK_OBSOLETE_NOTE" "$TASK_EVIDENCE_DIR/obsolete.md" 2>/dev/null || true
+    fi
 
     # Preserve original break behavior for API errors
     if [ "$API_ERROR_ABORT" = true ]; then
@@ -1775,6 +1781,19 @@ and commit if needed."
     TASK_OK=true
     REVERT_REASON=""
     REVERT_DETAILS=""
+
+    # If the implementation agent proves the task is stale/already satisfied
+    # and cannot make an honest scoped improvement, preserve that evidence as a
+    # non-landed outcome instead of letting it masquerade as implementation.
+    if [ -s "$TASK_OBSOLETE_NOTE" ]; then
+        echo "    Task $TASK_NUM marked obsolete by implementation agent — no code will be landed."
+        TASK_OK=false
+        REVERT_REASON="Task marked obsolete by agent; no implementation landed"
+        REVERT_DETAILS="Obsolete-task evidence:
+\`\`\`
+$(cat "$TASK_OBSOLETE_NOTE")
+\`\`\`"
+    fi
 
     # Check 1: Protected files (committed + staged + unstaged)
     PROTECTED_CHANGES=""

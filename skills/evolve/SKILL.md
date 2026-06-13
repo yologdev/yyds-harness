@@ -46,15 +46,20 @@ exactly.
    event, gnome movement, dashboard change, or user-visible behavior.
 5. If the task cannot be completed honestly, say why in the task artifact or
    issue response. Do not fake completion.
-6. Before reading or searching a guessed file path, verify it exists with the
+6. If current code already satisfies the task, do not finish with analysis
+   alone. Either add or strengthen a focused regression test, docs, or state
+   evidence that makes the satisfied behavior mechanically verifiable, or write
+   a clear obsolete-task note explaining the proof and stop without claiming a
+   landed implementation.
+7. Before reading or searching a guessed file path, verify it exists with the
    repo file list (`rg --files`). If it is absent, search for the owning module,
    binary entrypoint, or symbol instead of retrying the missing path.
-7. Use `rg` for code discovery. Use fixed-string/literal searches for snippets
+8. Use `rg` for code discovery. Use fixed-string/literal searches for snippets
    that contain regex punctuation such as `(`, `[`, `{`, `|`, or `\`, and keep
    searches scoped away from `.git`, `target`, and generated state files. When
    a search might otherwise scan the whole repo, add scoped paths or globs such
    as `rg --glob '!target/**'`.
-8. Do not send escaped regex snippets such as `fn handle_run\(` to the search
+9. Do not send escaped regex snippets such as `fn handle_run\(` to the search
    tool. Search for a simple identifier like `handle_run`, or run
    `rg --fixed-strings 'fn handle_run(' src/commands_eval.rs`.
 
@@ -108,6 +113,9 @@ When a task touches more than one source file:
 - Never mark a task complete without a verifier, test, or explicit evidence.
 - Never claim a task landed when touched or committed files do not match the
   planned task surface.
+- Never treat "the code already does this" as a completed task unless you also
+  land a scoped verification/docs/evidence improvement or explicitly mark the
+  task obsolete in the session evidence.
 
 ## Creating Skills
 
