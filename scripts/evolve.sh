@@ -207,6 +207,23 @@ record_state_event() {
     append_state_event_checked "$SESSION_STATE_EVENTS" "session" "$event_type" "$payload_json" || true
 }
 
+merge_live_state_delta_snapshot() {
+    local stage="${1:-agent}"
+    [ -f "$STATE_EVENTS" ] || return 0
+    [ -f "$SESSION_STATE_EVENTS" ] || return 0
+    mkdir -p "$SESSION_STAGING/state"
+    local stats
+    if stats=$(python3 scripts/merge_state_delta.py \
+        --live "$STATE_EVENTS" \
+        --session "$SESSION_STATE_EVENTS" \
+        --base-lines "$STATE_BASE_LINES" \
+        --allow-baseline-reset 2>>"$STATE_APPEND_LOG"); then
+        printf '%s\t%s\n' "$stage" "$stats" >>"$SESSION_STAGING/state/merge_state_delta_snapshots.log"
+    else
+        echo "  WARNING: live state snapshot merge failed for ${stage:-agent}" >&2
+    fi
+}
+
 record_agent_terminal_events() {
     local after_line="$1"
     local stage="$2"
@@ -235,6 +252,7 @@ record_agent_terminal_events() {
     if ! python3 scripts/append_terminal_state_events.py "${args[@]}" >>"$STATE_APPEND_LOG" 2>&1; then
         echo "  WARNING: failed to append terminal state events for ${stage:-agent}" >&2
     fi
+    merge_live_state_delta_snapshot "$stage"
 }
 
 task_lineage_payload() {
