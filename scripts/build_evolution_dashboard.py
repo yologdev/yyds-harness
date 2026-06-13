@@ -585,6 +585,53 @@ def failed_tool_pattern_summary(failed_tools: list[str]) -> dict[str, Any]:
     }
 
 
+def summarize_audit_actions(session_dir: Path) -> dict[str, Any]:
+    rows = load_jsonl(session_dir / "audit.jsonl")
+    commands: list[str] = []
+    successful_commands: list[str] = []
+    failed_commands: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("tool") != "bash":
+            continue
+        args = row.get("args") if isinstance(row.get("args"), dict) else {}
+        command = args.get("command")
+        if not isinstance(command, str) or not command.strip():
+            continue
+        cleaned = clean_transcript_action(command)
+        commands.append(cleaned)
+        if row.get("success") is True:
+            successful_commands.append(cleaned)
+        elif row.get("success") is False:
+            failed_commands.append(cleaned)
+    return {
+        "command_count": compact_count(commands),
+        "successful_command_count": compact_count(successful_commands),
+        "failed_command_count": compact_count(failed_commands),
+        "commands": compact_list(commands, 12),
+        "successful_commands": compact_list(successful_commands, 12),
+        "failed_commands": compact_list(failed_commands, 8),
+        "_successful_commands_all": successful_commands,
+    }
+
+
+def failed_bash_command(label: str) -> str:
+    text = str(label or "").strip()
+    if not text.startswith("bash "):
+        return ""
+    command = text.removeprefix("bash ").split(":", 1)[0].strip()
+    return clean_transcript_action(command)
+
+
+def recovered_failed_tool_labels(failed_tools: list[str], successful_commands: list[str]) -> list[str]:
+    successful = normalized_set(successful_commands)
+    recovered: list[str] = []
+    for label in failed_tools:
+        command = failed_bash_command(label)
+        if command and command in successful:
+            recovered.append(label)
+    return recovered
+
+
 def source_file(path: str) -> bool:
     if not path:
         return False
@@ -2260,6 +2307,7 @@ def work_summary(
     suggestions = evolution_suggestions(session_dir)
     event_data = summarize_events_for_work(load_jsonl(session_dir / "state" / "events.jsonl"))
     transcript_actions = summarize_transcript_actions(session_dir)
+    audit_actions = summarize_audit_actions(session_dir)
     source_file_values = [
         path
         for commit in commits
@@ -2295,6 +2343,19 @@ def work_summary(
     failed_commands = compact_list(failed_command_values, 8)
     failed_tools = compact_list(failed_tool_values, 8)
     failed_tool_summary = failed_tool_pattern_summary(failed_tool_values)
+    recovered_failed_tool_values = recovered_failed_tool_labels(
+        failed_tool_values,
+        audit_actions.get("_successful_commands_all", audit_actions.get("successful_commands", [])),
+    )
+    recovered_failed_tool_count = compact_count(recovered_failed_tool_values)
+    unrecovered_failed_tool_values = [
+        label
+        for label in failed_tool_values
+        if " ".join(str(label).split()) not in normalized_set(recovered_failed_tool_values)
+    ]
+    unrecovered_failed_tools = compact_list(unrecovered_failed_tool_values, 8)
+    unrecovered_failed_tool_count = compact_count(unrecovered_failed_tool_values)
+    unrecovered_failed_tool_summary = failed_tool_pattern_summary(unrecovered_failed_tool_values)
     command_count = compact_count(command_values)
     failed_command_count = compact_count(failed_command_values)
     failed_tool_count = compact_count(failed_tool_values)
@@ -2322,6 +2383,12 @@ def work_summary(
             "failed_tool_count": transcript_actions["failed_tool_count"],
             "read_file_count": transcript_actions["read_file_count"],
             "edited_file_count": transcript_actions["edited_file_count"],
+        },
+        "audit": {
+            "command_count": audit_actions["command_count"],
+            "successful_command_count": audit_actions["successful_command_count"],
+            "failed_command_count": audit_actions["failed_command_count"],
+            "recovered_failed_tool_count": recovered_failed_tool_count,
         },
         "merged": {
             "command_count": command_count,
@@ -2392,8 +2459,10 @@ def work_summary(
         labels.append(f"{touched_source_file_count} source file(s) touched")
     elif edited_file_count:
         labels.append(f"{edited_file_count} evidence/bookkeeping file(s) edited")
-    if failed_tool_count:
-        labels.append(f"{failed_tool_count} failed tool action(s)")
+    if unrecovered_failed_tool_count:
+        labels.append(f"{unrecovered_failed_tool_count} failed tool action(s)")
+    if recovered_failed_tool_count:
+        labels.append(f"{recovered_failed_tool_count} recovered failed tool action(s)")
     if failed_command_count > failed_tool_count:
         labels.append(f"{failed_command_count} failed command/check(s)")
     if command_count:
@@ -2437,10 +2506,16 @@ def work_summary(
         "failed_commands": failed_commands,
         "failed_tools": failed_tools,
         "failed_tool_summary": failed_tool_summary,
+        "recovered_failed_tools": compact_list(recovered_failed_tool_values, 8),
+        "recovered_failed_tool_count": recovered_failed_tool_count,
+        "unrecovered_failed_tools": unrecovered_failed_tools,
+        "unrecovered_failed_tool_count": unrecovered_failed_tool_count,
+        "unrecovered_failed_tool_summary": unrecovered_failed_tool_summary,
         "command_count": command_count,
         "failed_command_count": failed_command_count,
         "failed_tool_count": failed_tool_count,
         "action_evidence": action_evidence,
+        "audit_actions": {key: value for key, value in audit_actions.items() if not str(key).startswith("_")},
         "transcript_actions": public_transcript_actions,
         "tool_counts": event_data["tool_counts"],
         "deepseek_cache_hit_ratio": event_data["deepseek_cache_hit_ratio"],
@@ -2584,8 +2659,12 @@ def corrected_gnomes(
                 gnomes[gnome_key] = int(value)
                 recalc_score = True
     failed_tool_count = int(
-        work.get("failed_tool_count")
-        or (len(work.get("failed_tools") or []) if isinstance(work.get("failed_tools"), list) else 0)
+        work.get("unrecovered_failed_tool_count")
+        or (
+            len(work.get("unrecovered_failed_tools") or [])
+            if isinstance(work.get("unrecovered_failed_tools"), list)
+            else 0
+        )
     )
     if failed_tool_count > int(gnomes.get("tool_error_count") or 0):
         gnomes["tool_error_count"] = failed_tool_count
@@ -2820,7 +2899,13 @@ def failed_tool_category_lesson(category: str) -> tuple[str, str, str] | None:
 def failed_tool_category_lessons(work: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not isinstance(work, dict):
         return []
-    summary = work.get("failed_tool_summary") if isinstance(work.get("failed_tool_summary"), dict) else {}
+    summary = (
+        work.get("unrecovered_failed_tool_summary")
+        if isinstance(work.get("unrecovered_failed_tool_summary"), dict)
+        else work.get("failed_tool_summary")
+        if isinstance(work.get("failed_tool_summary"), dict)
+        else {}
+    )
     top_categories = summary.get("top_categories") if isinstance(summary.get("top_categories"), list) else []
     lessons: list[dict[str, Any]] = []
     for row in top_categories:
@@ -3323,12 +3408,22 @@ def reason_count(value: Any) -> int:
 
 def harness_attention_reasons(work: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
-    failed_tools = work.get("failed_tools") if isinstance(work.get("failed_tools"), list) else []
-    failed_tool_count = reason_count(work.get("failed_tool_count")) or len(failed_tools)
+    has_unrecovered_fields = (
+        "unrecovered_failed_tool_count" in work
+        or "unrecovered_failed_tools" in work
+        or "recovered_failed_tool_count" in work
+    )
+    if has_unrecovered_fields:
+        failed_tools = work.get("unrecovered_failed_tools") if isinstance(work.get("unrecovered_failed_tools"), list) else []
+        failed_tool_count = reason_count(work.get("unrecovered_failed_tool_count")) or len(failed_tools)
+    else:
+        failed_tools = work.get("failed_tools") if isinstance(work.get("failed_tools"), list) else []
+        failed_tool_count = reason_count(work.get("failed_tool_count")) or len(failed_tools)
     if failed_tool_count:
         reasons.append(f"{failed_tool_count} failed tool action(s)")
+    recovered_count = reason_count(work.get("recovered_failed_tool_count"))
     failed_command_count = reason_count(work.get("failed_command_count"))
-    if failed_command_count > failed_tool_count:
+    if failed_command_count > failed_tool_count + recovered_count:
         reasons.append(f"{failed_command_count} failed command/check(s)")
     lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
     lifecycle_missing = lifecycle.get("observed") is not True
@@ -6413,6 +6508,7 @@ HTML = r"""<!doctype html>
       const evidence = work.action_evidence || {};
       const stateRows = evidence.state || {};
       const transcriptRows = evidence.transcripts || {};
+      const auditRows = evidence.audit || {};
       const mergedRows = evidence.merged || {};
       if (!Object.keys(evidence).length) return `<p class="muted">No action evidence provenance recorded.</p>`;
       const stateOnlyFails = Number(evidence.state_only_failed_tool_count || 0);
@@ -6424,6 +6520,7 @@ HTML = r"""<!doctype html>
         <div class="detail-grid">
           <div class="item"><strong>State events</strong><br><span class="muted">${text(stateRows.command_count || 0)} commands / ${text(stateRows.failed_tool_count || 0)} tool fails / ${text(stateRows.failed_command_count || 0)} failed checks</span></div>
           <div class="item"><strong>Transcripts</strong><br><span class="muted">${text(transcriptRows.command_count || 0)} commands / ${text(transcriptRows.failed_tool_count || 0)} tool fails / ${text(transcriptRows.failed_command_count || 0)} failed checks</span></div>
+          <div class="item"><strong>Audit log</strong><br><span class="muted">${text(auditRows.successful_command_count || 0)} successful commands / ${text(auditRows.recovered_failed_tool_count || 0)} recovered tool fails</span></div>
           <div class="item"><strong>Merged</strong><br><span class="muted">${text(mergedRows.command_count || 0)} commands / ${text(mergedRows.failed_tool_count || 0)} tool fails / ${text(mergedRows.failed_command_count || 0)} failed checks</span></div>
         </div>`;
     }

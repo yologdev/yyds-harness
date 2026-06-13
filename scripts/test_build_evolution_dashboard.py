@@ -3288,6 +3288,18 @@ class BuildEvolutionDashboard(unittest.TestCase):
             write_events(
                 session / "state/events.jsonl",
                 [
+                    {"kind": "RunStarted", "run_id": "run-ok", "payload": {"status": "started"}},
+                    {
+                        "kind": "ModelCallStarted",
+                        "run_id": "run-ok",
+                        "payload": {"model": "deepseek-v4-pro"},
+                    },
+                    {
+                        "kind": "ModelCallCompleted",
+                        "run_id": "run-ok",
+                        "payload": {"model": "deepseek-v4-pro", "status": "completed"},
+                    },
+                    {"kind": "RunCompleted", "run_id": "run-ok", "payload": {"status": "completed"}},
                     {
                         "kind": "ToolCallStarted",
                         "payload": {
@@ -3333,6 +3345,91 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("Action evidence", html)
             self.assertIn("state-only", html)
             self.assertIn("action_evidence", data_json)
+
+    def test_audit_success_marks_failed_bash_tool_as_recovered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "build_ok": True,
+                    "test_ok": True,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {"tasks": [{"task_id": "task_01", "title": "Fix thing", "files": ["src/lib.rs"]}]},
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "planned_files": ["src/lib.rs"],
+                    "source_files": ["src/lib.rs"],
+                    "commit_shas": ["abc123"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "PASS"},
+            )
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_events(
+                session / "state/events.jsonl",
+                [
+                    {
+                        "kind": "ToolCallStarted",
+                        "payload": {
+                            "tool_call_id": "tool-1",
+                            "tool_name": "bash",
+                            "args": {
+                                "command": "cd /home/runner/work/yyds-harness/yyds-harness && git show abc123 --stat"
+                            },
+                        },
+                    },
+                    {
+                        "kind": "ToolCallCompleted",
+                        "payload": {
+                            "tool_call_id": "tool-1",
+                            "tool_name": "bash",
+                            "is_error": False,
+                            "result_preview": "Exit code: 128",
+                        },
+                    },
+                ],
+            )
+            write_events(
+                session / "audit.jsonl",
+                [
+                    {
+                        "tool": "bash",
+                        "success": True,
+                        "args": {
+                            "command": "cd /home/runner/work/yyds-harness/yyds-harness && git show abc123 --stat"
+                        },
+                    }
+                ],
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+            work = session_data["work_summary"]
+
+            self.assertEqual(work["failed_tool_count"], 1)
+            self.assertEqual(work["recovered_failed_tool_count"], 1)
+            self.assertEqual(work["unrecovered_failed_tool_count"], 0)
+            self.assertEqual(work["action_evidence"]["audit"]["recovered_failed_tool_count"], 1)
+            self.assertEqual(work["latest_eval_score"], None)
+            self.assertEqual(session_data["latest_gnomes"].get("tool_error_count"), None)
+            self.assertNotIn("failed tool action", " ".join(session_data["health_reasons"]))
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            self.assertIn("recovered tool fails", html)
 
     def test_file_evidence_totals_use_uncapped_counts(self):
         with tempfile.TemporaryDirectory() as tmp:
