@@ -255,6 +255,7 @@ def current_evidence_text(assessment: str) -> str:
         "self-test results",
         "yoagent-state deepseek feedback",
         "structured state snapshot",
+        "graph-derived next-task pressure",
         "capability gaps",
         "bugs / friction found",
         "open issues summary",
@@ -412,6 +413,16 @@ latest lifecycle gnomes: state_run_started_count=18; state_run_completed_count=1
 ## Bugs / Friction Found
 State lifecycle unhealthy: runs unmatched 1.
 Tool failures: search_regex_error=57; search_binary_match=19
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Close yyds state and model lifecycle gaps", task
+        assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- Close yyds state and model lifecycle gaps (deepseek_model_call_incomplete_count=1): Lifecycle gnomes show unpaired terminal events.
+
+## Recent Changes
+No current issue in the old history table.
 """
         task = choose_task(assessment)
         assert task["title"] == "Close yyds state and model lifecycle gaps", task

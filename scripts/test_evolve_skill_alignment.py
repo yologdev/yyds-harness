@@ -46,7 +46,9 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("First read and follow `skills/self-assess/SKILL.md`", script)
         self.assertIn("canonical assessment contract for yyds", script)
         self.assertIn("Structured state snapshot", script)
-        self.assertIn("claim health, unresolved claim families, task-state counts", script)
+        self.assertIn("claim health, latest lifecycle gnomes, unresolved claim families", script)
+        self.assertIn("Graph-derived next-task pressure", script)
+        self.assertIn("top recommendation and metric", script)
 
     def test_self_assess_skill_is_yyds_deepseek_native(self):
         text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")
