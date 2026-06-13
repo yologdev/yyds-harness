@@ -4608,6 +4608,19 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(states["summary"]["state_counts"], {"reverted_seed_contradicted": 1})
             self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_seed_contradiction_count"], 1)
             self.assertEqual(data["sessions"][0]["latest_gnomes"]["evaluator_unverified_count"], 0)
+            self.assertIn("1 seeded task(s) contradicted by assessment", work["headline"])
+            self.assertEqual(
+                data["sessions"][0]["health_reasons"],
+                [
+                    "0/1 verified tasks",
+                    "1 seeded task(s) contradicted by assessment",
+                    "state lifecycle not observed",
+                ],
+            )
+            health_text = "; ".join(data["sessions"][0]["health_reasons"])
+            self.assertNotIn("without passing verifier", health_text)
+            self.assertNotIn("reverted without edits", health_text)
+            self.assertNotIn("without touched files", health_text)
 
     def test_missing_optional_artifacts_do_not_fail(self):
         with tempfile.TemporaryDirectory() as tmp:

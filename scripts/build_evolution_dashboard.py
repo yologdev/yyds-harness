@@ -1604,6 +1604,7 @@ def annotate_seed_contradicted_task_states(work: dict[str, Any], count: int) -> 
         "reverted_unverified",
         "no_git_visible_changes",
     }
+    applied = 0
     for prefer_seed_origin in (True, False):
         for row in rows:
             if remaining <= 0:
@@ -1623,9 +1624,18 @@ def annotate_seed_contradicted_task_states(work: dict[str, Any], count: int) -> 
             if "seed_task_contradicted_by_assessment" not in failure_reasons:
                 row["failure_reasons"] = failure_reasons + ["seed_task_contradicted_by_assessment"]
             remaining -= 1
+            applied += 1
         if remaining <= 0:
             break
     refresh_task_state_counts(task_states)
+    if applied:
+        label = f"{applied} seeded task(s) contradicted by assessment"
+        labels = work.get("labels") if isinstance(work.get("labels"), list) else []
+        if label not in labels:
+            insert_at = 1 if labels else 0
+            labels = labels[:insert_at] + [label] + labels[insert_at:]
+            work["labels"] = labels
+            work["headline"] = "; ".join(str(item) for item in labels[:4])
 
 
 def annotate_task_lineage_verification(
@@ -3332,9 +3342,34 @@ def harness_attention(work: dict[str, Any]) -> bool:
     return bool(harness_attention_reasons(work))
 
 
+def seed_contradicted_task_ids(work: dict[str, Any]) -> set[str]:
+    task_states = work.get("task_states") if isinstance(work.get("task_states"), dict) else {}
+    rows = task_states.get("tasks") if isinstance(task_states.get("tasks"), list) else []
+    return {
+        str(row.get("task_id"))
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("task_id")
+        and (row.get("seed_contradicted") or str(row.get("state") or "") in {"seed_contradicted", "reverted_seed_contradicted"})
+    }
+
+
+def task_state_explanation_reasons(work: dict[str, Any]) -> list[str]:
+    task_states = work.get("task_states") if isinstance(work.get("task_states"), dict) else {}
+    state_counts = task_states.get("state_counts") if isinstance(task_states.get("state_counts"), dict) else {}
+    seed_contradicted = reason_count(state_counts.get("seed_contradicted")) + reason_count(
+        state_counts.get("reverted_seed_contradicted")
+    )
+    reasons: list[str] = []
+    if seed_contradicted:
+        reasons.append(f"{seed_contradicted} seeded task(s) contradicted by assessment")
+    return reasons
+
+
 def task_verification_problem_reasons(work: dict[str, Any]) -> list[str]:
     verification = work.get("task_verification") if isinstance(work.get("task_verification"), dict) else {}
     rows = verification.get("rows") if isinstance(verification.get("rows"), list) else []
+    seed_ids = seed_contradicted_task_ids(work)
     no_passing = 0
     unlanded = 0
     no_overlap = 0
@@ -3344,6 +3379,8 @@ def task_verification_problem_reasons(work: dict[str, Any]) -> list[str]:
     missing_planned = 0
     for row in rows:
         if not isinstance(row, dict):
+            continue
+        if str(row.get("task_id") or "") in seed_ids:
             continue
         problems = set(row.get("problems") if isinstance(row.get("problems"), list) else [])
         if "no_passing_verifier" in problems:
@@ -3393,6 +3430,7 @@ def run_health_reasons(session: dict[str, Any]) -> list[str]:
     if verified_total and verified_count < verified_total:
         return (
             [f"{verified_count}/{verified_total} verified tasks"]
+            + task_state_explanation_reasons(work)
             + task_verification_problem_reasons(work)
             + harness_attention_reasons(work)
         )
@@ -5407,6 +5445,16 @@ HTML = r"""<!doctype html>
       if (strictTotal && strictVerified < strictTotal) reasons.push(`${strictVerified}/${strictTotal} verified tasks`);
       if (strictTotal && strictVerified < strictTotal) {
         const rows = Array.isArray(verification.rows) ? verification.rows : [];
+        const taskStateRows = Array.isArray(work.task_states?.tasks) ? work.task_states.tasks : [];
+        const seedIds = new Set();
+        let seedContradicted = 0;
+        taskStateRows.forEach(row => {
+          const state = String(row.state || "");
+          if (row.seed_contradicted === true || state === "seed_contradicted" || state === "reverted_seed_contradicted") {
+            seedContradicted += 1;
+            if (row.task_id) seedIds.add(String(row.task_id));
+          }
+        });
         const counts = {
           noPassing: 0,
           timedOutPassing: 0,
@@ -5418,6 +5466,7 @@ HTML = r"""<!doctype html>
           missingPlanned: 0
         };
         rows.forEach(row => {
+          if (seedIds.has(String(row.task_id || ""))) return;
           const problems = new Set(Array.isArray(row.problems) ? row.problems : []);
           const protectedRevert = row.protected_revert === true || problems.has("modified_protected_files");
           const scopeMismatch = problems.has("no_planned_file_overlap");
@@ -5430,6 +5479,7 @@ HTML = r"""<!doctype html>
           if (problems.has("evaluator_timed_out_after_verdict")) counts.timeoutAfterVerdict += 1;
           if (problems.has("missing_planned_files")) counts.missingPlanned += 1;
         });
+        if (seedContradicted) reasons.push(`${seedContradicted} seeded task(s) contradicted by assessment`);
         if (counts.noPassing) reasons.push(`${counts.noPassing} task(s) without passing verifier`);
         if (counts.timedOutPassing) reasons.push(`${counts.timedOutPassing} task(s) with timed-out passing verifier`);
         if (counts.unlanded) reasons.push(`${counts.unlanded} unlanded source task(s)`);
