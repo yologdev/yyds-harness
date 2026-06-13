@@ -123,6 +123,7 @@ GNOME_KEYS = [
     "evaluator_unverified_count",
     "evaluator_timeout_with_verdict_count",
     "task_obsolete_count",
+    "task_api_error_count",
     "task_unlanded_source_count",
     "max_task_turn_count",
     "avg_task_turn_count",
@@ -859,6 +860,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     evaluator_unverified = 0
     evaluator_timeout_with_verdict = 0
     obsolete_count = 0
+    api_error_count = 0
     unlanded_source = 0
     for task_dir in task_dirs:
         outcome = load_json(task_dir / "outcome.json")
@@ -869,14 +871,17 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         obsolete = (task_dir / "obsolete.md").is_file() or "marked obsolete" in str(
             outcome.get("revert_reason") or ""
         ).lower()
+        api_error = "api error" in str(outcome.get("revert_reason") or "").lower()
         if obsolete:
             obsolete_count += 1
+        if api_error:
+            api_error_count += 1
         touched = outcome.get("source_files") or outcome.get("touched_files") or []
         landed = bool(outcome.get("commit_shas") or outcome.get("commits"))
         has_landed_source = not touched or landed
         if outcome.get("status") == "completed" and has_pass and has_landed_source:
             strict_verified += 1
-        elif not obsolete and (outcome.get("status") == "completed" or evals):
+        elif not obsolete and not api_error and (outcome.get("status") == "completed" or evals):
             evaluator_unverified += 1
         if has_timeout_with_verdict:
             evaluator_timeout_with_verdict += 1
@@ -884,7 +889,10 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             unlanded_source += 1
     verification_denominator = selected_count or len(task_dirs)
     if verification_denominator:
-        evaluator_unverified = max(evaluator_unverified, verification_denominator - strict_verified - obsolete_count)
+        evaluator_unverified = max(
+            evaluator_unverified,
+            verification_denominator - strict_verified - obsolete_count - api_error_count,
+        )
     replay = replay_check_session(session_dir)
     return {
         "task_manifest_available": bool(manifest),
@@ -898,6 +906,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "evaluator_unverified_count": evaluator_unverified,
         "evaluator_timeout_with_verdict_count": evaluator_timeout_with_verdict,
         "task_obsolete_count": obsolete_count,
+        "task_api_error_count": api_error_count,
         "task_unlanded_source_count": unlanded_source,
         "task_spec_quality_score": round(sum(quality_scores) / len(quality_scores), 4)
         if quality_scores
@@ -1042,6 +1051,7 @@ def score_assessment(metrics: dict[str, Any]) -> float:
             + float(metrics.get("planner_no_task_count") or 0) * 3.0
             + float(metrics.get("task_unattempted_count") or 0) * 2.0
             + float(metrics.get("task_obsolete_count") or 0)
+            + float(metrics.get("task_api_error_count") or 0) * 2.0
             + float(metrics.get("evaluator_unverified_count") or 0)
             + float(metrics.get("evaluator_timeout_with_verdict_count") or 0) * 2.0
             + float(metrics.get("task_unlanded_source_count") or 0) * 2.0
@@ -1193,6 +1203,14 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "task_obsolete",
                 "fingerprint": "implementation found the selected task was already satisfied or stale",
                 "action": "replace stale tasks during planning or land a small verification/docs improvement instead of analysis-only work",
+            }
+        )
+    if int(metrics.get("task_api_error_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "task_api_error",
+                "fingerprint": "implementation agent hit an API error before producing landed work",
+                "action": "preserve API-error evidence and retry with provider recovery instead of treating the task as a generic no-change revert",
             }
         )
     if int(metrics.get("state_live_baseline_shrink_count") or 0) > 0:

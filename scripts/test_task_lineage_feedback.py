@@ -705,6 +705,56 @@ class TaskLineageFeedback(unittest.TestCase):
                 any(lesson["kind"] == "task_obsolete" for lesson in assessment["top_lessons"])
             )
 
+    def test_log_feedback_counts_api_error_reverts_separately(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [{"task_id": "task_01"}],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Implementation agent API error",
+                    "source_files": [],
+                    "commit_shas": [],
+                },
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["task_success_rate"], 0.0)
+            self.assertEqual(metrics["task_api_error_count"], 1)
+            self.assertEqual(metrics["evaluator_unverified_count"], 0)
+            self.assertIn("task_api_error_count", log_feedback.gnome_values(metrics))
+            self.assertTrue(
+                any(lesson["kind"] == "task_api_error" for lesson in assessment["top_lessons"])
+            )
+
     def test_log_feedback_counts_selected_but_unattempted_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

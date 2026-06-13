@@ -1224,6 +1224,7 @@ def task_verification_summary(
         verified = eval_passed(artifact_evals, lineage.get("eval"))
         outcome_status = str(artifact.get("status") or lineage.get("status") or "")
         revert_reason = str(artifact.get("revert_reason") or lineage.get("revert_reason") or "").strip()
+        api_error = "api error" in revert_reason.lower()
         obsolete = bool(artifact.get("has_obsolete_note") or lineage.get("has_obsolete_note"))
         problems: list[str] = []
         if not planned:
@@ -1240,6 +1241,8 @@ def task_verification_summary(
             problems.append("no_passing_verifier")
         if obsolete:
             problems.append("task_marked_obsolete")
+        if api_error:
+            problems.append("implementation_api_error")
         if source_touched and not landed_commits:
             problems.append("source_edits_not_landed")
         if source_touched and outcome_status == "completed" and not landed_commits:
@@ -1255,6 +1258,7 @@ def task_verification_summary(
                 "verified": verified,
                 "outcome_status": outcome_status or None,
                 "revert_reason": revert_reason or None,
+                "api_error": api_error,
                 "landed_commit_shas": landed_commits,
                 "eval_statuses": eval_statuses,
                 "eval_evidence_source": eval_evidence_source,
@@ -1288,6 +1292,8 @@ def classify_task_state(row: dict[str, Any], attempted: bool | None = None) -> s
     if attempted is False:
         return "not_attempted"
     if outcome_status == "reverted":
+        if row.get("api_error") or "implementation_api_error" in problems:
+            return "reverted_api_error"
         if "source_edits_not_landed" in problems or "no_landed_source_commit" in problems:
             return "reverted_unlanded_source_edits"
         if "no_touched_files" in problems:
@@ -1437,6 +1443,7 @@ def structured_task_states(
                 "landed_commit_shas": row.get("landed_commit_shas") or [],
                 "reverted": row.get("outcome_status") == "reverted" or bool(row.get("revert_reason")),
                 "revert_reason": row.get("revert_reason"),
+                "api_error": bool(row.get("api_error")),
                 "obsolete": bool(row.get("obsolete")),
                 "obsolete_note_path": row.get("obsolete_note_path"),
                 "eval_attempt_count": row.get("eval_attempt_count") or 0,
@@ -2473,6 +2480,12 @@ def corrected_gnomes(
             if isinstance(row, dict)
             and (row.get("obsolete") or "task_marked_obsolete" in (row.get("problems") or []))
         )
+        api_error = sum(
+            1
+            for row in (verification.get("rows") or [])
+            if isinstance(row, dict)
+            and (row.get("api_error") or "implementation_api_error" in (row.get("problems") or []))
+        )
         gnomes["task_success_rate"] = verified / task_count
         gnomes["session_success_rate"] = 1.0 if verified == task_count else 0.0
         recalc_score = True
@@ -2480,7 +2493,11 @@ def corrected_gnomes(
             int(gnomes.get("task_obsolete_count") or 0),
             obsolete,
         )
-        gnomes["evaluator_unverified_count"] = max(unverified - obsolete, 0)
+        gnomes["task_api_error_count"] = max(
+            int(gnomes.get("task_api_error_count") or 0),
+            api_error,
+        )
+        gnomes["evaluator_unverified_count"] = max(unverified - obsolete - api_error, 0)
         gnomes["evaluator_timeout_with_verdict_count"] = max(
             int(gnomes.get("evaluator_timeout_with_verdict_count") or 0),
             timeout_with_verdict,
@@ -2625,6 +2642,12 @@ def corrected_gnome_lessons(
             "require bounded verifier evidence before counting task success",
         ),
         (
+            "task_api_error_count",
+            "task_api_error",
+            "implementation tasks reverted after API errors",
+            "preserve API-error evidence and retry with provider recovery instead of treating the task as a no-change revert",
+        ),
+        (
             "deepseek_model_call_incomplete_count",
             "deepseek_model_call_incomplete",
             "DeepSeek model call lifecycle was incomplete",
@@ -2738,6 +2761,7 @@ def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
             + metric_float(metrics, "planner_no_task_count") * 3.0
             + metric_float(metrics, "task_unattempted_count") * 2.0
             + metric_float(metrics, "task_obsolete_count")
+            + metric_float(metrics, "task_api_error_count") * 2.0
             + metric_float(metrics, "evaluator_unverified_count")
             + metric_float(metrics, "evaluator_timeout_with_verdict_count") * 2.0
             + metric_float(metrics, "task_unlanded_source_count") * 2.0
@@ -2787,6 +2811,7 @@ def gnome_correction_source(key: str, corrected_value: Any, feedback_metrics: di
         "evaluator_unverified_count",
         "evaluator_timeout_with_verdict_count",
         "task_obsolete_count",
+        "task_api_error_count",
         "task_unlanded_source_count",
         "task_unverified_raw_attempt_count",
         "task_unverified_raw_success_count",
@@ -4963,6 +4988,7 @@ HTML = r"""<!doctype html>
       planner_no_task_count: "Planner no-task count",
       task_unattempted_count: "Unattempted selected tasks",
       task_obsolete_count: "Obsolete/stale tasks",
+      task_api_error_count: "Task API-error reverts",
       task_manifest_available: "Task manifest available",
       task_artifact_coverage: "Task artifact coverage",
       task_lineage_capture_coverage: "Task lineage capture",
@@ -6002,6 +6028,7 @@ HTML = r"""<!doctype html>
         "evaluator_unverified_count",
         "evaluator_timeout_with_verdict_count",
         "task_obsolete_count",
+        "task_api_error_count",
         "task_unlanded_source_count",
         "max_task_turn_count",
         "state_operational_capture_coverage",
