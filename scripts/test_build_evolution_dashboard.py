@@ -2271,11 +2271,14 @@ class BuildEvolutionDashboard(unittest.TestCase):
         )
 
         lifecycle = work["state_lifecycle"]
-        self.assertFalse(lifecycle["balanced"])
+        self.assertFalse(lifecycle["strict_balanced"])
+        self.assertTrue(lifecycle["balanced"])
+        self.assertTrue(lifecycle["healthy"])
         self.assertEqual(lifecycle["runs"]["started"], 0)
         self.assertEqual(lifecycle["runs"]["completed"], 1)
         self.assertEqual(lifecycle["runs"]["unmatched_completed"], 1)
         self.assertEqual(lifecycle["runs"]["unstarted_input_validation_error"], 1)
+        self.assertEqual(lifecycle["runs"]["unmatched_non_validation_completed"], 0)
         self.assertEqual(
             lifecycle["runs"]["unstarted_input_validation_error_runs"][0]["run_id"],
             "run-empty",
@@ -2329,10 +2332,13 @@ class BuildEvolutionDashboard(unittest.TestCase):
             session_claims = {claim["name"]: claim for claim in claims["sessions"][0]["claims"]}
             claim = session_claims["state_run_lifecycle_balanced"]
 
-            self.assertEqual(claim["status"], "missing")
+            self.assertEqual(claim["status"], "proven")
             self.assertEqual(claim["actual"]["unmatched_completed"], 1)
             self.assertEqual(claim["actual"]["unstarted_input_validation_error"], 1)
-            self.assertIn("input-validation exits without RunStarted", claim["detail"])
+            self.assertEqual(claim["actual"]["unmatched_non_validation_completed"], 0)
+            self.assertFalse(claim["actual"]["strict_balanced"])
+            self.assertTrue(claim["actual"]["agent_balanced"])
+            self.assertIn("pre-agent input-validation exit", claim["detail"])
             self.assertEqual(
                 claim["actual"]["unstarted_input_validation_error_runs"][0]["run_id"],
                 "run-empty",

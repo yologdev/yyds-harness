@@ -1856,6 +1856,16 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         for run in run_unmatched_completed
         if is_input_validation_completion(run.get("last_event"))
     ]
+    run_unstarted_input_validation_error_ids = {
+        str(run.get("run_id") or "")
+        for run in run_unstarted_input_validation_errors
+        if isinstance(run, dict)
+    }
+    run_unmatched_non_validation_completed = [
+        run
+        for run in run_unmatched_completed
+        if str(run.get("run_id") or "") not in run_unstarted_input_validation_error_ids
+    ]
     run_incomplete = [
         {
             "run_id": run_id,
@@ -1871,10 +1881,12 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
             "incomplete": len(run_incomplete_ids),
             "unmatched_completed": len(run_unmatched_completed_ids),
             "unstarted_input_validation_error": len(run_unstarted_input_validation_errors),
+            "unmatched_non_validation_completed": len(run_unmatched_non_validation_completed),
             "incomplete_runs": run_incomplete,
             "unmatched_completed_runs": run_unmatched_completed_ids[:8],
             "unmatched_completed_details": run_unmatched_completed,
             "unstarted_input_validation_error_runs": run_unstarted_input_validation_errors,
+            "unmatched_non_validation_completed_details": run_unmatched_non_validation_completed,
         },
         "model_calls": {
             "started": deepseek_model_call_started,
@@ -1890,9 +1902,15 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
             "unmatched_completed_details": unmatched_completed_runs,
         },
     }
-    state_lifecycle["balanced"] = (
+    state_lifecycle["strict_balanced"] = (
         len(run_incomplete_ids) == 0
         and len(run_unmatched_completed_ids) == 0
+        and incomplete_count == 0
+        and unmatched_completed_count == 0
+    )
+    state_lifecycle["balanced"] = (
+        len(run_incomplete_ids) == 0
+        and len(run_unmatched_non_validation_completed) == 0
         and incomplete_count == 0
         and unmatched_completed_count == 0
     )
@@ -3699,6 +3717,12 @@ def state_run_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> d
     incomplete_runs = runs.get("incomplete_runs") if isinstance(runs.get("incomplete_runs"), list) else []
     unmatched_runs = runs.get("unmatched_completed_runs") if isinstance(runs.get("unmatched_completed_runs"), list) else []
     unmatched_details = runs.get("unmatched_completed_details") if isinstance(runs.get("unmatched_completed_details"), list) else []
+    unmatched_non_validation_completed = int(runs.get("unmatched_non_validation_completed") or 0)
+    unmatched_non_validation_completed_details = (
+        runs.get("unmatched_non_validation_completed_details")
+        if isinstance(runs.get("unmatched_non_validation_completed_details"), list)
+        else []
+    )
     unstarted_input_validation_error_runs = (
         runs.get("unstarted_input_validation_error_runs")
         if isinstance(runs.get("unstarted_input_validation_error_runs"), list)
@@ -3707,28 +3731,41 @@ def state_run_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> d
     if started == 0 and completed == 0:
         status = "missing"
         detail = "No yyds run lifecycle events were captured."
-    elif incomplete > 0 or unmatched_completed > 0:
+    elif incomplete > 0 or unmatched_non_validation_completed > 0:
         status = "missing"
         detail = "RunStarted and RunCompleted events do not pair by run_id."
         if unstarted_input_validation_error > 0:
             detail += f" {unstarted_input_validation_error} unmatched completion(s) are input-validation exits without RunStarted."
+    elif unstarted_input_validation_error > 0:
+        status = "proven"
+        detail = (
+            "RunStarted and RunCompleted events are paired for agent runs; "
+            f"{unstarted_input_validation_error} pre-agent input-validation exit(s) were explicitly classified."
+        )
     else:
         status = "proven"
         detail = "RunStarted and RunCompleted events are paired by run_id."
     return claim_row(
         "state_run_lifecycle_balanced",
         status,
-        {"started_equals_completed": True},
+        {
+            "agent_started_equals_completed": True,
+            "pre_agent_input_validation_exits_classified": True,
+        },
         {
             "started": started,
             "completed": completed,
             "incomplete": incomplete,
             "unmatched_completed": unmatched_completed,
             "unstarted_input_validation_error": unstarted_input_validation_error,
+            "unmatched_non_validation_completed": unmatched_non_validation_completed,
+            "strict_balanced": bool(state_lifecycle.get("strict_balanced")),
+            "agent_balanced": bool(state_lifecycle.get("balanced")),
             "incomplete_runs": incomplete_runs[:8],
             "unmatched_completed_runs": unmatched_runs[:8],
             "unmatched_completed_details": unmatched_details[:8],
             "unstarted_input_validation_error_runs": unstarted_input_validation_error_runs[:8],
+            "unmatched_non_validation_completed_details": unmatched_non_validation_completed_details[:8],
             "imbalance_causes": [
                 row for row in state_lifecycle.get("imbalance_causes", []) if row.get("category", "").startswith("run_")
             ][:8],
@@ -5674,7 +5711,7 @@ HTML = r"""<!doctype html>
         return `<p class="muted">No run/model lifecycle events observed.</p>`;
       }
       const rows = [
-        `status ${text(lifecycle.healthy === true ? "healthy" : "unhealthy")} / balanced ${text(lifecycle.balanced === true ? "yes" : "no")}`,
+        `status ${text(lifecycle.healthy === true ? "healthy" : "unhealthy")} / agent balanced ${text(lifecycle.balanced === true ? "yes" : "no")}${lifecycle.strict_balanced === false && lifecycle.balanced === true ? " / strict balanced no" : ""}`,
         `runs ${text(runs.started || 0)} started, ${text(runs.completed || 0)} completed, ${text(runs.incomplete || 0)} incomplete, ${text(runs.unmatched_completed || 0)} unmatched completed`,
         `model calls ${text(modelCalls.started || 0)} started, ${text(modelCalls.completed || 0)} completed, ${text(modelCalls.incomplete || 0)} incomplete, ${text(modelCalls.unmatched_completed || 0)} unmatched completed`
       ];
