@@ -2700,6 +2700,10 @@ def corrected_gnomes(
     if task_count:
         verified = int(verification.get("verified_task_count") or 0)
         unverified = int(verification.get("unverified_task_count") or 0)
+        for key in ("task_unverified_raw_attempt_count", "task_unverified_raw_success_count"):
+            if int(gnomes.get(key) or 0) != 0:
+                gnomes[key] = 0
+                recalc_score = True
         unlanded = sum(
             1
             for row in (verification.get("rows") or [])

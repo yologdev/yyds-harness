@@ -4244,6 +4244,88 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(aggregate["unverified_raw_task_outcome_attempted"], 3)
             self.assertEqual(aggregate["unverified_raw_task_outcome_succeeded"], 3)
 
+    def test_strict_task_artifacts_clear_stale_unverified_raw_gnomes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {"coding_log_score": 0.8},
+                    "gnome_keys": ["coding_log_score"],
+                },
+            )
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "task_unverified_raw_attempt_count": 1,
+                        "task_unverified_raw_success_count": 1,
+                    }
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Verified source task",
+                            "files": ["scripts/build_evolution_dashboard.py"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Verified source task",
+                    "status": "completed",
+                    "planned_files": ["scripts/build_evolution_dashboard.py"],
+                    "touched_files": ["scripts/build_evolution_dashboard.py"],
+                    "source_files": ["scripts/build_evolution_dashboard.py"],
+                    "commit_shas": ["abc1234"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {
+                    "task_id": "task_01",
+                    "status": "pass",
+                    "exit_code": 0,
+                    "verdict": "Verdict: PASS",
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            latest = data["sessions"][0]["latest_gnomes"]
+
+            self.assertEqual(latest["task_success_rate"], 1.0)
+            self.assertEqual(latest["session_success_rate"], 1.0)
+            self.assertEqual(latest["task_unverified_raw_attempt_count"], 0)
+            self.assertEqual(latest["task_unverified_raw_success_count"], 0)
+            self.assertEqual(data["gnome_history"][0]["values"]["task_unverified_raw_success_count"], 0.0)
+            self.assertEqual(data["aggregate"]["tasks_attempted"], 1)
+            self.assertEqual(data["aggregate"]["tasks_succeeded"], 1)
+            self.assertEqual(data["aggregate"]["unverified_raw_task_outcome_attempted"], 0)
+            self.assertEqual(data["aggregate"]["unverified_raw_task_outcome_succeeded"], 0)
+
     def test_task_artifacts_without_manifest_still_enter_strict_verification(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
