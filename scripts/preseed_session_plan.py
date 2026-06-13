@@ -4,7 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
+
+
+LIFECYCLE_TASK_TITLE = "Close yyds state and model lifecycle gaps"
+ACTIONABLE_LIFECYCLE_METRICS = (
+    "state_run_incomplete_count",
+    "state_run_unmatched_non_validation_completed_count",
+    "deepseek_model_call_incomplete_count",
+    "deepseek_model_call_unmatched_completed_count",
+)
 
 
 TASKS = [
@@ -139,13 +149,11 @@ TASKS = [
             "modelcallcompleted",
         ),
         "reject_keys": (
-            "state_run_incomplete_count=0",
-            "deepseek_model_call_incomplete_count=0",
             "input-validation exits without runstarted only",
             "input-validation-only unmatched",
             "pre-agent input-validation exit",
         ),
-        "title": "Close yyds state and model lifecycle gaps",
+        "title": LIFECYCLE_TASK_TITLE,
         "files": (
             "scripts/evolve.sh, scripts/append_terminal_state_events.py, "
             "scripts/log_feedback.py, scripts/summarize_state_gnomes.py"
@@ -270,14 +278,39 @@ def current_evidence_text(assessment: str) -> str:
     return "\n\n".join(sections)
 
 
+def numeric_metrics(text: str) -> dict[str, int]:
+    metrics: dict[str, int] = {}
+    for match in re.finditer(r"`?([a-z][a-z0-9_]+)`?\s*[=:]\s*(-?\d+)", text):
+        metrics[match.group(1)] = int(match.group(2))
+    return metrics
+
+
+def has_lifecycle_metrics(metrics: dict[str, int]) -> bool:
+    return any(
+        key.startswith("state_run_") or key.startswith("deepseek_model_call_")
+        for key in metrics
+    )
+
+
+def has_actionable_lifecycle_gap(metrics: dict[str, int]) -> bool:
+    return any(metrics.get(key, 0) > 0 for key in ACTIONABLE_LIFECYCLE_METRICS)
+
+
 def choose_task(assessment: str) -> dict[str, object]:
     current = current_evidence_text(assessment)
     lower = (current if current.strip() else assessment).lower()
+    metrics = numeric_metrics(lower)
+    lifecycle_metrics_present = has_lifecycle_metrics(metrics)
     for task in TASKS:
-        if any(key in lower for key in task["keys"]) and not any(
-            key in lower for key in task.get("reject_keys", ())
-        ):
+        if not any(key in lower for key in task["keys"]):
+            continue
+        if any(key in lower for key in task.get("reject_keys", ())):
+            continue
+        if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+            if not has_actionable_lifecycle_gap(metrics):
+                continue
             return task
+        return task
     return {
         "title": "Repair evidence-backed planning after no-task sessions",
         "files": "skills/evolve/SKILL.md, skills/self-assess/SKILL.md, scripts/task_manifest.py",
@@ -367,6 +400,17 @@ lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; stat
 
 ## Bugs / Friction Found
 State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1.
+Tool failures: search_regex_error=57; search_binary_match=19
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Close yyds state and model lifecycle gaps", task
+        assessment = """# Assessment
+
+## Structured State Snapshot
+latest lifecycle gnomes: state_run_started_count=18; state_run_completed_count=19; state_run_incomplete_count=0; state_run_unmatched_completed_count=1; state_run_unmatched_non_validation_completed_count=1; state_run_unstarted_input_validation_error_count=0; deepseek_model_call_started_count=1; deepseek_model_call_completed_count=1; deepseek_model_call_incomplete_count=0
+
+## Bugs / Friction Found
+State lifecycle unhealthy: runs unmatched 1.
 Tool failures: search_regex_error=57; search_binary_match=19
 """
         task = choose_task(assessment)
