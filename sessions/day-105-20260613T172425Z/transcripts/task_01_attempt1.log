@@ -1,0 +1,387 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. Add binary-match recovery hints to the search tool
+2. Two approaches: A) Add `-I` flag to `build_project_rg_args`, or B) Detect binary match lines and add recovery hints
+3. Prefer approach A (simpler, one line change)
+4. The `build_project_grep_args` already passes `-I` at line 352, so `build_project_rg_args` should too
+
+Let me start by reading the evolve skill and the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/tools.rs:240..370 ✓ (51ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the relevant code. Let me look at:
+
+1. `build_project_rg_args` at line 301-339 - this is where I need to add `-I`
+2. `build_project_grep_args` at line 341+ - already has `-I` at line 352
+3. The search tool error/output path around lines 240-289
+
+The task is clear: add `-I` to `build_project_rg_args` to match the behavior of `build_project_grep_args`. This prevents binary file matches entirely.
+
+Let me also check if there are existing tests for the search tool to understand how to write a test.
+
+Let me also look at how `stdout` is handled before line 240 - specifically the part that processes stdout results, to see if there's a "binary file matches" detection pattern that also needs attention.
+
+Actually, wait. The task says approach A (add `-I` flag) is preferred. With `-I`, ripgrep will skip binary files entirely, so there won't be any "binary file matches" output. This is the simplest fix.
+
+But let me also understand: does the task also want me to add a recovery hint? Let me re-read:
+
+"When rg reports binary file matches, the search result includes a hint about using --binary or -I to control binary file handling, OR binary files are skipped entirely"
+
+So either approach works. Approach A (add `-I`) skips binary files entirely, which satisfies the "OR binary files are skipped entirely" clause.
+
+Now let me check what tests exist for the search tool.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.8s (2 ✓)
+
+Let me find the existing search tests and understand the full search flow better.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'search_binary_match'  ▶ search 'binary file matches'  ▶ search 'build_project_rg_args' ✓ (8ms)
+ ✓ (40ms)
+ ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me look at the test file for the search tool and see how search tests are structured. Let me also look at the broader context of how the search tool's `call` method works, particularly lines 180-290 where the search execution happens.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.4s (3 ✓)
+
+Let me look at the search tool's full `call` method and find existing tests.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:100..220  ▶ search 'mod tests' in src/tools.rs ✓ (16ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the tests module to understand how the search tests are structured.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1448..1458 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for test functions related to search, rg, grep, binary, or ProjectSearchTool in the tests module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test.*search' in src/tools.rs  ▶ search 'fn test.*rg' in src/tools.rs  ▶ search 'ProjectSearchTool' in src/tools.rs ✓ (26ms)
+ ✓ (25ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the existing search tests to understand the pattern. They seem to be around lines 1691-1830 or so.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1685..1845 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The task is straightforward:
+
+1. Add `-I` flag to `build_project_rg_args` (line 309) — this is the simplest approach
+2. The existing tests use temp directories with text files, so they should continue to pass
+3. I should write a test that verifies binary files are skipped
+
+Let me also check what the fallback grep path looks like around line 220 to see how results are handled when rg isn't available, to make sure my change is consistent.
+
+Actually, the task is very simple. I just need to add `-I` to `build_project_rg_args`. Let me also write a test that creates a binary file and verifies the search tool skips it.
+
+Let me plan:
+
+1. Edit `build_project_rg_args` to add `"-I".to_string()` to the args vector
+2. Write a test that creates a binary file (with null bytes) containing the search pattern, and verify the search tool doesn't find it (it's skipped)
+3. Run `cargo fmt`, `cargo clippy`, `cargo build`, `cargo test`
+
+Let me think about the test. The test should:
+- Create a temp dir
+- Create a text file with a pattern
+- Create a binary file (with null bytes) also containing the pattern
+- Search for the pattern
+- Assert that the text match is found
+- Assert that the binary file does NOT appear in results
+
+Actually, wait. With `-I`, rg will not report binary matches at all. But the test should verify this behavior. Let me write a test similar to the existing ones.
+
+Let me also check what the `build_project_grep_args` args look like when it's passed to confirm consistency.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding. The fix is to add `-I` to `build_project_rg_args`. Let me implement it and write a test.
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with the edit.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 1.9s (4 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now, add `-I` to `build_project_rg_args`. I'll add it right after `--color=never`.
+────────────────────────────────────────────────────────────────────────────────
+
+            "--line-number".to_string(),
+            "--no-heading".to_string(),
+            "--color=never".to_string(),
+  +         "-I".to_string(),
+            format!("--max-count={max_results}"),
+        ];
+  ✓ Auto-approved: edit: src/tools.rs (6 → 7 lines)
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (6 → 7 lines)
+            "--line-number".to_string(),
+            "--no-heading".to_string(),
+            "--color=never".to_string(),
+  +         "-I".to_string(),
+            format!("--max-count={max_results}"),
+        ];
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the test. I'll add it after the existing `test_project_search_non_regex_error_no_hint` test. The test will:
+1. Create a temp dir
+2. Create a text file with a unique pattern
+3. Create a binary file (with null bytes) that also contains the pattern
+4. Search for the pattern
+5. Assert results contain the text file but NOT the binary file
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add a test. Let me read the exact end of the search tests to know where to insert.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1824..1854 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll insert the new test between line 1829 (closing brace of `test_project_search_non_regex_error_no_hint`) and line 1831 (start of `test_streaming_bash_deny_patterns`).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +     }
+  + 
+  +     #[tokio::test]
+  +     async fn test_project_search_skips_binary_files() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let src = dir.path().join("src");
+  +         std::fs::create_dir_all(&src).unwrap();
+  +         std::fs::write(src.join("lib.rs"), "pub fn binary_test_pattern() {}\n").unwrap();
+  +         // Write a binary file (with null bytes) that also contains the search pattern
+  +         let mut binary = b"binary_test_pattern\0\x00\x01\x02\x03\xff".to_vec();
+  +         // Pad to make it clearly non-text
+  +         binary.extend(std::iter::repeat(0u8).take(128));
+  +         std::fs::write(src.join("artifact.bin"), &binary).unwrap();
+  + 
+  +         let tool = ProjectSearchTool::default();
+  +         let params = serde_json::json!({
+  +             "pattern": "binary_test_pattern",
+  +             "path": dir.path().to_string_lossy(),
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/tools.rs (4 → 39 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (4 → 39 lines)
+  +     }
+  + 
+  +     #[tokio::test]
+  +     async fn test_project_search_skips_binary_files() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let src = dir.path().join("src");
+  +         std::fs::create_dir_all(&src).unwrap();
+  +         std::fs::write(src.join("lib.rs"), "pub fn binary_test_pattern() {}\n").unwrap();
+  +         // Write a binary file (with null bytes) that also contains the search pattern
+  +         let mut binary = b"binary_test_pattern\0\x00\x01\x02\x03\xff".to_vec();
+  +         // Pad to make it clearly non-text
+  +         binary.extend(std::iter::repeat(0u8).take(128));
+  +         std::fs::write(src.join("artifact.bin"), &binary).unwrap();
+  + 
+  +         let tool = ProjectSearchTool::default();
+  +         let params = serde_json::json!({
+  +             "pattern": "binary_test_pattern",
+  +             "path": dir.path().to_string_lossy(),
+  +         });
+  +         let result = tool
+  ... (18 more lines)
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the verification steps.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Run cargo fmt first, then build and test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, formatting passed. Now let me run build and clippy.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo clippy --all-targets -- … ✓ (25.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Need to fix the clippy suggestion - use `repeat_n` instead of `repeat().take()`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         binary.extend(std::iter::repeat(0u8).take(128));
+  +         binary.extend(std::iter::repeat_n(0u8, 128));
+  ✓ Auto-approved: edit: src/tools.rs (1 → 1 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (1 → 1 lines)
+  -         binary.extend(std::iter::repeat(0u8).take(128));
+  +         binary.extend(std::iter::repeat_n(0u8, 128));
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now re-run clippy.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo clippy --all-targets -- … ✓ (25.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clippy passes. Now build.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (15.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now run the search-related tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- search 2>&… ✓ (30.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 192 tests pass, including my new test. Now let me run cargo test tools to check if there are integration tests for tools.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test tools 2>&1 ✓ (14.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me also run the full test suite to make sure nothing is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Let me also run the full test suite to be thorough.
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test 2>&1 ✓ (1m 57s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The full test suite is running but it seems like it might take a while with 4209 tests. Let me check the final result. The output is truncated. Let me run just the filtered ones or check if it completed.
+
+Actually, looking at the output more carefully: it says `running 4209 tests` and I can see many passing tests. The output was truncated but the exit code is 0. Let me just confirm with a shorter command.
+
+Actually the exit code was 0, which means all tests passed. Let me now verify the diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass (exit code 0). Let me verify the diff.
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also verify the diff content is what I expect.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/tools.rs 2>&1 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is exactly what I expect:
+1. Added `"-I".to_string()` to `build_project_rg_args` — one line change that prevents binary file matches
+2. Added a new test `test_project_search_skips_binary_files` that verifies binary files are skipped
+
+Now let me update the todo and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now commit. The message should be: "Day 105 (17:24): Extend search tool with binary-match recovery hints (Task 1)"
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Commit successful. Let me mark the final todo as done.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**Task completed.** Here's what changed in `src/tools.rs`:
+
+### Change 1: Add `-I` flag to `build_project_rg_args` (line 313)
+Added `"-I".to_string()` to the rg argument vector. The `-I` flag tells ripgrep to ignore binary files — exactly matching the behavior of `build_project_grep_args` which already passes `-I` (line 352). This prevents the `search_binary_match=19` failure class entirely: binary files are simply skipped, and the agent never sees "binary file matches" output.
+
+### Change 2: New test `test_project_search_skips_binary_files` (lines 1830-1865)
+Creates a temp directory with both a text file (`lib.rs`) and a binary file (`artifact.bin` with null bytes) containing the same pattern. Asserts that:
+• The text file match is found (`src/lib.rs` appears in results)
+• The binary file is **not** reported (`artifact.bin` does NOT appear in results)
+
+### Verification
+• `cargo fmt` — passed
+• `cargo clippy --all-targets -- -D warnings` — passed
+• `cargo build` — passed
+• `cargo test --lib -- search` — 192 tests passed (includes new test)
+• `cargo test tools` — 189 tests passed
+• `cargo test` (full suite) — all 4209 tests passed
+
+### Expected evidence
+• Future state runs should show reduced `search_binary_match` failures (from 19 toward 0)
+• The search tool failure dashboard metric should shift down after this change lands
+
+
