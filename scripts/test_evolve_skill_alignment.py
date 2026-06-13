@@ -33,11 +33,12 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("First read and follow `skills/evolve/SKILL.md`", script)
         self.assertIn("canonical\nimplementation contract for yyds self-evolution", script)
         self.assertIn("Follow the evolve skill rules", script)
-        self.assertIn("Verify guessed file paths with \\`rg --files\\`", script)
-        self.assertIn("literal/fixed-string search", script)
-        self.assertIn("rg --glob '!target/**'", script)
+        self.assertIn("Verify guessed file paths with \\`list_files\\` or \\`git ls-files <path>\\`", script)
+        self.assertIn("Prefer \\`list_files\\` and the \\`search\\` tool for code discovery", script)
+        self.assertIn("Do not assume \\`rg\\` is installed", script)
+        self.assertIn("\\`grep -R -F -- '--json' src/\\`", script)
         self.assertIn("Do not send escaped regex snippets like \\`fn handle_run\\\\(\\`", script)
-        self.assertIn("\\`rg --fixed-strings 'fn handle_run(' src/commands_eval.rs\\`", script)
+        self.assertIn("\\`grep -R -F -- 'fn handle_run(' src/\\`", script)
 
     def test_assessment_phase_uses_self_assess_skill(self):
         script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
@@ -81,13 +82,13 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
     def test_evolve_skill_teaches_search_discipline_from_audit_friction(self):
         text = EVOLVE_SKILL.read_text(encoding="utf-8")
 
-        self.assertIn("verify it exists with the\n   repo file list (`rg --files`)", text)
+        self.assertIn("verify it exists with\n   `list_files` or a repository file listing", text)
         self.assertIn("search for the owning module", text)
-        self.assertIn("fixed-string/literal searches", text)
-        self.assertIn("regex punctuation", text)
-        self.assertIn("rg --glob '!target/**'", text)
+        self.assertIn("Prefer `list_files` and the `search` tool", text)
+        self.assertIn("do not assume `rg` is installed", text)
+        self.assertIn("flag-like literals such as `--json`", text)
         self.assertIn("Do not send escaped regex snippets such as `fn handle_run\\(`", text)
-        self.assertIn("`rg --fixed-strings 'fn handle_run(' src/commands_eval.rs`", text)
+        self.assertIn("`grep -R -F -- 'fn handle_run(' src/`", text)
 
 
 if __name__ == "__main__":

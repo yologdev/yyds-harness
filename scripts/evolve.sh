@@ -1074,19 +1074,23 @@ standard.
 
 Steps:
 
-0. **Tool and command discipline** — keep assessment evidence bounded. Prefer the
-   `search` tool for code search; it treats patterns literally by default and
-   skips build/state artifacts. If you use bash search, prefer `rg --files`,
-   `rg --fixed-strings`, and scoped paths. Verify guessed paths with
-   `rg --files` before reading them. Do not search `.git`, `target`, or
+0. **Tool and command discipline** — keep assessment evidence bounded. Prefer
+   `list_files` for path discovery and the `search` tool for simple identifiers;
+   both stay closer to the harness tool model than broad shell scans. Do not
+   send regex-punctuation snippets or flag-like literals such as `--json` to the
+   search tool. If you need a literal snippet or flag, use a bounded file read or
+   bash fixed-string search with an option terminator, for example
+   `grep -R -F -- '--json' src/commands_state.rs`. If you use bash search, first
+   check `command -v rg`; otherwise use `git ls-files`, `git grep -n --`, or
+   `grep -R -F --` with scoped paths. Do not search `.git`, `target`, or
    `.yoyo/state`. Do not assume `src/main.rs` exists; discover the binary entry
    point first.
 
-1. **Read your source architecture, not every source file** — use `rg --files src`,
-   `wc -l`, module declarations, and a few key entry points to summarize module
-   structure, line counts, and ownership. Read focused files only when the
-   trajectory/state evidence points at them. Do not read all `.rs` files under
-   `src/`.
+1. **Read your source architecture, not every source file** — use `list_files src`
+   or `git ls-files 'src/*.rs'`, `wc -l`, module declarations, and a few key
+   entry points to summarize module structure, line counts, and ownership. Read
+   focused files only when the trajectory/state evidence points at them. Do not
+   read all `.rs` files under `src/`.
 
 2. **Read recent history** — journals/JOURNAL.md (last 10 entries), git log (last 10 commits). Summarize what changed recently. Also check journals/ for any external project journals (e.g., journals/llm-wiki.md) and briefly note recent external work.
 
@@ -1633,9 +1637,9 @@ implementation contract for yyds self-evolution.
 Follow the evolve skill rules:
 - Write a test first if possible
 - Use edit_file for surgical changes
-- Verify guessed file paths with \`rg --files\` before reading/searching them; if a path is absent, search for the owning module, binary entrypoint, or symbol instead of retrying the missing path.
-- Use \`rg\` for code discovery and literal/fixed-string search for snippets with regex punctuation; keep searches scoped away from .git, target, and generated state files. For broad searches, add scoped paths or globs such as \`rg --glob '!target/**'\`.
-- Do not send escaped regex snippets like \`fn handle_run\\(\` to the search tool. Search for a simple identifier such as \`handle_run\`, or run \`rg --fixed-strings 'fn handle_run(' src/commands_eval.rs\`.
+- Verify guessed file paths with \`list_files\` or \`git ls-files <path>\` before reading/searching them; if a path is absent, search for the owning module, binary entrypoint, or symbol instead of retrying the missing path.
+- Prefer \`list_files\` and the \`search\` tool for code discovery. If you need bash search, first check \`command -v rg\`; otherwise use scoped \`git grep -n -- <literal>\` or \`grep -R -F -- <literal>\`. Keep searches scoped away from .git, target, and generated state files.
+- Do not send escaped regex snippets like \`fn handle_run\\(\` or flag-like literals like \`--json\` to the search tool. Search for a simple identifier such as \`handle_run\`, or use \`grep -R -F -- 'fn handle_run(' src/\`.
 - Treat yoagent as upstream foundation code. If this task reveals that yoagent itself must change, do not patch around it in this repo. $YOAGENT_UPSTREAM_TARGET When you cannot safely make an upstream PR, create an agent-help-wanted issue in $REPO with the evidence and proposed upstream change, then stop this task or choose a harness-only mitigation that stays honest about the upstream dependency.
 - Do not finish with analysis only. If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion in the listed task surface. If no honest code/test/docs improvement exists, write session_plan/${TASK_ID}_obsolete.md explaining the exact evidence and stop without claiming the task landed.
 - Before your final answer, run \`git diff --name-only\`. If it is empty and you did not write an obsolete-task note, the task is not complete.
@@ -2025,7 +2029,7 @@ Tests: PASS
 5. If a command would be broad or slow, skip it and explain the verifier reason from the diff and task criteria.
 6. If the task added a user-facing feature, try one bounded invocation if practical.
 7. Check if docs were updated (if the task changed behavior).
-8. If you need to search, avoid regex-punctuation failures: search a simple identifier, or use \`rg --fixed-strings\` for snippets such as \`fn handle_run(\`. Keep searches scoped away from target and generated state files, for example with \`rg --glob '!target/**'\`. Do not send escaped regex snippets like \`fn handle_run\\(\` to the search tool.
+8. If you need to search, avoid search-tool regex and flag parsing failures: search a simple identifier, use a focused file read, or use bash fixed-string search with an option terminator such as \`grep -R -F -- 'fn handle_run(' src/\` or \`grep -R -F -- '--json' src/\`. Do not assume \`rg\` is installed; check \`command -v rg\` before using it. Keep searches scoped away from target and generated state files.
 
 Write your verdict to session_plan/eval_task_${TASK_NUM}.md with exactly this format (no code fences):
 
@@ -2092,10 +2096,11 @@ $EVAL_FEEDBACK
 Fix the issues the evaluator identified. The build and tests already pass ��� focus on completing the missing functionality, not on refactoring what works.
 
 Search discipline:
-- Verify guessed paths with \`rg --files\` before reading them.
-- Search simple identifiers, or use \`rg --fixed-strings\` for snippets with regex punctuation.
-- Keep searches scoped away from target and generated state files; for broad searches, add a glob such as \`rg --glob '!target/**'\`.
-- Do not send escaped regex snippets like \`fn handle_run\\(\` to the search tool.
+- Verify guessed paths with \`list_files\` or \`git ls-files <path>\` before reading them.
+- Search simple identifiers with the search tool; do not pass regex-punctuation snippets or flag-like literals such as \`--json\` to it.
+- For literal snippets or flags, use a focused file read or bash fixed-string search with \`--\`, for example \`grep -R -F -- '--json' src/\`.
+- Do not assume \`rg\` is installed; check \`command -v rg\` first if you want to use it.
+- Keep searches scoped away from target and generated state files.
 
 After fixing, run: cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test
 FIXEOF

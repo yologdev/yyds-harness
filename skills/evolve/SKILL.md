@@ -51,17 +51,18 @@ exactly.
    evidence that makes the satisfied behavior mechanically verifiable, or write
    a clear obsolete-task note explaining the proof and stop without claiming a
    landed implementation.
-7. Before reading or searching a guessed file path, verify it exists with the
-   repo file list (`rg --files`). If it is absent, search for the owning module,
-   binary entrypoint, or symbol instead of retrying the missing path.
-8. Use `rg` for code discovery. Use fixed-string/literal searches for snippets
-   that contain regex punctuation such as `(`, `[`, `{`, `|`, or `\`, and keep
-   searches scoped away from `.git`, `target`, and generated state files. When
-   a search might otherwise scan the whole repo, add scoped paths or globs such
-   as `rg --glob '!target/**'`.
+7. Before reading or searching a guessed file path, verify it exists with
+   `list_files` or a repository file listing such as `git ls-files <path>`.
+   If it is absent, search for the owning module, binary entrypoint, or symbol
+   instead of retrying the missing path.
+8. Prefer `list_files` and the `search` tool for code discovery. If you need
+   bash search, do not assume `rg` is installed: check `command -v rg` first,
+   otherwise use scoped `git grep -n -- <literal>` or `grep -R -F -- <literal>`.
+   Keep searches scoped away from `.git`, `target`, and generated state files.
 9. Do not send escaped regex snippets such as `fn handle_run\(` to the search
-   tool. Search for a simple identifier like `handle_run`, or run
-   `rg --fixed-strings 'fn handle_run(' src/commands_eval.rs`.
+   tool, and do not send flag-like literals such as `--json` to it. Search for
+   a simple identifier like `handle_run`, or use bash fixed-string search with
+   an option terminator, such as `grep -R -F -- 'fn handle_run(' src/`.
 
 ## Making Changes
 
