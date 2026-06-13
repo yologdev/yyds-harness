@@ -1158,17 +1158,22 @@ def task_verification_summary(
         artifact = artifacts_by_id.get(task_id, {})
         lineage = lineage_by_id.get(task_id, {})
         planned = [str(path) for path in (task.get("files") or lineage.get("planned_files") or []) if path]
+        source_candidates = [
+            str(path)
+            for path in (lineage.get("source_files") or artifact.get("source_files") or [])
+            if path
+        ]
         touched = [
             str(path)
             for path in (
-                lineage.get("source_files")
-                or artifact.get("source_files")
-                or lineage.get("touched_files")
+                lineage.get("touched_files")
                 or artifact.get("touched_files")
+                or source_candidates
                 or []
             )
             if path
         ]
+        source_touched = [path for path in compact_list(source_candidates + touched, 16) if source_file(path)]
         landed_commits = [
             str(sha)
             for sha in (
@@ -1221,9 +1226,9 @@ def task_verification_summary(
             problems.append("timed_out_passing_verdict")
         elif not verified:
             problems.append("no_passing_verifier")
-        if touched and not landed_commits:
+        if source_touched and not landed_commits:
             problems.append("source_edits_not_landed")
-        if touched and outcome_status == "completed" and not landed_commits:
+        if source_touched and outcome_status == "completed" and not landed_commits:
             problems.append("no_landed_source_commit")
         rows.append(
             {
@@ -1231,6 +1236,7 @@ def task_verification_summary(
                 "title": task.get("title") or lineage.get("task_title"),
                 "planned_files": planned,
                 "touched_files": touched,
+                "source_touched_files": source_touched,
                 "overlap": overlap,
                 "verified": verified,
                 "outcome_status": outcome_status or None,
@@ -1405,6 +1411,7 @@ def structured_task_states(
                 "attempted": attempted,
                 "planned_files": row.get("planned_files") or [],
                 "touched_files": row.get("touched_files") or [],
+                "source_touched_files": row.get("source_touched_files") or [],
                 "implementation_status": row.get("outcome_status"),
                 "strict_success": bool(row.get("strict_success")),
                 "verified": bool(row.get("verified")),

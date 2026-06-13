@@ -1362,6 +1362,74 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 )
             )
 
+    def test_bookkeeping_only_touches_do_not_count_as_unlanded_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "reverted": False,
+                },
+            )
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            (session / "tasks/task_01").mkdir(parents=True)
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Self-improvement",
+                            "files": ["src/"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "touched_files": [
+                        ".yoyo/context-embedding-index.json",
+                        ".yoyo/context-semantic-index.json",
+                    ],
+                    "source_files": [],
+                    "commit_shas": [],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+            row = session_data["work_summary"]["task_verification"]["rows"][0]
+            problems = row["problems"]
+
+            self.assertEqual(
+                row["touched_files"],
+                [".yoyo/context-embedding-index.json", ".yoyo/context-semantic-index.json"],
+            )
+            self.assertEqual(row["source_touched_files"], [])
+            self.assertIn("no_planned_file_overlap", problems)
+            self.assertIn("no_passing_verifier", problems)
+            self.assertNotIn("source_edits_not_landed", problems)
+            self.assertNotIn("no_landed_source_commit", problems)
+            task_state = session_data["work_summary"]["task_states"]["tasks"][0]
+            self.assertEqual(task_state["source_touched_files"], [])
+            self.assertEqual(task_state["state"], "scope_mismatch")
+            self.assertEqual(session_data["latest_gnomes"]["task_unlanded_source_count"], 0)
+            self.assertEqual(session_data["work_summary"]["unlanded_source_task_count"], 0)
+
     def test_corrects_selected_but_unattempted_task_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
