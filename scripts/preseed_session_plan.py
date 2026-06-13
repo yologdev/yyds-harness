@@ -82,6 +82,11 @@ TASKS = [
             "fixed cold-start",
             "replaced \"no state log found\"",
             "no sessions completed yet",
+            "no failure found",
+            "healthy state",
+            "no failure found. the state system",
+            "returned nothing — meaning no",
+            "returned nothing - meaning no",
         ),
         "title": "Improve cold-start state failure diagnostics",
         "files": "src/commands_state.rs, src/state.rs",
@@ -225,6 +230,14 @@ def main() -> int:
         )
         task = choose_task(assessment)
         assert task["title"] == "Extract another focused state CLI module", task
+        assessment = (
+            "State why last-failure: No failure found. The state system's "
+            "`last-failure` target returned nothing — meaning no pipe-failures, "
+            "transport errors, or crash events have been recorded. "
+            "No clunky friction found in quick tool checks."
+        )
+        task = choose_task(assessment)
+        assert task["title"] != "Improve cold-start state failure diagnostics", task
         text = render_task(task, "103", "12:53")
         assert "Title:" in text and "Success Criteria:" in text and "Origin: harness-seed" in text
         assessment = "Assessment phase produced a transcript but did not write session_plan/assessment.md."
