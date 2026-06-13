@@ -436,6 +436,45 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("recent non-proven claims:", first_line)
             self.assertNotIn("assessment_artifact", first_line)
 
+    def test_structured_state_snapshot_omits_classified_input_validation_from_lifecycle_gaps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(session / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z"})
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            state_dir = session / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            state_dir.joinpath("events.jsonl").write_text(
+                "\n".join(
+                    json.dumps(row)
+                    for row in [
+                        {
+                            "kind": "SessionStarted",
+                            "run_id": "run-empty",
+                            "payload": {"model": "deepseek-v4-pro"},
+                        },
+                        {
+                            "kind": "RunCompleted",
+                            "run_id": "run-empty",
+                            "payload": {
+                                "status": "error",
+                                "error": "exit code 1",
+                                "error_detail": "empty_input",
+                            },
+                        },
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
+            first_line = next(line for line in rendered.splitlines() if line.startswith("claims:"))
+
+            self.assertNotIn("state_unmatched_completed", first_line)
+            self.assertNotIn("state_unmatched_non_validation", first_line)
+            self.assertNotIn("state_incomplete", first_line)
+
     def test_structured_state_snapshot_qualifies_recently_addressed_tool_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

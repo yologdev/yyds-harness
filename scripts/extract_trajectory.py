@@ -1039,12 +1039,11 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
             lifecycle_summary = []
             for key, label in (
                 ("state_run_incomplete_count", "state_incomplete"),
-                ("state_run_unmatched_completed_count", "state_unmatched_completed"),
                 ("state_run_unmatched_non_validation_completed_count", "state_unmatched_non_validation"),
                 ("deepseek_model_call_incomplete_count", "model_incomplete"),
                 ("deepseek_model_call_unmatched_completed_count", "model_unmatched_completed"),
             ):
-                if key in latest_lifecycle_counts:
+                if int(latest_lifecycle_counts.get(key) or 0) > 0:
                     lifecycle_summary.append(f"{label}={latest_lifecycle_counts[key]}")
             if lifecycle_summary:
                 summary_parts.append("lifecycle gaps: " + ", ".join(lifecycle_summary))
