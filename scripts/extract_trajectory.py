@@ -159,6 +159,66 @@ def session_sort_time(session_dir: Path) -> float:
     return fallback
 
 
+def int_metric(metrics: dict[str, Any], key: str) -> int:
+    value = metrics.get(key)
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return 0
+    return 0
+
+
+def resolved_seed_replacement_metrics(metrics: dict[str, Any]) -> bool:
+    seed_contradictions = int_metric(metrics, "task_seed_contradiction_count")
+    if seed_contradictions <= 0:
+        return False
+    if int_metric(metrics, "task_manifest_seed_contradiction_count") > 0:
+        return False
+    selected = int_metric(metrics, "selected_task_count")
+    strict_verified = int_metric(metrics, "task_strict_verified_count")
+    succeeded = int_metric(metrics, "tasks_succeeded")
+    return bool(
+        selected > 0
+        and strict_verified >= selected
+        and succeeded >= selected
+        and int_metric(metrics, "task_revert_count") == 0
+        and int_metric(metrics, "task_obsolete_count") == 0
+    )
+
+
+def suppress_resolved_seed_feedback(feedback: dict[str, Any]) -> dict[str, Any]:
+    metrics = feedback.get("metrics") if isinstance(feedback.get("metrics"), dict) else {}
+    if not metrics or not resolved_seed_replacement_metrics(metrics):
+        return feedback
+    corrected = dict(feedback)
+    corrected_metrics = dict(metrics)
+    seed_contradictions = int_metric(corrected_metrics, "task_seed_contradiction_count")
+    corrected_metrics["task_seed_contradiction_count"] = 0
+    corrected_metrics["task_seed_replacement_count"] = max(
+        int_metric(corrected_metrics, "task_seed_replacement_count"),
+        seed_contradictions,
+    )
+    corrected["metrics"] = corrected_metrics
+    lessons = feedback.get("top_lessons")
+    if isinstance(lessons, list):
+        corrected["top_lessons"] = [
+            lesson
+            for lesson in lessons
+            if not (
+                isinstance(lesson, dict)
+                and lesson.get("kind") == "task_seed_contradiction"
+            )
+        ]
+    return corrected
+
+
 def compact_values(values: list[str]) -> list[str]:
     out: list[str] = []
     for value in values:
@@ -674,6 +734,7 @@ def load_log_feedback(audit_dir: Path) -> list[dict]:
         except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
             warn(f"skipped malformed {feedback}: {e}")
             continue
+        data = suppress_resolved_seed_feedback(data)
         triples.append((session_sort_time(child), child.name, data))
     triples.sort(key=lambda t: t[0], reverse=True)
     return [t[2] for t in triples[:WINDOW_SESSIONS]]

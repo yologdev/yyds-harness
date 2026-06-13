@@ -58,6 +58,49 @@ class ExtractTrajectoryTests(unittest.TestCase):
 
             self.assertEqual(feedbacks[0]["metrics"]["coding_log_score"], 0.9)
 
+    def test_log_feedback_suppresses_resolved_seed_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(session / "outcome.json", {"ts": "2026-01-01T00:00:00Z"})
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "coding_log_score": 0.9,
+                        "selected_task_count": 1,
+                        "task_strict_verified_count": 1,
+                        "tasks_succeeded": 1,
+                        "task_seed_contradiction_count": 1,
+                        "task_manifest_seed_contradiction_count": 0,
+                        "task_revert_count": 0,
+                        "task_obsolete_count": 0,
+                    },
+                    "top_lessons": [
+                        {
+                            "kind": "task_seed_contradiction",
+                            "fingerprint": "seeded task was contradicted by fresh assessment evidence",
+                            "action": "replace stale seed",
+                        },
+                        {
+                            "kind": "high_task_turn_count",
+                            "fingerprint": "max task turn count is high",
+                            "action": "split tasks earlier",
+                        },
+                    ],
+                },
+            )
+
+            feedbacks = extract_trajectory.load_log_feedback(audit_dir)
+
+            metrics = feedbacks[0]["metrics"]
+            self.assertEqual(metrics["task_seed_contradiction_count"], 0)
+            self.assertEqual(metrics["task_seed_replacement_count"], 1)
+            self.assertEqual(
+                [lesson["kind"] for lesson in feedbacks[0]["top_lessons"]],
+                ["high_task_turn_count"],
+            )
+
     def test_log_feedback_prefers_corrected_lessons(self) -> None:
         rendered = extract_trajectory.render_log_feedback(
             [
