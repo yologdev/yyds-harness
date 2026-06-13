@@ -97,6 +97,26 @@ def truncate_lines(s: str, n: int) -> str:
     return "\n".join(lines[:n] + [f"... ({len(lines) - n} more lines truncated)"])
 
 
+def truncate_text(value: Any, limit: int) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def drop_dangling_trailing_section_header(s: str) -> str:
+    lines = s.splitlines()
+    last_header = None
+    for index, line in enumerate(lines):
+        if line.startswith("## "):
+            last_header = index
+    if last_header is None:
+        return s
+    if any(line.strip() for line in lines[last_header + 1:]):
+        return s
+    return "\n".join(lines[:last_header]).rstrip()
+
+
 # ── Section 1: Recent session outcomes ───────────────────────────────────
 
 
@@ -874,7 +894,7 @@ def render_log_feedback(
                 recurring_counter[str(item["fingerprint"])] += 1
     repeated = [(fp, count) for fp, count in recurring_counter.most_common(3) if count > 1]
     if repeated:
-        lines.append("Repeated across prior log feedback:")
+        lines.append("Historical repeated across prior log feedback:")
         for fp, count in repeated:
             lines.append(f"- {count}x {fp[:90]}")
     return "\n".join(lines)
@@ -1031,10 +1051,10 @@ def render_graph_suggestions(audit_dir: Path) -> str:
     for suggestion in suggestions:
         lines.append(
             "- {} ({}={}): {}".format(
-                str(suggestion.get("title") or "")[:90],
+                truncate_text(suggestion.get("title"), 80),
                 suggestion.get("metric"),
                 suggestion.get("value"),
-                str(suggestion.get("reason") or "")[:100],
+                truncate_text(suggestion.get("reason"), 72),
             )
         )
     return "\n".join(lines)
@@ -1095,13 +1115,13 @@ def main() -> int:
     s = render_provider_health(sessions_audited, provider_hits)
     if s:
         sections.append(s)
-    s = render_structured_state_snapshot(audit_dir)
-    if s:
-        sections.append(s)
     s = render_graph_suggestions(audit_dir)
     if s:
         sections.append(s)
     s = render_log_feedback(log_feedback, corrected_feedback_lessons)
+    if s:
+        sections.append(s)
+    s = render_structured_state_snapshot(audit_dir)
     if s:
         sections.append(s)
 
@@ -1125,7 +1145,10 @@ def main() -> int:
         idx = b.rfind(b"\n")
         if idx > 0:
             b = b[:idx]
-        output = b.decode("utf-8", errors="ignore") + truncation_marker
+        output = (
+            drop_dangling_trailing_section_header(b.decode("utf-8", errors="ignore"))
+            + truncation_marker
+        )
 
     try:
         out_path.write_text(output)

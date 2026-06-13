@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -21,6 +22,50 @@ def write_json(path: Path, value: object) -> None:
 
 
 class ExtractTrajectoryTests(unittest.TestCase):
+    def test_drop_dangling_trailing_section_header(self) -> None:
+        rendered = extract_trajectory.drop_dangling_trailing_section_header(
+            "# YOUR TRAJECTORY\n\n## Graph-derived next-task pressure\n- keep me\n\n## Structured state snapshot"
+        )
+
+        self.assertIn("## Graph-derived next-task pressure", rendered)
+        self.assertNotIn("## Structured state snapshot", rendered)
+
+    def test_main_keeps_graph_pressure_before_truncated_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "trajectory.md"
+            env = {
+                "YOYO_AUDIT_DIR": tmp,
+                "YOYO_REPO": "owner/repo",
+                "YOYO_DAY": "106",
+                "YOYO_TRAJECTORY_OUT": str(out),
+            }
+            graph = (
+                "## Graph-derived next-task pressure\n"
+                "- Close yyds state and model lifecycle gaps "
+                "(deepseek_model_call_incomplete_count=1): current graph pressure."
+            )
+            oversized_snapshot = (
+                "## Structured state snapshot\n"
+                + "\n".join(f"claims detail {index}: " + ("x" * 80) for index in range(20))
+            )
+            with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(extract_trajectory, "TOTAL_BYTE_CAP", 520), \
+                mock.patch.object(extract_trajectory, "load_recent_session_outcomes", return_value=[]), \
+                mock.patch.object(extract_trajectory, "collect_task_commits", return_value=([], 0)), \
+                mock.patch.object(extract_trajectory, "collect_provider_errors", return_value=(0, 0)), \
+                mock.patch.object(extract_trajectory, "collect_failed_ci_fingerprints", return_value=[]), \
+                mock.patch.object(extract_trajectory, "load_log_feedback", return_value=[]), \
+                mock.patch.object(extract_trajectory, "load_corrected_log_feedback_lessons", return_value=[]), \
+                mock.patch.object(extract_trajectory, "render_graph_suggestions", return_value=graph), \
+                mock.patch.object(extract_trajectory, "render_structured_state_snapshot", return_value=oversized_snapshot):
+
+                self.assertEqual(extract_trajectory.main(), 0)
+
+            rendered = out.read_text(encoding="utf-8")
+            self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("deepseek_model_call_incomplete_count=1", rendered)
+            self.assertNotIn("## Structured state snapshot\n... (truncated", rendered)
+
     def test_recent_outcomes_sort_by_outcome_timestamp_not_file_mtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)
@@ -110,6 +155,9 @@ class ExtractTrajectoryTests(unittest.TestCase):
                         "coding_log_confidence": 1.0,
                         "recurring_failure_count": 1,
                         "state_capture_coverage": 1.0,
+                        "failure_fingerprints": [
+                            {"fingerprint": "fatal: no pattern given"},
+                        ],
                     },
                     "top_lessons": [
                         {
@@ -117,7 +165,14 @@ class ExtractTrajectoryTests(unittest.TestCase):
                             "action": "replace stale seed",
                         }
                     ],
-                }
+                },
+                {
+                    "metrics": {
+                        "failure_fingerprints": [
+                            {"fingerprint": "fatal: no pattern given"},
+                        ],
+                    },
+                },
             ],
             [
                 {
@@ -129,6 +184,7 @@ class ExtractTrajectoryTests(unittest.TestCase):
 
         self.assertIn("Corrected top lessons for next run:", rendered)
         self.assertIn("DeepSeek model call lifecycle was incomplete", rendered)
+        self.assertIn("Historical repeated across prior log feedback:", rendered)
         self.assertNotIn("seeded task was contradicted", rendered)
 
     def test_raw_success_without_task_artifacts_is_not_rendered_as_verified(self) -> None:
