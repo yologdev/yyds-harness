@@ -241,10 +241,21 @@ impl AgentTool for ProjectSearchTool {
         let code = result.status.code();
 
         if code != Some(0) && code != Some(1) {
-            return Err(ToolError::Failed(format!(
-                "Search error: {}",
-                stderr.trim()
-            )));
+            let stderr_lower = stderr.to_lowercase();
+            let is_regex_error = regex
+                && (stderr_lower.contains("unmatched")
+                    || stderr_lower.contains("invalid")
+                    || stderr_lower.contains("regex parse")
+                    || stderr_lower.contains("unclosed")
+                    || stderr_lower.contains("empty pattern")
+                    || stderr_lower.contains("repetition"));
+            let mut error_msg = format!("Search error: {}", stderr.trim());
+            if is_regex_error {
+                error_msg.push_str(
+                    " Hint: try regex=false for literal search, or escape regex metacharacters with \\.",
+                );
+            }
+            return Err(ToolError::Failed(error_msg));
         }
 
         if stdout.trim().is_empty() {
@@ -1768,6 +1779,52 @@ mod tests {
             !text.contains(".yoyo") && !text.contains("state.sqlite"),
             ".yoyo generated state should not appear in search results: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_project_search_regex_error_includes_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), "fn example() {}\n").unwrap();
+
+        let tool = ProjectSearchTool::default();
+        // Use an unclosed character class which reliably fails regex parsing
+        let params = serde_json::json!({
+            "pattern": "[",
+            "regex": true,
+            "path": dir.path().to_string_lossy(),
+        });
+        let result = tool.execute(params, test_tool_context(None)).await;
+        assert!(result.is_err(), "Invalid regex should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Hint:"),
+            "Error should include a recovery hint, got: {err}"
+        );
+        assert!(
+            err.contains("regex=false"),
+            "Hint should mention regex=false, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_project_search_non_regex_error_no_hint() {
+        // A non-existent path error should NOT include the hint
+        let tool = ProjectSearchTool::default();
+        let params = serde_json::json!({
+            "pattern": "something",
+            "path": "/nonexistent/path/xyz",
+        });
+        let result = tool.execute(params, test_tool_context(None)).await;
+        // This may succeed (exit code 1: no matches) or fail (exit code 2: path error)
+        if let Err(err) = result {
+            let msg = err.to_string();
+            assert!(
+                !msg.contains("Hint:"),
+                "Non-regex errors should not include hint, got: {msg}"
+            );
+        }
     }
 
     #[tokio::test]
