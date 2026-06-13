@@ -886,12 +886,14 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     manifest = load_json(session_dir / "tasks" / "manifest.json")
     planner = manifest.get("planner") if isinstance(manifest.get("planner"), dict) else {}
     tasks = manifest.get("selected_tasks") if isinstance(manifest.get("selected_tasks"), list) else []
+    warnings = manifest.get("warnings") if isinstance(manifest.get("warnings"), list) else []
     task_dirs = [
         path
         for path in sorted((session_dir / "tasks").glob("task_*"))
         if path.is_dir()
     ]
     quality_scores: list[float] = []
+    manifest_seed_contradictions = 0
     for task in tasks:
         if not isinstance(task, dict):
             continue
@@ -899,6 +901,17 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         score = quality.get("score")
         if isinstance(score, (int, float)):
             quality_scores.append(float(score))
+        alignment = (
+            quality.get("assessment_alignment")
+            if isinstance(quality.get("assessment_alignment"), dict)
+            else {}
+        )
+        if alignment.get("contradicted_by_assessment"):
+            manifest_seed_contradictions += 1
+    manifest_seed_contradictions = max(
+        manifest_seed_contradictions,
+        sum(1 for warning in warnings if str(warning).endswith(":assessment_contradiction")),
+    )
     planned_count = int(planner.get("task_count") or len(tasks) or len(task_dirs) or 0)
     selected_count = int(planner.get("selected_task_count") or len(tasks) or len(task_dirs) or 0)
     planning_failed = bool(planner.get("planning_failed"))
@@ -997,6 +1010,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "evaluator_unverified_count": evaluator_unverified,
         "evaluator_timeout_with_verdict_count": evaluator_timeout_with_verdict,
         "task_obsolete_count": obsolete_count,
+        "task_manifest_seed_contradiction_count": manifest_seed_contradictions,
         "task_api_error_count": api_error_count,
         "task_no_edit_revert_count": no_edit_revert_count,
         "task_scope_mismatch_count": scope_mismatch_count,
@@ -1007,6 +1021,15 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         else None,
         "state_replay_integrity_rate": 1.0 if replay.get("ok") else 0.0,
     }
+
+
+def promote_manifest_seed_contradictions(metrics: dict[str, Any]) -> int:
+    seed_contradictions = int(metrics.get("task_seed_contradiction_count") or 0)
+    manifest_seed_contradictions = int(metrics.get("task_manifest_seed_contradiction_count") or 0)
+    if manifest_seed_contradictions > seed_contradictions:
+        metrics["task_seed_contradiction_count"] = manifest_seed_contradictions
+        seed_contradictions = manifest_seed_contradictions
+    return seed_contradictions
 
 
 def gnome_deltas(metrics: dict[str, Any], previous: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1263,7 +1286,7 @@ def build_assessment(
         **cache_metrics,
         **recurrences,
     }
-    seed_contradictions = int(metrics.get("task_seed_contradiction_count") or 0)
+    seed_contradictions = promote_manifest_seed_contradictions(metrics)
     no_edit_reverts = int(metrics.get("task_no_edit_revert_count") or 0)
     if seed_contradictions and no_edit_reverts:
         metrics["task_no_edit_revert_count"] = max(no_edit_reverts - seed_contradictions, 0)
@@ -1843,6 +1866,50 @@ def run_self_tests() -> int:
             "reverted selected task without edits is not evaluator-unverified",
             reverted_artifacts["evaluator_unverified_count"] == 0,
             reverted_artifacts,
+        )
+
+        (session / "tasks" / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "warnings": ["task_01:assessment_contradiction"],
+                    "selected_tasks": [
+                        {
+                            "quality": {
+                                "score": 0.5,
+                                "assessment_alignment": {
+                                    "contradicted_by_assessment": True,
+                                    "evidence": ["assessment reports healthy diagnostic output"],
+                                },
+                            }
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        contradicted_artifacts = task_artifact_metrics(session, attempted=1)
+        check(
+            "manifest assessment contradiction counted",
+            contradicted_artifacts["task_manifest_seed_contradiction_count"] == 1,
+            contradicted_artifacts,
+        )
+        combined = {
+            "workflow_success": True,
+            "session_success": False,
+            "task_success_rate": 0.0,
+            "task_seed_contradiction_count": 0,
+            "task_manifest_seed_contradiction_count": contradicted_artifacts[
+                "task_manifest_seed_contradiction_count"
+            ],
+            "task_no_edit_revert_count": contradicted_artifacts["task_no_edit_revert_count"],
+            "evaluator_unverified_count": contradicted_artifacts["evaluator_unverified_count"],
+        }
+        promote_manifest_seed_contradictions(combined)
+        check(
+            "manifest contradiction promotes seed contradiction gnome",
+            combined["task_seed_contradiction_count"] == 1,
+            combined,
         )
 
         (session / "state").mkdir(exist_ok=True)
