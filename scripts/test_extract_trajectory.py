@@ -66,6 +66,52 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("deepseek_model_call_incomplete_count=1", rendered)
             self.assertNotIn("## Structured state snapshot\n... (truncated", rendered)
 
+    def test_main_keeps_structured_state_before_verbose_log_feedback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "trajectory.md"
+            env = {
+                "YOYO_AUDIT_DIR": tmp,
+                "YOYO_REPO": "owner/repo",
+                "YOYO_DAY": "106",
+                "YOYO_TRAJECTORY_OUT": str(out),
+            }
+            graph = (
+                "## Graph-derived next-task pressure\n"
+                "- Close yyds state and model lifecycle gaps "
+                "(deepseek_model_call_incomplete_count=1): current graph pressure."
+            )
+            structured = (
+                "## Structured state snapshot\n"
+                "claims: 7/9 proven; lifecycle causes: model_incomplete/open_after_command=1"
+            )
+            verbose_feedback = (
+                "## GitHub Actions log feedback\n"
+                "latest score=0.9 confidence=1.0\n"
+                + "\n".join(f"- repeated historical detail {index}: " + ("x" * 60) for index in range(12))
+            )
+            with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(extract_trajectory, "TOTAL_BYTE_CAP", 760), \
+                mock.patch.object(extract_trajectory, "load_recent_session_outcomes", return_value=[]), \
+                mock.patch.object(extract_trajectory, "collect_task_commits", return_value=([], 0)), \
+                mock.patch.object(extract_trajectory, "collect_provider_errors", return_value=(0, 0)), \
+                mock.patch.object(extract_trajectory, "collect_failed_ci_fingerprints", return_value=[]), \
+                mock.patch.object(extract_trajectory, "load_log_feedback", return_value=[{"metrics": {}}]), \
+                mock.patch.object(extract_trajectory, "load_corrected_log_feedback_lessons", return_value=[]), \
+                mock.patch.object(extract_trajectory, "render_graph_suggestions", return_value=graph), \
+                mock.patch.object(extract_trajectory, "render_structured_state_snapshot", return_value=structured), \
+                mock.patch.object(extract_trajectory, "render_log_feedback", return_value=verbose_feedback):
+
+                self.assertEqual(extract_trajectory.main(), 0)
+
+            rendered = out.read_text(encoding="utf-8")
+            self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("## Structured state snapshot", rendered)
+            self.assertIn("model_incomplete/open_after_command=1", rendered)
+            self.assertLess(
+                rendered.index("## Structured state snapshot"),
+                rendered.index("## GitHub Actions log feedback"),
+            )
+
     def test_recent_outcomes_sort_by_outcome_timestamp_not_file_mtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

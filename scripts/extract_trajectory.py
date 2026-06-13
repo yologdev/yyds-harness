@@ -1250,10 +1250,10 @@ def main() -> int:
     s = render_graph_suggestions(audit_dir)
     if s:
         sections.append(s)
-    s = render_log_feedback(log_feedback, corrected_feedback_lessons)
+    s = render_structured_state_snapshot(audit_dir)
     if s:
         sections.append(s)
-    s = render_structured_state_snapshot(audit_dir)
+    s = render_log_feedback(log_feedback, corrected_feedback_lessons)
     if s:
         sections.append(s)
 
