@@ -212,6 +212,28 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("raw outcome 3/3 lacks strict task evidence", rendered)
             self.assertNotIn("tasks 3/3 ✅", rendered)
 
+    def test_recent_outcomes_display_is_capped_with_omission_note(self) -> None:
+        outcomes = [
+            {
+                "day": index,
+                "ts": f"2026-01-{index:02d}T00:00:00Z",
+                "tasks_attempted": 0,
+                "tasks_succeeded": 0,
+                "build_ok": True,
+                "test_ok": True,
+                "reverted": False,
+            }
+            for index in range(1, 9)
+        ]
+
+        rendered = extract_trajectory.render_outcomes(outcomes)
+
+        self.assertIn("## Recent session outcomes (newest 6 of 8)", rendered)
+        self.assertIn("day-1", rendered)
+        self.assertIn("day-6", rendered)
+        self.assertNotIn("day-7", rendered)
+        self.assertIn("... 2 older session outcome(s) omitted", rendered)
+
     def test_strict_verified_task_artifacts_are_rendered_as_verified(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)
@@ -366,6 +388,10 @@ class ExtractTrajectoryTests(unittest.TestCase):
 
             self.assertIn("## Structured state snapshot", rendered)
             self.assertIn("claims:", rendered)
+            self.assertIn("lifecycle gaps:", rendered)
+            self.assertIn("state_incomplete=1", rendered)
+            self.assertIn("model_incomplete=1", rendered)
+            self.assertIn("top task states:", rendered)
             self.assertIn("deepseek_model_call_lifecycle_balanced", rendered)
             self.assertIn("latest=day-1", rendered)
             self.assertIn("task states:", rendered)

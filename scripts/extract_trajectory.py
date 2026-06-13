@@ -30,6 +30,7 @@ from state_graph_tools import evolution_suggestions, ordered_sessions
 
 # ── Configuration constants ──────────────────────────────────────────────
 WINDOW_SESSIONS = 10           # last N sessions in the outcomes section
+OUTCOME_DISPLAY_SESSIONS = 6   # newest session rows shown before compact omission note
 WINDOW_DAYS = 14               # git log window
 MAX_FAILED_RUNS = 5            # cap on `gh run view --log-failed` calls
 GH_RUN_VIEW_TIMEOUT = 10       # seconds per gh run view
@@ -511,8 +512,12 @@ def render_outcomes(
             normalized.append(item)
         else:
             normalized.append((None, item))
-    lines = ["## Recent session outcomes (last {})".format(len(normalized))]
-    for session_dir, o in normalized:
+    display = normalized[:OUTCOME_DISPLAY_SESSIONS]
+    if len(normalized) > len(display):
+        lines = [f"## Recent session outcomes (newest {len(display)} of {len(normalized)})"]
+    else:
+        lines = ["## Recent session outcomes (last {})".format(len(normalized))]
+    for session_dir, o in display:
         day = o.get("day", "?")
         ts = (o.get("ts") or "").replace("T", " ").rstrip("Z")
         attempted = o.get("tasks_attempted", 0)
@@ -569,6 +574,9 @@ def render_outcomes(
             note = ", ".join(issues) or "partial"
 
         lines.append(f"day-{day} ({ts}): tasks {succeeded}/{attempted} {icon} — {note}")
+    omitted = len(normalized) - len(display)
+    if omitted > 0:
+        lines.append(f"... {omitted} older session outcome(s) omitted")
     return "\n".join(lines)
 
 
@@ -982,9 +990,42 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
         if session_lifecycle_counts:
             latest_lifecycle_counts = session_lifecycle_counts
 
+    top_states: list[tuple[str, Any]] = []
+    if state_counts:
+        top_states = sorted(
+            state_counts.items(),
+            key=lambda item: (-int(item[1] or 0), str(item[0])),
+        )[:5]
+    top_tool_failures = tool_failures.most_common(5)
+
     lines = ["## Structured state snapshot"]
     if claim_total:
-        lines.append(f"claims: {proven}/{claim_total} proven; {unresolved} unresolved")
+        summary_parts = [f"claims: {proven}/{claim_total} proven; {unresolved} unresolved"]
+        if latest_lifecycle_counts:
+            lifecycle_summary = []
+            for key, label in (
+                ("state_run_incomplete_count", "state_incomplete"),
+                ("state_run_unmatched_completed_count", "state_unmatched_completed"),
+                ("state_run_unmatched_non_validation_completed_count", "state_unmatched_non_validation"),
+                ("deepseek_model_call_incomplete_count", "model_incomplete"),
+                ("deepseek_model_call_unmatched_completed_count", "model_unmatched_completed"),
+            ):
+                if key in latest_lifecycle_counts:
+                    lifecycle_summary.append(f"{label}={latest_lifecycle_counts[key]}")
+            if lifecycle_summary:
+                summary_parts.append("lifecycle gaps: " + ", ".join(lifecycle_summary))
+        if top_states:
+            summary_parts.append(
+                "top task states: "
+                + ", ".join(f"{state}={count}" for state, count in top_states[:3])
+            )
+        if top_tool_failures:
+            tool_summary = []
+            for category, count in top_tool_failures[:3]:
+                suffix = " addressed" if category in addressed_tool_failures else ""
+                tool_summary.append(f"{category}={count}{suffix}")
+            summary_parts.append("historical tool failures: " + ", ".join(tool_summary))
+        lines.append("; ".join(summary_parts))
     if latest_lifecycle_counts:
         keys = (
             "state_run_started_count",
@@ -1015,15 +1056,11 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
             f"{row.get('count', 0)}x {row.get('name', 'unknown_claim')}"
             f"{latest_text}"
         )
-    if state_counts:
-        top_states = sorted(
-            state_counts.items(),
-            key=lambda item: (-int(item[1] or 0), str(item[0])),
-        )[:5]
+    if top_states:
         lines.append("task states: " + "; ".join(f"{state}={count}" for state, count in top_states))
-    if tool_failures:
+    if top_tool_failures:
         failure_parts = []
-        for category, count in tool_failures.most_common(5):
+        for category, count in top_tool_failures:
             part = f"{category}={count}"
             addressed_title = addressed_tool_failures.get(category)
             if addressed_title:
