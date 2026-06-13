@@ -3374,6 +3374,98 @@ def state_run_lifecycle_claim(gnomes: dict[str, Any], work: dict[str, Any]) -> d
     )
 
 
+def lifecycle_run_id_rows(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for row in value:
+        if isinstance(row, dict):
+            run_id = row.get("run_id")
+            if isinstance(run_id, str) and run_id:
+                rows.append(row)
+        elif isinstance(row, str) and row:
+            rows.append({"run_id": row})
+    return rows
+
+
+def lifecycle_run_id_refs(session: dict[str, Any]) -> dict[str, set[str]]:
+    work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
+    lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
+    runs = lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {}
+    model_calls = lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {}
+    refs: dict[str, set[str]] = {}
+
+    def add(rows: Any, surface: str) -> None:
+        for row in lifecycle_run_id_rows(rows):
+            run_id = str(row.get("run_id") or "")
+            if run_id:
+                refs.setdefault(run_id, set()).add(surface)
+
+    add(runs.get("incomplete_runs"), "state_run_incomplete")
+    add(runs.get("unmatched_completed_details"), "state_run_unmatched_completed")
+    add(runs.get("unmatched_completed_runs"), "state_run_unmatched_completed")
+    add(model_calls.get("incomplete_runs"), "model_call_incomplete")
+    add(model_calls.get("unmatched_completed_runs"), "model_call_unmatched_completed")
+    return refs
+
+
+def annotate_cross_session_lifecycle_reuse(sessions: list[dict[str, Any]]) -> dict[str, Any]:
+    refs: dict[str, dict[str, Any]] = {}
+    for session in sessions:
+        session_id = str(session.get("id") or "")
+        if not session_id:
+            continue
+        for run_id, surfaces in lifecycle_run_id_refs(session).items():
+            row = refs.setdefault(run_id, {"sessions": {}, "surfaces": set()})
+            row["sessions"][session_id] = sorted(surfaces)
+            row["surfaces"].update(surfaces)
+
+    reused = {
+        run_id: row
+        for run_id, row in refs.items()
+        if isinstance(row.get("sessions"), dict) and len(row["sessions"]) > 1
+    }
+    for session in sessions:
+        work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
+        lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
+        session_refs = lifecycle_run_id_refs(session)
+        rows = []
+        for run_id, surfaces in session_refs.items():
+            reuse = reused.get(run_id)
+            if not reuse:
+                continue
+            session_map = reuse.get("sessions") if isinstance(reuse.get("sessions"), dict) else {}
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "session_count": len(session_map),
+                    "sessions": sorted(session_map.keys())[:8],
+                    "surfaces": sorted(surfaces),
+                    "all_surfaces": sorted(reuse.get("surfaces") or []),
+                }
+            )
+        rows.sort(key=lambda row: (-int(row.get("session_count") or 0), str(row.get("run_id") or "")))
+        if isinstance(lifecycle, dict):
+            lifecycle["cross_session_reused_run_id_count"] = len(rows)
+            lifecycle["cross_session_reused_run_ids"] = rows[:8]
+
+    top = [
+        {
+            "run_id": run_id,
+            "session_count": len(row["sessions"]),
+            "sessions": sorted(row["sessions"].keys())[:8],
+            "surfaces": sorted(row.get("surfaces") or []),
+        }
+        for run_id, row in reused.items()
+    ]
+    top.sort(key=lambda row: (-int(row.get("session_count") or 0), str(row.get("run_id") or "")))
+    return {
+        "schema_version": 1,
+        "reused_lifecycle_run_id_count": len(reused),
+        "top_reused_lifecycle_run_ids": top[:20],
+    }
+
+
 def session_claims(session: dict[str, Any]) -> list[dict[str, Any]]:
     work = session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
     gnomes = session.get("latest_gnomes") if isinstance(session.get("latest_gnomes"), dict) else {}
@@ -3561,6 +3653,10 @@ def session_state_projection(session: dict[str, Any]) -> dict[str, Any]:
         "lifecycle": {
             "runs": lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {},
             "model_calls": lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {},
+            "cross_session_reused_run_id_count": lifecycle.get("cross_session_reused_run_id_count", 0),
+            "cross_session_reused_run_ids": lifecycle.get("cross_session_reused_run_ids")
+            if isinstance(lifecycle.get("cross_session_reused_run_ids"), list)
+            else [],
         },
         "gnome_audit": {
             "raw_state_gnome_count": gnome_audit.get("raw_state_gnome_count"),
@@ -5142,6 +5238,15 @@ HTML = r"""<!doctype html>
       rows.push(...renderLifecycleRuns("unmatched completed run", runs.unmatched_completed_runs));
       rows.push(...renderLifecycleRuns("incomplete model call", modelCalls.incomplete_runs));
       rows.push(...renderLifecycleRuns("unmatched completed model call", modelCalls.unmatched_completed_runs));
+      const reused = Array.isArray(lifecycle.cross_session_reused_run_ids) ? lifecycle.cross_session_reused_run_ids : [];
+      if (reused.length) {
+        rows.push(`cross-session reused lifecycle run IDs: ${text(lifecycle.cross_session_reused_run_id_count || reused.length)}`);
+        reused.slice(0, 4).forEach(row => {
+          const sessions = Array.isArray(row.sessions) ? row.sessions.join(", ") : "";
+          const surfaces = Array.isArray(row.surfaces) ? row.surfaces.join(", ") : "";
+          rows.push(`reused run: ${text(row.run_id || "unknown")} in ${text(row.session_count || 0)} sessions${surfaces ? `; ${text(surfaces)}` : ""}${sessions ? `; examples ${text(sessions)}` : ""}`);
+        });
+      }
       return `<ul class="mini-list">${rows.map(row => `<li>${row}</li>`).join("")}</ul>`;
     }
 
@@ -5703,6 +5808,7 @@ HTML = r"""<!doctype html>
 
 def build(audit_sessions: Path, output_dir: Path, repo_root: Path | None = None) -> dict[str, Any]:
     sessions = load_sessions(audit_sessions, repo_root or Path.cwd())
+    state_integrity = annotate_cross_session_lifecycle_reuse(sessions)
     gnome_history, gnome_numeric_keys = build_gnome_history(sessions)
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     data = {
@@ -5710,6 +5816,7 @@ def build(audit_sessions: Path, output_dir: Path, repo_root: Path | None = None)
         "generated_at": generated_at,
         "source": str(audit_sessions),
         "aggregate": aggregate(sessions),
+        "state_integrity": state_integrity,
         "gnome_history": gnome_history,
         "gnome_numeric_keys": gnome_numeric_keys,
         "sessions": sessions,

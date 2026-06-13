@@ -2064,6 +2064,54 @@ class BuildEvolutionDashboard(unittest.TestCase):
         self.assertEqual(lifecycle["model_calls"]["incomplete"], 1)
         self.assertEqual(lifecycle["model_calls"]["incomplete_runs"][0]["run_id"], "run-open")
 
+    def test_dashboard_marks_lifecycle_run_ids_reused_across_sessions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for session_name in ("day-1", "day-2"):
+                session = root / f"sessions/{session_name}"
+                write_json(session / "outcome.json", {"ts": f"2026-01-0{session_name[-1]}T00:00:00Z"})
+                write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+                write_events(
+                    session / "state/events.jsonl",
+                    [
+                        {
+                            "kind": "RunStarted",
+                            "run_id": "run-replayed",
+                            "payload": {"status": "started"},
+                        },
+                        {
+                            "kind": "ModelCallStarted",
+                            "run_id": "run-replayed",
+                            "payload": {"model": "deepseek-v4-pro"},
+                        },
+                    ],
+                )
+
+            data = build(root / "sessions", root / "out")
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+
+            self.assertEqual(data["state_integrity"]["reused_lifecycle_run_id_count"], 1)
+            self.assertEqual(
+                data["state_integrity"]["top_reused_lifecycle_run_ids"][0]["run_id"],
+                "run-replayed",
+            )
+            self.assertEqual(
+                data["state_integrity"]["top_reused_lifecycle_run_ids"][0]["session_count"],
+                2,
+            )
+            for session in data["sessions"]:
+                lifecycle = session["work_summary"]["state_lifecycle"]
+                self.assertEqual(lifecycle["cross_session_reused_run_id_count"], 1)
+                self.assertEqual(lifecycle["cross_session_reused_run_ids"][0]["run_id"], "run-replayed")
+                self.assertEqual(lifecycle["cross_session_reused_run_ids"][0]["session_count"], 2)
+            self.assertEqual(
+                states["sessions"][0]["lifecycle"]["cross_session_reused_run_ids"][0]["run_id"],
+                "run-replayed",
+            )
+            self.assertIn("cross-session reused lifecycle run IDs", html)
+            self.assertIn("reused run:", html)
+
     def test_state_lifecycle_buckets_unstarted_input_validation_errors(self):
         work = summarize_events_for_work(
             [
