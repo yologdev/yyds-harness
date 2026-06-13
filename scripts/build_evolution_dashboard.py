@@ -733,14 +733,49 @@ def state_pipeline_summary(session_dir: Path) -> dict[str, Any]:
     append_log = session_dir / "state" / "append_state_event.log"
     append_lines = 0
     append_problem_lines = 0
+    terminal_attempts = 0
+    terminal_completed_model_calls = 0
+    terminal_completed_runs = 0
+    terminal_noop_attempts = 0
+    terminal_fallback_scans = 0
+    terminal_examples: list[dict[str, Any]] = []
     if append_log.is_file():
         for line in append_log.read_text(encoding="utf-8", errors="replace").splitlines():
-            if not line.strip():
+            text = line.strip()
+            if not text:
                 continue
             append_lines += 1
-            lower = line.lower()
+            lower = text.lower()
             if "failed" in lower or "warning" in lower:
                 append_problem_lines += 1
+            try:
+                row = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict) or (
+                "completed_model_calls" not in row and "completed_runs" not in row
+            ):
+                continue
+            terminal_attempts += 1
+            completed_model_calls = row.get("completed_model_calls") if isinstance(row.get("completed_model_calls"), list) else []
+            completed_runs = row.get("completed_runs") if isinstance(row.get("completed_runs"), list) else []
+            terminal_completed_model_calls += len(completed_model_calls)
+            terminal_completed_runs += len(completed_runs)
+            if not completed_model_calls and not completed_runs:
+                terminal_noop_attempts += 1
+            diagnostics = row.get("diagnostics") if isinstance(row.get("diagnostics"), dict) else {}
+            if diagnostics.get("scope") == "fallback_after_line":
+                terminal_fallback_scans += 1
+            if len(terminal_examples) < 4:
+                terminal_examples.append(
+                    {
+                        "completed_model_call_count": len(completed_model_calls),
+                        "completed_run_count": len(completed_runs),
+                        "scope": diagnostics.get("scope"),
+                        "open_model_count": diagnostics.get("open_model_count"),
+                        "open_run_count": diagnostics.get("open_run_count"),
+                    }
+                )
     return {
         "replay_scope": "audit_history" if replay else None,
         "replay_files_read": replay.get("files_read") if isinstance(replay, dict) else None,
@@ -758,6 +793,12 @@ def state_pipeline_summary(session_dir: Path) -> dict[str, Any]:
         "session_events_after_merge": merge.get("session_events_after") if isinstance(merge, dict) else None,
         "append_log_lines": append_lines,
         "append_problem_lines": append_problem_lines,
+        "terminal_closure_attempts": terminal_attempts,
+        "terminal_closure_completed_model_calls": terminal_completed_model_calls,
+        "terminal_closure_completed_runs": terminal_completed_runs,
+        "terminal_closure_noop_attempts": terminal_noop_attempts,
+        "terminal_closure_fallback_scans": terminal_fallback_scans,
+        "terminal_closure_examples": terminal_examples,
     }
 
 
@@ -5276,6 +5317,12 @@ HTML = r"""<!doctype html>
       }
       if (pipe.append_log_lines || pipe.append_problem_lines) {
         rows.push(`append log ${text(pipe.append_log_lines || 0)} line(s); ${text(pipe.append_problem_lines || 0)} problem line(s)`);
+      }
+      if (pipe.terminal_closure_attempts) {
+        rows.push(`terminal closure ${text(pipe.terminal_closure_attempts)} attempt(s); ${text(pipe.terminal_closure_completed_model_calls || 0)} model call(s) and ${text(pipe.terminal_closure_completed_runs || 0)} run(s) closed; ${text(pipe.terminal_closure_noop_attempts || 0)} no-op attempt(s); ${text(pipe.terminal_closure_fallback_scans || 0)} fallback scan(s)`);
+        (pipe.terminal_closure_examples || []).slice(0, 3).forEach(row => {
+          rows.push(`terminal sample: ${text(row.completed_model_call_count || 0)} model / ${text(row.completed_run_count || 0)} run closures${row.scope ? `; scope ${text(row.scope)}` : ""}`);
+        });
       }
       return `<ul class="mini-list">${rows.map(row => `<li>${row}</li>`).join("")}</ul>`;
     }

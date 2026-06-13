@@ -1099,7 +1099,28 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 },
             )
             (session / "state/append_state_event.log").write_text(
-                "append_state_event.py failed once\n",
+                "\n".join(
+                    [
+                        "append_state_event.py failed once",
+                        json.dumps(
+                            {
+                                "completed_model_calls": ["run-a"],
+                                "completed_runs": ["run-a"],
+                                "diagnostics": {
+                                    "scope": "fallback_after_line",
+                                    "open_model_count": 1,
+                                    "open_run_count": 1,
+                                },
+                            },
+                            separators=(",", ":"),
+                        ),
+                        json.dumps(
+                            {"completed_model_calls": [], "completed_runs": []},
+                            separators=(",", ":"),
+                        ),
+                    ]
+                )
+                + "\n",
                 encoding="utf-8",
             )
 
@@ -1116,9 +1137,17 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertFalse(pipeline["merge_baseline_shrunk"])
             self.assertEqual(pipeline["merge_effective_base_lines"], 20)
             self.assertEqual(pipeline["append_problem_lines"], 1)
+            self.assertEqual(pipeline["terminal_closure_attempts"], 2)
+            self.assertEqual(pipeline["terminal_closure_completed_model_calls"], 1)
+            self.assertEqual(pipeline["terminal_closure_completed_runs"], 1)
+            self.assertEqual(pipeline["terminal_closure_noop_attempts"], 1)
+            self.assertEqual(pipeline["terminal_closure_fallback_scans"], 1)
+            self.assertEqual(pipeline["terminal_closure_examples"][0]["scope"], "fallback_after_line")
             self.assertIn("State pipeline", html)
             self.assertIn("audit replay", html)
             self.assertIn("merge_baseline_shrunk", html)
+            self.assertIn("terminal closure", html)
+            self.assertIn("fallback scan", html)
 
     def test_state_pipeline_explains_missing_live_merge_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
