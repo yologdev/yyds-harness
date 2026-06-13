@@ -991,6 +991,12 @@ def eval_timed_out_after_verdict(eval_data: dict[str, Any]) -> bool:
     )
 
 
+def eval_timed_out_after_passing_verdict(eval_data: dict[str, Any]) -> bool:
+    return eval_timed_out_after_verdict(eval_data) and (
+        explicit_pass(eval_data.get("status")) or explicit_pass(eval_data.get("verdict"))
+    )
+
+
 def eval_passed(evals: list[dict[str, Any]], lineage_eval: Any) -> bool:
     if evals:
         return any(
@@ -1180,6 +1186,10 @@ def task_verification_summary(
             isinstance(eval_data, dict) and eval_timed_out_after_verdict(eval_data)
             for eval_data in artifact_evals
         )
+        timeout_with_passing_verdict = any(
+            isinstance(eval_data, dict) and eval_timed_out_after_passing_verdict(eval_data)
+            for eval_data in artifact_evals
+        )
         artifact_eval_statuses = artifact.get("eval_statuses") or []
         lineage_eval_statuses = eval_statuses_from_lineage(lineage.get("eval"))
         attempt_eval_statuses = [
@@ -1207,7 +1217,9 @@ def task_verification_summary(
             problems.append("no_planned_file_overlap")
         if timeout_with_verdict:
             problems.append("evaluator_timed_out_after_verdict")
-        if not verified:
+        if timeout_with_passing_verdict:
+            problems.append("timed_out_passing_verdict")
+        elif not verified:
             problems.append("no_passing_verifier")
         if touched and not landed_commits:
             problems.append("source_edits_not_landed")
@@ -1258,6 +1270,8 @@ def classify_task_state(row: dict[str, Any], attempted: bool | None = None) -> s
             return "reverted_no_git_visible_changes"
         if "no_planned_file_overlap" in problems:
             return "reverted_scope_mismatch"
+        if "timed_out_passing_verdict" in problems:
+            return "reverted_verifier_timed_out_after_pass"
         if "no_passing_verifier" in problems:
             return "reverted_unverified"
         return "reverted"
@@ -1268,6 +1282,8 @@ def classify_task_state(row: dict[str, Any], attempted: bool | None = None) -> s
     if "no_planned_file_overlap" in problems:
         return "scope_mismatch"
     if "evaluator_timed_out_after_verdict" in problems:
+        if "timed_out_passing_verdict" in problems:
+            return "verifier_timed_out_after_pass"
         return "verifier_timed_out_after_verdict"
     if "no_passing_verifier" in problems:
         return "verifier_unproven"
@@ -4937,6 +4953,7 @@ HTML = r"""<!doctype html>
         const rows = Array.isArray(verification.rows) ? verification.rows : [];
         const counts = {
           noPassing: 0,
+          timedOutPassing: 0,
           unlanded: 0,
           noOverlap: 0,
           noTouched: 0,
@@ -4946,6 +4963,7 @@ HTML = r"""<!doctype html>
         rows.forEach(row => {
           const problems = new Set(Array.isArray(row.problems) ? row.problems : []);
           if (problems.has("no_passing_verifier")) counts.noPassing += 1;
+          if (problems.has("timed_out_passing_verdict")) counts.timedOutPassing += 1;
           if (problems.has("source_edits_not_landed") || problems.has("no_landed_source_commit")) counts.unlanded += 1;
           if (problems.has("no_planned_file_overlap")) counts.noOverlap += 1;
           if (problems.has("no_touched_files")) counts.noTouched += 1;
@@ -4953,6 +4971,7 @@ HTML = r"""<!doctype html>
           if (problems.has("missing_planned_files")) counts.missingPlanned += 1;
         });
         if (counts.noPassing) reasons.push(`${counts.noPassing} task(s) without passing verifier`);
+        if (counts.timedOutPassing) reasons.push(`${counts.timedOutPassing} task(s) with timed-out passing verifier`);
         if (counts.unlanded) reasons.push(`${counts.unlanded} unlanded source task(s)`);
         if (counts.noOverlap) reasons.push(`${counts.noOverlap} task(s) without planned-file overlap`);
         if (counts.noTouched) reasons.push(`${counts.noTouched} task(s) without touched files`);

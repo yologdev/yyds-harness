@@ -1513,7 +1513,12 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(verification["verified_task_count"], 0)
             self.assertEqual(verification["unverified_task_count"], 1)
             self.assertIn("evaluator_timed_out_after_verdict", verification["rows"][0]["problems"])
-            self.assertIn("no_passing_verifier", verification["rows"][0]["problems"])
+            self.assertIn("timed_out_passing_verdict", verification["rows"][0]["problems"])
+            self.assertNotIn("no_passing_verifier", verification["rows"][0]["problems"])
+            self.assertEqual(
+                session_data["work_summary"]["task_states"]["tasks"][0]["state"],
+                "verifier_timed_out_after_pass",
+            )
             self.assertTrue(verification["rows"][0]["latest_eval_attempt"]["timed_out_after_verdict"])
             self.assertEqual(verification["rows"][0]["latest_eval_attempt"]["exit_code"], 124)
             self.assertEqual(session_data["latest_gnomes"]["task_success_rate"], 0.0)
