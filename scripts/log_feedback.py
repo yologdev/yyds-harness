@@ -47,7 +47,10 @@ EVALUATOR_UNVERIFIED_RE = re.compile(
     r"Evaluator:\s*(?:timed out|API error|no verdict produced|unrecognized verdict)",
     re.IGNORECASE,
 )
-SEARCH_ERROR_RE = re.compile(r"\bSearch error:\s*", re.IGNORECASE)
+SEARCH_ERROR_RE = re.compile(
+    r"\bSearch error:\s*|\bfatal:\s+no pattern given\b",
+    re.IGNORECASE,
+)
 PLANNER_NO_TASK_RE = re.compile(r"Planning agent produced 0 tasks", re.IGNORECASE)
 PROTECTED_FILE_RE = re.compile(r"modified protected files(?:\s*:|\s+[—-]\s+reverting)", re.IGNORECASE)
 TASK_STARTED_RE = re.compile(r"(?:→|->)\s*Task\s+\d+:", re.IGNORECASE)
@@ -1651,6 +1654,7 @@ def run_self_tests() -> int:
                 "evolve\tRun evolution session\t2026-06-07T04:50:22Z ^G    BLOCKED: Task 2 modified protected files: .github/workflows/ci.yml",
                 "evolve\tRun evolution session\t2026-06-07T04:50:22Z     Reverting Task 2 (resetting to 041da74)",
                 "evolve\tRun evolution session\t2026-06-07T04:24:55Z     │ Search error: grep: ./target/debug/deps/yyds: binary file matches",
+                "evolve\tRun evolution session\t2026-06-13T10:34:35Z fatal: no pattern given",
                 "evolve\tRun evolution session\t2026-06-07T04:24:58Z   Planning agent produced 0 tasks — recording planning failure; no fake task will run.",
                 "evolve\tRun evolution session\t2026-06-07T04:24:22Z   → Task 1: First real eval run",
                 "evolve\tRun evolution session\t2026-06-07T05:05:46Z    Evaluator: timed out — skipping eval (build+test passed)",
@@ -1665,7 +1669,7 @@ def run_self_tests() -> int:
     check("evaluator timeouts counted", operational["evaluator_timeout_count"] == 1, operational)
     check("protected file reverts counted", operational["protected_file_revert_count"] == 3, operational)
     check("task reverts counted", operational["task_revert_count"] == 1, operational)
-    check("search errors counted", operational["search_error_count"] == 1, operational)
+    check("search/grep errors counted", operational["search_error_count"] == 2, operational)
     check("planner no-task counted", operational["planner_no_task_count"] == 1, operational)
     check("evaluator unverified counted", operational["evaluator_unverified_count"] == 1, operational)
     check("mechanical verification counted", operational["task_mechanical_verified_count"] == 1, operational)
