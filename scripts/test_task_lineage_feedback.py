@@ -106,6 +106,8 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn("scripts/preseed_session_plan.py", evolve)
         self.assertIn('PRESEED_SOURCE="session_plan/assessment_missing.md"', evolve)
         self.assertIn("Seeded task_01.md from assessment/fallback evidence before planner refinement.", evolve)
+        self.assertIn("If fresh assessment evidence contradicts the seed task's stated problem", evolve)
+        self.assertIn("session_plan/task_01_obsolete.md explaining the exact contradiction", evolve)
         self.assertIn("If session_plan/task_01.md already exists", evolve)
         self.assertIn("must create it.", evolve)
         self.assertIn("If task_01.md is not written by your third tool turn", evolve)
@@ -520,6 +522,47 @@ class TaskLineageFeedback(unittest.TestCase):
             task = (out / "task_01.md").read_text(encoding="utf-8")
             self.assertIn("Title: Repair evidence-backed planning after no-task sessions", task)
             self.assertIn("Origin: harness-seed", task)
+
+    def test_preseed_does_not_seed_cache_task_when_assessment_has_cache_ratio(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            assessment = root / "assessment.md"
+            out = root / "session_plan"
+            assessment.write_text(
+                "\n".join(
+                    [
+                        "Self-Test Results",
+                        "- yyds deepseek cache-report: 94.10% cache hit ratio - healthy",
+                        "- yyds state why last-failure: Now properly explains cold-start state",
+                        "Source Architecture",
+                        "`commands_state.rs` remains a structural bottleneck.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            rc = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).with_name("preseed_session_plan.py")),
+                    "--assessment",
+                    str(assessment),
+                    "--output-dir",
+                    str(out),
+                    "--day",
+                    "104",
+                    "--session-time",
+                    "18:08",
+                ],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(rc.returncode, 0, rc.stderr)
+            task = (out / "task_01.md").read_text(encoding="utf-8")
+            self.assertNotIn("Record DeepSeek prompt cache metrics during prompt runs", task)
+            self.assertIn("Extract another focused state CLI module", task)
 
     def test_task_lineage_linked_events_reconstruct_task_lifecycle(self):
         with tempfile.TemporaryDirectory() as tmp:

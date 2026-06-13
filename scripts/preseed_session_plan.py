@@ -36,7 +36,20 @@ TASKS = [
         ],
     },
     {
-        "keys": ("cache metrics absent", "cache-report", "cache metrics", "prompt_cache", "deepseek cache"),
+        "keys": (
+            "cache metrics absent",
+            "cache-report returning no metrics",
+            "cache-report shows nothing",
+            "cache report shows nothing",
+            "no cache metrics",
+            "missing cache metrics",
+        ),
+        "reject_keys": (
+            "cache hit ratio",
+            "deepseek_cache_hit_ratio",
+            "cache metric event_count",
+            "server-side cache hit ratio",
+        ),
         "title": "Record DeepSeek prompt cache metrics during prompt runs",
         "files": "src/prompt.rs, src/deepseek.rs, src/state.rs",
         "objective": (
@@ -64,6 +77,12 @@ TASKS = [
     },
     {
         "keys": ("why last-failure", "cold-start", "cold start", "no state event found"),
+        "reject_keys": (
+            "now properly explains cold-start",
+            "fixed cold-start",
+            "replaced \"no state log found\"",
+            "no sessions completed yet",
+        ),
         "title": "Improve cold-start state failure diagnostics",
         "files": "src/commands_state.rs, src/state.rs",
         "objective": (
@@ -120,7 +139,9 @@ TASKS = [
 def choose_task(assessment: str) -> dict[str, object]:
     lower = assessment.lower()
     for task in TASKS:
-        if any(key in lower for key in task["keys"]):
+        if any(key in lower for key in task["keys"]) and not any(
+            key in lower for key in task.get("reject_keys", ())
+        ):
             return task
     return {
         "title": "Repair evidence-backed planning after no-task sessions",
@@ -195,6 +216,15 @@ def main() -> int:
         assessment = "Cache metrics absent. deepseek cache-report shows nothing."
         task = choose_task(assessment)
         assert task["title"] == "Record DeepSeek prompt cache metrics during prompt runs", task
+        assessment = "yyds deepseek cache-report: 94.10% cache hit ratio - healthy"
+        task = choose_task(assessment)
+        assert task["title"] != "Record DeepSeek prompt cache metrics during prompt runs", task
+        assessment = (
+            "yyds state why last-failure now properly explains cold-start state. "
+            "`commands_state.rs` remains a structural bottleneck."
+        )
+        task = choose_task(assessment)
+        assert task["title"] == "Extract another focused state CLI module", task
         text = render_task(task, "103", "12:53")
         assert "Title:" in text and "Success Criteria:" in text and "Origin: harness-seed" in text
         assessment = "Assessment phase produced a transcript but did not write session_plan/assessment.md."

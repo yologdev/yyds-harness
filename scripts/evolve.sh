@@ -1307,6 +1307,10 @@ The harness may have already created session_plan/task_01.md from assessment
 evidence before you started. Treat that as a valid seed task. You may refine it
 or add task_02.md/task_03.md, but do not delete it unless you immediately write
 an equal-or-better evidence-backed task file.
+If fresh assessment evidence contradicts the seed task's stated problem, do not
+send that stale task to implementation. Replace it with an evidence-backed task,
+or write session_plan/task_01_obsolete.md explaining the exact contradiction and
+proof.
 
 $ASSESSMENT_SECTION
 ${CI_STATUS_MSG:+
