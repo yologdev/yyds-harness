@@ -310,6 +310,7 @@ fn build_project_rg_args(
         "--line-number".to_string(),
         "--no-heading".to_string(),
         "--color=never".to_string(),
+        "-I".to_string(),
         format!("--max-count={max_results}"),
     ];
     if !case_sensitive {
@@ -1825,6 +1826,41 @@ mod tests {
                 "Non-regex errors should not include hint, got: {msg}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_project_search_skips_binary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), "pub fn binary_test_pattern() {}\n").unwrap();
+        // Write a binary file (with null bytes) that also contains the search pattern
+        let mut binary = b"binary_test_pattern\0\x00\x01\x02\x03\xff".to_vec();
+        // Pad to make it clearly non-text
+        binary.extend(std::iter::repeat_n(0u8, 128));
+        std::fs::write(src.join("artifact.bin"), &binary).unwrap();
+
+        let tool = ProjectSearchTool::default();
+        let params = serde_json::json!({
+            "pattern": "binary_test_pattern",
+            "path": dir.path().to_string_lossy(),
+        });
+        let result = tool
+            .execute(params, test_tool_context(None))
+            .await
+            .expect("binary files should be skipped, not reported as search errors");
+        let text = match &result.content[0] {
+            yoagent::types::Content::Text { text } => text,
+            _ => panic!("expected text result"),
+        };
+        assert!(
+            text.contains("src/lib.rs"),
+            "source match should remain: {text}"
+        );
+        assert!(
+            !text.contains("artifact.bin"),
+            "binary file should not appear in search results: {text}"
+        );
     }
 
     #[tokio::test]
