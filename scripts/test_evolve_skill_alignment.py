@@ -89,6 +89,9 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("flag-like literals such as `--json`", text)
         self.assertIn("Do not send escaped regex snippets such as `fn handle_run\\(`", text)
         self.assertIn("`grep -R -F -- 'fn handle_run(' src/`", text)
+        self.assertIn("inspect the actual git\n   diff", text)
+        self.assertIn("required obsolete-task note", text)
+        self.assertIn("Do not spend the task budget on analysis", text)
 
 
 if __name__ == "__main__":
