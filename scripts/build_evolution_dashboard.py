@@ -36,6 +36,15 @@ PSEUDO_ROOT_NAMES = {
     "tests",
 }
 NORMAL_MODEL_COMPLETION_STATUSES = {"completed", "success", "ok", "stopped_after_completion_file"}
+ASSESSMENT_WRITE_RE = re.compile(r"(?:write|Auto-approved: write:|# Assessment\b).*session_plan/assessment\.md|^\s*\+\s*# Assessment\b")
+ASSESSMENT_SYNTHESIS_RE = re.compile(
+    r"(enough data to write|prepare the assessment|write the assessment|finalize .*assessment|assessment complete)",
+    re.IGNORECASE,
+)
+ASSESSMENT_NOTE_RE = re.compile(
+    r"(key findings|interesting findings|tests pass|tests failed|state tail|state failures|ci run|failure|crash|cache)",
+    re.IGNORECASE,
+)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -674,6 +683,58 @@ def serialize_commits(commits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def assessment_transcript_summary(session_dir: Path) -> dict[str, Any]:
+    path = session_dir / "transcripts" / "assess.log"
+    if not path.is_file():
+        return {"present": False, "classification": "missing", "line_count": 0, "evidence_phrases": []}
+    try:
+        text_value = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"present": True, "classification": "unreadable", "line_count": 0, "evidence_phrases": []}
+    lines = text_value.splitlines()
+    write_evidence = False
+    synthesis_evidence = False
+    note_evidence = False
+    write_phrases: list[str] = []
+    synthesis_phrases: list[str] = []
+    note_phrases: list[str] = []
+    for line in lines:
+        clean = line.strip()
+        if not clean:
+            continue
+        if ASSESSMENT_WRITE_RE.search(clean):
+            write_evidence = True
+            if len(write_phrases) < 3:
+                write_phrases.append(clean[:220])
+        elif ASSESSMENT_SYNTHESIS_RE.search(clean):
+            synthesis_evidence = True
+            if len(synthesis_phrases) < 3:
+                synthesis_phrases.append(clean[:220])
+        elif ASSESSMENT_NOTE_RE.search(clean):
+            note_evidence = True
+            if len(note_phrases) < 3:
+                note_phrases.append(clean[:220])
+    if write_evidence:
+        classification = "write_evidence"
+    elif synthesis_evidence:
+        classification = "synthesis_reached"
+    elif note_evidence:
+        classification = "audit_notes"
+    elif lines:
+        classification = "transcript_present"
+    else:
+        classification = "empty_transcript"
+    return {
+        "present": True,
+        "classification": classification,
+        "line_count": len(lines),
+        "write_evidence": write_evidence,
+        "synthesis_evidence": synthesis_evidence,
+        "audit_note_evidence": note_evidence,
+        "evidence_phrases": (write_phrases + synthesis_phrases + note_phrases)[:5],
+    }
+
+
 def transcript_summary(session_dir: Path) -> dict[str, Any]:
     transcript_dir = session_dir / "transcripts"
     files = sorted(transcript_dir.glob("*.log")) if transcript_dir.is_dir() else []
@@ -724,6 +785,7 @@ def transcript_summary(session_dir: Path) -> dict[str, Any]:
         "count": len(files),
         "phase_counts": {key: value for key, value in phase_counts.items() if value},
         "files": transcript_rows,
+        "assessment": assessment_transcript_summary(session_dir),
     }
 
 
@@ -1544,6 +1606,12 @@ def assessment_artifact_state(
         or assessment_missing_file_present
     )
     transcript_present = bool((transcript_data.get("phase_counts") or {}).get("assess"))
+    assessment_transcript = (
+        transcript_data.get("assessment")
+        if isinstance(transcript_data.get("assessment"), dict)
+        else {}
+    )
+    transcript_classification = str(assessment_transcript.get("classification") or "")
     manifest_present = bool(task_manifest)
     if artifact_present:
         classification = "assessment_present"
@@ -1551,6 +1619,24 @@ def assessment_artifact_state(
     elif diagnostic_present:
         classification = "missing_with_diagnostic"
         detail = "Assessment artifact is missing, and assessment_missing.md explains the missing output."
+    elif transcript_present and transcript_classification == "write_evidence":
+        classification = "missing_written_not_preserved"
+        detail = (
+            "Assessment transcript shows session_plan/assessment.md was written, but neither "
+            "assessment.md nor assessment_missing.md was preserved in task artifacts."
+        )
+    elif transcript_present and transcript_classification == "synthesis_reached":
+        classification = "missing_synthesis_only"
+        detail = (
+            "Assessment transcript reached assessment synthesis, but no assessment artifact "
+            "or missing-assessment diagnostic was preserved."
+        )
+    elif transcript_present and transcript_classification == "audit_notes":
+        classification = "missing_recoverable_transcript"
+        detail = (
+            "Assessment transcript contains useful audit notes, but no structured assessment "
+            "artifact or missing-assessment diagnostic was preserved."
+        )
     elif transcript_present:
         classification = "missing_transcript_only"
         detail = (
@@ -1570,6 +1656,8 @@ def assessment_artifact_state(
         "transcript_present": transcript_present,
         "diagnostic_present": diagnostic_present,
         "manifest_present": manifest_present,
+        "transcript_classification": transcript_classification or None,
+        "transcript_summary": assessment_transcript if assessment_transcript else None,
         "assessment_path": "tasks/assessment.md" if assessment_file_present or artifacts.get("assessment") else None,
         "assessment_missing_path": "tasks/assessment_missing.md"
         if assessment_missing_file_present or artifacts.get("assessment_missing")
@@ -3345,6 +3433,11 @@ def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
         or manifest.get("assessment_missing_present")
         or manifest_artifacts.get("assessment_missing")
     )
+    assessment_transcript = (
+        assessment_state.get("transcript_summary")
+        if isinstance(assessment_state.get("transcript_summary"), dict)
+        else {}
+    )
     if artifact_present is True:
         status = "proven"
         detail = str(assessment_state.get("detail") or "Assessment artifact is present.")
@@ -3382,6 +3475,8 @@ def assessment_claim(work: dict[str, Any]) -> dict[str, Any]:
             "transcript_present": transcript_present,
             "diagnostic_present": diagnostic_present,
             "classification": assessment_state.get("classification"),
+            "transcript_classification": assessment_state.get("transcript_classification"),
+            "transcript_summary": assessment_transcript,
         },
         evidence,
         detail,
@@ -5514,6 +5609,7 @@ HTML = r"""<!doctype html>
     function renderTaskArtifacts(session, work) {
       const manifest = work.task_manifest || {};
       const verification = work.task_verification || {};
+      const assessmentState = work.assessment_artifact_state || {};
       const rows = (work.task_artifacts || []).slice(0, 6);
       const attempted = Number(session.tasks_attempted || 0);
       const succeeded = Number(session.tasks_succeeded || 0);
@@ -5527,7 +5623,11 @@ HTML = r"""<!doctype html>
           ? "assessment missing"
           : "assessment unknown";
       const assessmentDetail = assessmentState.detail ? ` ${text(assessmentState.detail)}` : "";
-      const evidenceSummary = `<p class="muted">Task evidence: raw outcome ${text(succeeded)}/${text(attempted)}; manifest ${text(manifestTaskCount)} task(s); artifact bundles ${text(artifactCount)}; strict verification ${text(strictVerified)}/${text(strictTotal)}; ${text(assessmentText)}.${assessmentDetail}</p>`;
+      const transcriptSummary = assessmentState.transcript_summary || {};
+      const transcriptEvidence = transcriptSummary.classification
+        ? ` Assessment transcript: ${text(transcriptSummary.classification)}${transcriptSummary.line_count ? ` / ${text(transcriptSummary.line_count)} lines` : ""}.`
+        : "";
+      const evidenceSummary = `<p class="muted">Task evidence: raw outcome ${text(succeeded)}/${text(attempted)}; manifest ${text(manifestTaskCount)} task(s); artifact bundles ${text(artifactCount)}; strict verification ${text(strictVerified)}/${text(strictTotal)}; ${text(assessmentText)}.${assessmentDetail}${transcriptEvidence}</p>`;
       const manifestArtifacts = manifest.artifacts || {};
       const manifestLinks = [
         manifestArtifacts.manifest ? auditLink(session, manifestArtifacts.manifest, "manifest.json") : "",

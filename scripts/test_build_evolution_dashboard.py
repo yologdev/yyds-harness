@@ -2919,8 +2919,67 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(assessment_claim["actual"]["artifact_present"], False)
             self.assertTrue(assessment_claim["actual"]["transcript_present"])
             self.assertEqual(assessment_claim["actual"]["classification"], "missing_transcript_only")
+            self.assertEqual(assessment_claim["actual"]["transcript_classification"], "transcript_present")
             self.assertIn("neither assessment.md nor assessment_missing.md", assessment_claim["detail"])
             self.assertEqual(assessment_claim["evidence"], ["transcripts/assess.log"])
+
+    def test_assessment_transcript_write_evidence_is_classified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "build_ok": True,
+                    "test_ok": True,
+                },
+            )
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("assess.log").write_text(
+                "\n".join(
+                    [
+                        "Let me now write the assessment to session_plan/assessment.md.",
+                        "  + # Assessment - Day 1",
+                        "  ✓ Auto-approved: write: session_plan/assessment.md (42 lines)",
+                        "  ▶ write session_plan/assessment.md (42 lines) ✓",
+                        "Assessment complete.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            data = build(root / "sessions", root / "out")
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+            work = data["sessions"][0]["work_summary"]
+            assessment_claim = next(
+                claim
+                for claim in claims["sessions"][0]["claims"]
+                if claim["name"] == "assessment_artifact_and_transcript_state"
+            )
+
+            self.assertEqual(work["assessment_artifact_state"]["classification"], "missing_written_not_preserved")
+            self.assertEqual(
+                data["aggregate"]["assessment_artifact_state_counts"],
+                {"missing_written_not_preserved": 1},
+            )
+            self.assertEqual(
+                work["assessment_artifact_state"]["transcript_summary"]["classification"],
+                "write_evidence",
+            )
+            self.assertEqual(
+                work["assessment_artifact_state"]["transcript_summary"]["evidence_phrases"][0],
+                "Let me now write the assessment to session_plan/assessment.md.",
+            )
+            self.assertTrue(assessment_claim["actual"]["transcript_summary"]["write_evidence"])
+            self.assertEqual(assessment_claim["actual"]["classification"], "missing_written_not_preserved")
+            self.assertIn("was written", assessment_claim["detail"])
+            self.assertIn("Assessment transcript:", html)
 
     def test_assessment_claim_evidence_excludes_absent_diagnostic_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
