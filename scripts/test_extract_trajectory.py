@@ -184,7 +184,10 @@ class ExtractTrajectoryTests(unittest.TestCase):
 
         self.assertIn("Corrected top lessons for next run:", rendered)
         self.assertIn("DeepSeek model call lifecycle was incomplete", rendered)
-        self.assertIn("Historical repeated across prior log feedback:", rendered)
+        self.assertIn(
+            "Historical repeated across prior log feedback (context only; corrected lessons are current pressure):",
+            rendered,
+        )
         self.assertNotIn("seeded task was contradicted", rendered)
 
     def test_raw_success_without_task_artifacts_is_not_rendered_as_verified(self) -> None:

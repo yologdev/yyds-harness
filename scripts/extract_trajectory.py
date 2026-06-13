@@ -902,7 +902,10 @@ def render_log_feedback(
                 recurring_counter[str(item["fingerprint"])] += 1
     repeated = [(fp, count) for fp, count in recurring_counter.most_common(3) if count > 1]
     if repeated:
-        lines.append("Historical repeated across prior log feedback:")
+        if corrected_lessons:
+            lines.append("Historical repeated across prior log feedback (context only; corrected lessons are current pressure):")
+        else:
+            lines.append("Historical repeated across prior log feedback:")
         for fp, count in repeated:
             lines.append(f"- {count}x {fp[:90]}")
     return "\n".join(lines)
