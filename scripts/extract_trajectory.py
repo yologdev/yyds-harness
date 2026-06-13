@@ -947,6 +947,12 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
     )
     proven = int(claim_counts.get("proven") or 0)
     unresolved = int(claim_summary.get("unresolved_count") or 0)
+    recent_unresolved = int(claim_summary.get("recent_unresolved_count") or 0)
+    non_proven_statuses = [
+        f"{status}={int(count or 0)}"
+        for status, count in sorted(claim_counts.items())
+        if status != "proven" and int(count or 0) > 0
+    ]
     state_summary = states.get("summary") if isinstance(states.get("summary"), dict) else {}
     state_counts = state_summary.get("state_counts") if isinstance(state_summary.get("state_counts"), dict) else {}
     tool_failures: Counter[str] = Counter()
@@ -1001,14 +1007,25 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
 
     lines = ["## Structured state snapshot"]
     if claim_total:
-        summary_parts = [f"claims: {proven}/{claim_total} proven; {unresolved} unresolved"]
+        claim_text = f"claims: {proven}/{claim_total} proven; {unresolved} non-proven"
+        if non_proven_statuses:
+            claim_text += f" ({', '.join(non_proven_statuses)})"
+        if recent_unresolved:
+            claim_text += f"; {recent_unresolved} recent"
+        summary_parts = [claim_text]
         unresolved_claim_summary = []
         claim_aliases = {
             "deepseek_model_call_lifecycle_balanced": "model_lifecycle",
             "state_run_lifecycle_balanced": "run_lifecycle",
             "assessment_artifact_and_transcript_state": "assessment_artifact",
         }
-        for row in (claim_summary.get("top_unresolved") or [])[:3]:
+        unresolved_rows = (
+            claim_summary.get("recent_top_unresolved")
+            if isinstance(claim_summary.get("recent_top_unresolved"), list)
+            and claim_summary.get("recent_top_unresolved")
+            else claim_summary.get("top_unresolved")
+        )
+        for row in (unresolved_rows or [])[:3]:
             if not isinstance(row, dict):
                 continue
             name = str(row.get("name") or "unknown_claim")
@@ -1017,7 +1034,7 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                 f"{label}={int(row.get('count') or 0)} {row.get('status', 'unknown')}"
             )
         if unresolved_claim_summary:
-            summary_parts.append("unresolved claims: " + ", ".join(unresolved_claim_summary))
+            summary_parts.append("recent non-proven claims: " + ", ".join(unresolved_claim_summary))
         if latest_lifecycle_counts:
             lifecycle_summary = []
             for key, label in (
