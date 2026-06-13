@@ -25,6 +25,8 @@ NON_SOURCE_FILES = {".skill_evolve_counter", "DAY_COUNT", "ISSUES_TODAY.md"}
 def source_file(path: str) -> bool:
     if not path:
         return False
+    if path.endswith(".bak"):
+        return False
     if path.startswith(NON_SOURCE_PREFIXES):
         return False
     return path not in NON_SOURCE_FILES

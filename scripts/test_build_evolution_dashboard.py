@@ -883,6 +883,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "evaluator_unverified_count",
                     "evolution_friction_count",
                     "max_task_turn_count",
+                    "protected_file_revert_count",
                     "session_success_rate",
                     "task_api_error_count",
                     "task_artifact_coverage",
@@ -902,6 +903,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "evaluator_unverified_count": 0.0,
                     "evolution_friction_count": 2.0,
                     "max_task_turn_count": 4.0,
+                    "protected_file_revert_count": 0.0,
                     "session_success_rate": 1.0,
                     "task_artifact_coverage": 1.0,
                     "task_obsolete_count": 0.0,
@@ -4007,8 +4009,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             write_json(
                 session / "state/summary.json",
                 {
-                    "latest_gnomes": {"coding_log_score": 0.8},
-                    "gnome_keys": ["coding_log_score"],
+                    "latest_gnomes": {"coding_log_score": 0.8, "task_unlanded_source_count": 2},
+                    "gnome_keys": ["coding_log_score", "task_unlanded_source_count"],
                 },
             )
 
@@ -4235,6 +4237,136 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(states["summary"]["state_counts"], {"reverted_api_error": 1})
             self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_api_error_count"], 1)
             self.assertEqual(data["sessions"][0]["latest_gnomes"]["evaluator_unverified_count"], 0)
+
+    def test_protected_file_revert_has_distinct_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {"coding_log_score": 0.8},
+                    "gnome_keys": ["coding_log_score"],
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Protected task",
+                            "files": ["skills/evolve/SKILL.md", "scripts/task_manifest.py"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            (session / "tasks/task_01/task.md").write_text("Title: Protected task\n", encoding="utf-8")
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Protected task",
+                    "status": "reverted",
+                    "revert_reason": "Modified protected files: skills/evolve/SKILL.md",
+                    "planned_files": ["skills/evolve/SKILL.md", "scripts/task_manifest.py"],
+                    "source_files": ["skills/evolve/SKILL.md", "scripts/task_manifest.py"],
+                    "touched_files": ["skills/evolve/SKILL.md", "scripts/task_manifest.py"],
+                    "commit_shas": [],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            work = data["sessions"][0]["work_summary"]
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+
+            verification_row = work["task_verification"]["rows"][0]
+            self.assertTrue(verification_row["protected_revert"])
+            self.assertIn("modified_protected_files", verification_row["problems"])
+            task_state = work["task_states"]["tasks"][0]
+            self.assertTrue(task_state["protected_revert"])
+            self.assertEqual(task_state["state"], "reverted_protected_file_edits")
+            self.assertEqual(states["summary"]["state_counts"], {"reverted_protected_file_edits": 1})
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["protected_file_revert_count"], 1)
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_unlanded_source_count"], 0)
+
+    def test_backup_only_revert_is_scope_mismatch_not_unlanded_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "reverted": False,
+                },
+            )
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Backup-only task",
+                            "files": ["scripts/evolve.sh"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            (session / "tasks/task_01/task.md").write_text("Title: Backup-only task\n", encoding="utf-8")
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Backup-only task",
+                    "status": "reverted",
+                    "revert_reason": "Task scope mismatch: task changes do not overlap planned Files entries",
+                    "planned_files": ["scripts/evolve.sh"],
+                    "source_files": ["scripts/evolve.sh.bak"],
+                    "touched_files": ["scripts/evolve.sh.bak"],
+                    "commit_shas": [],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            work = data["sessions"][0]["work_summary"]
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+
+            verification_row = work["task_verification"]["rows"][0]
+            self.assertEqual(verification_row["source_touched_files"], [])
+            self.assertNotIn("source_edits_not_landed", verification_row["problems"])
+            task_state = work["task_states"]["tasks"][0]
+            self.assertEqual(task_state["state"], "reverted_scope_mismatch")
+            self.assertEqual(states["summary"]["state_counts"], {"reverted_scope_mismatch": 1})
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_unlanded_source_count"], 0)
 
     def test_missing_optional_artifacts_do_not_fail(self):
         with tempfile.TemporaryDirectory() as tmp:

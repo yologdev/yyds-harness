@@ -89,6 +89,12 @@ OPERATIONAL_STATE_EVENTS = {
     "TestStarted",
     "TestCompleted",
 }
+
+
+def task_source_file(path: str) -> bool:
+    return bool(path) and not str(path).endswith(".bak")
+
+
 GNOME_KEYS = [
     "coding_log_score",
     "coding_log_confidence",
@@ -861,6 +867,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     evaluator_timeout_with_verdict = 0
     obsolete_count = 0
     api_error_count = 0
+    protected_file_revert_count = 0
     unlanded_source = 0
     for task_dir in task_dirs:
         outcome = load_json(task_dir / "outcome.json")
@@ -872,11 +879,18 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             outcome.get("revert_reason") or ""
         ).lower()
         api_error = "api error" in str(outcome.get("revert_reason") or "").lower()
+        protected_revert = "modified protected files" in str(outcome.get("revert_reason") or "").lower()
         if obsolete:
             obsolete_count += 1
         if api_error:
             api_error_count += 1
-        touched = outcome.get("source_files") or outcome.get("touched_files") or []
+        if protected_revert:
+            protected_file_revert_count += 1
+        touched = [
+            str(path)
+            for path in (outcome.get("source_files") or outcome.get("touched_files") or [])
+            if task_source_file(str(path))
+        ]
         landed = bool(outcome.get("commit_shas") or outcome.get("commits"))
         has_landed_source = not touched or landed
         if outcome.get("status") == "completed" and has_pass and has_landed_source:
@@ -885,7 +899,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             evaluator_unverified += 1
         if has_timeout_with_verdict:
             evaluator_timeout_with_verdict += 1
-        if touched and not landed:
+        if touched and not landed and not protected_revert:
             unlanded_source += 1
     verification_denominator = selected_count or len(task_dirs)
     if verification_denominator:
@@ -907,6 +921,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "evaluator_timeout_with_verdict_count": evaluator_timeout_with_verdict,
         "task_obsolete_count": obsolete_count,
         "task_api_error_count": api_error_count,
+        "protected_file_revert_count": protected_file_revert_count,
         "task_unlanded_source_count": unlanded_source,
         "task_spec_quality_score": round(sum(quality_scores) / len(quality_scores), 4)
         if quality_scores
@@ -1046,6 +1061,7 @@ def score_assessment(metrics: dict[str, Any]) -> float:
             + float(metrics.get("provider_error_count") or 0)
             + float(metrics.get("json_error_count") or 0)
             + float(metrics.get("tool_error_count") or 0)
+            + float(metrics.get("protected_file_revert_count") or 0) * 2.0
             + float(metrics.get("recurring_failure_count") or 0) * 2.0
             + float(metrics.get("evolution_friction_count") or 0)
             + float(metrics.get("planner_no_task_count") or 0) * 3.0
@@ -1104,6 +1120,10 @@ def build_assessment(
     artifact_metrics["evaluator_unverified_count"] = max(
         int(parsed.get("evaluator_unverified_count") or 0),
         int(artifact_metrics.get("evaluator_unverified_count") or 0),
+    )
+    artifact_metrics["protected_file_revert_count"] = max(
+        int(parsed.get("protected_file_revert_count") or 0),
+        int(artifact_metrics.get("protected_file_revert_count") or 0),
     )
     strict_succeeded = int(artifact_metrics.get("task_strict_verified_count") or 0)
     has_task_evidence = bool(

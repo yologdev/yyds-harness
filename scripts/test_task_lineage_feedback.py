@@ -253,6 +253,43 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(payload["source_files"], ["src/new_module.rs"])
             self.assertIn("src/new_module.rs", payload["touched_files"])
 
+    def test_task_lineage_ignores_backup_files_as_source_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            (repo / "scripts").mkdir()
+            (repo / "session_plan").mkdir()
+            (repo / "scripts/evolve.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "scripts/evolve.sh"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+            base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+            task_file = repo / "session_plan/task_01.md"
+            task_file.write_text("Title: Prompt\nFiles: scripts/evolve.sh\nIssue: none\n", encoding="utf-8")
+            (repo / "scripts/evolve.sh.bak").write_text("backup\n", encoding="utf-8")
+
+            args = type(
+                "Args",
+                (),
+                {
+                    "repo_root": repo,
+                    "base": base,
+                    "head": "",
+                    "task_number": 1,
+                    "task_title": "Prompt",
+                    "status": "reverted",
+                    "task_file": task_file,
+                    "eval_file": None,
+                    "reason": "",
+                },
+            )()
+            payload = task_lineage.build_payload(args)
+
+            self.assertEqual(payload["source_files"], [])
+            self.assertIn("scripts/evolve.sh.bak", payload["touched_files"])
+
     def test_single_task_linkage_leaves_unplanned_source_commits_unassigned(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -797,6 +834,63 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertTrue(
                 any(lesson["kind"] == "task_api_error" for lesson in assessment["top_lessons"])
             )
+
+    def test_log_feedback_separates_protected_and_backup_reverts_from_unlanded_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 2,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 2, "selected_task_count": 2},
+                    "selected_tasks": [{"task_id": "task_01"}, {"task_id": "task_02"}],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Modified protected files: skills/evolve/SKILL.md",
+                    "source_files": ["skills/evolve/SKILL.md", "scripts/task_manifest.py"],
+                    "commit_shas": [],
+                },
+            )
+            write_json(
+                session / "tasks/task_02/outcome.json",
+                {
+                    "task_id": "task_02",
+                    "status": "reverted",
+                    "revert_reason": "Task scope mismatch: task changes do not overlap planned Files entries",
+                    "source_files": ["scripts/evolve.sh.bak"],
+                    "commit_shas": [],
+                },
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["protected_file_revert_count"], 1)
+            self.assertEqual(metrics["task_unlanded_source_count"], 0)
+            self.assertEqual(metrics["evaluator_unverified_count"], 2)
+            self.assertIn("protected_file_revert_count", log_feedback.gnome_values(metrics))
 
     def test_log_feedback_counts_selected_but_unattempted_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:

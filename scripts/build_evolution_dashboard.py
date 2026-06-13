@@ -524,6 +524,8 @@ def failed_tool_pattern_summary(failed_tools: list[str]) -> dict[str, Any]:
 def source_file(path: str) -> bool:
     if not path:
         return False
+    if path.endswith(".bak"):
+        return False
     non_source_prefixes = (
         ".yoyo/",
         "journals/",
@@ -547,6 +549,10 @@ def path_matches(planned: str, touched: str) -> bool:
 
 def file_overlap(planned: list[str], touched: list[str]) -> bool:
     return any(path_matches(planned_file, touched_file) for planned_file in planned for touched_file in touched)
+
+
+def protected_file_revert(reason: str) -> bool:
+    return "modified protected files" in str(reason or "").lower()
 
 
 def trace_quality(summary: dict[str, Any], evals: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1225,6 +1231,7 @@ def task_verification_summary(
         outcome_status = str(artifact.get("status") or lineage.get("status") or "")
         revert_reason = str(artifact.get("revert_reason") or lineage.get("revert_reason") or "").strip()
         api_error = "api error" in revert_reason.lower()
+        protected_revert = protected_file_revert(revert_reason)
         obsolete = bool(artifact.get("has_obsolete_note") or lineage.get("has_obsolete_note"))
         problems: list[str] = []
         if not planned:
@@ -1243,6 +1250,8 @@ def task_verification_summary(
             problems.append("task_marked_obsolete")
         if api_error:
             problems.append("implementation_api_error")
+        if protected_revert:
+            problems.append("modified_protected_files")
         if source_touched and not landed_commits:
             problems.append("source_edits_not_landed")
         if source_touched and outcome_status == "completed" and not landed_commits:
@@ -1259,6 +1268,7 @@ def task_verification_summary(
                 "outcome_status": outcome_status or None,
                 "revert_reason": revert_reason or None,
                 "api_error": api_error,
+                "protected_revert": protected_revert,
                 "landed_commit_shas": landed_commits,
                 "eval_statuses": eval_statuses,
                 "eval_evidence_source": eval_evidence_source,
@@ -1294,6 +1304,8 @@ def classify_task_state(row: dict[str, Any], attempted: bool | None = None) -> s
     if outcome_status == "reverted":
         if row.get("api_error") or "implementation_api_error" in problems:
             return "reverted_api_error"
+        if row.get("protected_revert") or "modified_protected_files" in problems:
+            return "reverted_protected_file_edits"
         if "source_edits_not_landed" in problems or "no_landed_source_commit" in problems:
             return "reverted_unlanded_source_edits"
         if "no_touched_files" in problems:
@@ -1444,6 +1456,7 @@ def structured_task_states(
                 "reverted": row.get("outcome_status") == "reverted" or bool(row.get("revert_reason")),
                 "revert_reason": row.get("revert_reason"),
                 "api_error": bool(row.get("api_error")),
+                "protected_revert": bool(row.get("protected_revert")),
                 "obsolete": bool(row.get("obsolete")),
                 "obsolete_note_path": row.get("obsolete_note_path"),
                 "eval_attempt_count": row.get("eval_attempt_count") or 0,
@@ -2463,10 +2476,17 @@ def corrected_gnomes(
             1
             for row in (verification.get("rows") or [])
             if isinstance(row, dict)
+            and not (row.get("protected_revert") or "modified_protected_files" in (row.get("problems") or []))
             and (
                 "source_edits_not_landed" in (row.get("problems") or [])
                 or "no_landed_source_commit" in (row.get("problems") or [])
             )
+        )
+        protected_reverts = sum(
+            1
+            for row in (verification.get("rows") or [])
+            if isinstance(row, dict)
+            and (row.get("protected_revert") or "modified_protected_files" in (row.get("problems") or []))
         )
         timeout_with_verdict = sum(
             1
@@ -2502,9 +2522,10 @@ def corrected_gnomes(
             int(gnomes.get("evaluator_timeout_with_verdict_count") or 0),
             timeout_with_verdict,
         )
-        gnomes["task_unlanded_source_count"] = max(
-            int(gnomes.get("task_unlanded_source_count") or 0),
-            unlanded,
+        gnomes["task_unlanded_source_count"] = unlanded
+        gnomes["protected_file_revert_count"] = max(
+            int(gnomes.get("protected_file_revert_count") or 0),
+            protected_reverts,
         )
     elif attempted:
         succeeded = int(outcome.get("tasks_succeeded") or 0)
@@ -2756,6 +2777,7 @@ def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
             + metric_float(metrics, "provider_error_count")
             + metric_float(metrics, "json_error_count")
             + metric_float(metrics, "tool_error_count")
+            + metric_float(metrics, "protected_file_revert_count") * 2.0
             + metric_float(metrics, "recurring_failure_count") * 2.0
             + metric_float(metrics, "evolution_friction_count")
             + metric_float(metrics, "planner_no_task_count") * 3.0
@@ -2813,6 +2835,7 @@ def gnome_correction_source(key: str, corrected_value: Any, feedback_metrics: di
         "task_obsolete_count",
         "task_api_error_count",
         "task_unlanded_source_count",
+        "protected_file_revert_count",
         "task_unverified_raw_attempt_count",
         "task_unverified_raw_success_count",
         "raw_tasks_attempted",
