@@ -934,11 +934,14 @@ def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
                 }
             )
         task_file = task_dir / "task.md"
+        obsolete_file = task_dir / "obsolete.md"
         outcome = load_json(task_dir / "outcome.json")
         rows.append(
             {
                 "task_id": task_id,
                 "has_task_file": task_file.is_file(),
+                "has_obsolete_note": obsolete_file.is_file(),
+                "obsolete_note_path": f"tasks/{task_id}/obsolete.md" if obsolete_file.is_file() else None,
                 "has_outcome": bool(outcome),
                 "task_title": outcome.get("task_title") if isinstance(outcome, dict) else None,
                 "status": outcome.get("status") if isinstance(outcome, dict) else None,
@@ -1108,7 +1111,15 @@ def enrich_task_lineage_with_artifacts(
                 eval_summary = eval_summary_from_artifacts(artifact.get("evals") or [])
                 if eval_summary:
                     next_row["eval"] = eval_summary
-            for field in ("status", "revert_reason", "source_files", "touched_files", "commit_shas"):
+            for field in (
+                "status",
+                "revert_reason",
+                "source_files",
+                "touched_files",
+                "commit_shas",
+                "has_obsolete_note",
+                "obsolete_note_path",
+            ):
                 if not next_row.get(field) and artifact.get(field):
                     next_row[field] = artifact.get(field)
         enriched.append(next_row)
@@ -1213,6 +1224,7 @@ def task_verification_summary(
         verified = eval_passed(artifact_evals, lineage.get("eval"))
         outcome_status = str(artifact.get("status") or lineage.get("status") or "")
         revert_reason = str(artifact.get("revert_reason") or lineage.get("revert_reason") or "").strip()
+        obsolete = bool(artifact.get("has_obsolete_note") or lineage.get("has_obsolete_note"))
         problems: list[str] = []
         if not planned:
             problems.append("missing_planned_files")
@@ -1224,8 +1236,10 @@ def task_verification_summary(
             problems.append("evaluator_timed_out_after_verdict")
         if timeout_with_passing_verdict:
             problems.append("timed_out_passing_verdict")
-        elif not verified:
+        elif not verified and not obsolete:
             problems.append("no_passing_verifier")
+        if obsolete:
+            problems.append("task_marked_obsolete")
         if source_touched and not landed_commits:
             problems.append("source_edits_not_landed")
         if source_touched and outcome_status == "completed" and not landed_commits:
@@ -1248,6 +1262,8 @@ def task_verification_summary(
                 "eval_attempts": eval_attempts,
                 "latest_eval_attempt": eval_attempts[-1] if eval_attempts else None,
                 "problems": problems,
+                "obsolete": obsolete,
+                "obsolete_note_path": artifact.get("obsolete_note_path") or lineage.get("obsolete_note_path"),
                 "strict_success": outcome_status == "completed" and overlap and verified and not problems,
             }
         )
@@ -1267,6 +1283,8 @@ def classify_task_state(row: dict[str, Any], attempted: bool | None = None) -> s
     outcome_status = str(row.get("outcome_status") or "").strip().lower()
     if row.get("strict_success"):
         return "verified_landed"
+    if row.get("obsolete") or "task_marked_obsolete" in problems:
+        return "obsolete_already_satisfied"
     if attempted is False:
         return "not_attempted"
     if outcome_status == "reverted":
@@ -1419,6 +1437,8 @@ def structured_task_states(
                 "landed_commit_shas": row.get("landed_commit_shas") or [],
                 "reverted": row.get("outcome_status") == "reverted" or bool(row.get("revert_reason")),
                 "revert_reason": row.get("revert_reason"),
+                "obsolete": bool(row.get("obsolete")),
+                "obsolete_note_path": row.get("obsolete_note_path"),
                 "eval_attempt_count": row.get("eval_attempt_count") or 0,
                 "latest_eval_attempt": latest_eval or None,
                 "implementation_attempt_count": implementation_attempt_count,
@@ -2447,13 +2467,20 @@ def corrected_gnomes(
             if isinstance(row, dict)
             and "evaluator_timed_out_after_verdict" in (row.get("problems") or [])
         )
+        obsolete = sum(
+            1
+            for row in (verification.get("rows") or [])
+            if isinstance(row, dict)
+            and (row.get("obsolete") or "task_marked_obsolete" in (row.get("problems") or []))
+        )
         gnomes["task_success_rate"] = verified / task_count
         gnomes["session_success_rate"] = 1.0 if verified == task_count else 0.0
         recalc_score = True
-        gnomes["evaluator_unverified_count"] = max(
-            int(gnomes.get("evaluator_unverified_count") or 0),
-            unverified,
+        gnomes["task_obsolete_count"] = max(
+            int(gnomes.get("task_obsolete_count") or 0),
+            obsolete,
         )
+        gnomes["evaluator_unverified_count"] = max(unverified - obsolete, 0)
         gnomes["evaluator_timeout_with_verdict_count"] = max(
             int(gnomes.get("evaluator_timeout_with_verdict_count") or 0),
             timeout_with_verdict,
@@ -2710,6 +2737,7 @@ def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
             + metric_float(metrics, "evolution_friction_count")
             + metric_float(metrics, "planner_no_task_count") * 3.0
             + metric_float(metrics, "task_unattempted_count") * 2.0
+            + metric_float(metrics, "task_obsolete_count")
             + metric_float(metrics, "evaluator_unverified_count")
             + metric_float(metrics, "evaluator_timeout_with_verdict_count") * 2.0
             + metric_float(metrics, "task_unlanded_source_count") * 2.0
@@ -2758,6 +2786,7 @@ def gnome_correction_source(key: str, corrected_value: Any, feedback_metrics: di
         "session_success_rate",
         "evaluator_unverified_count",
         "evaluator_timeout_with_verdict_count",
+        "task_obsolete_count",
         "task_unlanded_source_count",
         "task_unverified_raw_attempt_count",
         "task_unverified_raw_success_count",
@@ -4933,6 +4962,7 @@ HTML = r"""<!doctype html>
       task_mechanical_verification_rate: "Mechanical task verification",
       planner_no_task_count: "Planner no-task count",
       task_unattempted_count: "Unattempted selected tasks",
+      task_obsolete_count: "Obsolete/stale tasks",
       task_manifest_available: "Task manifest available",
       task_artifact_coverage: "Task artifact coverage",
       task_lineage_capture_coverage: "Task lineage capture",
@@ -5971,6 +6001,7 @@ HTML = r"""<!doctype html>
         "task_verification_rate",
         "evaluator_unverified_count",
         "evaluator_timeout_with_verdict_count",
+        "task_obsolete_count",
         "task_unlanded_source_count",
         "max_task_turn_count",
         "state_operational_capture_coverage",

@@ -885,6 +885,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "max_task_turn_count",
                     "session_success_rate",
                     "task_artifact_coverage",
+                    "task_obsolete_count",
                     "task_success_rate",
                     "task_unlanded_source_count",
                     "total_task_turn_count",
@@ -901,6 +902,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "max_task_turn_count": 4.0,
                     "session_success_rate": 1.0,
                     "task_artifact_coverage": 1.0,
+                    "task_obsolete_count": 0.0,
                     "task_success_rate": 1.0,
                     "task_unlanded_source_count": 0.0,
                     "total_task_turn_count": 4.0,
@@ -4087,6 +4089,81 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["aggregate"]["tasks_attempted"], 1)
             self.assertEqual(data["aggregate"]["tasks_succeeded"], 0)
             self.assertEqual(data["aggregate"]["unverified_raw_task_outcome_attempted"], 0)
+
+    def test_obsolete_task_artifact_has_distinct_state_and_gnome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {"coding_log_score": 0.8, "evaluator_unverified_count": 1},
+                    "gnome_keys": ["coding_log_score", "evaluator_unverified_count"],
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Already satisfied task",
+                            "files": ["src/state.rs"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            (session / "tasks/task_01/task.md").write_text("Title: Already satisfied task\n", encoding="utf-8")
+            (session / "tasks/task_01/obsolete.md").write_text(
+                "Existing cache-metrics tests already prove the requested behavior.\n",
+                encoding="utf-8",
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Already satisfied task",
+                    "status": "reverted",
+                    "revert_reason": "Task marked obsolete by agent; no implementation landed",
+                    "planned_files": ["src/state.rs"],
+                    "source_files": [],
+                    "touched_files": [],
+                    "commit_shas": [],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            work = data["sessions"][0]["work_summary"]
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+
+            self.assertTrue(work["task_artifacts"][0]["has_obsolete_note"])
+            self.assertEqual(work["task_artifacts"][0]["obsolete_note_path"], "tasks/task_01/obsolete.md")
+            verification_row = work["task_verification"]["rows"][0]
+            self.assertTrue(verification_row["obsolete"])
+            self.assertIn("task_marked_obsolete", verification_row["problems"])
+            self.assertNotIn("no_passing_verifier", verification_row["problems"])
+            task_state = work["task_states"]["tasks"][0]
+            self.assertEqual(task_state["state"], "obsolete_already_satisfied")
+            self.assertEqual(states["summary"]["state_counts"], {"obsolete_already_satisfied": 1})
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_obsolete_count"], 1)
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["evaluator_unverified_count"], 0)
 
     def test_missing_optional_artifacts_do_not_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
