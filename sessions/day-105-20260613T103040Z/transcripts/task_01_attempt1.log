@@ -1,0 +1,447 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task:
+
+1. Improve cold-start state failure diagnostics in `src/commands_state.rs` and `src/state.rs`
+2. Make `yyds state why last-failure` useful when there are no completed failed sessions
+3. Keep existing behavior for completed failed sessions unchanged
+
+Let me first read the evolve skill to understand the contract, then explore the relevant files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ ls src/commands_state.rs  ▶ ls src/state.rs ✓ (18ms)
+ ✓ (36ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, both files exist. Let me read them to understand the current state of the code.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.3s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs  ▶ read src/state.rs ✓ (126ms)
+ ✓ (147ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file is very large (23,548 lines for commands_state.rs and 6,528 lines for state.rs). Let me search for the specific functions related to "why last-failure" and "handle_why" to understand the current implementation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+Let me search for the relevant functions in these large files.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_why' in src/commands_state.rs  ▶ search 'last-failure' in src/commands_state.rs  ▶ search 'handle_state_summary' in src/commands_state.rs  ▶ search 'no state event found' in src/commands_state.rs ✓ (36ms)
+ ✓ (35ms)
+ ✓ (37ms)
+ ✓ (37ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, let me now read the `handle_why`, `handle_state_summary`, `build_why_report`, and related functions. Let me start reading around these areas.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.0s (4 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:836..936  ▶ read src/commands_state.rs:878..978 ✓ (24ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find the `build_why_report` function which contains the "last-failure" logic.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the build_why_report function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2571..2771 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, so I see the current code. When `find_target_event` returns `None` for `last-failure`, the function builds an error message. The error handling is already somewhat good — it detects empty events, no completed runs, no failures, etc.
+
+But there's a case I'm missing: what about `RunStarted` events that have errors, or `FailureObserved` events, or `CrashObserved` events? Let me look at `find_target_event` to see how `last-failure` works.
+
+Also, I notice there's a `is_failure_event_type` function. Let me look at `find_target_event` and `is_failure_event_type` to understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn find_target_event' in src/commands_state.rs  ▶ search 'fn is_failure_event_type' in src/commands_state.rs ✓ (19ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13525..13605 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the current state:
+
+1. `find_target_event` for `"last-failure"` looks for the last event whose `event_type` is `FailureObserved`, `JsonOutputFailure`, or `ToolSchemaFailure`.
+
+2. `build_why_report` tries to find the target, and if not found, it builds an error message. The error message already has some handling for cold start cases:
+   - If events empty or no RunCompleted events: "State recording is active but no sessions have completed yet. Diagnostics become available after 2–3 completed evolution sessions."
+   - If no failures: "N successful session(s) recorded. No failure data to diagnose."
+   - If some failures but not enough: "N failure(s) recorded but not enough to cluster into patterns."
+
+3. The issue the task talks about is: "`state why last-failure` returning only `no state event found` during fresh-state sessions."
+
+Looking at the code, when there are NO events at all, the `handle_why` function already handles this at lines 837-849 — it says "No state events file found" and gives a helpful message. So the "no state event found" would happen when there ARE events but no failure events exist yet.
+
+Wait, let me re-read the error output. In `build_why_report`, when `find_target_event` returns `None`, the error says:
+```
+no state event found for '{id}'
+
+<state summary>
+
+<actionable guidance>
+```
+
+So the current code already has some cold-start diagnostics. But the task says the output should give "actionable next evidence to inspect" and "distinguish no history from missing diagnostics and from active/incomplete runs."
+
+Let me look more closely at what's missing. The current error distinguishes:
+1. No events / no completed runs (cold start with active recording)
+2. No failures (all successful)
+3. Some failures but not enough
+
+But what about:
+- RunStarted events exist but no RunCompleted (active/incomplete runs)
+- Error-level events exist (like CrashObserved) that aren't failure events
+- The current code doesn't check for incomplete runs, startup errors, or nearby diagnostic evidence
+
+Let me look at what event types are used, and also look at `build_state_summary` to understand what information is available.
+
+Let me also check what `is_failure_event_type` considers as failures. It currently only matches `FailureObserved`, `JsonOutputFailure`, and `ToolSchemaFailure`. But there could be:
+- `RunCompleted` with `status: "error"` — these are also failures
+- `CrashObserved` — crash events
+- `ModelCallCompleted` with error status
+
+The task says:
+1. Cold-start `why last-failure` output gives actionable next evidence to inspect
+2. Existing behavior for completed failed sessions remains unchanged
+3. Output distinguishes no history from missing diagnostics and from active/incomplete runs
+
+Let me think about what changes to make:
+
+1. When `last-failure` finds no failure events, but there are RunStarted events without RunCompleted → report active/incomplete runs
+2. When `last-failure` finds no failure events, but there are RunCompleted with error status → those ARE failures, so check for those too
+3. When there are some error-adjacent events (like CrashObserved, ModelCallCompleted with errors) → point to those as evidence
+4. When there are truly no events → report no history
+
+Let me also check if `find_target_event` for `last-failure` should also match RunCompleted with error status, since those are failures too.
+
+Let me read the `build_state_summary` function to understand what it reports.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_state_summary' in src/commands_state.rs ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function to understand what's already available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2311..2391 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also look at the tests for `build_why_report` to understand what behavior is already tested. Let me also find the `last-failure` tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_why_report.*last-failure' in src/commands_state.rs ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the test functions that reference "last-failure" to see existing test coverage.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'last-failure' src/com… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test cases to understand the existing test coverage.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:15000..15060  ▶ read src/commands_state.rs:15060..15120 ✓ (8ms)
+ ✓ (37ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at existing "cold-start" type tests to understand what's already tested. Let me also search for tests that return Err from build_why_report.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'build_why_report.*Err… ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me search for tests around the "no state event found" case - the Err path of build_why_report.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn.*why.*fail\|fn.*wh… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the tests that reference the error handling for when no failure is found. It seems like there aren't tests for the error case — all tests seem to be for the success case. Let me search for tests that test for the Err case.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'assert.*build_why_rep… ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So no tests for the error path of `build_why_report` with "last-failure". Now let me think about the task.
+
+The task says: "Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence."
+
+The current behavior when `find_target_event` returns None for "last-failure" is:
+1. Shows "no state event found for 'last-failure'"
+2. Shows a state summary
+3. Shows one of three messages:
+   a. If no events or no RunCompleted: "State recording is active but no sessions have completed yet."
+   b. If no failures: "N successful session(s) recorded."
+   c. If some failures but not enough: "N failure(s) recorded..."
+
+So the issue is:
+- When events exist but there's no `FailureObserved`, `JsonOutputFailure`, or `ToolSchemaFailure` event, the error message is generic
+- The task wants us to provide MORE diagnostics in this cold-start case
+
+Specifically, the task wants us to:
+1. Report nearby startup errors — look for `RunCompleted` events with `status: "error"`, `CrashObserved` events, or `ModelCallCompleted` with error statuses
+2. Report incomplete runs — look for `RunStarted` without matching `RunCompleted`
+3. Report missing diagnostic evidence — if there are no events at all
+
+Let me plan the changes:
+
+### Changes to `build_why_report` (in src/commands_state.rs):
+
+When `find_target_event` returns `None` for "last-failure":
+
+1. **Check for RunCompleted with error status**: These are actual failures but currently not captured by `is_failure_event_type`. Add them.
+2. **Check for incomplete runs**: RunStarted without RunCompleted. Report these as active/incomplete.
+3. **Check for nearby error events**: CrashObserved, ModelCallCompleted with errors, etc.
+4. **Keep existing behavior for completed failed sessions unchanged**
+
+The main changes:
+1. In `find_target_event` for "last-failure", also consider `RunCompleted` with `status: "error"` as a failure.
+2. In `build_why_report` error path, add more detailed diagnostics:
+   - Check for RunStarted without RunCompleted → report incomplete runs
+   - Check for RunCompleted with error status but not caught by is_failure_event_type → report those
+   - Check for CrashObserved events
+   - Check for ModelCallCompleted with error
+
+Wait, I need to think about this more carefully. The task says "Cold-start `why last-failure` output gives actionable next evidence to inspect." So when there is no "last-failure" found, the output should help the user understand what's going on.
+
+Let me re-read the task:
+- "reporting nearby startup errors, incomplete runs, or missing diagnostic evidence"
+- "Output distinguishes no history from missing diagnostics and from active/incomplete runs"
+
+So the three cases to distinguish:
+1. **No history**: No events at all → "no state recording active yet"
+2. **Missing diagnostics**: Events exist but no failure-specific events → "diagnostics not available because X"
+3. **Active/incomplete runs**: RunStarted without RunCompleted → "run in progress, wait for it to complete"
+
+Let me think about what the output should look like. Currently:
+
+**Case: No events file**
+```
+handle_why already handles this at line 837: "No state events file found..."
+```
+
+**Case: Events exist but no failures (cold start)**
+Current: "no state event found for 'last-failure'" + summary + generic message
+
+What it should be:
+- "no failure event found for 'last-failure'"
+- Then show what IS available:
+  - RunStarted without RunCompleted → "Incomplete runs detected"
+  - RunCompleted with error status → "Run errors found"  
+  - CrashObserved → "Crash events found"
+  - ModelCallCompleted with error → "Model call errors found"
+  - If none of these exist either → "No diagnostic evidence available yet"
+- Then show actionable next steps
+
+Let me now implement this. First, I'll look at how events are structured for RunCompleted, CrashObserved, etc.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at a few more relevant sections to understand the event structure.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn event\b\|fn event_… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the event helper functions to understand how to construct test events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13778..13818  ▶ read src/commands_state.rs:13676..13696 ✓ (24ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `append_failure_explanation` function to understand how failures are explained currently.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn append_failure_explanation' in src/commands_state.rs ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3679..3779 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me now plan the implementation:
+
+### Changes needed in `src/commands_state.rs`:
+
+#### 1. In `find_target_event` for `"last-failure"`:
+Currently only looks for `FailureObserved`, `JsonOutputFailure`, `ToolSchemaFailure`.  
+Should also look for `RunCompleted` with `status: "error"` payload. These are actual failures that the task wants to recognize.
+
+#### 2. In `build_why_report` error path:
+When `find_target_event` returns None for `"last-failure"`, improve the diagnostics:
+- Check for RunStarted without matching RunCompleted → report incomplete/in-progress runs
+- Check for CrashObserved events → report crashes
+- Check for ModelCallCompleted with error status → model errors
+- Check for RunCompleted with error status → run errors  
+- If truly nothing → say "no diagnostic evidence available"
+
+Let me now make the changes. I'll start with the implementation plan:
+
+1. **Modify `find_target_event`**: When `id == "last-failure"`, also look for `RunCompleted` with error status
+2. **Modify `build_why_report` error handling**: Add richer diagnostics for cold-start cases
+
+Actually wait - let me reconsider. The task says "Cold-start `why last-failure` output gives actionable next evidence to inspect." The key insight is that when there are NO `FailureObserved`/`JsonOutputFailure`/`ToolSchemaFailure` events, we should still give useful information.
+
+Currently `find_target_event` for "last-failure" only finds those 3 event types. If none exist, it returns None and we get the error message. The error message already does some analysis (completed runs count, failure count), but it doesn't:
+1. Distinguish between "incomplete runs" (RunStarted without RunCompleted) and "no sessions"
+2. Check for RunCompleted with error status as actual failures  
+3. Check for CrashObserved or other error-adjacent events
+4. Give specific next steps for each case
+
+Let me now implement. I'll also look at what tests exist near line 15000 area that I already partially read.
+
+Let me look at the specific test area for why_report tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:15360..15420 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me plan and implement the changes. Let me write a test first, then modify the code.
+
+Here's my plan:
+
+### Test 1: Cold-start with incomplete runs (RunStarted without RunCompleted)
+When events have RunStarted but no RunCompleted, and no FailureObserved, the error message should mention incomplete/in-progress runs.
+
+### Test 2: Cold-start with RunCompleted errors but no FailureObserved
+When events have RunCompleted with error status, the error should point to those run errors.
+
+### Test 3: Cold-start with CrashObserved but no FailureObserved
+Crash events should be reported.
+
+### Code changes:
+
+#### In `find_target_event`:
+Add `RunCompleted` with error status AND `CrashObserved` as failure event types for "last-failure".
+
+Actually, let me think about this more carefully. The task says:
+- "Existing behavior for completed failed sessions remains unchanged"
+- The output should "distinguish no history from missing diagnostics and from active/incomplete runs"
+
+So for `find_target_event`:
+- Currently: finds `FailureObserved`, `JsonOutputFailure`, `ToolSchemaFailure` — these are the specific failure-typed events
+- We could add `RunCompleted` with `status: "error"` as another failure event
+- We could also add `CrashObserved`
+
+But the main improvement is in the **error path** of `build_why_report`. When no failure event is found, we should do better diagnostics.
+
+Let me think about what's the cleanest approach:
+
+Option A: Expand `find_target_event` to find more types of failures, then use the existing success path
+Option B: Keep `find_target_event` the same, improve the error path
+
+The task says "Cold-start `why last-failure` output gives actionable next evidence to inspect." The output should:
+1. Distinguish no history from missing diagnostics from active/incomplete runs
+2. Give actionable next evidence
+
+I think Option A is cleaner because if there ARE RunCompleted errors or CrashObserved events, they are genuine failures. But the task also wants us to handle the case where there are NONE of these — and give different messages for different cold-start states.
+
+Let me do both:
+1. Expand `find_target_event` for "last-failure" to also find RunCompleted errors and CrashObserved
+2. Improve the error path for when nothing is found at all
+
+Actually, let me reconsider. The `append_failure_explanation` function works with `FailureObserved`, `JsonOutputFailure`, `ToolSchemaFailure` events. If we add RunCompleted to `find_target_event`, the explanation path would try to call `append_failure_explanation` on a RunCompleted event, which might not work correctly (since RunCompleted has different payload format).
+
+Let me check what happens in `build_why_report` when the target is a RunCompleted with error status. It would hit the first `if is_failure_event_type(event_type)` branch - but `is_failure_event_type` doesn't include `RunCompleted`. So it would fall through all the if-else branches and just show the basic info (event, run, trace, payload).
+
+That's not bad actually — it would show the RunCompleted payload which includes the error. But it wouldn't give the nice explanation that `append_failure_explanation` gives.
+
+OK, I think the cleanest approach is:
+
+1. **Don't change `find_target_event`** — keep it finding only the three failure event types
+2. **Improve the error path** in `build_why_report` to:
+   a. Look for RunCompleted with error status → report run-level errors with their details
+   b. Look for RunStarted without RunCompleted → report incomplete runs
+   c. Look for CrashObserved → report crashes
+   d. Look for ModelCallCompleted with error → report model errors
+   e. Give actionable next evidence for each case
+
+This keeps the existing behavior for completed failed sessions unchanged (since those still match FailureObserved etc), and improves the cold-start case.
+
+Let me now implement. I'll write tests first.
+
+Let me look at how RunCompleted events look — they have a "status" field in payload.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the code. Let me implement the changes. I'll start with tests (per evolve skill rules), then modify the code.
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first find the exact location in the test module where I should add the new tests. The tests are at the end of `src/commands_state.rs`. Let me look for the last test function to find the right insertion point.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.3s (4 ✓)
+
+Let me find where to add the tests — near the end of the test section with other `why_report` tests.
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '#\[test\]' src/comman… ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The last test is at line 23502. Let me find the end of the file to add new tests before the closing `}`. Let me read the last few tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:23502..23552 ✓ (9ms)
+
+
