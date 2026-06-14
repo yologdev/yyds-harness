@@ -1004,11 +1004,13 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "session_success_rate",
                     "task_api_error_count",
                     "task_artifact_coverage",
+                    "task_mechanical_verification_rate",
                     "task_no_edit_revert_count",
                     "task_obsolete_count",
                     "task_scope_mismatch_count",
                     "task_success_rate",
                     "task_unlanded_source_count",
+                    "task_verification_rate",
                     "total_task_turn_count",
                 ],
             )
@@ -1025,11 +1027,13 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "protected_file_revert_count": 0.0,
                     "session_success_rate": 1.0,
                     "task_artifact_coverage": 1.0,
+                    "task_mechanical_verification_rate": 1.0,
                     "task_no_edit_revert_count": 0.0,
                     "task_obsolete_count": 0.0,
                     "task_scope_mismatch_count": 0.0,
                     "task_success_rate": 1.0,
                     "task_unlanded_source_count": 0.0,
+                    "task_verification_rate": 1.0,
                     "total_task_turn_count": 4.0,
                 },
             )
@@ -4768,6 +4772,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             latest = data["sessions"][0]["latest_gnomes"]
 
             self.assertEqual(latest["task_success_rate"], 1.0)
+            self.assertEqual(latest["task_verification_rate"], 1.0)
+            self.assertEqual(latest["task_mechanical_verification_rate"], 1.0)
             self.assertEqual(latest["session_success_rate"], 1.0)
             self.assertEqual(latest["task_unverified_raw_attempt_count"], 0)
             self.assertEqual(latest["task_unverified_raw_success_count"], 0)

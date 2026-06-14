@@ -1218,6 +1218,8 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(gnomes["task_unverified_raw_attempt_count"], 0)
             self.assertEqual(gnomes["task_unverified_raw_success_count"], 0)
             self.assertEqual(gnomes["task_success_rate"], 1.0)
+            self.assertEqual(gnomes["task_verification_rate"], 1.0)
+            self.assertEqual(gnomes["task_mechanical_verification_rate"], 1.0)
             self.assertNotIn(
                 "Bound evaluator checks so verdicts are not skipped",
                 [item["title"] for item in suggestions],

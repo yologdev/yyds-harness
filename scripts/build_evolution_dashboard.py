@@ -2727,6 +2727,11 @@ def corrected_gnomes(
     if task_count:
         verified = int(verification.get("verified_task_count") or 0)
         unverified = int(verification.get("unverified_task_count") or 0)
+        mechanical_verified = sum(
+            1
+            for row in (verification.get("rows") or [])
+            if isinstance(row, dict) and row.get("verified")
+        )
         for key in ("task_unverified_raw_attempt_count", "task_unverified_raw_success_count"):
             if int(gnomes.get(key) or 0) != 0:
                 gnomes[key] = 0
@@ -2793,6 +2798,8 @@ def corrected_gnomes(
         additional_seed_explanations = max(seed_contradictions - no_edit_reverts, 0)
         unattempted_explanations = int(gnomes.get("task_unattempted_count") or 0)
         gnomes["task_success_rate"] = verified / task_count
+        gnomes["task_verification_rate"] = verified / task_count
+        gnomes["task_mechanical_verification_rate"] = mechanical_verified / task_count
         gnomes["session_success_rate"] = 1.0 if verified == task_count else 0.0
         recalc_score = True
         gnomes["task_obsolete_count"] = max(

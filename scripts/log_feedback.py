@@ -1029,6 +1029,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         artifact_coverage = None if not task_dirs else 0.0
     task_unattempted = max(selected_count - attempted, 0) if selected_count else 0
     strict_verified = 0
+    mechanical_verified = 0
     evaluator_unverified = 0
     evaluator_timeout_with_verdict = 0
     obsolete_count = 0
@@ -1086,6 +1087,8 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             explained_unverified_ids.add(task_key)
         landed = bool(outcome.get("commit_shas") or outcome.get("commits"))
         has_landed_source = not touched or landed
+        if has_pass:
+            mechanical_verified += 1
         if outcome.get("status") == "completed" and has_pass and has_landed_source:
             strict_verified += 1
         elif not obsolete and not api_error and not protected_revert and not scope_mismatch and (
@@ -1103,7 +1106,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             verification_denominator - strict_verified - task_unattempted - len(explained_unverified_ids),
         )
     replay = replay_check_session(session_dir)
-    return {
+    metrics = {
         "task_manifest_available": bool(manifest),
         "planner_no_task_count": 1 if planning_failed else 0,
         "planned_task_count": planned_count,
@@ -1112,6 +1115,8 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "task_artifact_count": len(task_dirs),
         "task_artifact_coverage": artifact_coverage,
         "task_strict_verified_count": strict_verified,
+        "task_verified_count": strict_verified,
+        "task_mechanical_verified_count": mechanical_verified,
         "evaluator_unverified_count": evaluator_unverified,
         "evaluator_timeout_with_verdict_count": evaluator_timeout_with_verdict,
         "task_obsolete_count": obsolete_count,
@@ -1126,6 +1131,10 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         else None,
         "state_replay_integrity_rate": 1.0 if replay.get("ok") else 0.0,
     }
+    if verification_denominator:
+        metrics["task_verification_rate"] = ratio(strict_verified, verification_denominator)
+        metrics["task_mechanical_verification_rate"] = ratio(mechanical_verified, verification_denominator)
+    return metrics
 
 
 def promote_manifest_seed_contradictions(metrics: dict[str, Any]) -> int:

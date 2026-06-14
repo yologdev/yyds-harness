@@ -347,6 +347,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
         rows.append(
             {
                 "strict_success": strict_success,
+                "verified": passed,
                 "problems": problems,
                 "obsolete": obsolete,
                 "api_error": api_error,
@@ -356,11 +357,16 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
     if not rows:
         return {}
     unverified = sum(1 for row in rows if not row["strict_success"])
+    strict_verified = sum(1 for row in rows if row["strict_success"])
+    mechanical_verified = sum(1 for row in rows if row["verified"])
     return {
         "selected_task_count": len(tasks),
         "task_count": len(rows),
-        "task_strict_verified_count": sum(1 for row in rows if row["strict_success"]),
-        "task_verified_count": sum(1 for row in rows if row["strict_success"]),
+        "task_strict_verified_count": strict_verified,
+        "task_verified_count": strict_verified,
+        "task_mechanical_verified_count": mechanical_verified,
+        "task_verification_rate": strict_verified / len(rows),
+        "task_mechanical_verification_rate": mechanical_verified / len(rows),
         "task_obsolete_count": sum(1 for row in rows if row["obsolete"] or "task_marked_obsolete" in row["problems"]),
         "task_api_error_count": sum(1 for row in rows if row["api_error"] or "implementation_api_error" in row["problems"]),
         "task_no_edit_revert_count": sum(1 for row in rows if "no_edit_revert" in row["problems"]),
@@ -752,11 +758,20 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
             gnomes["tasks_succeeded"] = max(int_metric(gnomes, "tasks_succeeded"), verified)
         if task_count > 0 and verified == task_count:
             gnomes["task_success_rate"] = 1.0
+            gnomes["task_verification_rate"] = 1.0
+            gnomes["task_mechanical_verification_rate"] = max(
+                float(gnomes.get("task_mechanical_verification_rate") or 0.0),
+                float(artifact_metrics.get("task_mechanical_verification_rate") or 0.0),
+            )
             gnomes["session_success_rate"] = 1.0
             gnomes["evaluator_unverified_count"] = 0
             gnomes["task_unverified_raw_attempt_count"] = 0
             gnomes["task_unverified_raw_success_count"] = 0
         elif task_count > 0:
+            gnomes["task_verification_rate"] = float(artifact_metrics.get("task_verification_rate") or 0.0)
+            gnomes["task_mechanical_verification_rate"] = float(
+                artifact_metrics.get("task_mechanical_verification_rate") or 0.0
+            )
             seed_contradictions = int_metric(gnomes, "task_seed_contradiction_count")
             no_edit = max(int_metric(artifact_metrics, "task_no_edit_revert_count") - seed_contradictions, 0)
             explained = (
