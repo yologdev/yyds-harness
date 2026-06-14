@@ -647,6 +647,47 @@ class ExtractTrajectoryTests(unittest.TestCase):
 
             self.assertIn("recent non-proven claims:", first_line)
             self.assertNotIn("assessment_artifact", first_line)
+            self.assertNotIn("recent assessment artifacts:", first_line)
+
+    def test_structured_state_snapshot_surfaces_recent_assessment_classifications(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            for index in range(5):
+                session = audit_dir / f"day-{index + 1}"
+                write_json(
+                    session / "outcome.json",
+                    {"day": index + 1, "ts": f"2026-01-0{index + 1}T00:00:00Z"},
+                )
+                write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+                transcript_dir = session / "transcripts"
+                transcript_dir.mkdir(parents=True)
+                transcript_dir.joinpath("assess.log").write_text("Assessment transcript.\n", encoding="utf-8")
+                if index == 4:
+                    write_json(
+                        session / "tasks/manifest.json",
+                        {"artifacts": {"assessment_missing": "tasks/assessment_missing.md"}},
+                    )
+                    (session / "tasks/assessment_missing.md").parent.mkdir(parents=True, exist_ok=True)
+                    (session / "tasks/assessment_missing.md").write_text(
+                        "Assessment was missing.\n",
+                        encoding="utf-8",
+                    )
+                else:
+                    write_json(
+                        session / "tasks/manifest.json",
+                        {"artifacts": {"assessment": "tasks/assessment.md"}},
+                    )
+                    (session / "tasks/assessment.md").parent.mkdir(parents=True, exist_ok=True)
+                    (session / "tasks/assessment.md").write_text("# Assessment\n", encoding="utf-8")
+
+            rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
+            first_line = next(line for line in rendered.splitlines() if line.startswith("claims:"))
+
+            self.assertIn("recent assessment artifacts: missing_with_diagnostic=1", first_line)
+            self.assertIn(
+                "recent assessment artifacts: missing_with_diagnostic=1",
+                rendered,
+            )
 
     def test_structured_state_snapshot_omits_classified_input_validation_from_lifecycle_gaps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

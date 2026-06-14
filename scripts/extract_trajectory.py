@@ -1041,7 +1041,19 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
     addressed_tool_failures = recently_addressed_tool_failure_categories(audit_dir)
     latest_lifecycle_counts: Counter[str] = Counter()
     latest_lifecycle_causes: list[dict[str, Any]] = []
-    for session in states.get("sessions", []) if isinstance(states.get("sessions"), list) else []:
+    state_sessions = states.get("sessions") if isinstance(states.get("sessions"), list) else []
+    recent_window_size = int(state_summary.get("recent_window_size") or 5)
+    recent_state_sessions = state_sessions[-recent_window_size:] if recent_window_size > 0 else []
+    recent_assessment_counts: Counter[str] = Counter()
+    for session in recent_state_sessions:
+        if not isinstance(session, dict):
+            continue
+        assessment = session.get("assessment") if isinstance(session.get("assessment"), dict) else {}
+        classification = str(assessment.get("classification") or "")
+        if classification and classification != "assessment_present":
+            recent_assessment_counts[classification] += 1
+
+    for session in state_sessions:
         if not isinstance(session, dict):
             continue
         tool_failure_data = session.get("tool_failures") if isinstance(session.get("tool_failures"), dict) else {}
@@ -1181,6 +1193,14 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                 "recent task issues: "
                 + ", ".join(f"{state}={count}" for state, count in recent_task_issue_states[:3])
             )
+        if recent_assessment_counts:
+            summary_parts.append(
+                "recent assessment artifacts: "
+                + ", ".join(
+                    f"{state}={count}"
+                    for state, count in recent_assessment_counts.most_common(3)
+                )
+            )
         if top_tool_failures:
             tool_summary = []
             for category, count in top_tool_failures[:3]:
@@ -1222,6 +1242,14 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
         lines.append(
             "recent task issues: "
             + "; ".join(f"{state}={count}" for state, count in recent_task_issue_states)
+        )
+    if recent_assessment_counts:
+        lines.append(
+            "recent assessment artifacts: "
+            + "; ".join(
+                f"{state}={count}"
+                for state, count in recent_assessment_counts.most_common()
+            )
         )
     if top_tool_failures:
         failure_parts = []
