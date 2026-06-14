@@ -18,6 +18,7 @@ from build_evolution_dashboard import (  # noqa: E402
     build_dashboard_claim_summary,
     corrected_gnome_lessons,
     count_claim,
+    dashboard_dataset_warnings,
     failed_tool_summary_count_claim,
     failed_tool_pattern_summary,
     run_health,
@@ -43,6 +44,49 @@ def write_events(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class BuildEvolutionDashboard(unittest.TestCase):
+    def test_dashboard_dataset_warnings_are_durable_json_signals(self):
+        warnings = dashboard_dataset_warnings(
+            {
+                "schema_version": 1,
+                "sessions": [
+                    {"id": "day-1", "work_summary": {"headline": "raw legacy session"}},
+                    2,
+                ],
+            }
+        )
+
+        self.assertIn("schema 1 is older", " ".join(warnings))
+        self.assertIn("generated_at timestamp", " ".join(warnings))
+        self.assertIn("claims_summary is missing", " ".join(warnings))
+        self.assertIn("1 non-object session row", " ".join(warnings))
+        self.assertIn("lack current task-state", " ".join(warnings))
+
+    def test_build_publishes_dataset_warnings_to_data_and_states_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "build_ok": True,
+                    "test_ok": True,
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+
+            self.assertIn("dataset_warnings", data)
+            self.assertIn(
+                "dashboard_dataset_warnings",
+                states["summary"],
+            )
+            self.assertEqual(data["dataset_warnings"], states["summary"]["dashboard_dataset_warnings"])
+
     def test_transcript_action_paths_drop_pseudo_workspace_dot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

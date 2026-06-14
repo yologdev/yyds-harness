@@ -715,6 +715,31 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("historical unrecovered tool failures:", rendered)
             self.assertNotIn("reverted_scope_mismatch", rendered)
 
+    def test_structured_state_snapshot_surfaces_dashboard_dataset_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "build_ok": True,
+                    "test_ok": True,
+                },
+            )
+
+            with unittest.mock.patch(
+                "build_evolution_dashboard.dashboard_dataset_warnings",
+                return_value=["session work summaries lack current task-state evidence."],
+            ):
+                rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
+
+            self.assertIn("dashboard dataset warnings:", rendered)
+            self.assertIn("lack current task-state evidence", rendered)
+
     def test_structured_state_snapshot_prioritizes_recent_unresolved_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

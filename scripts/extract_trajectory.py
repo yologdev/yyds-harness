@@ -990,6 +990,7 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
             build_claims_projection,
             build_dashboard_claim_summary,
             build_states_projection,
+            dashboard_dataset_warnings,
             load_sessions,
         )
     except Exception as e:  # pragma: no cover - defensive degradation for cron
@@ -1009,6 +1010,18 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
         claims = build_claims_projection(sessions, generated_at, audit_dir)
         claim_summary = build_dashboard_claim_summary(claims)
         states = build_states_projection(sessions, generated_at, audit_dir)
+        dataset_warnings = dashboard_dataset_warnings(
+            {
+                "schema_version": 2,
+                "generated_at": generated_at,
+                "source": str(audit_dir),
+                "sessions": sessions,
+                "claims_summary": claim_summary,
+            }
+        )
+        state_summary = states.get("summary") if isinstance(states.get("summary"), dict) else {}
+        state_summary["dashboard_dataset_warnings"] = dataset_warnings
+        states["summary"] = state_summary
     except Exception as e:  # pragma: no cover - defensive degradation for cron
         warn(f"could not build structured trajectory snapshot: {e}")
         return ""
@@ -1028,6 +1041,11 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
         if status != "proven" and int(count or 0) > 0
     ]
     state_summary = states.get("summary") if isinstance(states.get("summary"), dict) else {}
+    dataset_warnings = (
+        state_summary.get("dashboard_dataset_warnings")
+        if isinstance(state_summary.get("dashboard_dataset_warnings"), list)
+        else []
+    )
     recent_task_summary = (
         state_summary.get("recent_task_summary")
         if isinstance(state_summary.get("recent_task_summary"), dict)
@@ -1268,6 +1286,11 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                 action_parts.append(f"transcript_only_failed_tools={transcript_only_failed_tools}")
             if action_parts:
                 summary_parts.append("recent action evidence: " + ", ".join(action_parts))
+        if dataset_warnings:
+            summary_parts.append(
+                "dashboard dataset warnings: "
+                + "; ".join(str(warning) for warning in dataset_warnings[:2])
+            )
         if top_tool_failures:
             tool_summary = []
             for category, count in top_tool_failures[:3]:

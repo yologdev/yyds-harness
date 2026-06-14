@@ -4888,6 +4888,40 @@ def build_states_projection(
     }
 
 
+def dashboard_dataset_warnings(data: dict[str, Any]) -> list[str]:
+    """Return durable evidence-quality warnings for dashboard consumers."""
+    warnings: list[str] = []
+    schema = int(data.get("schema_version") or 0)
+    if data.get("error"):
+        warnings.append(f"Could not load data.json: {data['error']}")
+    if schema and schema < 2:
+        warnings.append(f"data.json schema {schema} is older than the dashboard's schema 2 evidence model.")
+    if not data.get("generated_at"):
+        warnings.append("data.json has no generated_at timestamp, so dashboard freshness cannot be verified.")
+    if not data.get("claims_summary"):
+        warnings.append("claims_summary is missing; claim health and the unresolved evidence queue are incomplete.")
+    sessions = data.get("sessions") if isinstance(data.get("sessions"), list) else []
+    session_rows = [session for session in sessions if isinstance(session, dict)]
+    malformed_session_count = len(sessions) - len(session_rows)
+    if malformed_session_count:
+        warnings.append(
+            f"data.json has {malformed_session_count} non-object session row(s), so session evidence is incomplete."
+        )
+    has_current_work_evidence = any(
+        key in work and work.get(key) is not None
+        for session in session_rows
+        for work in [
+            session.get("work_summary") if isinstance(session.get("work_summary"), dict) else {}
+        ]
+        for key in ("task_states", "state_lifecycle", "transcript_actions", "failed_tool_summary")
+    )
+    if session_rows and not has_current_work_evidence:
+        warnings.append(
+            "session work summaries lack current task-state, action-log, transcript-action, and lifecycle evidence fields."
+        )
+    return warnings
+
+
 HTML = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -6151,19 +6185,22 @@ HTML = r"""<!doctype html>
     }
 
     function datasetWarnings(data) {
-      const warnings = [];
+      const warnings = Array.isArray(data?.dataset_warnings) ? data.dataset_warnings.slice() : [];
+      const addWarning = warning => {
+        if (!warnings.includes(warning)) warnings.push(warning);
+      };
       const schema = Number(data?.schema_version || 0);
       if (data?.error) {
-        warnings.push(`Could not load data.json: ${data.error}`);
+        addWarning(`Could not load data.json: ${data.error}`);
       }
       if (schema && schema < 2) {
-        warnings.push(`data.json schema ${schema} is older than the dashboard's schema 2 evidence model.`);
+        addWarning(`data.json schema ${schema} is older than the dashboard's schema 2 evidence model.`);
       }
       if (!data?.generated_at) {
-        warnings.push("data.json has no generated_at timestamp, so dashboard freshness cannot be verified.");
+        addWarning("data.json has no generated_at timestamp, so dashboard freshness cannot be verified.");
       }
       if (!data?.claims_summary) {
-        warnings.push("claims_summary is missing; claim health and the unresolved evidence queue are incomplete.");
+        addWarning("claims_summary is missing; claim health and the unresolved evidence queue are incomplete.");
       }
       const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
       const hasCurrentWorkEvidence = sessions.some(session => {
@@ -6171,7 +6208,7 @@ HTML = r"""<!doctype html>
         return Boolean(work.task_states || work.state_lifecycle || work.transcript_actions || work.failed_tool_summary);
       });
       if (sessions.length && !hasCurrentWorkEvidence) {
-        warnings.push("session work summaries lack current task-state, action-log, transcript-action, and lifecycle evidence fields.");
+        addWarning("session work summaries lack current task-state, action-log, transcript-action, and lifecycle evidence fields.");
       }
       return warnings;
     }
@@ -7209,6 +7246,11 @@ def build(audit_sessions: Path, output_dir: Path, repo_root: Path | None = None)
     claims["summary"] = {**claims_summary, **claim_summary}
     data["claims_summary"] = claim_summary
     states = build_states_projection(sessions, generated_at, audit_sessions)
+    warnings = dashboard_dataset_warnings(data)
+    data["dataset_warnings"] = warnings
+    states_summary = states.get("summary") if isinstance(states.get("summary"), dict) else {}
+    states_summary["dashboard_dataset_warnings"] = warnings
+    states["summary"] = states_summary
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "data.json").write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (output_dir / "claims.json").write_text(json.dumps(claims, indent=2, sort_keys=True) + "\n", encoding="utf-8")
