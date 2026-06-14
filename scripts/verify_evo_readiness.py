@@ -53,6 +53,99 @@ def latest_session(audit_dir: Path) -> Path | None:
     return sessions[-1] if sessions else None
 
 
+def artifact_readiness_metrics(session_dir: Path) -> dict[str, Any]:
+    """Return readiness-critical metrics from durable session artifacts.
+
+    `evolve.sh` writes evo_readiness.json before the asynchronous log-feedback
+    job can add log_feedback.json. Do not depend on feedback enrichment for the
+    basic task-evidence contract; derive it from outcome/manifest/task artifacts.
+    """
+    manifest = state_graph_tools.task_manifest(session_dir)
+    tasks = state_graph_tools.selected_tasks(manifest)
+    artifacts = state_graph_tools.task_artifact_rows(session_dir)
+    outcome = state_graph_tools.load_json(session_dir / "outcome.json")
+    summary = state_graph_tools.load_json(session_dir / "state" / "summary.json")
+    lineage = state_graph_tools.lineage_rows(summary)
+    artifact_metrics = state_graph_tools.task_artifact_verification_metrics(session_dir)
+
+    task_ids = [str(task.get("task_id") or "") for task in tasks if task.get("task_id")]
+    selected = len(task_ids)
+    artifact_hits = sum(1 for task_id in task_ids if task_id in artifacts)
+    lineage_hits = sum(1 for task_id in task_ids if task_id in lineage)
+    attempt_rows = sum(
+        len(row.get("attempts") or [])
+        for row in artifacts.values()
+        if isinstance(row, dict)
+    )
+    attempted = max(
+        int_metric(outcome, "tasks_attempted"),
+        attempt_rows,
+    )
+    succeeded = int_metric(outcome, "tasks_succeeded")
+
+    result: dict[str, Any] = {
+        "task_manifest_available": bool(manifest),
+        "selected_task_count": selected,
+        "tasks_attempted": attempted,
+    }
+    if selected > 0:
+        result["task_artifact_coverage"] = artifact_hits / selected
+        result["task_lineage_capture_coverage"] = lineage_hits / selected
+    if attempted > 0:
+        result["task_success_rate"] = max(min(succeeded / attempted, 1.0), 0.0)
+    for key in (
+        "task_verification_rate",
+        "task_mechanical_verification_rate",
+        "task_stale_seed_obsolete_note_count",
+        "task_incomplete_terminal_count",
+        "task_no_edit_revert_count",
+        "task_obsolete_count",
+        "task_api_error_count",
+        "protected_file_revert_count",
+        "task_scope_mismatch_count",
+    ):
+        if key in artifact_metrics:
+            result[key] = artifact_metrics[key]
+    return result
+
+
+def merge_artifact_metrics(gnomes: dict[str, Any], artifact_metrics: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(gnomes)
+    if artifact_metrics.get("task_manifest_available"):
+        merged["task_manifest_available"] = True
+    for key in ("selected_task_count", "tasks_attempted"):
+        merged[key] = max(int_metric(merged, key), int_metric(artifact_metrics, key))
+    for key in (
+        "task_success_rate",
+        "task_verification_rate",
+        "task_mechanical_verification_rate",
+        "task_artifact_coverage",
+        "task_lineage_capture_coverage",
+    ):
+        if float_metric(merged, key) is None and float_metric(artifact_metrics, key) is not None:
+            merged[key] = artifact_metrics[key]
+    for key in (
+        "task_stale_seed_obsolete_note_count",
+        "task_incomplete_terminal_count",
+        "task_no_edit_revert_count",
+        "task_obsolete_count",
+        "task_api_error_count",
+        "protected_file_revert_count",
+        "task_scope_mismatch_count",
+    ):
+        merged[key] = max(int_metric(merged, key), int_metric(artifact_metrics, key))
+    return merged
+
+
+def task_success_pressure_visible(graph_pressure: str) -> bool:
+    return (
+        "Dominant task failure:" in graph_pressure
+        or "Raise verified task success rate" in graph_pressure
+        or "task_success_rate=" in graph_pressure
+        or "outcome_task_success_rate=" in graph_pressure
+    )
+
+
 def readiness_report(audit_dir: Path) -> dict[str, Any]:
     latest = latest_session(audit_dir)
     if latest is None:
@@ -64,7 +157,10 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
             "evidence": {},
         }
 
-    gnomes = state_graph_tools.corrected_latest_gnomes(latest)
+    gnomes = merge_artifact_metrics(
+        state_graph_tools.corrected_latest_gnomes(latest),
+        artifact_readiness_metrics(latest),
+    )
     graph_pressure = extract_trajectory.render_graph_suggestions(audit_dir)
     selected = int_metric(gnomes, "selected_task_count")
     attempted = int_metric(gnomes, "tasks_attempted")
@@ -98,7 +194,7 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
         elif task_success >= 1.0:
             if verification_rate != 1.0:
                 issues.append(f"task success is complete but verifier rate is {verification_rate}")
-        elif "Dominant task failure:" not in graph_pressure:
+        elif not task_success_pressure_visible(graph_pressure):
             issues.append("low task success lacks prompt-visible dominant failure pressure")
     else:
         issues.append(
@@ -135,7 +231,7 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
             "task_lineage_capture_coverage": lineage_coverage,
             "task_stale_seed_obsolete_note_count": stale_seed_obsolete,
             "graph_pressure_present": bool(graph_pressure),
-            "dominant_task_failure_visible": "Dominant task failure:" in graph_pressure,
+            "dominant_task_failure_visible": task_success_pressure_visible(graph_pressure),
         },
     }
 
@@ -231,6 +327,46 @@ def run_self_tests() -> int:
             any("stale seed-obsolete" in issue for issue in report["issues"]),
             report,
         )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        session = root / "day-1"
+        write_json(
+            session / "outcome.json",
+            {"day": 1, "tasks_attempted": 1, "tasks_succeeded": 0},
+        )
+        write_json(
+            session / "tasks/manifest.json",
+            {
+                "planner": {"planning_failed": False, "selected_task_count": 1},
+                "tasks": [{"task_id": "task_01", "title": "T", "files": ["src/lib.rs"]}],
+            },
+        )
+        write_json(session / "tasks/task_01/outcome.json", {"status": "reverted"})
+        write_json(session / "tasks/task_01/decision.json", {"task_id": "task_01"})
+        write_json(
+            session / "state/summary.json",
+            {
+                "latest_gnomes": {},
+                "task_lineage": [{"task_id": "task_01"}],
+            },
+        )
+        report = readiness_report(root)
+        evidence = report["evidence"]
+        check("artifact overlay sees selected task", evidence["selected_task_count"] == 1, report)
+        check("artifact overlay sees attempted task", evidence["tasks_attempted"] == 1, report)
+        check("artifact overlay sees manifest", "task manifest missing" not in "\n".join(report["issues"]), report)
+        check("artifact overlay gives task success", evidence["task_success_rate"] == 0.0, report)
+        check("artifact overlay gives artifact coverage", evidence["task_artifact_coverage"] == 1.0, report)
+        check("artifact overlay gives lineage coverage", evidence["task_lineage_capture_coverage"] == 1.0, report)
+
+    check(
+        "readiness accepts generic task success pressure",
+        task_success_pressure_visible(
+            "## Graph-derived next-task pressure\n"
+            "- Raise verified task success rate (task_success_rate=0.0): selected tasks failed"
+        ),
+    )
 
     if failures:
         print("verify_evo_readiness self-tests failed:", file=sys.stderr)
