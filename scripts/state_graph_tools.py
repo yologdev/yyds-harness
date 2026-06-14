@@ -1275,10 +1275,24 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             )
         else:
             add("planning", "Split high-turn tasks into narrower plans", "A task used many turns, suggesting the task was too broad or under-specified.", "max_task_turn_count", max_turns, 70)
-    if gnomes.get("task_artifact_coverage") == 0:
+    task_activity_expected = any(
+        int_metric(gnomes, key) > 0
+        for key in (
+            "selected_task_count",
+            "tasks_attempted",
+            "transcript_task_attempt_count",
+            "task_unverified_raw_attempt_count",
+        )
+    )
+    if gnomes.get("task_artifact_coverage") == 0 and task_activity_expected:
         add("state", "Restore task artifact coverage", "Task decisions or artifacts were missing from the audit bundle.", "task_artifact_coverage", 0, 95)
     lineage_capture = gnomes.get("task_lineage_capture_coverage")
-    if isinstance(lineage_capture, (int, float)) and not isinstance(lineage_capture, bool) and lineage_capture < 1.0:
+    if (
+        task_activity_expected
+        and isinstance(lineage_capture, (int, float))
+        and not isinstance(lineage_capture, bool)
+        and lineage_capture < 1.0
+    ):
         add(
             "state",
             "Restore explicit task lineage capture",

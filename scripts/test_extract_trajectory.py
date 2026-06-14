@@ -1497,6 +1497,7 @@ class ExtractTrajectoryTests(unittest.TestCase):
                     "latest_gnomes": {
                         "task_artifact_coverage": 1.0,
                         "task_lineage_capture_coverage": 0.0,
+                        "selected_task_count": 1,
                     }
                 },
             )

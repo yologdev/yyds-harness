@@ -364,6 +364,7 @@ class StateGraphTools(unittest.TestCase):
                     "latest_gnomes": {
                         "provider_error_count": 2,
                         "task_artifact_coverage": 0.0,
+                        "selected_task_count": 1,
                     }
                 },
             )
@@ -372,6 +373,36 @@ class StateGraphTools(unittest.TestCase):
 
             self.assertEqual(suggestions[0]["title"], "Recover provider errors before task attempts")
             self.assertEqual(suggestions[0]["metric"], "provider_error_count")
+
+    def test_evolution_suggestions_skip_task_artifact_cleanup_when_provider_blocked_before_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "provider_error_count": 2,
+                        "planner_no_task_count": 1,
+                        "task_artifact_coverage": 0.0,
+                        "task_lineage_capture_coverage": 0.0,
+                        "selected_task_count": 0,
+                        "tasks_attempted": 0,
+                        "transcript_task_attempt_count": 0,
+                    }
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {"planner": {"planning_failed": True, "task_count": 0, "selected_task_count": 0}},
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=10)
+            titles = [item["title"] for item in suggestions]
+
+            self.assertEqual(suggestions[0]["title"], "Recover provider errors before task attempts")
+            self.assertIn("Treat planning failure as provider-blocked", titles)
+            self.assertNotIn("Restore task artifact coverage", titles)
+            self.assertNotIn("Restore explicit task lineage capture", titles)
 
     def test_evolution_suggestions_prioritize_provider_recovery_over_provider_blocked_planning(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -408,6 +439,7 @@ class StateGraphTools(unittest.TestCase):
                     "latest_gnomes": {
                         "task_artifact_coverage": 1.0,
                         "task_lineage_capture_coverage": 0.0,
+                        "selected_task_count": 1,
                     }
                 },
             )
