@@ -28,6 +28,9 @@ GNOME_COMPARE_KEYS = [
     "task_spec_quality_score",
     "state_operational_capture_coverage",
     "evolution_friction_count",
+    "provider_error_count",
+    "tool_error_count",
+    "prompt_heredoc_expansion_error_count",
     "command_timeout_count",
     "evaluator_timeout_count",
     "evaluator_unverified_count",
@@ -965,6 +968,17 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             gnomes.get("task_seed_contradiction_count"),
             89,
         )
+    provider_errors = int_metric(gnomes, "provider_error_count")
+    task_api_errors = int_metric(gnomes, "task_api_error_count")
+    if provider_errors > 0 and provider_errors > task_api_errors:
+        add(
+            "deepseek",
+            "Recover provider errors before task attempts",
+            "DeepSeek/provider API errors appeared outside task-scoped API reverts; preserve the failure evidence and route retry or provider recovery before spending implementation attempts.",
+            "provider_error_count",
+            provider_errors,
+            88,
+        )
     if int(gnomes.get("task_api_error_count") or 0) > 0:
         add(
             "implementation",
@@ -1004,6 +1018,24 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             "protected_file_revert_count",
             gnomes.get("protected_file_revert_count"),
             83,
+        )
+    if int(gnomes.get("tool_error_count") or 0) > 0:
+        add(
+            "tooling",
+            "Recover failed tool actions before scoring",
+            "Failed tool actions were present in session evidence; inspect the dominant tool failure and add prompt/tool guards before trusting the next score.",
+            "tool_error_count",
+            gnomes.get("tool_error_count"),
+            82,
+        )
+    if int(gnomes.get("prompt_heredoc_expansion_error_count") or 0) > 0:
+        add(
+            "prompting",
+            "Quote generated prompts before execution",
+            "Prompt heredocs expanded Markdown code spans before yyds started; render prompts from quoted templates or escape generated backticks.",
+            "prompt_heredoc_expansion_error_count",
+            gnomes.get("prompt_heredoc_expansion_error_count"),
+            81,
         )
     if int(gnomes.get("search_error_count") or 0) > 0:
         add("tooling", "Harden search commands and pattern escaping", "Search/grep errors created avoidable evolution friction.", "search_error_count", gnomes.get("search_error_count"), 80)

@@ -141,6 +141,8 @@ GNOME_KEYS = [
     "audit_capture_coverage",
     "closed_loop_fix_rate",
     "evolution_friction_count",
+    "provider_error_count",
+    "tool_error_count",
     "prompt_heredoc_expansion_error_count",
     "command_timeout_count",
     "evaluator_timeout_count",
@@ -1466,6 +1468,14 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "task_no_edit_revert",
                 "fingerprint": "implementation task reverted without touching files",
                 "action": "force implementation agents to either make an early scoped edit, write an obsolete note, or fail with a concrete blocker",
+            }
+        )
+    if int(metrics.get("provider_error_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "provider_error",
+                "fingerprint": "DeepSeek/provider API errors appeared in the coding loop",
+                "action": "preserve provider-error evidence and route recovery or retry before spending implementation attempts",
             }
         )
     if int(metrics.get("task_api_error_count") or 0) > 0:

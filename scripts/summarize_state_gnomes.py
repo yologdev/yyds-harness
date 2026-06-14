@@ -52,6 +52,8 @@ GNOME_KEYS = [
     "audit_capture_coverage",
     "closed_loop_fix_rate",
     "evolution_friction_count",
+    "provider_error_count",
+    "tool_error_count",
     "command_timeout_count",
     "evaluator_timeout_count",
     "search_error_count",

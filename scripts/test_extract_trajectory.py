@@ -1267,9 +1267,12 @@ class ExtractTrajectoryTests(unittest.TestCase):
         cases = [
             ("state_live_baseline_shrink_count", "Keep live state append-only"),
             ("task_api_error_count", "Recover API-error tasks instead of generic reverts"),
+            ("provider_error_count", "Recover provider errors before task attempts"),
             ("task_no_edit_revert_count", "Force reverted tasks to leave concrete evidence"),
             ("task_scope_mismatch_count", "Align implementation edits with task file scope"),
             ("protected_file_revert_count", "Route protected-file work through explicit approval"),
+            ("tool_error_count", "Recover failed tool actions before scoring"),
+            ("prompt_heredoc_expansion_error_count", "Quote generated prompts before execution"),
             ("deepseek_cache_ratio_unverified_count", "Ignore prose-only DeepSeek cache ratios"),
             ("deepseek_cache_metric_missing_count", "Record token-backed DeepSeek cache metrics"),
         ]

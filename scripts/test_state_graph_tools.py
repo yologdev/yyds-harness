@@ -213,6 +213,11 @@ class StateGraphTools(unittest.TestCase):
                 "provider/API errors",
             ),
             (
+                "provider_error_count",
+                "Recover provider errors before task attempts",
+                "outside task-scoped API reverts",
+            ),
+            (
                 "task_no_edit_revert_count",
                 "Force reverted tasks to leave concrete evidence",
                 "reverted without touching files",
@@ -226,6 +231,16 @@ class StateGraphTools(unittest.TestCase):
                 "protected_file_revert_count",
                 "Route protected-file work through explicit approval",
                 "protected files",
+            ),
+            (
+                "tool_error_count",
+                "Recover failed tool actions before scoring",
+                "Failed tool actions",
+            ),
+            (
+                "prompt_heredoc_expansion_error_count",
+                "Quote generated prompts before execution",
+                "Prompt heredocs expanded",
             ),
             (
                 "deepseek_cache_ratio_unverified_count",
