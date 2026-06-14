@@ -957,8 +957,8 @@ def render_log_feedback(
         for lesson in lessons[:3]:
             if not isinstance(lesson, dict):
                 continue
-            fp = str(lesson.get("fingerprint") or "")[:90]
-            action = str(lesson.get("action") or "")[:100]
+            fp = str(lesson.get("fingerprint") or "")[:120]
+            action = str(lesson.get("action") or "")[:120]
             if fp:
                 lines.append(f"- {fp} -> {action}")
 

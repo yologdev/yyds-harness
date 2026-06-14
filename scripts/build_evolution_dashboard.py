@@ -2939,6 +2939,48 @@ def failed_tool_category_lessons(work: dict[str, Any] | None) -> list[dict[str, 
     return lessons
 
 
+def lifecycle_lesson_cause_summary(work: dict[str, Any] | None, metric_key: str, limit: int = 2) -> str:
+    if not isinstance(work, dict):
+        return ""
+    lifecycle = work.get("state_lifecycle") if isinstance(work.get("state_lifecycle"), dict) else {}
+    rows = lifecycle.get("imbalance_causes") if isinstance(lifecycle.get("imbalance_causes"), list) else []
+    category_by_metric = {
+        "deepseek_model_call_incomplete_count": {"model_call_incomplete"},
+        "state_run_incomplete_count": {"run_incomplete"},
+    }
+    allowed = category_by_metric.get(metric_key)
+    if not allowed:
+        return ""
+    labels = {
+        "run_incomplete": "state_incomplete",
+        "run_unmatched_completed": "state_unmatched",
+        "model_call_incomplete": "model_incomplete",
+        "model_call_unmatched_completed": "model_unmatched",
+    }
+    parts: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        category = str(row.get("category") or "")
+        if category not in allowed:
+            continue
+        cause = str(row.get("cause") or "")
+        if cause == "input_validation_exit_without_run_start":
+            continue
+        if cause.startswith("open_after_file_edit:"):
+            cause = "open_after_file_edit"
+        try:
+            count = int(row.get("count") or 0)
+        except (TypeError, ValueError):
+            continue
+        if count <= 0:
+            continue
+        parts.append(f"{labels.get(category, category)}/{cause or 'unknown'}={count}")
+        if len(parts) >= limit:
+            break
+    return ", ".join(parts)
+
+
 def corrected_gnome_lessons(
     gnomes: dict[str, Any],
     existing_lessons: list[dict[str, Any]] | None = None,
@@ -3049,6 +3091,9 @@ def corrected_gnome_lessons(
         count = metric_int(gnomes, metric_key)
         if count <= 0:
             continue
+        cause_summary = lifecycle_lesson_cause_summary(work, metric_key)
+        if cause_summary:
+            fingerprint = f"{fingerprint}: {cause_summary}"
         lesson = {
             "kind": kind,
             "fingerprint": fingerprint,

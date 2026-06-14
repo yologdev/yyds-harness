@@ -222,7 +222,7 @@ class ExtractTrajectoryTests(unittest.TestCase):
             ],
             [
                 {
-                    "fingerprint": "DeepSeek model call lifecycle was incomplete",
+                    "fingerprint": "DeepSeek model call lifecycle was incomplete: model_incomplete/open_after_command=1",
                     "action": "close model-call lifecycle events",
                 }
             ],
@@ -230,6 +230,7 @@ class ExtractTrajectoryTests(unittest.TestCase):
 
         self.assertIn("Corrected top lessons for next run:", rendered)
         self.assertIn("DeepSeek model call lifecycle was incomplete", rendered)
+        self.assertIn("model_incomplete/open_after_command=1", rendered)
         self.assertIn(
             "Historical repeated across prior log feedback (context only; corrected lessons are current pressure):",
             rendered,

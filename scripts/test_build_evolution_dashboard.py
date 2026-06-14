@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_evolution_dashboard import (  # noqa: E402
     build,
     build_dashboard_claim_summary,
+    corrected_gnome_lessons,
     count_claim,
     failed_tool_summary_count_claim,
     failed_tool_pattern_summary,
@@ -2193,13 +2194,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
                         "payload": {"_yoyo": {"run_id": "run-a"}, "model": "deepseek-v4-pro"},
                     },
                     {
-                        "kind": "RunCompleted",
-                        "payload": {
-                            "_yoyo": {"run_id": "run-a"},
-                            "status": "error",
-                            "error": "exit code 1",
-                            "error_detail": "empty_input",
-                        },
+                        "kind": "CommandCompleted",
+                        "payload": {"_yoyo": {"run_id": "run-a"}, "command": "cargo test"},
                     },
                     {
                         "kind": "ModelCallCompleted",
@@ -2224,9 +2220,8 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["deepseek_model_call_incomplete_count"], 1)
             self.assertEqual(work["deepseek_model_call_unmatched_completed_count"], 1)
             self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["run_id"], "run-a")
-            self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["error_detail"], "empty_input")
-            self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["last_event"]["kind"], "RunCompleted")
-            self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["last_event"]["error_detail"], "empty_input")
+            self.assertIsNone(work["deepseek_model_call_incomplete_runs"][0]["error_detail"])
+            self.assertEqual(work["deepseek_model_call_incomplete_runs"][0]["last_event"]["kind"], "CommandCompleted")
             self.assertEqual(work["deepseek_model_call_unmatched_completed_details"][0]["run_id"], "run-b")
             self.assertEqual(
                 work["deepseek_model_call_unmatched_completed_details"][0]["last_event"]["kind"],
@@ -2248,6 +2243,16 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "examples": ["run-b"],
                 },
                 model_claim["actual"]["imbalance_causes"],
+            )
+            lifecycle_lessons = [
+                lesson
+                for lesson in work["corrected_gnome_lessons"]
+                if lesson["kind"] == "deepseek_model_call_incomplete"
+            ]
+            self.assertEqual(len(lifecycle_lessons), 1)
+            self.assertIn(
+                "model_incomplete/open_after_command=1",
+                lifecycle_lessons[0]["fingerprint"],
             )
 
     def test_model_call_lifecycle_pairs_wrapped_yoyo_run_ids(self):
@@ -2342,6 +2347,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             },
             lifecycle["imbalance_causes"],
         )
+        lessons = corrected_gnome_lessons({"state_run_incomplete_count": 1}, work=work)
+        self.assertEqual(lessons[0]["kind"], "state_run_incomplete")
+        self.assertIn("state_incomplete/open_after_file_edit=1", lessons[0]["fingerprint"])
 
     def test_dashboard_marks_lifecycle_run_ids_reused_across_sessions(self):
         with tempfile.TemporaryDirectory() as tmp:
