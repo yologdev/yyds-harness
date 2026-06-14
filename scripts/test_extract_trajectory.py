@@ -1300,6 +1300,34 @@ class ExtractTrajectoryTests(unittest.TestCase):
                 self.assertIn(title, rendered)
                 self.assertIn(f"{metric}=1", rendered)
 
+    def test_graph_suggestions_surface_low_state_capture_pressure(self) -> None:
+        cases = [
+            (
+                {"state_operational_capture_coverage": 0.0, "state_capture_coverage": 1.0},
+                "Restore operational state capture",
+                "state_operational_capture_coverage=0.0",
+            ),
+            (
+                {"state_capture_coverage": 0.0},
+                "Restore state event capture",
+                "state_capture_coverage=0.0",
+            ),
+        ]
+        for gnomes, title, metric_text in cases:
+            with self.subTest(title=title), tempfile.TemporaryDirectory() as tmp:
+                audit_dir = Path(tmp)
+                session = audit_dir / "day-1"
+                latest_gnomes = {"task_artifact_coverage": 1.0}
+                latest_gnomes.update(gnomes)
+                write_json(session / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z"})
+                write_json(session / "state/summary.json", {"latest_gnomes": latest_gnomes})
+
+                rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+                self.assertIn("## Graph-derived next-task pressure", rendered)
+                self.assertIn(title, rendered)
+                self.assertIn(metric_text, rendered)
+
     def test_graph_suggestions_surface_recent_action_evidence_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

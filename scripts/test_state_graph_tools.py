@@ -273,6 +273,35 @@ class StateGraphTools(unittest.TestCase):
                 self.assertEqual(suggestion["value"], 1)
                 self.assertIn(reason_snippet, suggestion["reason"])
 
+    def test_evolution_suggestions_surface_low_state_capture_pressure(self):
+        cases = [
+            (
+                {"state_operational_capture_coverage": 0.0, "state_capture_coverage": 1.0},
+                "Restore operational state capture",
+                "state_operational_capture_coverage",
+                "Operational yoagent-state events",
+            ),
+            (
+                {"state_capture_coverage": 0.0},
+                "Restore state event capture",
+                "state_capture_coverage",
+                "state/events.jsonl",
+            ),
+        ]
+        for gnomes, title, metric, reason_snippet in cases:
+            with self.subTest(metric=metric), tempfile.TemporaryDirectory() as tmp:
+                session = Path(tmp) / "sessions/day-1"
+                latest_gnomes = {"task_artifact_coverage": 1.0}
+                latest_gnomes.update(gnomes)
+                write_json(session / "state/summary.json", {"latest_gnomes": latest_gnomes})
+
+                suggestions = state_graph_tools.evolution_suggestions(session, limit=10)
+                suggestion = next(item for item in suggestions if item["title"] == title)
+
+                self.assertEqual(suggestion["metric"], metric)
+                self.assertEqual(suggestion["value"], 0.0)
+                self.assertIn(reason_snippet, suggestion["reason"])
+
     def test_evolution_suggestions_include_lifecycle_cause_detail(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

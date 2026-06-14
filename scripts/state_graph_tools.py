@@ -928,6 +928,26 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             value,
             96,
         )
+    operational_capture = gnomes.get("state_operational_capture_coverage")
+    state_capture = gnomes.get("state_capture_coverage")
+    if isinstance(operational_capture, (int, float)) and not isinstance(operational_capture, bool) and operational_capture < 1.0:
+        add(
+            "state",
+            "Restore operational state capture",
+            "Operational yoagent-state events were missing or incomplete; preserve command/tool/model lifecycle events before trusting gnome movement.",
+            "state_operational_capture_coverage",
+            operational_capture,
+            90,
+        )
+    elif isinstance(state_capture, (int, float)) and not isinstance(state_capture, bool) and state_capture < 1.0:
+        add(
+            "state",
+            "Restore state event capture",
+            "yoagent-state events were missing from session evidence; preserve state/events.jsonl before audit-log session push.",
+            "state_capture_coverage",
+            state_capture,
+            90,
+        )
     if int(gnomes.get("state_live_baseline_shrink_count") or 0) > 0:
         add(
             "state",
