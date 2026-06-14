@@ -27,7 +27,7 @@ from state_graph_tools import replay_check_session
 
 
 ERROR_LINE_RE = re.compile(
-    r"(##\[error\]|::error::|\berror(?:\[[^\]]+\])?:|\berror\[[^\]]+\]|\bfatal:|\bpanicked\b|\bexception\b|\btraceback\b|timed out|api error|network error|dns error|exit code [1-9]\d*|process completed with exit code [1-9]\d*|test result: failed)",
+    r"(##\[error\]|::error::|\berror(?:\[[^\]]+\])?:|\berror\[[^\]]+\]|\bfatal:|\bpanicked\b|\bexception\b|\btraceback\b|timed out|no fallback configured|piped_api_failure|exit code [1-9]\d*|process completed with exit code [1-9]\d*|test result: failed)",
     re.IGNORECASE,
 )
 PROVIDER_STATUS_RE = (
@@ -35,11 +35,11 @@ PROVIDER_STATUS_RE = (
     r"|(?:\b(?:429|5\d\d)\b\W{0,24}(?:http|status|response|api|rate limit))"
 )
 PROVIDER_ERROR_RE = re.compile(
-    rf"(provider_error|rate_limit|rate limit|api error|network error|dns error|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded|{PROVIDER_STATUS_RE})",
+    rf"(reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded|{PROVIDER_STATUS_RE}|(?:\b(?:error|fatal|exception|traceback)\b\W{{0,12}}.*(?:provider_error|rate_limit|rate limit|api error|network error|dns error|provider|overloaded)))",
     re.IGNORECASE,
 )
 EXPLICIT_PROVIDER_SIGNAL_RE = re.compile(
-    rf"(provider_error|rate_limit|rate limit|api error|network error|dns error|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded|{PROVIDER_STATUS_RE})",
+    rf"(reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded|{PROVIDER_STATUS_RE}|(?:\b(?:error|fatal|exception|traceback)\b\W{{0,12}}.*(?:provider_error|rate_limit|rate limit|api error|network error|dns error|provider|overloaded)))",
     re.IGNORECASE,
 )
 JSON_ERROR_RE = re.compile(r"(json|schema|deserialize|parse).*(error|fail)", re.IGNORECASE)
@@ -2035,6 +2035,17 @@ def run_self_tests() -> int:
     )
     check("DeepSeek network transcript errors counted as provider errors", network_provider["provider_error_count"] == 2, network_provider)
     check("DeepSeek network transcript errors fingerprinted", network_provider["distinct_failure_count"] >= 1, network_provider)
+    provider_prose = parse_log(
+        "\n".join(
+            [
+                "Recover API error tasks instead of generic reverts.",
+                "The assessment mentions provider/API task failures as prior evidence.",
+                "No API errors were observed in the last five sessions.",
+            ]
+        )
+    )
+    check("provider prose is not counted as provider errors", provider_prose["provider_error_count"] == 0, provider_prose)
+    check("provider prose is not fingerprinted as failures", provider_prose["distinct_failure_count"] == 0, provider_prose)
     assessment_numbers = parse_log(
         "\n".join(
             [
@@ -2064,8 +2075,8 @@ def run_self_tests() -> int:
         )
     )
     check(
-        "setup curl workaround prose is not provider failure evidence",
-        provider_block_with_setup_noise["provider_error_count"] == 2,
+        "setup and harness provider prose is not provider failure evidence",
+        provider_block_with_setup_noise["provider_error_count"] == 0,
         provider_block_with_setup_noise,
     )
     check(

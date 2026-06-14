@@ -660,7 +660,7 @@ PROVIDER_UNAVAILABLE=false
 agent_log_has_api_error() {
     local log_file="$1"
     [ -f "$log_file" ] || return 1
-    grep -Eiq '("type"[[:space:]]*:[[:space:]]*"error"|api error|network error|dns error|reqwest::error|failed to lookup address information|no fallback configured|provider_error|rate_limit|rate limit|piped_api_failure|overloaded|((http|status|status_code|response|request|code)[^[:alnum:]]{0,24}(429|5[0-9][0-9])\b)|(\b(429|5[0-9][0-9])\b[^[:alnum:]]{0,24}(http|status|response|api|rate limit)))' "$log_file" 2>/dev/null
+    grep -Eiq '("type"[[:space:]]*:[[:space:]]*"error"|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded|((http|status|status_code|response|request|code)[^[:alnum:]]{0,24}(429|5[0-9][0-9])\b)|(\b(429|5[0-9][0-9])\b[^[:alnum:]]{0,24}(http|status|response|api|rate limit))|(^|[[:space:]])(error|fatal|exception|traceback)[^[:alnum:]]{0,12}.*(provider_error|rate_limit|rate limit|api error|network error|dns error|provider|overloaded))' "$log_file" 2>/dev/null
 }
 
 # ── Helper: run agent with automatic fallback on API error ──
