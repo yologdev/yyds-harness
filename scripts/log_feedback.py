@@ -27,15 +27,15 @@ from state_graph_tools import replay_check_session
 
 
 ERROR_LINE_RE = re.compile(
-    r"(##\[error\]|::error::|\berror(?:\[[^\]]+\])?:|\berror\[[^\]]+\]|\bfatal:|\bpanicked\b|\bexception\b|\btraceback\b|timed out|exit code [1-9]\d*|process completed with exit code [1-9]\d*|test result: failed)",
+    r"(##\[error\]|::error::|\berror(?:\[[^\]]+\])?:|\berror\[[^\]]+\]|\bfatal:|\bpanicked\b|\bexception\b|\btraceback\b|timed out|api error|network error|dns error|exit code [1-9]\d*|process completed with exit code [1-9]\d*|test result: failed)",
     re.IGNORECASE,
 )
 PROVIDER_ERROR_RE = re.compile(
-    r"(provider_error|rate_limit|rate limit|\b(?:http\s*)?(?:429|5\d\d)\b|api error|overloaded)",
+    r"(provider_error|rate_limit|rate limit|\b(?:http\s*)?(?:429|5\d\d)\b|api error|network error|dns error|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded)",
     re.IGNORECASE,
 )
 EXPLICIT_PROVIDER_SIGNAL_RE = re.compile(
-    r"(provider_error|rate_limit|rate limit|\b(?:http\s*)?(?:429|5\d\d)\b|overloaded)",
+    r"(provider_error|rate_limit|rate limit|\b(?:http\s*)?(?:429|5\d\d)\b|api error|network error|dns error|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded)",
     re.IGNORECASE,
 )
 JSON_ERROR_RE = re.compile(r"(json|schema|deserialize|parse).*(error|fail)", re.IGNORECASE)
@@ -793,6 +793,21 @@ def task_turn_metrics(session_dir: Path) -> dict[str, Any]:
     }
 
 
+def transcript_feedback_text(session_dir: Path) -> tuple[str, int]:
+    transcript_dir = session_dir / "transcripts"
+    if not transcript_dir.is_dir():
+        return "", 0
+    chunks: list[str] = []
+    count = 0
+    for path in sorted(transcript_dir.glob("*.log")):
+        text = read_text(path)
+        if not text.strip():
+            continue
+        count += 1
+        chunks.append(f"## transcript: {path.relative_to(session_dir)}\n{text}")
+    return "\n".join(chunks), count
+
+
 def payload_int(payload: dict[str, Any], *keys: str) -> int | None:
     for key in keys:
         value = payload.get(key)
@@ -1321,7 +1336,9 @@ def build_assessment(
     state_metrics = state_trace_metrics(session_dir)
     pipeline_metrics = state_pipeline_metrics(session_dir)
     audit_exists = (session_dir / "audit.jsonl").is_file()
-    parsed = parse_log(log_text) if log_available else parse_log("")
+    transcript_text, transcript_log_file_count = transcript_feedback_text(session_dir)
+    parsed_text = log_text if log_available else transcript_text
+    parsed = parse_log(parsed_text)
     turn_metrics = task_turn_metrics(session_dir)
     cache_metrics = state_cache_metrics(session_dir)
     previous = previous_feedback(session_dir)
@@ -1367,6 +1384,8 @@ def build_assessment(
     confidence = 0.0
     if log_available:
         confidence += 0.45
+    elif transcript_log_file_count > 0:
+        confidence += 0.20
     if outcome:
         confidence += 0.20
     if int(state_metrics.get("state_event_count") or 0) > 0:
@@ -1377,6 +1396,8 @@ def build_assessment(
     audit_capture_coverage = 1.0 if audit_exists else 0.0
     metrics: dict[str, Any] = {
         "coding_log_available": log_available,
+        "transcript_log_available": transcript_log_file_count > 0,
+        "transcript_log_file_count": transcript_log_file_count,
         "coding_log_confidence": round(confidence, 4),
         "workflow_success": workflow_success,
         "workflow_conclusion": workflow_conclusion or "unknown",
@@ -1791,6 +1812,16 @@ def run_self_tests() -> int:
     check("provider errors counted", parsed["provider_error_count"] == 1)
     check("failure fingerprints captured", parsed["distinct_failure_count"] >= 2)
     check("retry markers captured", parsed["retry_markers"] == 1)
+    network_provider = parse_log(
+        "\n".join(
+            [
+                'error: Network error: reqwest::Error { source: dns error, error: "failed to lookup address information" }',
+                "API error with no fallback configured. Exiting.",
+            ]
+        )
+    )
+    check("DeepSeek network transcript errors counted as provider errors", network_provider["provider_error_count"] == 2, network_provider)
+    check("DeepSeek network transcript errors fingerprinted", network_provider["distinct_failure_count"] >= 1, network_provider)
     noisy = parse_log(
         "\n".join(
             [
@@ -1996,6 +2027,26 @@ def run_self_tests() -> int:
         check("max task turn gnome counted", turns["max_task_turn_count"] == 18, turns)
         check("avg task turn gnome counted", turns["avg_task_turn_count"] == 13.0, turns)
         check("total task turn gnome counted", turns["total_task_turn_count"] == 26, turns)
+        (session / "outcome.json").write_text(json.dumps({"tasks_attempted": 0, "tasks_succeeded": 0}) + "\n", encoding="utf-8")
+        (transcript_dir / "assess.log").write_text(
+            'error: Network error: reqwest::Error { source: dns error, error: "failed to lookup address information" }\n'
+            "API error with no fallback configured. Exiting.\n",
+            encoding="utf-8",
+        )
+        transcript_assessment = build_assessment(
+            session_dir=session,
+            log_available=False,
+            log_error="fetch disabled",
+            log_text="",
+            repo="",
+            run_id="",
+            run_attempt="",
+            workflow_conclusion="unknown",
+        )
+        transcript_metrics = transcript_assessment["metrics"]
+        check("transcript fallback marks transcript log available", transcript_metrics["transcript_log_available"] is True, transcript_metrics)
+        check("transcript fallback counts provider errors", transcript_metrics["provider_error_count"] >= 2, transcript_metrics)
+        check("transcript fallback adds confidence", transcript_metrics["coding_log_confidence"] >= 0.2, transcript_metrics)
         high_turn_lessons = [
             lesson["kind"]
             for lesson in top_lessons(
