@@ -1485,12 +1485,19 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("1 unlanded source task(s)", session_data["work_summary"]["headline"])
             self.assertEqual(
                 session_data["work_summary"]["evolution_suggestions"][0]["metric"],
-                "evaluator_unverified_count",
+                "outcome_task_success_rate",
             )
             self.assertTrue(
                 any(
                     row.get("metric") == "task_unlanded_source_count"
                     and row.get("title") == "Make source-edit outcomes land or explain reverts"
+                    for row in session_data["work_summary"]["evolution_suggestions"]
+                )
+            )
+            self.assertTrue(
+                any(
+                    row.get("metric") == "evaluator_unverified_count"
+                    and row.get("title") == "Bound evaluator checks so verdicts are not skipped"
                     for row in session_data["work_summary"]["evolution_suggestions"]
                 )
             )

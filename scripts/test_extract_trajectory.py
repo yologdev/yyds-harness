@@ -1541,6 +1541,44 @@ class ExtractTrajectoryTests(unittest.TestCase):
                 self.assertIn(title, rendered)
                 self.assertIn(metric_text, rendered)
 
+    def test_graph_suggestions_surface_low_task_success_pressure(self) -> None:
+        cases = [
+            (
+                {"task_success_rate": 0.5, "session_success_rate": 0.0},
+                {},
+                "Raise verified task success rate",
+                "task_success_rate=0.5",
+            ),
+            (
+                {},
+                {"tasks_attempted": 2, "tasks_succeeded": 1},
+                "Raise verified task success rate",
+                "outcome_task_success_rate=0.5",
+            ),
+            (
+                {"task_success_rate": 1.0, "session_success_rate": 0.0},
+                {},
+                "Raise session success rate",
+                "session_success_rate=0.0",
+            ),
+        ]
+        for gnomes, outcome_metrics, title, metric_text in cases:
+            with self.subTest(title=title, metric_text=metric_text), tempfile.TemporaryDirectory() as tmp:
+                audit_dir = Path(tmp)
+                session = audit_dir / "day-1"
+                latest_gnomes = {"task_artifact_coverage": 1.0}
+                latest_gnomes.update(gnomes)
+                outcome = {"day": 1, "ts": "2026-01-01T00:00:00Z"}
+                outcome.update(outcome_metrics)
+                write_json(session / "outcome.json", outcome)
+                write_json(session / "state/summary.json", {"latest_gnomes": latest_gnomes})
+
+                rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+                self.assertIn("## Graph-derived next-task pressure", rendered)
+                self.assertIn(title, rendered)
+                self.assertIn(metric_text, rendered)
+
     def test_graph_suggestions_surface_recent_action_evidence_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

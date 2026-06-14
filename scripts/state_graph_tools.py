@@ -579,6 +579,29 @@ def fully_verified_success_metrics(metrics: dict[str, Any]) -> bool:
     )
 
 
+def float_metric(metrics: dict[str, Any], key: str) -> float | None:
+    value = metrics.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def outcome_task_success_rate(session_dir: Path) -> float | None:
+    outcome = load_json(session_dir / "outcome.json")
+    attempted = int_metric(outcome, "tasks_attempted")
+    if attempted <= 0:
+        return None
+    succeeded = int_metric(outcome, "tasks_succeeded")
+    return max(min(succeeded / attempted, 1.0), 0.0)
+
+
 def lifecycle_cause(last_event: Any) -> str:
     if not isinstance(last_event, dict):
         return "unknown_last_event"
@@ -1069,6 +1092,32 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
         add("eval", "Bound evaluator checks so verdicts are not skipped", "Some task evals were unverified or timed out.", "evaluator_unverified_count", gnomes.get("evaluator_unverified_count"), 90)
     if int(gnomes.get("evaluator_timeout_with_verdict_count") or 0) > 0:
         add("eval", "Stop evaluator once verdict evidence exists", "An evaluator wrote a verdict but still timed out, making the verifier evidence ambiguous.", "evaluator_timeout_with_verdict_count", gnomes.get("evaluator_timeout_with_verdict_count"), 92)
+    task_success_rate = float_metric(gnomes, "task_success_rate")
+    task_success_metric = "task_success_rate"
+    if task_success_rate is None:
+        task_success_rate = outcome_task_success_rate(session_dir)
+        task_success_metric = "outcome_task_success_rate"
+    if task_success_rate is not None and task_success_rate < 1.0:
+        add(
+            "task",
+            "Raise verified task success rate",
+            "Selected or attempted tasks did not all finish as verified successful outcomes; use task artifacts, action logs, and transcripts to remove the highest-frequency failure class before optimizing secondary gnomes.",
+            task_success_metric,
+            task_success_rate,
+            91,
+        )
+    session_success_rate = float_metric(gnomes, "session_success_rate")
+    if session_success_rate is not None and session_success_rate < 1.0 and (
+        task_success_rate is None or task_success_rate >= 1.0
+    ):
+        add(
+            "task",
+            "Raise session success rate",
+            "The evo session did not complete cleanly even though task success was not the visible bottleneck; inspect build/test/revert status and make the session outcome pass end to end.",
+            "session_success_rate",
+            session_success_rate,
+            89,
+        )
     verification_rate = gnomes.get("task_verification_rate")
     if (
         isinstance(verification_rate, (int, float))
