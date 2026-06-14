@@ -176,6 +176,30 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(obsolete["value"], 1)
             self.assertIn("obsolete or already satisfied", obsolete["reason"])
 
+    def test_evolution_suggestions_surface_raw_seed_contradictions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "task_seed_contradiction_count": 1,
+                        "task_artifact_coverage": 1.0,
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+            contradiction = next(
+                item
+                for item in suggestions
+                if item["title"] == "Validate seeded tasks against fresh assessment"
+            )
+
+            self.assertEqual(contradiction["metric"], "task_seed_contradiction_count")
+            self.assertEqual(contradiction["value"], 1)
+            self.assertIn("contradicted by assessment evidence", contradiction["reason"])
+
     def test_evolution_suggestions_surface_measured_execution_state_and_cache_pressure(self):
         cases = [
             (

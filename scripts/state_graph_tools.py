@@ -956,6 +956,15 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             gnomes.get("task_obsolete_count"),
             86,
         )
+    if int(gnomes.get("task_seed_contradiction_count") or 0) > 0 and not assessment_contradictions:
+        add(
+            "planning",
+            "Validate seeded tasks against fresh assessment",
+            "Seeded tasks were contradicted by assessment evidence; validate seeds before implementation and replace stale targets.",
+            "task_seed_contradiction_count",
+            gnomes.get("task_seed_contradiction_count"),
+            89,
+        )
     if int(gnomes.get("task_api_error_count") or 0) > 0:
         add(
             "implementation",
