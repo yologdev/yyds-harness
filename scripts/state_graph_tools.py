@@ -118,24 +118,73 @@ def selected_tasks(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return [task for task in tasks if isinstance(task, dict)]
 
 
-def task_spec_evidence_gap_count(manifest: dict[str, Any]) -> int:
+TASK_SPEC_WARNING_SUFFIXES = {
+    "missing_expected_evidence",
+    "assessment_contradiction",
+    "generic_self_improvement",
+    "missing_files",
+    "thin_task_spec",
+}
+
+
+def task_spec_warning_counts(manifest: dict[str, Any]) -> dict[str, int]:
     tasks = selected_tasks(manifest)
     if not tasks:
-        return 0
-    warning_task_ids = {
-        warning.split(":", 1)[0]
-        for warning in (manifest.get("warnings") or [])
-        if isinstance(warning, str) and warning.endswith(":missing_expected_evidence")
-    }
-    missing = 0
+        return {}
+    counts = {suffix: 0 for suffix in TASK_SPEC_WARNING_SUFFIXES}
+    counted: set[tuple[str, str]] = set()
+    for warning in manifest.get("warnings") or []:
+        if not isinstance(warning, str) or ":" not in warning:
+            continue
+        task_id, suffix = warning.split(":", 1)
+        if suffix in TASK_SPEC_WARNING_SUFFIXES and (task_id, suffix) not in counted:
+            counts[suffix] += 1
+            counted.add((task_id, suffix))
     for task in tasks:
         task_id = str(task.get("task_id") or "")
         quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
         expected = str(task.get("expected_evidence") or "").strip()
         has_expected_flag = quality.get("has_expected_evidence")
-        if task_id in warning_task_ids or has_expected_flag is False or not expected:
-            missing += 1
-    return missing
+        checks = {
+            "missing_expected_evidence": has_expected_flag is False or not expected,
+            "generic_self_improvement": quality.get("generic_self_improvement") is True,
+            "missing_files": not task.get("files"),
+            "thin_task_spec": (
+                isinstance(quality.get("score"), (int, float))
+                and not isinstance(quality.get("score"), bool)
+                and float(quality.get("score") or 0.0) < 0.75
+            ),
+        }
+        alignment = (
+            quality.get("assessment_alignment")
+            if isinstance(quality.get("assessment_alignment"), dict)
+            else {}
+        )
+        checks["assessment_contradiction"] = alignment.get("contradicted_by_assessment") is True
+        for suffix, is_missing in checks.items():
+            if is_missing and (task_id, suffix) not in counted:
+                counts[suffix] += 1
+                counted.add((task_id, suffix))
+    return {key: value for key, value in sorted(counts.items()) if value > 0}
+
+
+def task_spec_warning_detail(counts: dict[str, int]) -> str:
+    labels = {
+        "assessment_contradiction": "assessment_contradiction",
+        "generic_self_improvement": "generic_self_improvement",
+        "missing_expected_evidence": "missing_expected_evidence",
+        "missing_files": "missing_files",
+        "thin_task_spec": "thin_task_spec",
+    }
+    return ", ".join(
+        f"{labels[key]}={value}"
+        for key, value in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        if value > 0
+    )
+
+
+def task_spec_evidence_gap_count(manifest: dict[str, Any]) -> int:
+    return task_spec_warning_counts(manifest).get("missing_expected_evidence", 0)
 
 
 def path_matches(planned: str, touched: str) -> bool:
@@ -775,15 +824,38 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
 
     if int(gnomes.get("planner_no_task_count") or 0) > 0 or (manifest and (manifest.get("planner") or {}).get("planning_failed")):
         add("planner", "Make planning failure actionable", "The planner produced no concrete task files.", "planner_no_task_count", gnomes.get("planner_no_task_count"), 100)
-    missing_expected_evidence = task_spec_evidence_gap_count(manifest)
+    spec_warning_counts = task_spec_warning_counts(manifest)
+    spec_warning_total = sum(spec_warning_counts.values())
+    spec_warning_detail = task_spec_warning_detail(spec_warning_counts)
+    assessment_contradictions = spec_warning_counts.get("assessment_contradiction", 0)
+    if assessment_contradictions:
+        add(
+            "planning",
+            "Replace assessment-contradicted task specs",
+            f"Selected task specs contradicted fresh assessment evidence ({spec_warning_detail}); replace stale seeds before implementation.",
+            "task_manifest_seed_contradiction_count",
+            assessment_contradictions,
+            93,
+        )
+    missing_expected_evidence = spec_warning_counts.get("missing_expected_evidence", 0)
     if missing_expected_evidence:
         add(
             "planning",
             "Require task evidence specs",
-            "Selected task specs lacked Expected Evidence, so the next implementation target may be hard to verify from task lineage, state events, or gnome movement.",
+            f"Selected task specs lacked Expected Evidence ({spec_warning_detail}), so the next implementation target may be hard to verify from task lineage, state events, or gnome movement.",
             "missing_expected_evidence_count",
             missing_expected_evidence,
             82,
+        )
+    other_spec_warnings = spec_warning_total - missing_expected_evidence - assessment_contradictions
+    if other_spec_warnings:
+        add(
+            "planning",
+            "Tighten selected task specs",
+            f"Selected task specs had manifest quality warnings ({spec_warning_detail}); require concrete file scope, non-generic objective, and verification evidence before implementation.",
+            "task_spec_warning_count",
+            other_spec_warnings,
+            81,
         )
     lifecycle_metrics = (
         ("deepseek_model_call_incomplete_count", "model calls incomplete"),

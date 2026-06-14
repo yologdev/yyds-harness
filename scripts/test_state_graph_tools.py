@@ -220,6 +220,79 @@ class StateGraphTools(unittest.TestCase):
 
             self.assertNotIn("Require task evidence specs", [item["title"] for item in suggestions])
 
+    def test_evolution_suggestions_surface_contradicted_task_specs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Stale seed",
+                            "files": ["scripts/evolve.sh"],
+                            "expected_evidence": "fresh assessment accepts the seed",
+                            "quality": {
+                                "has_expected_evidence": True,
+                                "assessment_alignment": {"contradicted_by_assessment": True},
+                            },
+                        }
+                    ],
+                    "warnings": ["task_01:assessment_contradiction"],
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+            contradiction = next(
+                item
+                for item in suggestions
+                if item["title"] == "Replace assessment-contradicted task specs"
+            )
+
+            self.assertEqual(contradiction["metric"], "task_manifest_seed_contradiction_count")
+            self.assertEqual(contradiction["value"], 1)
+            self.assertIn("assessment_contradiction=1", contradiction["reason"])
+
+    def test_evolution_suggestions_surface_thin_generic_task_specs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Self-improvement",
+                            "files": [],
+                            "expected_evidence": "dashboard row exists",
+                            "quality": {
+                                "has_expected_evidence": True,
+                                "generic_self_improvement": True,
+                                "score": 0.4,
+                            },
+                        }
+                    ],
+                    "warnings": [
+                        "task_01:generic_self_improvement",
+                        "task_01:missing_files",
+                        "task_01:thin_task_spec",
+                    ],
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+            spec = next(item for item in suggestions if item["title"] == "Tighten selected task specs")
+
+            self.assertEqual(spec["metric"], "task_spec_warning_count")
+            self.assertEqual(spec["value"], 3)
+            self.assertIn("generic_self_improvement=1", spec["reason"])
+            self.assertIn("missing_files=1", spec["reason"])
+            self.assertIn("thin_task_spec=1", spec["reason"])
+
     def test_lifecycle_cause_summary_skips_input_validation_exits(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
