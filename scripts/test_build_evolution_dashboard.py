@@ -64,6 +64,51 @@ class BuildEvolutionDashboard(unittest.TestCase):
 
         self.assertLessEqual(score, 0.25)
 
+    def test_dashboard_derives_provider_blocked_session_gnome_and_lesson(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "coding_log_score": 0.9,
+                        "workflow_success_rate": 0.0,
+                        "session_success_rate": 0.0,
+                        "provider_error_count": 3,
+                        "tasks_attempted": 0,
+                        "task_success_rate": None,
+                    },
+                    "gnome_keys": [
+                        "coding_log_score",
+                        "workflow_success_rate",
+                        "session_success_rate",
+                        "provider_error_count",
+                        "tasks_attempted",
+                        "task_success_rate",
+                    ],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+            lessons = session_data["work_summary"]["corrected_gnome_lessons"]
+
+            self.assertEqual(session_data["latest_gnomes"]["provider_blocked_session_count"], 1)
+            self.assertLessEqual(session_data["latest_gnomes"]["coding_log_score"], 0.25)
+            self.assertEqual(lessons[0]["kind"], "provider_blocked_session")
+            self.assertEqual(lessons[0]["metric"], "provider_blocked_session_count")
+            self.assertIn("configure fallback", lessons[0]["action"])
+
     def test_dashboard_dataset_warnings_are_durable_json_signals(self):
         warnings = dashboard_dataset_warnings(
             {

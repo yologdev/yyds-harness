@@ -2859,6 +2859,11 @@ def corrected_gnomes(
         gnomes["session_success_rate"] = 0.0
         gnomes["task_artifact_coverage"] = 0.0
         recalc_score = True
+    provider_blocked_session = 1 if provider_blocked_before_tasks(gnomes) else 0
+    if provider_blocked_session or int(gnomes.get("provider_blocked_session_count") or 0) != 0:
+        if int(gnomes.get("provider_blocked_session_count") or 0) != provider_blocked_session:
+            gnomes["provider_blocked_session_count"] = provider_blocked_session
+            recalc_score = True
     merge = work.get("state_pipeline") if isinstance(work.get("state_pipeline"), dict) else {}
     if int(gnomes.get("state_live_baseline_shrink_count") or 0) > 0 and merge:
         try:
@@ -3010,6 +3015,12 @@ def corrected_gnome_lessons(
 ) -> list[dict[str, Any]]:
     existing_keys = {lesson_key(lesson) for lesson in existing_lessons or [] if isinstance(lesson, dict)}
     candidates = [
+        (
+            "provider_blocked_session_count",
+            "provider_blocked_session",
+            "provider errors prevented any real task attempt",
+            "recover DeepSeek/provider access or configure fallback before spending planning or implementation attempts",
+        ),
         (
             "tool_error_count",
             "tool_error",
