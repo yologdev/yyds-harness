@@ -46,6 +46,7 @@ GNOME_COMPARE_KEYS = [
     "evaluator_unverified_count",
     "task_stale_seed_obsolete_note_count",
     "task_unlanded_source_count",
+    "task_incomplete_terminal_count",
     "search_error_count",
     "max_task_turn_count",
     "deepseek_cache_hit_ratio",
@@ -354,6 +355,13 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
         commits = [str(sha) for sha in (outcome.get("commit_shas") or []) if sha]
         outcome_status = str(outcome.get("status") or "").strip().lower()
         revert_reason = str(outcome.get("revert_reason") or "")
+        attempts = artifact.get("attempts") if isinstance(artifact.get("attempts"), list) else []
+        incomplete_terminal = any(
+            isinstance(row, dict)
+            and str(row.get("phase") or "") == "implementation"
+            and str(row.get("status") or "") == "incomplete_no_terminal_evidence"
+            for row in attempts
+        )
         problems: list[str] = []
         overlap = file_overlap(planned, touched) if planned and touched else False
         if not planned:
@@ -378,6 +386,8 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             problems.append("no_edit_revert")
         if source_touched and not commits:
             problems.append("source_edits_not_landed")
+        if incomplete_terminal:
+            problems.append("incomplete_terminal_evidence")
         passed = eval_passed(artifact.get("evals") if isinstance(artifact.get("evals"), list) else [])
         if not passed and not obsolete:
             problems.append("no_passing_verifier")
@@ -391,6 +401,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
                 "stale_seed_obsolete_note": stale_obsolete_note,
                 "api_error": api_error,
                 "protected_revert": protected_revert,
+                "incomplete_terminal": incomplete_terminal,
             }
         )
     if not rows:
@@ -419,6 +430,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             and not row["protected_revert"]
             and "no_planned_file_overlap" not in row["problems"]
         ),
+        "task_incomplete_terminal_count": sum(1 for row in rows if row["incomplete_terminal"]),
         "evaluator_unverified_raw_count": unverified,
     }
 
@@ -844,6 +856,7 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
                 + int_metric(artifact_metrics, "task_api_error_count")
                 + int_metric(artifact_metrics, "protected_file_revert_count")
                 + int_metric(artifact_metrics, "task_scope_mismatch_count")
+                + int_metric(artifact_metrics, "task_incomplete_terminal_count")
             )
             gnomes["evaluator_unverified_count"] = max(
                 int_metric(artifact_metrics, "evaluator_unverified_raw_count")
@@ -861,6 +874,7 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
                 "protected_file_revert_count",
                 "task_scope_mismatch_count",
                 "task_unlanded_source_count",
+                "task_incomplete_terminal_count",
             ):
                 gnomes[key] = max(int_metric(gnomes, key), int_metric(artifact_metrics, key))
             stale_seed_obsolete = int_metric(artifact_metrics, "task_stale_seed_obsolete_note_count")
@@ -1340,6 +1354,15 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
         )
     if int(gnomes.get("task_unlanded_source_count") or 0) > 0:
         add("commit", "Make source-edit outcomes land or explain reverts", "A task touched source files without a landed source commit.", "task_unlanded_source_count", gnomes.get("task_unlanded_source_count"), 88)
+    if int(gnomes.get("task_incomplete_terminal_count") or 0) > 0:
+        add(
+            "implementation",
+            "Require terminal task evidence before completion",
+            "Implementation exited cleanly without a final TASK_TERMINAL_EVIDENCE marker; retry checkpointed partial progress before scoring the task.",
+            "task_incomplete_terminal_count",
+            gnomes.get("task_incomplete_terminal_count"),
+            87,
+        )
     if int(gnomes.get("evaluator_timeout_count") or 0) > 0:
         add("eval", "Make evaluator timeouts resumable or cheaper", "Evaluator timeout friction still appears in action logs.", "evaluator_timeout_count", gnomes.get("evaluator_timeout_count"), 85)
     if int(gnomes.get("task_scope_mismatch_count") or 0) > 0:

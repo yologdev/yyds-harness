@@ -1410,6 +1410,7 @@ class ExtractTrajectoryTests(unittest.TestCase):
             ("task_api_error_count", "Recover API-error tasks instead of generic reverts"),
             ("provider_error_count", "Recover provider errors before task attempts"),
             ("task_no_edit_revert_count", "Force reverted tasks to leave concrete evidence"),
+            ("task_incomplete_terminal_count", "Require terminal task evidence before completion"),
             ("task_scope_mismatch_count", "Align implementation edits with task file scope"),
             ("protected_file_revert_count", "Route protected-file work through explicit approval"),
             ("tool_error_count", "Recover failed tool actions before scoring"),

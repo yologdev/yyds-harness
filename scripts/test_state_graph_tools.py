@@ -265,6 +265,11 @@ class StateGraphTools(unittest.TestCase):
                 "reverted without touching files",
             ),
             (
+                "task_incomplete_terminal_count",
+                "Require terminal task evidence before completion",
+                "TASK_TERMINAL_EVIDENCE",
+            ),
+            (
                 "task_scope_mismatch_count",
                 "Align implementation edits with task file scope",
                 "outside the selected task surface",

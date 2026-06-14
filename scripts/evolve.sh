@@ -325,6 +325,40 @@ with out.open("a", encoding="utf-8") as handle:
 PY
 }
 
+agent_log_has_terminal_evidence() {
+    local log_file="$1"
+    [ -s "$log_file" ] || return 1
+    if grep -Eq 'TASK_TERMINAL_EVIDENCE:[[:space:]]*(changed|obsolete|blocked)' "$log_file" 2>/dev/null; then
+        return 0
+    fi
+    # Backward-compatible fallback for older agents that produced a final prose
+    # summary before the explicit marker existed.
+    if tail -80 "$log_file" 2>/dev/null | grep -Eiq \
+        '(^## Summary|^Done\.|Task completed|All gates passed|Verification|obsolete-task note|concrete blocker|committed)'; then
+        return 0
+    fi
+    return 1
+}
+
+task_has_progress_since_base() {
+    local base_sha="$1"
+    local head_sha
+    head_sha=$(git rev-parse HEAD 2>/dev/null || true)
+    if [ -n "$base_sha" ] && [ -n "$head_sha" ] && [ "$head_sha" != "$base_sha" ]; then
+        return 0
+    fi
+    if ! git diff --cached --quiet --exit-code 2>/dev/null; then
+        return 0
+    fi
+    if ! git diff --quiet --exit-code 2>/dev/null; then
+        return 0
+    fi
+    if [ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ]; then
+        return 0
+    fi
+    return 1
+}
+
 write_task_eval_evidence() {
     local task_id="$1"
     local attempt="$2"
@@ -1818,6 +1852,8 @@ Follow the evolve skill rules:
 - Do not finish with analysis only. If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion in the listed task surface. If no honest code/test/docs improvement exists, write session_plan/${TASK_ID}_obsolete.md explaining the exact evidence and stop without claiming the task landed.
 - Before your final answer, run \`git diff --name-only\` and inspect the result. Your final answer must name one of: the task-scope files you changed, the obsolete-task note you wrote, or the concrete blocker that prevented any honest scoped edit.
 - If \`git diff --name-only\` is empty and you did not write session_plan/${TASK_ID}_obsolete.md or name a concrete blocker, the task is not complete. Keep working inside the task scope instead of ending with analysis only.
+- End your final answer with exactly one terminal evidence marker:
+  \`TASK_TERMINAL_EVIDENCE: changed\`, \`TASK_TERMINAL_EVIDENCE: obsolete\`, or \`TASK_TERMINAL_EVIDENCE: blocked\`.
 - Run cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test after changes
 - If any check fails, read the error and fix it. Keep trying until it passes.
 - Only if you've tried 3+ times and are stuck, revert with: git checkout -- . (keeps previous commits)
@@ -1852,6 +1888,13 @@ TEOF
         if agent_log_has_api_error "$TASK_LOG"; then
             TASK_ATTEMPT_STATUS="api_error"
         fi
+        if [ "$TASK_EXIT" -eq 0 ] \
+            && [ "$TASK_ATTEMPT_STATUS" = "completed" ] \
+            && [ ! -s "$TASK_OBSOLETE_NOTE" ] \
+            && ! agent_log_has_terminal_evidence "$TASK_LOG"; then
+            echo "    WARNING: Task $TASK_NUM exited 0 without final terminal evidence (attempt $ATTEMPT)."
+            TASK_ATTEMPT_STATUS="incomplete_no_terminal_evidence"
+        fi
         append_task_attempt_evidence \
             "$TASK_ID" "implementation" "$ATTEMPT" "$TASK_STAGE_NAME" \
             "transcripts/${TASK_STAGE_NAME}.log" "$TASK_EXIT" "$TASK_ATTEMPT_STATUS" || true
@@ -1873,13 +1916,18 @@ TEOF
         INTERRUPTED=false
         if [ "$TASK_EXIT" -eq 124 ] || [ "$TASK_EXIT" -eq 2 ]; then
             INTERRUPTED=true
+        elif [ "$TASK_ATTEMPT_STATUS" = "incomplete_no_terminal_evidence" ]; then
+            INTERRUPTED=true
         elif grep -q '\[Agent stopped:' "$TASK_LOG" 2>/dev/null; then
             INTERRUPTED=true
         fi
 
         # Checkpoint-restart: retry if interrupted with partial progress
-        CURRENT_SHA=$(git rev-parse HEAD 2>/dev/null || true)
-        if [ "$INTERRUPTED" = true ] && [ "$CURRENT_SHA" != "$PRE_TASK_SHA" ] && [ "$ATTEMPT" -eq 1 ]; then
+        TASK_PROGRESS=false
+        if task_has_progress_since_base "$PRE_TASK_SHA"; then
+            TASK_PROGRESS=true
+        fi
+        if [ "$INTERRUPTED" = true ] && [ "$TASK_PROGRESS" = true ] && [ "$ATTEMPT" -eq 1 ]; then
             echo "    Partial progress detected — building checkpoint for retry..."
 
             # Capture uncommitted work before discarding

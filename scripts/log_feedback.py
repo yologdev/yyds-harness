@@ -191,6 +191,7 @@ GNOME_KEYS = [
     "task_api_error_count",
     "task_scope_mismatch_count",
     "task_unlanded_source_count",
+    "task_incomplete_terminal_count",
     "max_task_turn_count",
     "avg_task_turn_count",
     "total_task_turn_count",
@@ -365,6 +366,23 @@ def load_json(path: Path) -> dict[str, Any]:
         warn(f"could not read {path}: {exc}")
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            if isinstance(value, dict):
+                rows.append(value)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        warn(f"could not read {path}: {exc}")
+        return []
+    return rows
 
 
 def read_text(path: Path) -> str:
@@ -1074,11 +1092,19 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     no_edit_revert_count = 0
     explained_unverified_ids: set[str] = set()
     unlanded_source = 0
+    incomplete_terminal = 0
     tasks_by_id = {str(task.get("task_id") or ""): task for task in tasks if isinstance(task, dict)}
     stale_seed_obsolete_note_count = 0
     for task_dir in task_dirs:
         task_key = task_dir.name
         outcome = load_json(task_dir / "outcome.json")
+        attempts = load_jsonl(task_dir / "attempts.jsonl")
+        incomplete_terminal += sum(
+            1
+            for row in attempts
+            if str(row.get("phase") or "") == "implementation"
+            and str(row.get("status") or "") == "incomplete_no_terminal_evidence"
+        )
         evals = [load_json(path) for path in sorted(task_dir.glob("eval_attempt_*.json"))]
         evals = [row for row in evals if row]
         has_pass = any(clean_eval_pass(row) for row in evals)
@@ -1172,6 +1198,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "task_scope_mismatch_count": scope_mismatch_count,
         "protected_file_revert_count": protected_file_revert_count,
         "task_unlanded_source_count": unlanded_source,
+        "task_incomplete_terminal_count": incomplete_terminal,
         "task_spec_quality_score": round(sum(quality_scores) / len(quality_scores), 4)
         if quality_scores
         else None,
@@ -1383,6 +1410,7 @@ def score_assessment(metrics: dict[str, Any]) -> float:
             + float(metrics.get("evaluator_unverified_count") or 0)
             + float(metrics.get("evaluator_timeout_with_verdict_count") or 0) * 2.0
             + float(metrics.get("task_unlanded_source_count") or 0) * 2.0
+            + float(metrics.get("task_incomplete_terminal_count") or 0) * 2.0
             + float(metrics.get("state_live_baseline_shrink_count") or 0) * 2.0
         )
         / 12.0,
@@ -1631,6 +1659,14 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "task_unlanded_source",
                 "fingerprint": "implementation touched source files without a landed source commit",
                 "action": "make implementation agents commit scoped source edits before verification, or preserve the exact revert blocker instead of ending with unlanded work",
+            }
+        )
+    if int(metrics.get("task_incomplete_terminal_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "task_incomplete_terminal",
+                "fingerprint": "implementation attempt exited cleanly without final terminal evidence",
+                "action": "retry partial progress from a checkpoint and require TASK_TERMINAL_EVIDENCE before treating exit 0 as completed",
             }
         )
     if int(metrics.get("state_live_baseline_shrink_count") or 0) > 0:

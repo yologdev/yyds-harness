@@ -178,6 +178,10 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn("Your final answer must name one of: the task-scope files you changed", evolve)
         self.assertIn("the obsolete-task note you wrote, or the concrete blocker", evolve)
         self.assertIn("the task is not complete. Keep working inside the task scope", evolve)
+        self.assertIn("TASK_TERMINAL_EVIDENCE: changed", evolve)
+        self.assertIn("agent_log_has_terminal_evidence()", evolve)
+        self.assertIn("incomplete_no_terminal_evidence", evolve)
+        self.assertIn('task_has_progress_since_base "$PRE_TASK_SHA"', evolve)
         self.assertIn('scripts/task_verification_gate.py', evolve)
         self.assertIn('scripts/task_completion_gate.py', evolve)
         self.assertIn('auto-committed verified source changes', evolve)
@@ -1237,6 +1241,67 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["task_unlanded_source_count"], 1)
             self.assertIn(
                 "task_unlanded_source",
+                {lesson["kind"] for lesson in assessment["top_lessons"]},
+            )
+
+    def test_log_feedback_counts_incomplete_terminal_task_attempt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [{"task_id": "task_01"}],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {"task_id": "task_01", "status": "reverted", "revert_reason": "no terminal"},
+            )
+            attempts_path = session / "tasks/task_01/attempts.jsonl"
+            attempts_path.parent.mkdir(parents=True, exist_ok=True)
+            attempts_path.write_text(
+                json.dumps(
+                    {
+                        "task_id": "task_01",
+                        "phase": "implementation",
+                        "attempt": 1,
+                        "exit_code": 0,
+                        "status": "incomplete_no_terminal_evidence",
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["task_success_rate"], 0.0)
+            self.assertEqual(metrics["task_incomplete_terminal_count"], 1)
+            self.assertIn("task_incomplete_terminal_count", log_feedback.gnome_values(metrics))
+            self.assertIn(
+                "task_incomplete_terminal",
                 {lesson["kind"] for lesson in assessment["top_lessons"]},
             )
 
