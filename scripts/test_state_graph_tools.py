@@ -166,6 +166,60 @@ class StateGraphTools(unittest.TestCase):
             self.assertIn("model_incomplete/open_after_command=1", suggestions[0]["reason"])
             self.assertIn("state_incomplete/open_after_cache_metrics=1", suggestions[0]["reason"])
 
+    def test_evolution_suggestions_require_task_expected_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Improve vague task",
+                            "files": ["scripts/evolve.sh"],
+                            "quality": {"has_expected_evidence": False},
+                        }
+                    ],
+                    "warnings": ["task_01:missing_expected_evidence"],
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+            spec_suggestion = next(
+                item for item in suggestions if item["title"] == "Require task evidence specs"
+            )
+
+            self.assertEqual(spec_suggestion["metric"], "missing_expected_evidence_count")
+            self.assertEqual(spec_suggestion["value"], 1)
+            self.assertIn("Selected task specs lacked Expected Evidence", spec_suggestion["reason"])
+
+    def test_evolution_suggestions_accept_task_expected_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Improve verifiable task",
+                            "files": ["scripts/evolve.sh"],
+                            "expected_evidence": "trajectory shows missing evidence pressure only when absent",
+                            "quality": {"has_expected_evidence": True},
+                        }
+                    ],
+                    "warnings": [],
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+
+            self.assertNotIn("Require task evidence specs", [item["title"] for item in suggestions])
+
     def test_lifecycle_cause_summary_skips_input_validation_exits(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

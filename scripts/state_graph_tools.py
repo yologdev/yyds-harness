@@ -118,6 +118,26 @@ def selected_tasks(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return [task for task in tasks if isinstance(task, dict)]
 
 
+def task_spec_evidence_gap_count(manifest: dict[str, Any]) -> int:
+    tasks = selected_tasks(manifest)
+    if not tasks:
+        return 0
+    warning_task_ids = {
+        warning.split(":", 1)[0]
+        for warning in (manifest.get("warnings") or [])
+        if isinstance(warning, str) and warning.endswith(":missing_expected_evidence")
+    }
+    missing = 0
+    for task in tasks:
+        task_id = str(task.get("task_id") or "")
+        quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
+        expected = str(task.get("expected_evidence") or "").strip()
+        has_expected_flag = quality.get("has_expected_evidence")
+        if task_id in warning_task_ids or has_expected_flag is False or not expected:
+            missing += 1
+    return missing
+
+
 def path_matches(planned: str, touched: str) -> bool:
     planned = str(planned).strip().strip("/")
     touched = str(touched).strip().strip("/")
@@ -755,6 +775,16 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
 
     if int(gnomes.get("planner_no_task_count") or 0) > 0 or (manifest and (manifest.get("planner") or {}).get("planning_failed")):
         add("planner", "Make planning failure actionable", "The planner produced no concrete task files.", "planner_no_task_count", gnomes.get("planner_no_task_count"), 100)
+    missing_expected_evidence = task_spec_evidence_gap_count(manifest)
+    if missing_expected_evidence:
+        add(
+            "planning",
+            "Require task evidence specs",
+            "Selected task specs lacked Expected Evidence, so the next implementation target may be hard to verify from task lineage, state events, or gnome movement.",
+            "missing_expected_evidence_count",
+            missing_expected_evidence,
+            82,
+        )
     lifecycle_metrics = (
         ("deepseek_model_call_incomplete_count", "model calls incomplete"),
         ("deepseek_model_call_unmatched_completed_count", "model calls unmatched"),

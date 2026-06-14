@@ -1191,6 +1191,37 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("deepseek_model_call_incomplete_count=1", rendered)
             self.assertIn("model_incomplete/open_after_command=1", rendered)
 
+    def test_graph_suggestions_include_missing_expected_evidence_pressure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(
+                session / "outcome.json",
+                {"day": 1, "ts": "2026-01-01T00:00:00Z"},
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Improve vague task",
+                            "files": ["scripts/evolve.sh"],
+                            "quality": {"has_expected_evidence": False},
+                        }
+                    ],
+                    "warnings": ["task_01:missing_expected_evidence"],
+                },
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("Require task evidence specs", rendered)
+            self.assertIn("missing_expected_evidence_count=1", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
