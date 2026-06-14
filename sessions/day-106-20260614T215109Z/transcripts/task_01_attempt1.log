@@ -1,0 +1,315 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to understand the task first, then follow the evolve skill. Let me start by reading the evolve skill, then explore the relevant source files.
+
+The task is about improving cold-start state failure diagnostics in `yyds state why last-failure`. The files to focus on are `src/commands_state.rs` and `src/state.rs`.
+
+Let me:
+1. Read the evolve skill
+2. Read the relevant source files
+3. Understand the current behavior
+4. Write a test
+5. Implement the change
+6. Verify with build/test/clippy/fmt
+7. Commit
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs  ▶ read src/state.rs ✓ (52ms)
+ ✓ (23ms)
+ ✓ (135ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the current state:
+
+1. The task is about improving `yyds state why last-failure` for cold-start (when there are no completed failed sessions yet).
+2. I need to find the `handle_why` function and `handle_state_summary` to understand current behavior.
+
+Let me search for key functions in `src/commands_state.rs` - especially `handle_why` and `handle_state_summary`.
+
+The file is huge (23548 lines), so let me search for specific patterns.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.7s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_why' in src/commands_state.rs  ▶ search 'fn handle_state_summary' in src/commands_state.rs  ▶ search 'last-failure' in src/commands_state.rs ✓ (35ms)
+ ✓ (36ms)
+ ✓ (36ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `handle_why` function and the `handle_state_summary` function.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.6s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:836..1036 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find the `build_why_report` function which is the core logic.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `build_why_report` function and surrounding context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2571..2771 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current behavior. Let me look at `find_target_event` to understand how it resolves "last-failure":
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn find_target_event' in src/commands_state.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13525..13645 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current flow:
+
+1. `handle_why` is called with `id = "last-failure"`.
+2. It reads events from the state file.
+3. If no events file exists, it prints a cold-start message and returns.
+4. `build_why_report` calls `find_target_event(events, "last-failure")` which searches for failure events (FailureObserved, JsonOutputFailure, ToolSchemaFailure) in reverse order.
+5. If no failure event is found, it returns an error with some diagnostic info.
+6. If found, it produces a detailed report.
+
+The task wants to improve cold-start diagnostics. The current behavior:
+- If no events file: prints cold-start message (good)
+- If events file exists but no RunCompleted events: "State recording is active but no sessions have completed yet."
+- If events file exists but no failure events: "N successful session(s) recorded. No failure data to diagnose."
+- If there are failure events but not enough: "N failure(s) recorded but not enough to cluster into patterns."
+
+The task says: "Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence."
+
+So the improvement should:
+1. When there are no completed failed sessions yet, also look for:
+   - Startup errors (e.g., provider errors, config failures)
+   - Incomplete runs (RunStarted but no RunCompleted)
+   - Nearby diagnostic evidence (like provider errors in the events)
+
+Let me check what other event types might be relevant. Let me look at what events could indicate startup/early failures.
+
+Let me also look at the existing tests for `build_why_report` and `find_target_event`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at the existing tests for `build_why_report` and what events might indicate startup errors:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_why_report' in src/commands_state.rs ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the tests around line 16834 to understand what's tested.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:16780..16980 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also search for test cases related to the no-failure / cold-start scenarios, and understand the current test coverage for `build_why_report` when no failure is found:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'no state event found' in src/commands_state.rs  ▶ search 'build_why_report.*Err' in src/commands_state.rs ✓ (9ms)
+ ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for tests that exercise the error path of `build_why_report`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_why_report.*err' in src/commands_state.rs  ▶ search 'why_report' in src/commands_state.rs ✓ (18ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There don't seem to be any tests for the error case of `build_why_report` (when no events are found). Let me look at what tests exist around lines 16474:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:16450..16550 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also look at what event types are recorded in `state.rs` to understand the available diagnostics. Let me search for the EventType enum or the event recording functions:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me understand what event types are available and how to detect startup errors and incomplete runs. Let me search for event types and the state recording patterns:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'enum EventType' in src/state.rs  ▶ search 'RunStarted' in src/state.rs  ▶ search 'RunCompleted' in src/state.rs ✓ (27ms)
+ ✓ (26ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the EventType enum to see all types:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.2s (3 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:108..168 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the event types. Let me now plan the improvement.
+
+The key insight: when `find_target_event(events, "last-failure")` returns None (no failure events found), the current error message gives basic diagnostics but doesn't help the user find what's actually going wrong. 
+
+For cold-start / early sessions, users need to know:
+1. Are there any incomplete runs (RunStarted but no RunCompleted)?
+2. Are there startup/config errors (provider errors, auth failures)?
+3. Are there recent tool failures that might indicate problems?
+
+Let me look at what events would indicate these states. The `state.rs` has `FailureObserved` for general failures, but there are also other useful events:
+- `ModelCallCompleted` with error status
+- `ToolCallCompleted` with failures
+- `RunStarted` without matching `RunCompleted` (incomplete runs)
+
+Let me look at the `build_state_summary` function to see what summary info is available, and how to improve the error message in `build_why_report`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_state_summary' in src/commands_state.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the build_state_summary function and a few surrounding functions:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2311..2411 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me plan the change:
+
+The improvement should be in `build_why_report`, specifically in the error path when `find_target_event` returns None. The current code already provides some diagnostics (no sessions completed, no failures), but it should also:
+
+1. Detect incomplete runs (RunStarted without RunCompleted) - these are "nearby" failures that might indicate why sessions aren't completing
+2. Check for ModelCallCompleted with error status (provider errors, etc.)
+3. Check for ToolCallCompleted with failures
+4. Report these as actionable evidence
+
+Let me now also look at the `event_string` helper and what payload fields might indicate errors.
+
+Let me also look at how `normalize_event` and event fields work in `state.rs` to understand the `error` or `status` fields in payloads.
+
+Let me now focus on writing the test first, then implementing the change.
+
+The key change: In the error path of `build_why_report` (lines 2572-2611), when no failure event is found, we should scan for:
+1. Incomplete runs (RunStarted count > RunCompleted count)
+2. Recently failed model calls (ModelCallCompleted with error status)
+3. Recently failed tool calls (ToolCallCompleted with error/failure)
+4. Startup errors (RunCompleted with status "error")
+
+And report these as actionable evidence instead of just saying "no sessions have completed yet" or "no failures recorded."
+
+Let me also look at what payload keys indicate errors in ModelCallCompleted and ToolCallCompleted events.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at how model/tool call completions record errors:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted' in src/state.rs  ▶ search 'ToolCallCompleted' in src/state.rs ✓ (17ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how ModelCallCompleted is recorded with error status. Let me check line 3700 area:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3690..3750 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that `ToolCallCompleted` has `is_error: true/false`. Let me search for `is_error` across the codebase to understand how tool error/failure is tracked:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'is_error' in src/state.rs  ▶ search 'error_detail' in src/state.rs ✓ (19ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me also see how `RunCompleted` records errors. Let me look at the `run_completed_payload` function:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:355..385 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me plan my implementation. Here's what I want to do:
+
+In `build_why_report`, when `find_target_event(events, "last-failure")` returns None, improve the error message to:
+
+1. Count incomplete runs (RunStarted count - RunCompleted count)
+2. Find runs with RunCompleted status="error" (not necessarily failure events)
+3. Find ModelCallCompleted with error-related payload fields
+4. Find ToolCallCompleted with is_error=true
+5. Find recently failed/reverted events
+6. Give actionable next steps
+
+Let me look at what payload fields for ModelCallCompleted indicate errors:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted.*error' in src/state.rs  ▶ search 'stream_closed_without_agent_end' in src/state.rs ✓ (21ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look for where ModelCallCompleted events are recorded with error status in the broader codebase:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'stream_closed_without_agent_end' in src  ▶ search 'ModelCallCompleted.*status' in src ✓ (11ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how ModelCallCompleted with error status is actually recorded in state:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1030..1070 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `model_call_terminal_payload` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn model_call_terminal_payload' in src/prompt.rs ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:31..71 ✓ (10ms)
+
+
