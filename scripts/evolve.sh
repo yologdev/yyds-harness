@@ -1400,6 +1400,7 @@ Your main job in this repo is not generic yoyo CLI feature growth. It is to impr
 
 Use yoagent-state feedback proactively:
 - Treat state tail, state why, graph hotspots, eval evidence, cache reports, failed protocol checks, repair loops, rollback pressure, context misses, and model/tool-call failures as live KPI feedback.
+- If you plan directly from YOUR TRAJECTORY because assessment is missing or thin, use "Graph-derived next-task pressure", "recent tool failures", and "recent action evidence" as current task-selection evidence. Treat "historical unrecovered tool failures" as context only unless recent evidence shows the failure still reproduces.
 - Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality.
 - Raw code changes are implementation details. The important tracked states are the harness gnomes/KPIs and the state graph evidence that shows whether a change helped.
 - Product users of yoyo/yyds should not see this state layer. Keep state/evolution logic in harness workflows, eval/state commands, audit/dashboard scripts, and internal docs.

@@ -56,6 +56,15 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("Graph-derived next-task pressure", script)
         self.assertIn("top recommendation and metric", script)
 
+    def test_planning_phase_interprets_recent_trajectory_labels(self):
+        script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("If you plan directly from YOUR TRAJECTORY", script)
+        self.assertIn('"Graph-derived next-task pressure"', script)
+        self.assertIn('"recent tool failures"', script)
+        self.assertIn('"recent action evidence"', script)
+        self.assertIn('"historical unrecovered tool failures" as context only', script)
+
     def test_self_assess_skill_is_yyds_deepseek_native(self):
         text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")
 
