@@ -1819,6 +1819,18 @@ def augment_evolution_suggestions(
     return out
 
 
+def corrected_task_quality_score(task: dict[str, Any], parsed_task: dict[str, Any]) -> float | None:
+    quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
+    parsed_quality = parsed_task.get("quality") if isinstance(parsed_task.get("quality"), dict) else {}
+    score = quality.get("score", parsed_quality.get("score"))
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        return None
+    expected = str(task.get("expected_evidence") or parsed_task.get("expected_evidence") or "").strip()
+    if expected:
+        return float(score)
+    return min(float(score), 0.8)
+
+
 def task_manifest_summary(session_dir: Path) -> dict[str, Any]:
     manifest = load_json(session_dir / "tasks" / "manifest.json")
     if not manifest:
@@ -1838,6 +1850,7 @@ def task_manifest_summary(session_dir: Path) -> dict[str, Any]:
         parsed_task = parse_task_file(session_dir / artifact_path, task_number)
         quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
         parsed_quality = parsed_task.get("quality") if isinstance(parsed_task.get("quality"), dict) else {}
+        expected_evidence = task.get("expected_evidence") or parsed_task.get("expected_evidence")
         tasks.append(
             {
                 "task_id": task.get("task_id"),
@@ -1847,8 +1860,8 @@ def task_manifest_summary(session_dir: Path) -> dict[str, Any]:
                 "issue": task.get("issue") or parsed_task.get("issue"),
                 "origin": task.get("origin") or parsed_task.get("origin"),
                 "artifact_path": artifact_path,
-                "expected_evidence": task.get("expected_evidence") or parsed_task.get("expected_evidence"),
-                "quality_score": quality.get("score", parsed_quality.get("score")),
+                "expected_evidence": expected_evidence,
+                "quality_score": corrected_task_quality_score(task, parsed_task),
                 "generic_self_improvement": quality.get(
                     "generic_self_improvement",
                     parsed_quality.get("generic_self_improvement"),

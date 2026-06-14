@@ -987,6 +987,17 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
     return metrics
 
 
+def corrected_task_spec_quality_score(task: dict[str, Any]) -> float | None:
+    quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
+    score = quality.get("score")
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        return None
+    expected = str(task.get("expected_evidence") or "").strip()
+    if expected:
+        return float(score)
+    return min(float(score), 0.8)
+
+
 def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     manifest = load_json(session_dir / "tasks" / "manifest.json")
     planner = manifest.get("planner") if isinstance(manifest.get("planner"), dict) else {}
@@ -1003,9 +1014,9 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         if not isinstance(task, dict):
             continue
         quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
-        score = quality.get("score")
-        if isinstance(score, (int, float)):
-            quality_scores.append(float(score))
+        corrected_score = corrected_task_spec_quality_score(task)
+        if corrected_score is not None:
+            quality_scores.append(corrected_score)
         alignment = (
             quality.get("assessment_alignment")
             if isinstance(quality.get("assessment_alignment"), dict)

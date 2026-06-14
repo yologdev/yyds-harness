@@ -751,6 +751,30 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["evaluator_unverified_count"], 1)
             self.assertEqual(metrics["task_unlanded_source_count"], 0)
 
+    def test_log_feedback_downgrades_stale_quality_without_expected_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "expected_evidence": "",
+                            "quality": {
+                                "score": 1.0,
+                                "has_expected_evidence": True,
+                            },
+                        }
+                    ],
+                },
+            )
+
+            metrics = log_feedback.task_artifact_metrics(session, attempted=0)
+
+            self.assertEqual(metrics["task_spec_quality_score"], 0.8)
+
     def test_log_feedback_counts_obsolete_tasks_separately(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

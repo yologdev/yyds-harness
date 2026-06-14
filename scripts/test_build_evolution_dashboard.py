@@ -26,6 +26,7 @@ from build_evolution_dashboard import (  # noqa: E402
     run_health_reasons,
     summarize_events_for_work,
     summarize_transcript_actions,
+    task_manifest_summary,
     task_verification_problem_reasons,
     task_verification_summary,
     transcript_summary,
@@ -1106,6 +1107,40 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
             self.assertIn("const evalRows = (task.evals || [])", html)
             self.assertIn("evalRow.reason", html)
+
+    def test_task_manifest_summary_downgrades_stale_quality_without_expected_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "artifact_path": "tasks/task_01/task.md",
+                            "quality": {
+                                "score": 1.0,
+                                "has_expected_evidence": True,
+                            },
+                            "expected_evidence": "",
+                        }
+                    ],
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            (session / "tasks/task_01/task.md").write_text(
+                "Title: Improve task\n"
+                "Files: scripts/evolve.sh\n"
+                "Expected Evidence:\n",
+                encoding="utf-8",
+            )
+
+            summary = task_manifest_summary(session)
+
+            self.assertEqual(summary["tasks"][0]["quality_score"], 0.8)
+            self.assertIsNone(summary["tasks"][0]["expected_evidence"])
 
     def test_run_health_demotes_verified_sessions_with_harness_attention(self):
         base = {
