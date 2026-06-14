@@ -412,6 +412,36 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(suggestion["value"], 0.25)
             self.assertIn("structured-output prompts", suggestion["reason"])
 
+    def test_evolution_suggestions_surface_tool_call_and_context_quality_pressure(self):
+        cases = [
+            (
+                "tool_call_malformed_rate",
+                0.5,
+                "Reduce malformed tool-call outputs",
+                "tool schema instructions",
+            ),
+            (
+                "context_miss_rate",
+                0.4,
+                "Reduce DeepSeek context misses",
+                "prompt prefix or retrieval path",
+            ),
+        ]
+        for metric, value, title, reason_snippet in cases:
+            with self.subTest(metric=metric), tempfile.TemporaryDirectory() as tmp:
+                session = Path(tmp) / "sessions/day-1"
+                write_json(
+                    session / "state/summary.json",
+                    {"latest_gnomes": {metric: value, "task_artifact_coverage": 1.0}},
+                )
+
+                suggestions = state_graph_tools.evolution_suggestions(session, limit=10)
+                suggestion = next(item for item in suggestions if item["title"] == title)
+
+                self.assertEqual(suggestion["metric"], metric)
+                self.assertEqual(suggestion["value"], value)
+                self.assertIn(reason_snippet, suggestion["reason"])
+
     def test_evolution_suggestions_surface_low_task_verification_pressure(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
@@ -984,13 +1014,20 @@ class StateGraphTools(unittest.TestCase):
             cand = sessions / "day-2"
             write_json(base / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z", "tasks_succeeded": 1})
             write_json(cand / "outcome.json", {"day": 2, "ts": "2026-01-02T00:00:00Z", "tasks_succeeded": 2})
-            write_json(base / "state/summary.json", {"latest_gnomes": {"coding_log_score": 0.7}})
-            write_json(cand / "state/summary.json", {"latest_gnomes": {"coding_log_score": 0.9}})
+            write_json(
+                base / "state/summary.json",
+                {"latest_gnomes": {"coding_log_score": 0.7, "context_miss_rate": 0.5}},
+            )
+            write_json(
+                cand / "state/summary.json",
+                {"latest_gnomes": {"coding_log_score": 0.9, "context_miss_rate": 0.25}},
+            )
 
             comparison = state_graph_tools.compare_sessions(sessions, "previous", "latest")
             self.assertEqual(comparison["baseline_session"], "day-1")
             self.assertEqual(comparison["candidate_session"], "day-2")
             self.assertAlmostEqual(comparison["gnome_deltas"]["coding_log_score"]["delta"], 0.2)
+            self.assertAlmostEqual(comparison["gnome_deltas"]["context_miss_rate"]["delta"], -0.25)
 
     def test_replay_check_requires_state_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -19,7 +19,9 @@ from typing import Any
 
 GNOME_COMPARE_KEYS = [
     "coding_log_score",
+    "tool_call_malformed_rate",
     "json_parse_failure_rate",
+    "context_miss_rate",
     "session_success_rate",
     "task_success_rate",
     "task_verification_rate",
@@ -1032,6 +1034,26 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             "json_parse_failure_rate",
             json_parse_rate,
             86,
+        )
+    malformed_tool_rate = gnomes.get("tool_call_malformed_rate")
+    if isinstance(malformed_tool_rate, (int, float)) and not isinstance(malformed_tool_rate, bool) and malformed_tool_rate > 0.0:
+        add(
+            "deepseek",
+            "Reduce malformed tool-call outputs",
+            "State/eval metrics recorded malformed tool calls; tighten tool schema instructions, parser recovery, and tool-call fixtures before scoring coding-task reliability.",
+            "tool_call_malformed_rate",
+            malformed_tool_rate,
+            86,
+        )
+    context_miss_rate = gnomes.get("context_miss_rate")
+    if isinstance(context_miss_rate, (int, float)) and not isinstance(context_miss_rate, bool) and context_miss_rate > 0.0:
+        add(
+            "deepseek",
+            "Reduce DeepSeek context misses",
+            "State/eval metrics recorded context misses; move stable repo, task, and trajectory evidence into the prompt prefix or retrieval path before selecting broader coding tasks.",
+            "context_miss_rate",
+            context_miss_rate,
+            84,
         )
     repair_loops = int_metric(gnomes, "repair_loop_count")
     if repair_loops > 0:
