@@ -786,6 +786,40 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("recent action evidence:", rendered)
             self.assertIn("coverage=state 1/2, transcripts 1/2", rendered)
 
+    def test_structured_state_snapshot_surfaces_gnome_evidence_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {"tool_error_count": 0},
+                    "gnome_keys": ["tool_error_count"],
+                },
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "  \u25b6 search 'needle' in src/lib.rs \u2717 (17ms)\n",
+                encoding="utf-8",
+            )
+
+            rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
+
+            self.assertIn("gnome evidence audit:", rendered)
+            self.assertIn("adjusted=1 across 1 session(s)", rendered)
+            self.assertIn("top_sources=transcripts=1", rendered)
+            self.assertIn("reconciliation_not_raw_bug_count", rendered)
+
     def test_structured_state_snapshot_surfaces_recent_task_expected_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

@@ -1056,6 +1056,11 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
         if isinstance(state_summary.get("recent_action_evidence_summary"), dict)
         else {}
     )
+    gnome_audit_summary = (
+        state_summary.get("gnome_audit")
+        if isinstance(state_summary.get("gnome_audit"), dict)
+        else {}
+    )
     recent_state_counts = (
         recent_task_summary.get("state_counts")
         if isinstance(recent_task_summary.get("state_counts"), dict)
@@ -1338,6 +1343,42 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                 action_parts.append(f"transcript_only_failed_tools={transcript_only_failed_tools}")
             if action_parts:
                 summary_parts.append("recent action evidence: " + ", ".join(action_parts))
+        if gnome_audit_summary:
+            gnome_adjustments = int(
+                gnome_audit_summary.get("evidence_adjustment_count")
+                or gnome_audit_summary.get("correction_count")
+                or 0
+            )
+            if gnome_adjustments:
+                adjusted_sessions = int(
+                    gnome_audit_summary.get("adjusted_session_count")
+                    or gnome_audit_summary.get("corrected_session_count")
+                    or 0
+                )
+                source_counts = (
+                    gnome_audit_summary.get("adjustments_by_source")
+                    if isinstance(gnome_audit_summary.get("adjustments_by_source"), dict)
+                    else gnome_audit_summary.get("corrections_by_source")
+                    if isinstance(gnome_audit_summary.get("corrections_by_source"), dict)
+                    else {}
+                )
+                top_sources = sorted(
+                    (
+                        (str(source), int(count or 0))
+                        for source, count in source_counts.items()
+                    ),
+                    key=lambda item: (-item[1], item[0]),
+                )[:3]
+                source_text = (
+                    ", ".join(f"{source}={count}" for source, count in top_sources)
+                    if top_sources
+                    else "none"
+                )
+                summary_parts.append(
+                    "gnome evidence audit: "
+                    f"adjusted={gnome_adjustments} across {adjusted_sessions} session(s), "
+                    f"top_sources={source_text}; reconciliation_not_raw_bug_count"
+                )
         if dataset_warnings:
             summary_parts.append(
                 "dashboard dataset warnings: "
