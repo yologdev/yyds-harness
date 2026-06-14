@@ -384,12 +384,24 @@ def event_count(events_path: Path) -> int:
     return count
 
 
+def state_dir_for_feedback(session_dir: Path) -> Path:
+    bundled = session_dir / "state"
+    if (bundled / "events.jsonl").is_file():
+        return bundled
+    live = session_dir.parent / "state"
+    if session_dir.name == "session_staging" and (live / "events.jsonl").is_file():
+        return live
+    return bundled
+
+
 def state_trace_metrics(session_dir: Path) -> dict[str, Any]:
-    events = load_events(session_dir / "state" / "events.jsonl")
+    state_dir = state_dir_for_feedback(session_dir)
+    events = load_events(state_dir / "events.jsonl")
     operational_count = sum(1 for event in events if event_kind(event) in OPERATIONAL_STATE_EVENTS)
     lineage_count = sum(1 for event in events if event_kind(event) == "TaskLineageLinked")
     return {
         "state_event_count": len(events),
+        "state_feedback_source": "live_staging" if state_dir != session_dir / "state" else "session",
         "state_capture_coverage": 1.0 if events else 0.0,
         "state_operational_event_count": operational_count,
         "state_operational_capture_coverage": 1.0 if operational_count else 0.0,
@@ -2061,6 +2073,35 @@ def run_self_tests() -> int:
         check("transcript fallback counts implementation task attempts", transcript_metrics["transcript_task_attempt_count"] == 2, transcript_metrics)
         check("transcript fallback promotes attempted tasks", transcript_metrics["tasks_attempted"] == 2, transcript_metrics)
         check("transcript fallback makes task success measurable", transcript_metrics["task_success_rate"] == 0.0, transcript_metrics)
+        staging = root / ".yoyo" / "session_staging"
+        staging_transcripts = staging / "transcripts"
+        staging_transcripts.mkdir(parents=True)
+        (staging_transcripts / "task_01_attempt1.log").write_text("error: API error with no fallback configured\n", encoding="utf-8")
+        live_state = root / ".yoyo" / "state"
+        live_state.mkdir(parents=True)
+        (live_state / "events.jsonl").write_text(
+            json.dumps({"event_type": "ModelCallStarted", "payload": {"model": "deepseek-v4-pro"}}) + "\n",
+            encoding="utf-8",
+        )
+        staging_assessment = build_assessment(
+            session_dir=staging,
+            log_available=False,
+            log_error="fetch disabled",
+            log_text="",
+            repo="",
+            run_id="",
+            run_attempt="",
+            workflow_conclusion="unknown",
+        )
+        staging_metrics = staging_assessment["metrics"]
+        check("session_staging uses live state fallback", staging_metrics["state_feedback_source"] == "live_staging", staging_metrics)
+        check("session_staging live state counts events", staging_metrics["state_event_count"] == 1, staging_metrics)
+        check("session_staging live state counts operational capture", staging_metrics["state_operational_capture_coverage"] == 1.0, staging_metrics)
+        archived = root / "sessions" / "day-1"
+        archived.mkdir(parents=True)
+        archived_metrics = state_trace_metrics(archived)
+        check("archived sessions do not borrow live staging state", archived_metrics["state_feedback_source"] == "session", archived_metrics)
+        check("archived sessions require bundled state", archived_metrics["state_event_count"] == 0, archived_metrics)
         high_turn_lessons = [
             lesson["kind"]
             for lesson in top_lessons(
