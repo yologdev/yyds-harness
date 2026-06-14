@@ -602,6 +602,14 @@ setup_external_skills() {
 
 setup_external_skills
 
+PROVIDER_UNAVAILABLE=false
+
+agent_log_has_api_error() {
+    local log_file="$1"
+    [ -f "$log_file" ] || return 1
+    grep -Eiq '("type"[[:space:]]*:[[:space:]]*"error"|api error|network error|dns error|reqwest::error|failed to lookup address information|no fallback configured|provider_error|rate_limit|rate limit|\b(429|5[0-9][0-9])\b)' "$log_file" 2>/dev/null
+}
+
 # ── Helper: run agent with automatic fallback on API error ──
 # Run yoyo with optional --fallback flag for provider failover.
 # Fallback switching happens inside the binary (see Issue #226).
@@ -1213,11 +1221,15 @@ STAGE_NAME=assess \
 
 rm -f "$ASSESS_PROMPT"
 
-# Exit early on API errors (after fallback attempt if configured)
-if grep -q '"type":"error"' "$AGENT_LOG" 2>/dev/null; then
-    echo "  API error in assessment agent. Exiting for retry."
-    rm -f "$AGENT_LOG"
-    exit 1
+# Detect API/provider errors (after fallback attempt if configured). Keep the
+# session alive so audit-log still receives transcripts and explicit failure
+# artifacts instead of losing evidence to an early shell exit.
+ASSESS_PROVIDER_ERROR=false
+if agent_log_has_api_error "$AGENT_LOG"; then
+    echo "  API error in assessment agent. Recording provider failure and skipping model-dependent planning."
+    ASSESS_PROVIDER_ERROR=true
+    PROVIDER_UNAVAILABLE=true
+    ASSESS_EXIT=1
 fi
 rm -f "$AGENT_LOG"
 
@@ -1245,6 +1257,7 @@ Guard result:
 - status: assessment_missing
 - assessment_exit_code: $ASSESS_EXIT
 - assessment_timeout_seconds: $ASSESS_TIMEOUT
+- provider_error_detected: $ASSESS_PROVIDER_ERROR
 - required_artifact: session_plan/assessment.md
 - transcript: transcripts/assess.log
 
@@ -1264,7 +1277,7 @@ if [ -s session_plan/assessment.md ]; then
 elif [ -s session_plan/assessment_missing.md ]; then
     PRESEED_SOURCE="session_plan/assessment_missing.md"
 fi
-if [ -n "$PRESEED_SOURCE" ]; then
+if [ "$ASSESS_PROVIDER_ERROR" != true ] && [ -n "$PRESEED_SOURCE" ]; then
     if python3 scripts/preseed_session_plan.py \
         --assessment "$PRESEED_SOURCE" \
         --output-dir session_plan \
@@ -1278,20 +1291,49 @@ if [ -n "$PRESEED_SOURCE" ]; then
     fi
 fi
 
-# ── Phase A2: Planning agent ──
-# Reads assessment + issues; writes task files. Does NOT read source code directly.
-echo "  Phase A2: Planning (${PLAN_TIMEOUT}s)..."
-PLAN_PROMPT=$(mktemp)
+PLAN_EXIT=0
+PLAN_PROVIDER_ERROR=false
+if [ "$ASSESS_PROVIDER_ERROR" = true ]; then
+    echo "  Phase A2: Planning skipped because assessment hit a provider/API error."
+    mkdir -p session_plan
+    cat > session_plan/planning_failure.md <<PLANFAIL
+# Planning Failure — Day $DAY ($SESSION_TIME)
 
-# Build assessment section — either from A1 output or instruct fallback
-if [ -n "$ASSESSMENT" ]; then
-    ASSESSMENT_SECTION="=== ASSESSMENT (from Phase A1) ===
-$ASSESSMENT"
+The planning agent was skipped because the assessment phase hit a provider/API error.
+
+Guard result:
+- status: planning_skipped_provider_unavailable
+- planner_exit_code: 1
+- planner_timeout_seconds: $PLAN_TIMEOUT
+- required_artifact: session_plan/task_*.md
+- transcript: transcripts/assess.log
+
+Why this matters:
+- Spending planner and implementation turns while DeepSeek is unreachable lowers task success without creating useful code evidence.
+- The next session should recover provider access or configure fallback before selecting implementation work.
+
+Expected follow-up:
+- Recover the DeepSeek provider path or configure a working fallback provider.
+- Preserve this artifact, transcripts, and provider-error gnomes as the current task-selection evidence.
+PLANFAIL
+    PLANNING_FAILED=true
+    PLAN_PROVIDER_ERROR=true
+    PLAN_EXIT=1
 else
-    # Fallback: if assessment is empty, keep planning artifact-first. Previous
-    # runs showed that broad source/test exploration can consume the whole
-    # planning budget and leave no task files.
-    ASSESSMENT_SECTION="=== NO ASSESSMENT AVAILABLE ===
+    # ── Phase A2: Planning agent ──
+    # Reads assessment + issues; writes task files. Does NOT read source code directly.
+    echo "  Phase A2: Planning (${PLAN_TIMEOUT}s)..."
+    PLAN_PROMPT=$(mktemp)
+
+    # Build assessment section — either from A1 output or instruct fallback
+    if [ -n "$ASSESSMENT" ]; then
+        ASSESSMENT_SECTION="=== ASSESSMENT (from Phase A1) ===
+$ASSESSMENT"
+    else
+        # Fallback: if assessment is empty, keep planning artifact-first. Previous
+        # runs showed that broad source/test exploration can consume the whole
+        # planning budget and leave no task files.
+        ASSESSMENT_SECTION="=== NO ASSESSMENT AVAILABLE ===
 The assessment agent did not produce output. Treat that as evidence, not as a
 reason to redo the whole assessment.
 
@@ -1303,9 +1345,9 @@ Fallback planning rule:
   log commands during planning.
 - After task_01.md exists, you may run at most 3 short context-gathering reads or
   commands to refine task_02.md/task_03.md."
-fi
+    fi
 
-cat > "$PLAN_PROMPT" <<PLANEOF
+    cat > "$PLAN_PROMPT" <<PLANEOF
 $YOYO_STABLE_CONTEXT
 
 === CURRENT SESSION ===
@@ -1526,31 +1568,56 @@ plan artifacts into the audit-log session artifact. Do not implement anything.
 Your job is planning only.
 PLANEOF
 
-AGENT_LOG=$(mktemp)
-PLAN_EXIT=0
-STAGE_NAME=plan run_agent_with_fallback "$PLAN_TIMEOUT" "$PLAN_PROMPT" "$AGENT_LOG" "--no-auto-watch" || PLAN_EXIT=$?
+    AGENT_LOG=$(mktemp)
+    STAGE_NAME=plan run_agent_with_fallback "$PLAN_TIMEOUT" "$PLAN_PROMPT" "$AGENT_LOG" "--no-auto-watch" || PLAN_EXIT=$?
 
-rm -f "$PLAN_PROMPT"
+    rm -f "$PLAN_PROMPT"
 
-# Exit early on API errors (after fallback attempt if configured)
-if grep -q '"type":"error"' "$AGENT_LOG" 2>/dev/null; then
-    echo "  API error detected. Exiting for retry."
+    # Detect API/provider errors (after fallback attempt if configured). Clear
+    # seed task files so a provider outage cannot spend implementation attempts.
+    if agent_log_has_api_error "$AGENT_LOG"; then
+        echo "  API error detected in planning agent. Recording planning failure and skipping implementation."
+        PLAN_PROVIDER_ERROR=true
+        PROVIDER_UNAVAILABLE=true
+        PLANNING_FAILED=true
+        PLAN_EXIT=1
+        rm -f session_plan/task_*.md
+        mkdir -p session_plan
+        cat > session_plan/planning_failure.md <<PLANFAIL
+# Planning Failure — Day $DAY ($SESSION_TIME)
+
+The planning agent hit a provider/API error before producing reliable task files.
+
+Guard result:
+- status: planning_provider_error
+- planner_exit_code: $PLAN_EXIT
+- planner_timeout_seconds: $PLAN_TIMEOUT
+- required_artifact: session_plan/task_*.md
+- transcript: transcripts/plan.log
+
+Why this matters:
+- Sending implementation agents into the same provider outage burns task attempts and hides the true failure class.
+- The next session should recover provider access or configure fallback before selecting implementation work.
+
+Expected follow-up:
+- Recover the DeepSeek provider path or configure a working fallback provider.
+- Use transcripts/plan.log, provider-error gnomes, and this artifact as task-selection evidence.
+PLANFAIL
+    fi
     rm -f "$AGENT_LOG"
-    exit 1
-fi
-rm -f "$AGENT_LOG"
 
-if [ "$PLAN_EXIT" -eq 124 ]; then
-    echo "  WARNING: Planning agent TIMED OUT after ${PLAN_TIMEOUT}s."
-elif [ "$PLAN_EXIT" -ne 0 ]; then
-    echo "  WARNING: Planning agent exited with code $PLAN_EXIT."
+    if [ "$PLAN_EXIT" -eq 124 ]; then
+        echo "  WARNING: Planning agent TIMED OUT after ${PLAN_TIMEOUT}s."
+    elif [ "$PLAN_EXIT" -ne 0 ]; then
+        echo "  WARNING: Planning agent exited with code $PLAN_EXIT."
+    fi
 fi
 
 # Check if planning agent produced tasks
 TASK_COUNT=0
 for _f in session_plan/task_[0-9][0-9].md; do [ -f "$_f" ] && TASK_COUNT=$((TASK_COUNT + 1)); done
-PLANNING_FAILED=false
-if [ "$TASK_COUNT" -eq 0 ]; then
+PLANNING_FAILED="${PLANNING_FAILED:-false}"
+if [ "$TASK_COUNT" -eq 0 ] && [ "$PLANNING_FAILED" != true ]; then
     echo "  Planning guard failed: planning agent produced 0 tasks — recording planning failure; no fake task will run."
     mkdir -p session_plan
     cat > session_plan/planning_failure.md <<PLANFAIL
@@ -1755,7 +1822,7 @@ TEOF
             echo "    WARNING: Task $TASK_NUM exited with code $TASK_EXIT (attempt $ATTEMPT)."
             TASK_ATTEMPT_STATUS="nonzero"
         fi
-        if grep -q '"type":"error"' "$TASK_LOG" 2>/dev/null; then
+        if agent_log_has_api_error "$TASK_LOG"; then
             TASK_ATTEMPT_STATUS="api_error"
         fi
         append_task_attempt_evidence \
@@ -1763,7 +1830,7 @@ TEOF
             "transcripts/${TASK_STAGE_NAME}.log" "$TASK_EXIT" "$TASK_ATTEMPT_STATUS" || true
 
         # Abort on API errors (after fallback attempt if configured) — revert partial work and stop
-        if grep -q '"type":"error"' "$TASK_LOG" 2>/dev/null; then
+        if agent_log_has_api_error "$TASK_LOG"; then
             echo "    API error in Task $TASK_NUM. Reverting and aborting implementation loop."
             rm -f "$TASK_LOG"
             if ! git reset --hard "$PRE_TASK_SHA"; then
@@ -2034,7 +2101,7 @@ BFIXEOF
         if [ "$BFIX_EXIT" -eq 124 ]; then
             echo "    WARNING: Build-fix agent timed out after ${BFIX_TIMEOUT}s."
             BFIX_STATUS="timeout"
-        elif grep -q '"type":"error"' "$BFIX_LOG" 2>/dev/null; then
+        elif agent_log_has_api_error "$BFIX_LOG"; then
             echo "    WARNING: Build-fix agent hit API error — aborting fix loop."
             append_task_attempt_evidence \
                 "$TASK_ID" "build_fix" "$BUILD_FIX_ATTEMPT" "$BFIX_STAGE_NAME" \
@@ -2194,7 +2261,7 @@ FIXEOF
                 if [ "$FIX_EXIT" -eq 124 ]; then
                     echo "    WARNING: Fix agent timed out after ${FIX_TIMEOUT}s."
                     FIX_STATUS="timeout"
-                elif grep -q '"type":"error"' "$FIX_LOG" 2>/dev/null; then
+                elif agent_log_has_api_error "$FIX_LOG"; then
                     echo "    WARNING: Fix agent hit API error."
                     FIX_STATUS="api_error"
                 elif [ "$FIX_EXIT" -ne 0 ]; then
@@ -2280,7 +2347,7 @@ $(cat "session_plan/eval_task_${TASK_NUM}.md" 2>/dev/null || echo 'no eval file 
             TASK_OK=false
             REVERT_REASON="Evaluator timed out without a verifier verdict"
             break
-        elif grep -q '"type":"error"' "$EVAL_LOG" 2>/dev/null; then
+        elif agent_log_has_api_error "$EVAL_LOG"; then
             echo "    Evaluator: API error — failing task because no verifier verdict exists"
             write_task_eval_evidence \
                 "$TASK_ID" "$EVAL_ATTEMPT" "api_error" "$EVAL_EXIT" "$EVAL_VERDICT" "" \
@@ -2576,8 +2643,11 @@ ${RECENT_ENTRY}
         fi
     done
 
-    JOURNAL_PROMPT=$(mktemp)
-    cat > "$JOURNAL_PROMPT" <<JEOF
+    if [ "$PROVIDER_UNAVAILABLE" = true ]; then
+        echo "  Provider unavailable — skipping journal agent and using fallback."
+    else
+        JOURNAL_PROMPT=$(mktemp)
+        cat > "$JOURNAL_PROMPT" <<JEOF
 $YOYO_STABLE_CONTEXT
 
 === CURRENT SESSION ===
@@ -2620,11 +2690,12 @@ Be specific and honest. Then commit:
   git add journals/JOURNAL.md && git commit -m "Day $DAY ($SESSION_TIME): journal entry" || true
 JEOF
 
-    JOURNAL_LOG=$(mktemp)
-    STAGE_NAME=journal run_agent_with_fallback \
-        120 "$JOURNAL_PROMPT" "$JOURNAL_LOG" "--no-auto-watch" || true
-    rm -f "$JOURNAL_PROMPT"
-    rm -f "$JOURNAL_LOG"
+        JOURNAL_LOG=$(mktemp)
+        STAGE_NAME=journal run_agent_with_fallback \
+            120 "$JOURNAL_PROMPT" "$JOURNAL_LOG" "--no-auto-watch" || true
+        rm -f "$JOURNAL_PROMPT"
+        rm -f "$JOURNAL_LOG"
+    fi
 
     # Final fallback if agent still didn't write it
     if ! grep -q "## Day $DAY.*$SESSION_TIME" journals/JOURNAL.md 2>/dev/null; then
@@ -2645,7 +2716,7 @@ fi
 
 # ── Step 6b2: Reflect & update learnings ──
 COMMITS_FOR_REFLECTION=$(git log --oneline "$SESSION_START_SHA"..HEAD --format="%s" | grep -v "session wrap-up\|cargo fmt\|journal entry\|update learnings" | paste -sd ", " - || true)
-if [ -n "$COMMITS_FOR_REFLECTION" ]; then
+if [ -n "$COMMITS_FOR_REFLECTION" ] && [ "$PROVIDER_UNAVAILABLE" != true ]; then
     echo "  Reflecting on session learnings..."
     REFLECT_PROMPT=$(mktemp)
     cat > "$REFLECT_PROMPT" <<REOF
@@ -2720,7 +2791,9 @@ if [ -f "session_plan/issue_responses.md" ]; then
 fi
 
 ISSUE_COUNT=$(echo "$ALL_ISSUES" | grep -c '^### Issue' 2>/dev/null) || ISSUE_COUNT=0
-if [ "$ISSUE_COUNT" -gt 0 ] && command -v gh &>/dev/null; then
+if [ "$ISSUE_COUNT" -gt 0 ] && [ "$PROVIDER_UNAVAILABLE" = true ]; then
+    echo "  Provider unavailable — skipping agent-driven issue responses."
+elif [ "$ISSUE_COUNT" -gt 0 ] && command -v gh &>/dev/null; then
     # Pre-filter: find issues already commented on today (cross-session dedup)
     SKIP_COUNT=0
     ALREADY_RESPONDED=""
@@ -2737,7 +2810,7 @@ if [ "$ISSUE_COUNT" -gt 0 ] && command -v gh &>/dev/null; then
         echo "  Already responded today:${ALREADY_RESPONDED}"
     fi
 fi
-if [ "$ISSUE_COUNT" -gt 0 ] && command -v gh &>/dev/null; then
+if [ "$ISSUE_COUNT" -gt 0 ] && [ "$PROVIDER_UNAVAILABLE" != true ] && command -v gh &>/dev/null; then
     echo ""
     echo "→ Responding to issues (agent-driven)..."
     SESSION_COMMITS=$(git log --oneline "$SESSION_START_SHA"..HEAD --format="%s" || true)
@@ -2810,7 +2883,7 @@ RESPONDEOF
     rm -f "$RESPOND_PROMPT"
 
     # Check for API errors in the agent output
-    if grep -q '"type":"error"' "$RESPOND_LOG" 2>/dev/null; then
+    if agent_log_has_api_error "$RESPOND_LOG"; then
         echo "  API error detected in issue response agent."
         RESPOND_EXIT=1
     fi
