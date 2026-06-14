@@ -929,6 +929,15 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
         add("eval", "Bound evaluator checks so verdicts are not skipped", "Some task evals were unverified or timed out.", "evaluator_unverified_count", gnomes.get("evaluator_unverified_count"), 90)
     if int(gnomes.get("evaluator_timeout_with_verdict_count") or 0) > 0:
         add("eval", "Stop evaluator once verdict evidence exists", "An evaluator wrote a verdict but still timed out, making the verifier evidence ambiguous.", "evaluator_timeout_with_verdict_count", gnomes.get("evaluator_timeout_with_verdict_count"), 92)
+    if int(gnomes.get("task_unattempted_count") or 0) > 0:
+        add(
+            "implementation",
+            "Preserve budget to start every selected task",
+            "The planner selected tasks that the implementation phase never attempted.",
+            "task_unattempted_count",
+            gnomes.get("task_unattempted_count"),
+            94,
+        )
     if int(gnomes.get("task_unlanded_source_count") or 0) > 0:
         add("commit", "Make source-edit outcomes land or explain reverts", "A task touched source files without a landed source commit.", "task_unlanded_source_count", gnomes.get("task_unlanded_source_count"), 88)
     if int(gnomes.get("evaluator_timeout_count") or 0) > 0:

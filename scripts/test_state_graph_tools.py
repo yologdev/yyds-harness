@@ -128,6 +128,30 @@ class StateGraphTools(unittest.TestCase):
                 [item["title"] for item in suggestions],
             )
 
+    def test_evolution_suggestions_surface_unattempted_selected_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "task_unattempted_count": 1,
+                        "task_artifact_coverage": 1.0,
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+            unattempted = next(
+                item
+                for item in suggestions
+                if item["title"] == "Preserve budget to start every selected task"
+            )
+
+            self.assertEqual(unattempted["metric"], "task_unattempted_count")
+            self.assertEqual(unattempted["value"], 1)
+            self.assertIn("never attempted", unattempted["reason"])
+
     def test_evolution_suggestions_include_lifecycle_cause_detail(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
