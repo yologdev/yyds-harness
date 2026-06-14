@@ -37,10 +37,13 @@ evidence that lets the planner choose small, useful, verifiable work.
    `state tail`, `state why`, graph hotspots, replay integrity, cache reports,
    model/tool events, task lineage, and `PatchEvaluated` gnome values.
 6. **Print the structured state snapshot.** Summarize claim health, top
-   unresolved claim families, task-state counts, and top tool-failure
-   categories before choosing candidate tasks. Use the trajectory snapshot when
-   present; otherwise derive the compact view from current dashboard/state
-   artifacts.
+   unresolved claim families, task-state counts, recent tool failures, recent
+   action evidence, and top historical tool-failure categories before choosing
+   candidate tasks. Use the trajectory snapshot when present; otherwise derive
+   the compact view from current dashboard/state artifacts. Treat `recent tool
+   failures` and `recent action evidence` as current harness pressure. Treat
+   `historical unrecovered tool failures` as cumulative context unless fresh
+   evidence shows the failure still reproduces.
 7. **Compare intent to evidence.** Ask whether task artifacts, action logs,
    transcripts, states, and gnomes really prove what the dashboard says.
 8. **Identify the next smallest improvement.** Favor fixes that improve
@@ -76,7 +79,7 @@ Write findings as prioritized evidence, not guesses:
 
 ```markdown
 SELF-ASSESSMENT Day [N]:
-Structured State Snapshot: [claim health; top unresolved claim families; task-state counts; top tool-failure categories]
+Structured State Snapshot: [claim health; top unresolved claim families; task-state counts; recent tool failures; recent action evidence; historical unrecovered tool-failure categories]
 1. [CRITICAL/HIGH/MEDIUM/LOW] [issue]
    Evidence: [file, session id, metric, transcript, command, or dashboard field]
    Impact: [why this matters for yyds as a DeepSeek coding agent]

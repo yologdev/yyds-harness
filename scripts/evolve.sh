@@ -1131,12 +1131,15 @@ Steps:
    Treat this as harness feedback, not product-user behavior. Look for DeepSeek protocol failures, repair churn, eval regressions, cache inefficiency, tool-call/schema friction, context misses, rollback pressure, and recurring failure classes.
    If the trajectory includes a "Structured state snapshot", copy its compact
    claim health, latest lifecycle gnomes, unresolved claim families, task-state
-   counts, and tool-failure categories into your assessment before choosing
-   candidate tasks. Treat lines labeled "historical tool failures" as cumulative
-   history, not automatically current bugs; if a category says "recent verified
-   task", mention that it was recently addressed and do not promote it into
-   Bugs / Friction Found unless fresh self-test or graph evidence shows the
-   failure still reproduces. If the trajectory includes "Graph-derived next-task pressure",
+   counts, recent tool failures, recent action evidence, and tool-failure
+   categories into your assessment before choosing candidate tasks. Treat
+   "recent tool failures" and "recent action evidence" as current harness
+   pressure: they show what the latest state/transcript/action logs still
+   disagree on. Treat lines labeled "historical unrecovered tool failures" as
+   cumulative history, not automatically current bugs; if a category says
+   "recent verified task", mention that it was recently addressed and do not
+   promote it into Bugs / Friction Found unless fresh self-test or graph
+   evidence shows the failure still reproduces. If the trajectory includes "Graph-derived next-task pressure",
    copy the top recommendation and metric too; treat it as current harness
    evidence, not dashboard-only display.
 
@@ -1174,7 +1177,7 @@ Steps:
 [state tail / state why / graph hotspots / cache report — concrete harness signals and what they imply]
 
 ## Structured State Snapshot
-[claim health; top unresolved claim families; task-state counts; top tool-failure categories; note historical/recently addressed categories separately from current bugs]
+[claim health; top unresolved claim families; task-state counts; recent tool failures; recent action evidence; top historical tool-failure categories; note historical/recently addressed categories separately from current bugs]
 
 ## Upstream Dependency Signals
 [any evidence that yoagent / yoagent-state needs upstream work; include whether to file help-wanted or propose a PR]

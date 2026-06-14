@@ -47,9 +47,12 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("canonical assessment contract for yyds", script)
         self.assertIn("Structured state snapshot", script)
         self.assertIn("claim health, latest lifecycle gnomes, unresolved claim families", script)
-        self.assertIn("historical tool failures", script)
-        self.assertIn("recent verified\n   task", script)
-        self.assertIn("do not promote it into\n   Bugs / Friction Found", script)
+        self.assertIn("recent tool failures", script)
+        self.assertIn("recent action evidence", script)
+        self.assertIn("current harness\n   pressure", script)
+        self.assertIn("historical unrecovered tool failures", script)
+        self.assertIn('"recent verified task"', script)
+        self.assertIn("do not\n   promote it into Bugs / Friction Found", script)
         self.assertIn("Graph-derived next-task pressure", script)
         self.assertIn("top recommendation and metric", script)
 
@@ -74,6 +77,9 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("prompt-cache regressions", text)
         self.assertIn("Structured State Snapshot", text)
         self.assertIn("top unresolved claim families", text)
+        self.assertIn("recent tool failures", text)
+        self.assertIn("recent action evidence", text)
+        self.assertIn("historical unrecovered tool failures", text)
 
     def test_self_assess_skill_preserves_bounded_assessment_contract(self):
         text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")
