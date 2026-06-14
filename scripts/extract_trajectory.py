@@ -1274,12 +1274,35 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                 summary_parts.append(tool_label + ": " + ", ".join(tool_parts))
         if recent_action_evidence_summary:
             action_parts = []
+            action_session_count = int(recent_action_evidence_summary.get("session_count") or 0)
+            merged_action_sessions = int(
+                recent_action_evidence_summary.get("merged_observed_session_count") or 0
+            )
+            state_action_sessions = int(
+                recent_action_evidence_summary.get("state_observed_session_count") or 0
+            )
+            transcript_action_sessions = int(
+                recent_action_evidence_summary.get("transcript_observed_session_count") or 0
+            )
             state_only_failed_tools = int(
                 recent_action_evidence_summary.get("state_only_failed_tool_count") or 0
             )
             transcript_only_failed_tools = int(
                 recent_action_evidence_summary.get("transcript_only_failed_tool_count") or 0
             )
+            if (
+                action_session_count
+                and merged_action_sessions
+                and (
+                    state_action_sessions < merged_action_sessions
+                    or transcript_action_sessions < merged_action_sessions
+                )
+            ):
+                action_parts.append(
+                    "coverage="
+                    f"state {state_action_sessions}/{action_session_count}, "
+                    f"transcripts {transcript_action_sessions}/{action_session_count}"
+                )
             if state_only_failed_tools:
                 action_parts.append(f"state_only_failed_tools={state_only_failed_tools}")
             if transcript_only_failed_tools:

@@ -4655,6 +4655,7 @@ def action_evidence_summary_for_sessions(session_states: list[dict[str, Any]]) -
     }
     totals = Counter()
     observed_session_count = 0
+    source_observed_session_counts = Counter()
 
     for row in session_states:
         action_evidence = (
@@ -4671,6 +4672,11 @@ def action_evidence_summary_for_sessions(session_states: list[dict[str, Any]]) -
             for key, value in source.items():
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     bucket[str(key)] += int(value)
+            if any(
+                isinstance(value, (int, float)) and not isinstance(value, bool) and int(value) > 0
+                for value in source.values()
+            ):
+                source_observed_session_counts[bucket_name] += 1
         for key in ("state_only_failed_tool_count", "transcript_only_failed_tool_count"):
             value = action_evidence.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -4688,6 +4694,10 @@ def action_evidence_summary_for_sessions(session_states: list[dict[str, Any]]) -
         "transcripts": dict(sorted(buckets["transcripts"].items())),
         "audit": dict(sorted(buckets["audit"].items())),
         "merged": dict(sorted(buckets["merged"].items())),
+        "state_observed_session_count": source_observed_session_counts["state"],
+        "transcript_observed_session_count": source_observed_session_counts["transcripts"],
+        "audit_observed_session_count": source_observed_session_counts["audit"],
+        "merged_observed_session_count": source_observed_session_counts["merged"],
         "state_only_failed_tool_count": totals["state_only_failed_tool_count"],
         "state_only_failed_tool_session_count": totals["state_only_failed_tool_session_count"],
         "transcript_only_failed_tool_count": totals["transcript_only_failed_tool_count"],

@@ -3554,6 +3554,19 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["action_evidence"]["merged"]["failed_tool_count"], 2)
             self.assertEqual(work["action_evidence"]["state_only_failed_tool_count"], 1)
             self.assertEqual(work["action_evidence"]["transcript_only_failed_tool_count"], 1)
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                states["summary"]["recent_action_evidence_summary"]["state_observed_session_count"],
+                1,
+            )
+            self.assertEqual(
+                states["summary"]["recent_action_evidence_summary"]["transcript_observed_session_count"],
+                1,
+            )
+            self.assertEqual(
+                states["summary"]["recent_action_evidence_summary"]["merged_observed_session_count"],
+                1,
+            )
             self.assertEqual(
                 work["failed_tool_summary"]["category_counts"],
                 {"bash_tool_error": 1, "search_error": 1},
@@ -3563,6 +3576,49 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("Action evidence", html)
             self.assertIn("state-only", html)
             self.assertIn("action_evidence", data_json)
+
+    def test_action_evidence_summary_counts_source_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for day in (1, 2):
+                session = root / f"sessions/day-{day}"
+                write_json(
+                    session / "outcome.json",
+                    {
+                        "day": day,
+                        "ts": f"2026-06-0{day}T00:00:00Z",
+                        "tasks_attempted": 0,
+                        "tasks_succeeded": 0,
+                    },
+                )
+                write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_events(
+                root / "sessions/day-1/state/events.jsonl",
+                [
+                    {
+                        "kind": "CommandStarted",
+                        "payload": {
+                            "tool_call_id": "tool-1",
+                            "command": "cargo check",
+                        },
+                    }
+                ],
+            )
+            transcript_dir = root / "sessions/day-2/transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "  ▶ read src/lib.rs ✓ (5ms)\n",
+                encoding="utf-8",
+            )
+
+            build(root / "sessions", root / "out")
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+            summary = states["summary"]["action_evidence_summary"]
+
+            self.assertEqual(summary["session_count"], 2)
+            self.assertEqual(summary["state_observed_session_count"], 1)
+            self.assertEqual(summary["transcript_observed_session_count"], 1)
+            self.assertEqual(summary["merged_observed_session_count"], 2)
 
     def test_audit_success_marks_failed_bash_tool_as_recovered(self):
         with tempfile.TemporaryDirectory() as tmp:

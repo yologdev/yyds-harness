@@ -21,6 +21,13 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
+def write_events(path: Path, rows: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+
 class ExtractTrajectoryTests(unittest.TestCase):
     def test_run_cmd_timeout_without_pid_degrades(self) -> None:
         with mock.patch.object(
@@ -739,6 +746,45 @@ class ExtractTrajectoryTests(unittest.TestCase):
 
             self.assertIn("dashboard dataset warnings:", rendered)
             self.assertIn("lack current task-state evidence", rendered)
+
+    def test_structured_state_snapshot_surfaces_recent_action_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            for day in (1, 2):
+                session = audit_dir / f"day-{day}"
+                write_json(
+                    session / "outcome.json",
+                    {
+                        "day": day,
+                        "ts": f"2026-01-0{day}T00:00:00Z",
+                        "tasks_attempted": 1,
+                        "tasks_succeeded": 1,
+                    },
+                )
+                write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_events(
+                audit_dir / "day-1/state/events.jsonl",
+                [
+                    {
+                        "kind": "CommandStarted",
+                        "payload": {
+                            "tool_call_id": "tool-1",
+                            "command": "cargo check",
+                        },
+                    }
+                ],
+            )
+            transcript_dir = audit_dir / "day-2/transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "  ▶ read src/lib.rs ✓ (5ms)\n",
+                encoding="utf-8",
+            )
+
+            rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
+
+            self.assertIn("recent action evidence:", rendered)
+            self.assertIn("coverage=state 1/2, transcripts 1/2", rendered)
 
     def test_structured_state_snapshot_prioritizes_recent_unresolved_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
