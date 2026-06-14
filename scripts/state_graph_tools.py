@@ -1188,7 +1188,7 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             "DeepSeek/provider API errors appeared outside task-scoped API reverts; preserve the failure evidence and route retry or provider recovery before spending implementation attempts.",
             "provider_error_count",
             provider_errors,
-            94,
+            96,
         )
     if int(gnomes.get("task_api_error_count") or 0) > 0:
         add(

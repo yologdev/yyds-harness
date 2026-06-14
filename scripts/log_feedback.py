@@ -1344,7 +1344,15 @@ def build_assessment(
     previous = previous_feedback(session_dir)
     recurrences = recurrence_metrics(parsed["failure_fingerprints"], previous)
 
-    attempted = int(outcome.get("tasks_attempted") or 0)
+    outcome_attempted = int(outcome.get("tasks_attempted") or 0)
+    transcript_attempted = len(
+        {
+            str(row.get("task_id") or "")
+            for row in turn_metrics.get("task_turn_attempts") or []
+            if isinstance(row, dict) and row.get("phase") == "implementation" and row.get("task_id")
+        }
+    )
+    attempted = max(outcome_attempted, transcript_attempted)
     succeeded = int(outcome.get("tasks_succeeded") or 0)
     artifact_metrics = task_artifact_metrics(session_dir, attempted)
     artifact_metrics["planner_no_task_count"] = max(
@@ -1407,6 +1415,8 @@ def build_assessment(
         "session_success_rate": 1.0 if session_success else 0.0,
         "task_success_rate": task_success_rate,
         "tasks_attempted": attempted,
+        "raw_tasks_attempted": outcome_attempted,
+        "transcript_task_attempt_count": transcript_attempted,
         "tasks_succeeded": counted_succeeded,
         "raw_tasks_succeeded": succeeded,
         "retry_success_rate": retry_success_rate,
@@ -2047,6 +2057,10 @@ def run_self_tests() -> int:
         check("transcript fallback marks transcript log available", transcript_metrics["transcript_log_available"] is True, transcript_metrics)
         check("transcript fallback counts provider errors", transcript_metrics["provider_error_count"] >= 2, transcript_metrics)
         check("transcript fallback adds confidence", transcript_metrics["coding_log_confidence"] >= 0.2, transcript_metrics)
+        check("transcript fallback preserves raw attempted count", transcript_metrics["raw_tasks_attempted"] == 0, transcript_metrics)
+        check("transcript fallback counts implementation task attempts", transcript_metrics["transcript_task_attempt_count"] == 2, transcript_metrics)
+        check("transcript fallback promotes attempted tasks", transcript_metrics["tasks_attempted"] == 2, transcript_metrics)
+        check("transcript fallback makes task success measurable", transcript_metrics["task_success_rate"] == 0.0, transcript_metrics)
         high_turn_lessons = [
             lesson["kind"]
             for lesson in top_lessons(

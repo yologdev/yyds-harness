@@ -355,6 +355,24 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(suggestions[0]["metric"], "provider_error_count")
             self.assertEqual(suggestions[0]["value"], 2)
 
+    def test_evolution_suggestions_prioritize_provider_recovery_over_missing_task_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "provider_error_count": 2,
+                        "task_artifact_coverage": 0.0,
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+
+            self.assertEqual(suggestions[0]["title"], "Recover provider errors before task attempts")
+            self.assertEqual(suggestions[0]["metric"], "provider_error_count")
+
     def test_evolution_suggestions_surface_low_task_lineage_capture_pressure(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
