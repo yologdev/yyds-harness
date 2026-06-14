@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from state_graph_tools import evolution_suggestions, ordered_sessions
+from state_graph_tools import evolution_suggestions, ordered_sessions, session_dirs
 
 # ── Configuration constants ──────────────────────────────────────────────
 WINDOW_SESSIONS = 10           # last N sessions in the outcomes section
@@ -142,9 +142,7 @@ def load_recent_session_outcomes(audit_dir: Path) -> list[tuple[Path, dict[str, 
     if not audit_dir.exists() or not audit_dir.is_dir():
         return []
     triples: list[tuple[float, str, dict]] = []
-    for child in audit_dir.iterdir():
-        if not child.is_dir():
-            continue
+    for child in session_dirs(audit_dir):
         outcome = child / "outcome.json"
         if not outcome.is_file():
             continue
@@ -847,18 +845,14 @@ def collect_provider_errors(audit_dir: Path) -> tuple[int, int]:
     memory. Per-file size cap (10MB) protects against pathological cases."""
     if not audit_dir.exists():
         return 0, 0
-    sessions = 0
+    sessions_examined = 0
     hits = 0
-    session_dirs = sorted(
-        [child for child in audit_dir.iterdir() if child.is_dir()],
-        key=session_sort_time,
-        reverse=True,
-    )
-    for child in session_dirs:
+    candidate_sessions = sorted(session_dirs(audit_dir), key=session_sort_time, reverse=True)
+    for child in candidate_sessions:
         audit = child / "audit.jsonl"
         if not audit.is_file():
             continue
-        sessions += 1
+        sessions_examined += 1
         try:
             size = audit.stat().st_size
             if size > AUDIT_FILE_SIZE_CAP:
@@ -875,7 +869,7 @@ def collect_provider_errors(audit_dir: Path) -> tuple[int, int]:
             warn(f"skipped {audit}: {e}")
         if sessions >= WINDOW_SESSIONS:
             break
-    return sessions, hits
+    return sessions_examined, hits
 
 
 def render_provider_health(sessions: int, hits: int) -> str:
@@ -893,9 +887,7 @@ def load_log_feedback(audit_dir: Path) -> list[dict]:
     if not audit_dir.exists() or not audit_dir.is_dir():
         return []
     triples: list[tuple[float, str, dict]] = []
-    for child in audit_dir.iterdir():
-        if not child.is_dir():
-            continue
+    for child in session_dirs(audit_dir):
         feedback = child / "log_feedback.json"
         if not feedback.is_file():
             continue
@@ -944,9 +936,19 @@ def render_log_feedback(
     confidence = metrics.get("coding_log_confidence")
     recurring = metrics.get("recurring_failure_count", 0)
     capture = metrics.get("state_capture_coverage")
+    metric_parts = []
+    for key in (
+        "provider_error_count",
+        "provider_blocked_session_count",
+        "task_success_rate",
+        "task_spec_quality_score",
+    ):
+        if key in metrics and metrics.get(key) is not None:
+            metric_parts.append(f"{key}={metrics.get(key)}")
+    metric_suffix = (" " + " ".join(metric_parts)) if metric_parts else ""
     lines = [
         "## GitHub Actions log feedback",
-        f"latest score={score} confidence={confidence} recurring_failures={recurring} state_capture={capture}",
+        f"latest score={score} confidence={confidence} recurring_failures={recurring} state_capture={capture}{metric_suffix}",
     ]
 
     lessons = corrected_lessons if corrected_lessons else latest.get("top_lessons")
@@ -958,7 +960,7 @@ def render_log_feedback(
         for lesson in lessons[:3]:
             if not isinstance(lesson, dict):
                 continue
-            fp = str(lesson.get("fingerprint") or "")[:120]
+            fp = str(lesson.get("fingerprint") or lesson.get("title") or lesson.get("kind") or "")[:120]
             action = str(lesson.get("action") or "")[:120]
             if fp:
                 lines.append(f"- {fp} -> {action}")

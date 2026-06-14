@@ -413,6 +413,19 @@ TRAJ_WT="/tmp/evolve-trajectory-$$"
 TRAJ_STDERR="$SESSION_STAGING/trajectory.stderr.log"
 YOYO_TRAJECTORY=""
 
+load_fallback_trajectory() {
+    local fallback_dir=".yoyo/session_staging"
+    if [ ! -f "$fallback_dir/log_feedback.json" ] && [ ! -f "$fallback_dir/state/summary.json" ]; then
+        return 1
+    fi
+    YOYO_AUDIT_DIR="$fallback_dir" \
+    YOYO_REPO="$REPO" \
+    YOYO_DAY="$DAY" \
+    YOYO_TRAJECTORY_OUT="$TRAJECTORY_FILE" \
+    python3 scripts/extract_trajectory.py 2>>"$TRAJ_STDERR" || return 1
+    YOYO_TRAJECTORY=$(cat "$TRAJECTORY_FILE" 2>/dev/null || echo "")
+}
+
 # Fetch audit-log first; capture rc so we can surface fetch-specific failures.
 if git fetch --depth 50 origin audit-log:audit-log 2>>"$TRAJ_STDERR"; then
     if git worktree add "$TRAJ_WT" audit-log 2>>"$TRAJ_STDERR"; then
@@ -436,9 +449,15 @@ if git fetch --depth 50 origin audit-log:audit-log 2>>"$TRAJ_STDERR"; then
         fi
     else
         echo "  trajectory: worktree add failed (will run without trajectory data)" >&2
+        if load_fallback_trajectory; then
+            echo "  trajectory: loaded fallback session_staging feedback" >&2
+        fi
     fi
 else
     echo "  trajectory: audit-log fetch failed (will run without trajectory data)" >&2
+    if load_fallback_trajectory; then
+        echo "  trajectory: loaded fallback session_staging feedback" >&2
+    fi
 fi
 
 # Cleanup runs UNCONDITIONALLY — even if fetch succeeded but worktree-add

@@ -113,6 +113,13 @@ def event_counts(events: list[dict[str, Any]]) -> dict[str, int]:
 def session_dirs(sessions_dir: Path) -> list[Path]:
     if not sessions_dir.is_dir():
         return []
+    if (
+        (sessions_dir / "outcome.json").is_file()
+        or (sessions_dir / "log_feedback.json").is_file()
+        or (sessions_dir / "state" / "summary.json").is_file()
+        or (sessions_dir / "tasks" / "manifest.json").is_file()
+    ):
+        return [sessions_dir]
     return sorted(path for path in sessions_dir.iterdir() if path.is_dir())
 
 

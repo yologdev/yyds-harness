@@ -1703,6 +1703,45 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("Recover provider errors before task attempts", bullets[0])
             self.assertIn("provider_error_count=2", bullets[0])
 
+    def test_graph_suggestions_render_from_single_session_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "session_staging"
+            write_json(
+                session / "log_feedback.json",
+                {"metrics": {"provider_error_count": 2}},
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(session)
+
+            self.assertIn("Recover provider errors before task attempts", rendered)
+            self.assertIn("provider_error_count=2", rendered)
+
+    def test_log_feedback_renders_from_single_session_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "session_staging"
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "coding_log_score": 0.25,
+                        "provider_error_count": 2,
+                    },
+                    "top_lessons": [
+                        {
+                            "kind": "provider_error",
+                            "action": "recover provider before task attempts",
+                        }
+                    ],
+                },
+            )
+
+            feedbacks = extract_trajectory.load_log_feedback(session)
+            rendered = extract_trajectory.render_log_feedback(feedbacks)
+
+            self.assertEqual(len(feedbacks), 1)
+            self.assertIn("provider_error", rendered)
+            self.assertIn("provider_error_count=2", rendered)
+
     def test_graph_suggestions_include_missing_expected_evidence_pressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

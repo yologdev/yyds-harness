@@ -28,6 +28,16 @@ def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class StateGraphTools(unittest.TestCase):
+    def test_ordered_sessions_accepts_single_session_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "session_staging"
+            write_json(
+                session / "log_feedback.json",
+                {"metrics": {"provider_error_count": 2}},
+            )
+
+            self.assertEqual(state_graph_tools.ordered_sessions(session), [session])
+
     def test_replay_check_and_causal_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
