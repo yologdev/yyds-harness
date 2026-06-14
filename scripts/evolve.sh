@@ -1140,8 +1140,8 @@ Steps:
    "recent verified task", mention that it was recently addressed and do not
    promote it into Bugs / Friction Found unless fresh self-test or graph
    evidence shows the failure still reproduces. If the trajectory includes "Graph-derived next-task pressure",
-   copy the top recommendation and metric too; treat it as current harness
-   evidence, not dashboard-only display.
+   copy every rendered recommendation and metric into the assessment; treat those
+   rows as current harness evidence, not dashboard-only display.
 
 7. **Audit upstream dependency boundaries** — yoagent and yoagent-state are foundation dependencies, not code to patch inside this harness. $YOAGENT_UPSTREAM_TARGET If DeepSeek harness evidence points to a yoagent defect or missing capability, identify the smallest upstream change and whether it needs a yyds help issue or an upstream yoagent PR.
 
@@ -1400,7 +1400,8 @@ Your main job in this repo is not generic yoyo CLI feature growth. It is to impr
 
 Use yoagent-state feedback proactively:
 - Treat state tail, state why, graph hotspots, eval evidence, cache reports, failed protocol checks, repair loops, rollback pressure, context misses, and model/tool-call failures as live KPI feedback.
-- If you plan directly from YOUR TRAJECTORY because assessment is missing or thin, use "Graph-derived next-task pressure", "recent tool failures", and "recent action evidence" as current task-selection evidence. Treat "historical unrecovered tool failures" as context only unless recent evidence shows the failure still reproduces.
+- Always treat "Graph-derived next-task pressure" as current task-selection evidence, whether it came through the assessment or directly from YOUR TRAJECTORY. It is graph-ranked state/log pressure, not dashboard decoration. Prefer tasks that address the highest ranked pressure rows; if you choose a different task, say which graph-pressure row you are deferring and why.
+- If you plan directly from YOUR TRAJECTORY because assessment is missing or thin, also use "recent tool failures" and "recent action evidence" as current task-selection evidence. Treat "historical unrecovered tool failures" as context only unless recent evidence shows the failure still reproduces.
 - Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality.
 - Raw code changes are implementation details. The important tracked states are the harness gnomes/KPIs and the state graph evidence that shows whether a change helped.
 - Product users of yoyo/yyds should not see this state layer. Keep state/evolution logic in harness workflows, eval/state commands, audit/dashboard scripts, and internal docs.

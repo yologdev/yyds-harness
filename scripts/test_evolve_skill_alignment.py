@@ -57,11 +57,15 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn('"recent verified task"', script)
         self.assertIn("do not\n   promote it into Bugs / Friction Found", script)
         self.assertIn("Graph-derived next-task pressure", script)
-        self.assertIn("top recommendation and metric", script)
+        self.assertIn("copy every rendered recommendation and metric", script)
+        self.assertIn("not dashboard-only display", script)
 
     def test_planning_phase_interprets_recent_trajectory_labels(self):
         script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
 
+        self.assertIn('Always treat "Graph-derived next-task pressure" as current task-selection evidence', script)
+        self.assertIn("graph-ranked state/log pressure, not dashboard decoration", script)
+        self.assertIn("say which graph-pressure row you are deferring and why", script)
         self.assertIn("If you plan directly from YOUR TRAJECTORY", script)
         self.assertIn('"Graph-derived next-task pressure"', script)
         self.assertIn('"recent tool failures"', script)
