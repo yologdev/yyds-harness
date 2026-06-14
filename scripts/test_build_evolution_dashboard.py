@@ -25,6 +25,7 @@ from build_evolution_dashboard import (  # noqa: E402
     log_feedback_metrics,
     run_health,
     run_health_reasons,
+    stale_seed_obsolete_note,
     summarize_events_for_work,
     summarize_transcript_actions,
     task_manifest_summary,
@@ -5115,6 +5116,17 @@ class BuildEvolutionDashboard(unittest.TestCase):
             task_state = work["task_states"]["tasks"][0]
             self.assertEqual(task_state["state"], "reverted_no_edit")
             self.assertEqual(states["summary"]["state_counts"], {"reverted_no_edit": 1})
+
+    def test_stale_seed_obsolete_note_accepts_seed_task_replaced_by_style(self):
+        self.assertTrue(
+            stale_seed_obsolete_note(
+                {"task_id": "task_01", "origin": "planner"},
+                "# task_01_obsolete.md - Seed Task Contradicted by Evidence\n\n"
+                "**Seed task**: stale task\n\n"
+                "## Verdict\n\n"
+                "Replaced by evidence-backed tasks from trajectory signals.\n",
+            )
+        )
 
     def test_api_error_task_artifact_has_distinct_state_and_gnome(self):
         with tempfile.TemporaryDirectory() as tmp:

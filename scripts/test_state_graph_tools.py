@@ -1243,6 +1243,19 @@ class StateGraphTools(unittest.TestCase):
             )
             self.assertIn("task_stale_seed_obsolete_note_count=1", task_success["reason"])
 
+    def test_stale_seed_obsolete_note_accepts_seed_task_replaced_by_style(self):
+        self.assertTrue(
+            state_graph_tools.stale_seed_obsolete_note(
+                {"task_id": "task_01", "origin": "planner"},
+                {
+                    "obsolete_note_text": "# task_01_obsolete.md - Seed Task Contradicted by Evidence\n\n"
+                    "**Seed task**: stale task\n\n"
+                    "## Verdict\n\n"
+                    "Replaced by evidence-backed tasks from trajectory signals.\n"
+                },
+            )
+        )
+
     def test_task_artifacts_clear_stale_raw_and_evaluator_gnomes(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

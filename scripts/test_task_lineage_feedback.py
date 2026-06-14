@@ -905,6 +905,17 @@ class TaskLineageFeedback(unittest.TestCase):
                 any(lesson["kind"] == "task_obsolete" for lesson in assessment["top_lessons"])
             )
 
+    def test_log_feedback_recognizes_seed_task_replaced_by_obsolete_note(self):
+        self.assertTrue(
+            log_feedback.stale_seed_obsolete_note(
+                {"task_id": "task_01", "origin": "planner"},
+                "# task_01_obsolete.md - Seed Task Contradicted by Evidence\n\n"
+                "**Seed task**: stale task\n\n"
+                "## Verdict\n\n"
+                "Replaced by evidence-backed tasks from trajectory signals.\n",
+            )
+        )
+
     def test_log_feedback_counts_api_error_reverts_separately(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
@@ -1224,6 +1235,10 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["session_success_rate"], 0.0)
             self.assertEqual(metrics["evaluator_unverified_count"], 1)
             self.assertEqual(metrics["task_unlanded_source_count"], 1)
+            self.assertIn(
+                "task_unlanded_source",
+                {lesson["kind"] for lesson in assessment["top_lessons"]},
+            )
 
     def test_log_feedback_counts_reverted_source_task_as_unlanded(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1276,6 +1291,10 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["session_success_rate"], 0.0)
             self.assertEqual(metrics["evaluator_unverified_count"], 1)
             self.assertEqual(metrics["task_unlanded_source_count"], 1)
+            self.assertIn(
+                "task_unlanded_source",
+                {lesson["kind"] for lesson in assessment["top_lessons"]},
+            )
 
     def test_log_feedback_uses_task_artifacts_for_strict_success_without_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:

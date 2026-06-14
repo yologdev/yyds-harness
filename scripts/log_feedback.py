@@ -124,11 +124,20 @@ def file_overlap(planned: list[str], touched: list[str]) -> bool:
 def stale_seed_obsolete_note(task: dict[str, Any], note_text: str) -> bool:
     lowered = str(note_text or "").lower()
     origin = str(task.get("origin") or "").lower()
-    return bool(
+    seed_contradiction_marker = (
         "seed contradiction" in lowered
-        and "original seed" in lowered
-        and "replacement" in lowered
-        and "see task_01.md" in lowered
+        or "seed task contradicted by evidence" in lowered
+    )
+    seed_marker = "original seed" in lowered or "seed task" in lowered
+    replacement_marker = (
+        "replacement" in lowered
+        or "replaced by" in lowered
+        or "see task_01.md" in lowered
+    )
+    return bool(
+        seed_contradiction_marker
+        and seed_marker
+        and replacement_marker
         and "harness-seed" not in origin
     )
 
@@ -1614,6 +1623,14 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "task_scope_mismatch",
                 "fingerprint": "implementation changed files outside the selected task surface",
                 "action": "tighten task Files entries and implementation prompts so the planned surface matches the actual edit target",
+            }
+        )
+    if int(metrics.get("task_unlanded_source_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "task_unlanded_source",
+                "fingerprint": "implementation touched source files without a landed source commit",
+                "action": "make implementation agents commit scoped source edits before verification, or preserve the exact revert blocker instead of ending with unlanded work",
             }
         )
     if int(metrics.get("state_live_baseline_shrink_count") or 0) > 0:

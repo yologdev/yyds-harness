@@ -305,11 +305,20 @@ def stale_seed_obsolete_note(task: dict[str, Any], artifact: dict[str, Any]) -> 
         return False
     lowered = note.lower()
     origin = str(task.get("origin") or "").lower()
-    return bool(
+    seed_contradiction_marker = (
         "seed contradiction" in lowered
-        and "original seed" in lowered
-        and "replacement" in lowered
-        and "see task_01.md" in lowered
+        or "seed task contradicted by evidence" in lowered
+    )
+    seed_marker = "original seed" in lowered or "seed task" in lowered
+    replacement_marker = (
+        "replacement" in lowered
+        or "replaced by" in lowered
+        or "see task_01.md" in lowered
+    )
+    return bool(
+        seed_contradiction_marker
+        and seed_marker
+        and replacement_marker
         and "harness-seed" not in origin
     )
 
