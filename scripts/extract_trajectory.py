@@ -1461,12 +1461,95 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
 GRAPH_SUGGESTION_RENDER_LIMIT = 5
 
 
+def action_evidence_graph_suggestions(audit_dir: Path) -> list[dict[str, Any]]:
+    try:
+        from build_evolution_dashboard import build_states_projection, load_sessions
+    except Exception as e:  # pragma: no cover - defensive degradation for cron
+        warn(f"could not import action-evidence projection for graph pressure: {e}")
+        return []
+    try:
+        sessions = load_sessions(audit_dir, Path.cwd())
+        if not sessions:
+            return []
+        generated_at = (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        states = build_states_projection(sessions, generated_at, audit_dir)
+    except Exception as e:  # pragma: no cover - defensive degradation for cron
+        warn(f"could not build action-evidence graph pressure: {e}")
+        return []
+
+    summary = states.get("summary") if isinstance(states.get("summary"), dict) else {}
+    evidence = (
+        summary.get("recent_action_evidence_summary")
+        if isinstance(summary.get("recent_action_evidence_summary"), dict)
+        else {}
+    )
+    if not evidence:
+        return []
+
+    suggestions: list[dict[str, Any]] = []
+    transcript_only = int(evidence.get("transcript_only_failed_tool_count") or 0)
+    state_only = int(evidence.get("state_only_failed_tool_count") or 0)
+    session_count = int(evidence.get("session_count") or 0)
+    merged_sessions = int(evidence.get("merged_observed_session_count") or 0)
+    state_sessions = int(evidence.get("state_observed_session_count") or 0)
+    transcript_sessions = int(evidence.get("transcript_observed_session_count") or 0)
+
+    if transcript_only:
+        suggestions.append(
+            {
+                "kind": "tooling",
+                "title": "Reconcile transcript-only tool failures",
+                "reason": "Recent transcripts contained failed tool actions absent from state events; merge transcript evidence into gnomes before trusting task scores.",
+                "metric": "transcript_only_failed_tool_count",
+                "value": transcript_only,
+                "priority": 84,
+            }
+        )
+    if state_only:
+        suggestions.append(
+            {
+                "kind": "tooling",
+                "title": "Reconcile state-only tool failures",
+                "reason": "State events contained failed tool actions without matching transcript evidence; preserve action provenance before scoring.",
+                "metric": "state_only_failed_tool_count",
+                "value": state_only,
+                "priority": 83,
+            }
+        )
+    if (
+        session_count
+        and merged_sessions
+        and (state_sessions < merged_sessions or transcript_sessions < merged_sessions)
+    ):
+        coverage_gap = max(merged_sessions - min(state_sessions, transcript_sessions), 0)
+        if coverage_gap:
+            suggestions.append(
+                {
+                    "kind": "state",
+                    "title": "Restore action evidence coverage",
+                    "reason": f"Recent action evidence was not captured on both state and transcript surfaces for all merged sessions: state {state_sessions}/{session_count}, transcripts {transcript_sessions}/{session_count}.",
+                    "metric": "action_evidence_coverage_gap_count",
+                    "value": coverage_gap,
+                    "priority": 79,
+                }
+            )
+    return suggestions
+
+
 def render_graph_suggestions(audit_dir: Path) -> str:
     sessions = ordered_sessions(audit_dir)
     if not sessions:
         return ""
     latest = sessions[-1]
-    suggestions = evolution_suggestions(latest, limit=GRAPH_SUGGESTION_RENDER_LIMIT)
+    suggestions = evolution_suggestions(latest, limit=GRAPH_SUGGESTION_RENDER_LIMIT + 5)
+    suggestions.extend(action_evidence_graph_suggestions(audit_dir))
+    suggestions.sort(key=lambda item: (-int(item.get("priority") or 0), str(item.get("title") or "")))
+    suggestions = suggestions[:GRAPH_SUGGESTION_RENDER_LIMIT]
     if not suggestions:
         return ""
     lines = ["## Graph-derived next-task pressure"]

@@ -1300,6 +1300,46 @@ class ExtractTrajectoryTests(unittest.TestCase):
                 self.assertIn(title, rendered)
                 self.assertIn(f"{metric}=1", rendered)
 
+    def test_graph_suggestions_surface_recent_action_evidence_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "task_artifact_coverage": 1.0,
+                        "tool_error_count": 0,
+                    }
+                },
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "  ▶ search 'fn handle_run\\(' in src/commands.rs ✗ (17ms)\n",
+                encoding="utf-8",
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("Reconcile transcript-only tool failures", rendered)
+            self.assertIn("transcript_only_failed_tool_count=1", rendered)
+            self.assertIn("Restore action evidence coverage", rendered)
+            self.assertIn("action_evidence_coverage_gap_count=1", rendered)
+
     def test_graph_suggestions_render_five_ranked_pressures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)
