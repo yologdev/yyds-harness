@@ -1775,6 +1775,43 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("Preserve assessment artifacts", rendered)
             self.assertIn("assessment_artifact_missing_count=1", rendered)
 
+    def test_graph_suggestions_accept_assessment_missing_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(
+                session / "outcome.json",
+                {"day": 1, "ts": "2026-01-01T00:00:00Z"},
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {
+                        "planning_failed": True,
+                        "task_count": 0,
+                        "selected_task_count": 0,
+                        "assessment_missing_present": True,
+                    },
+                    "artifacts": {"assessment": None, "assessment_missing": "tasks/assessment_missing.md"},
+                },
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("assess.log").write_text(
+                "API error with no fallback configured. Exiting.\n",
+                encoding="utf-8",
+            )
+            (session / "tasks").mkdir(parents=True, exist_ok=True)
+            (session / "tasks/assessment_missing.md").write_text(
+                "Assessment phase hit a provider/API error before writing assessment.md.\n",
+                encoding="utf-8",
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            self.assertNotIn("Preserve assessment artifacts", rendered)
+            self.assertNotIn("assessment_artifact_missing_count=1", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

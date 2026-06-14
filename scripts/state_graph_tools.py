@@ -138,18 +138,12 @@ def assessment_artifact_gap(session_dir: Path, manifest: dict[str, Any]) -> dict
         or diagnostic_path.is_file()
     )
     transcript_present = transcript_path.is_file() and transcript_path.stat().st_size > 0
-    missing_with_evidence = not artifact_present and (diagnostic_present or transcript_present)
+    missing_with_evidence = not artifact_present and not diagnostic_present and transcript_present
     if not missing_with_evidence:
         return {}
-    if diagnostic_present and transcript_present:
-        classification = "missing_with_diagnostic_and_transcript"
-    elif diagnostic_present:
-        classification = "missing_with_diagnostic"
-    else:
-        classification = "missing_transcript_only"
     return {
         "missing": True,
-        "classification": classification,
+        "classification": "missing_transcript_only",
         "diagnostic_present": diagnostic_present,
         "transcript_present": transcript_present,
     }

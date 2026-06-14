@@ -732,6 +732,37 @@ class StateGraphTools(unittest.TestCase):
 
             self.assertNotIn("Preserve assessment artifacts", [item["title"] for item in suggestions])
 
+    def test_evolution_suggestions_accept_preserved_assessment_missing_diagnostic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {
+                        "planning_failed": True,
+                        "task_count": 0,
+                        "selected_task_count": 0,
+                        "assessment_missing_present": True,
+                    },
+                    "artifacts": {"assessment": None, "assessment_missing": "tasks/assessment_missing.md"},
+                },
+            )
+            (session / "tasks").mkdir(parents=True, exist_ok=True)
+            (session / "tasks/assessment_missing.md").write_text(
+                "Assessment phase hit a provider/API error before writing assessment.md.\n",
+                encoding="utf-8",
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("assess.log").write_text(
+                "API error with no fallback configured. Exiting.\n",
+                encoding="utf-8",
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=5)
+
+            self.assertNotIn("Preserve assessment artifacts", [item["title"] for item in suggestions])
+
     def test_evolution_suggestions_require_task_expected_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
