@@ -59,6 +59,7 @@ GNOME_COMPARE_KEYS = [
     "task_stale_seed_obsolete_note_count",
     "task_unlanded_source_count",
     "task_incomplete_terminal_count",
+    "task_analysis_only_attempt_count",
     "search_error_count",
     "max_task_turn_count",
     "deepseek_cache_hit_ratio",
@@ -402,6 +403,12 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             isinstance(row, dict) and implementation_attempt_missing_terminal_evidence(session_dir, row)
             for row in attempts
         )
+        analysis_only_attempt = any(
+            isinstance(row, dict)
+            and str(row.get("phase") or "") == "implementation"
+            and str(row.get("status") or "") == "analysis_only_no_terminal_evidence"
+            for row in attempts
+        )
         problems: list[str] = []
         overlap = file_overlap(planned, touched) if planned and touched else False
         if not planned:
@@ -428,6 +435,8 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             problems.append("source_edits_not_landed")
         if incomplete_terminal:
             problems.append("incomplete_terminal_evidence")
+        if analysis_only_attempt:
+            problems.append("analysis_only_attempt")
         passed = eval_passed(artifact.get("evals") if isinstance(artifact.get("evals"), list) else [])
         if not passed and not obsolete:
             problems.append("no_passing_verifier")
@@ -442,6 +451,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
                 "api_error": api_error,
                 "protected_revert": protected_revert,
                 "incomplete_terminal": incomplete_terminal,
+                "analysis_only_attempt": analysis_only_attempt,
             }
         )
     if not rows:
@@ -471,6 +481,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             and "no_planned_file_overlap" not in row["problems"]
         ),
         "task_incomplete_terminal_count": sum(1 for row in rows if row["incomplete_terminal"]),
+        "task_analysis_only_attempt_count": sum(1 for row in rows if row["analysis_only_attempt"]),
         "evaluator_unverified_raw_count": unverified,
     }
 
@@ -626,6 +637,7 @@ def dominant_task_failure_detail(metrics: dict[str, Any]) -> str:
         ("task_scope_mismatch_count", "scope-mismatched task edits"),
         ("task_unlanded_source_count", "source edits not landed"),
         ("evaluator_unverified_count", "unverified task outcomes"),
+        ("task_analysis_only_attempt_count", "analysis-only task attempts"),
         ("task_no_edit_revert_count", "reverted tasks without edits"),
         ("protected_file_revert_count", "protected-file reverts"),
         ("task_obsolete_count", "obsolete selected tasks"),
@@ -889,7 +901,7 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
                 artifact_metrics.get("task_mechanical_verification_rate") or 0.0
             )
             seed_contradictions = int_metric(gnomes, "task_seed_contradiction_count")
-            no_edit = max(int_metric(artifact_metrics, "task_no_edit_revert_count") - seed_contradictions, 0)
+            no_edit = int_metric(artifact_metrics, "task_no_edit_revert_count")
             explained = (
                 max(seed_contradictions, int_metric(artifact_metrics, "task_no_edit_revert_count"))
                 + int_metric(artifact_metrics, "task_obsolete_count")
@@ -897,6 +909,7 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
                 + int_metric(artifact_metrics, "protected_file_revert_count")
                 + int_metric(artifact_metrics, "task_scope_mismatch_count")
                 + int_metric(artifact_metrics, "task_incomplete_terminal_count")
+                + int_metric(artifact_metrics, "task_analysis_only_attempt_count")
             )
             gnomes["evaluator_unverified_count"] = max(
                 int_metric(artifact_metrics, "evaluator_unverified_raw_count")
@@ -915,6 +928,7 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
                 "task_scope_mismatch_count",
                 "task_unlanded_source_count",
                 "task_incomplete_terminal_count",
+                "task_analysis_only_attempt_count",
             ):
                 gnomes[key] = max(int_metric(gnomes, key), int_metric(artifact_metrics, key))
             stale_seed_obsolete = int_metric(artifact_metrics, "task_stale_seed_obsolete_note_count")
@@ -1391,6 +1405,15 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             "task_no_edit_revert_count",
             gnomes.get("task_no_edit_revert_count"),
             86,
+        )
+    if int(gnomes.get("task_analysis_only_attempt_count") or 0) > 0:
+        add(
+            "implementation",
+            "Force analysis-only attempts into action",
+            "Implementation ended without file progress or terminal evidence; retry once with an action-first checkpoint and require an early edit, obsolete note, or blocked note.",
+            "task_analysis_only_attempt_count",
+            gnomes.get("task_analysis_only_attempt_count"),
+            90,
         )
     if int(gnomes.get("task_unlanded_source_count") or 0) > 0:
         add("commit", "Make source-edit outcomes land or explain reverts", "A task touched source files without a landed source commit.", "task_unlanded_source_count", gnomes.get("task_unlanded_source_count"), 88)

@@ -1371,7 +1371,7 @@ class StateGraphTools(unittest.TestCase):
                 [item["title"] for item in suggestions],
             )
 
-    def test_seed_contradiction_artifact_suppresses_evaluator_pressure(self):
+    def test_seed_contradiction_artifact_suppresses_evaluator_but_keeps_no_edit_pressure(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
             write_json(
@@ -1414,9 +1414,13 @@ class StateGraphTools(unittest.TestCase):
 
             self.assertEqual(gnomes["task_seed_contradiction_count"], 1)
             self.assertEqual(gnomes["evaluator_unverified_count"], 0)
-            self.assertEqual(gnomes["task_no_edit_revert_count"], 0)
+            self.assertEqual(gnomes["task_no_edit_revert_count"], 1)
             self.assertNotIn(
                 "Bound evaluator checks so verdicts are not skipped",
+                [item["title"] for item in suggestions],
+            )
+            self.assertIn(
+                "Force reverted tasks to leave concrete evidence",
                 [item["title"] for item in suggestions],
             )
 

@@ -207,6 +207,7 @@ GNOME_KEYS = [
     "task_scope_mismatch_count",
     "task_unlanded_source_count",
     "task_incomplete_terminal_count",
+    "task_analysis_only_attempt_count",
     "max_task_turn_count",
     "avg_task_turn_count",
     "total_task_turn_count",
@@ -1138,6 +1139,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     explained_unverified_ids: set[str] = set()
     unlanded_source = 0
     incomplete_terminal = 0
+    analysis_only_attempts = 0
     tasks_by_id = {str(task.get("task_id") or ""): task for task in tasks if isinstance(task, dict)}
     stale_seed_obsolete_note_count = 0
     for task_dir in task_dirs:
@@ -1148,6 +1150,12 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             1
             for row in attempts
             if implementation_attempt_missing_terminal_evidence(session_dir, row)
+        )
+        analysis_only_attempts += sum(
+            1
+            for row in attempts
+            if str(row.get("phase") or "") == "implementation"
+            and str(row.get("status") or "") == "analysis_only_no_terminal_evidence"
         )
         evals = [load_json(path) for path in sorted(task_dir.glob("eval_attempt_*.json"))]
         evals = [row for row in evals if row]
@@ -1195,7 +1203,6 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             and not obsolete
             and not api_error
             and not protected_revert
-            and not scope_mismatch
         )
         if no_edit_revert:
             no_edit_revert_count += 1
@@ -1243,6 +1250,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "protected_file_revert_count": protected_file_revert_count,
         "task_unlanded_source_count": unlanded_source,
         "task_incomplete_terminal_count": incomplete_terminal,
+        "task_analysis_only_attempt_count": analysis_only_attempts,
         "task_spec_quality_score": round(sum(quality_scores) / len(quality_scores), 4)
         if quality_scores
         else None,
@@ -1594,10 +1602,7 @@ def build_assessment(
     promote_manifest_seed_contradictions(metrics)
     seed_contradictions = suppress_resolved_seed_replacement(metrics)
     no_edit_reverts = int(metrics.get("task_no_edit_revert_count") or 0)
-    if seed_contradictions and no_edit_reverts:
-        metrics["task_no_edit_revert_count"] = max(no_edit_reverts - seed_contradictions, 0)
-        no_edit_reverts = int(metrics.get("task_no_edit_revert_count") or 0)
-    explained_evaluator_gaps = seed_contradictions + no_edit_reverts
+    explained_evaluator_gaps = max(seed_contradictions, no_edit_reverts)
     if explained_evaluator_gaps > 0:
         metrics["evaluator_unverified_count"] = max(
             int(metrics.get("evaluator_unverified_count") or 0) - explained_evaluator_gaps,
@@ -1711,6 +1716,14 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "task_incomplete_terminal",
                 "fingerprint": "implementation attempt exited cleanly without final terminal evidence",
                 "action": "retry partial progress from a checkpoint and require TASK_TERMINAL_EVIDENCE before treating exit 0 as completed",
+            }
+        )
+    if int(metrics.get("task_analysis_only_attempt_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "task_analysis_only_attempt",
+                "fingerprint": "implementation attempt ended without terminal evidence or file progress",
+                "action": "retry once with an action-first checkpoint and require an early scoped edit, obsolete note, or blocked note",
             }
         )
     if int(metrics.get("state_live_baseline_shrink_count") or 0) > 0:
@@ -2464,10 +2477,29 @@ def run_self_tests() -> int:
             ),
             encoding="utf-8",
         )
+        (task_dir / "attempts.jsonl").write_text(
+            json.dumps(
+                {
+                    "task_id": "task_01",
+                    "phase": "implementation",
+                    "attempt": 1,
+                    "exit_code": 0,
+                    "status": "analysis_only_no_terminal_evidence",
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         reverted_artifacts = task_artifact_metrics(session, attempted=1)
         check(
             "reverted selected task without edits is classified",
             reverted_artifacts["task_no_edit_revert_count"] == 1,
+            reverted_artifacts,
+        )
+        check(
+            "analysis-only attempt is classified",
+            reverted_artifacts["task_analysis_only_attempt_count"] == 1,
             reverted_artifacts,
         )
         check(
@@ -2523,6 +2555,11 @@ def run_self_tests() -> int:
         check(
             "manifest contradiction is not suppressed as replacement",
             combined["task_seed_contradiction_count"] == 1,
+            combined,
+        )
+        check(
+            "seed contradiction does not erase no-edit pressure",
+            combined["task_no_edit_revert_count"] == 1,
             combined,
         )
 

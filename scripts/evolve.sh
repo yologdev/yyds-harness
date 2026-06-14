@@ -1758,9 +1758,14 @@ for TASK_FILE in session_plan/task_[0-9][0-9].md; do
     TASK_ID=$(printf 'task_%02d' "$TASK_NUM")
     TASK_EVIDENCE_DIR="$SESSION_STAGING/tasks/$TASK_ID"
     TASK_OBSOLETE_NOTE="session_plan/${TASK_ID}_obsolete.md"
+    TASK_BLOCKED_NOTE="session_plan/${TASK_ID}_blocked.md"
     TASK_OBSOLETE_NOTE_PREEXISTED=false
+    TASK_BLOCKED_NOTE_PREEXISTED=false
     if [ -s "$TASK_OBSOLETE_NOTE" ]; then
         TASK_OBSOLETE_NOTE_PREEXISTED=true
+    fi
+    if [ -s "$TASK_BLOCKED_NOTE" ]; then
+        TASK_BLOCKED_NOTE_PREEXISTED=true
     fi
     mkdir -p "$TASK_EVIDENCE_DIR"
     cp "$TASK_FILE" "$TASK_EVIDENCE_DIR/task.md" 2>/dev/null || true
@@ -1850,8 +1855,9 @@ Follow the evolve skill rules:
 - Do not send escaped regex snippets like \`fn handle_run\\(\` or flag-like literals like \`--json\` to the search tool. Search for a simple identifier such as \`handle_run\`, or use \`grep -R -F -- 'fn handle_run(' src/\`.
 - Treat yoagent as upstream foundation code. If this task reveals that yoagent itself must change, do not patch around it in this repo. $YOAGENT_UPSTREAM_TARGET When you cannot safely make an upstream PR, create an agent-help-wanted issue in $REPO with the evidence and proposed upstream change, then stop this task or choose a harness-only mitigation that stays honest about the upstream dependency.
 - Do not finish with analysis only. If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion in the listed task surface. If no honest code/test/docs improvement exists, write session_plan/${TASK_ID}_obsolete.md explaining the exact evidence and stop without claiming the task landed.
+- Early action requirement: by your 8th tool turn, you must have written a test, edited one listed task-scope file, written session_plan/${TASK_ID}_obsolete.md, or written session_plan/${TASK_ID}_blocked.md. Do not spend the whole task budget reading and planning. If you still lack enough certainty by then, write the blocked note with the exact missing evidence instead of continuing archaeology.
 - Before your final answer, run \`git diff --name-only\` and inspect the result. Your final answer must name one of: the task-scope files you changed, the obsolete-task note you wrote, or the concrete blocker that prevented any honest scoped edit.
-- If \`git diff --name-only\` is empty and you did not write session_plan/${TASK_ID}_obsolete.md or name a concrete blocker, the task is not complete. Keep working inside the task scope instead of ending with analysis only.
+- If \`git diff --name-only\` is empty and you did not write session_plan/${TASK_ID}_obsolete.md or session_plan/${TASK_ID}_blocked.md, the task is not complete. Keep working inside the task scope instead of ending with analysis only.
 - End your final answer with exactly one terminal evidence marker:
   \`TASK_TERMINAL_EVIDENCE: changed\`, \`TASK_TERMINAL_EVIDENCE: obsolete\`, or \`TASK_TERMINAL_EVIDENCE: blocked\`.
 - Run cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test after changes
@@ -1895,6 +1901,15 @@ TEOF
             echo "    WARNING: Task $TASK_NUM exited 0 without final terminal evidence (attempt $ATTEMPT)."
             TASK_ATTEMPT_STATUS="incomplete_no_terminal_evidence"
         fi
+        TASK_PROGRESS=false
+        if task_has_progress_since_base "$PRE_TASK_SHA" || [ -s "$TASK_OBSOLETE_NOTE" ] || [ -s "$TASK_BLOCKED_NOTE" ]; then
+            TASK_PROGRESS=true
+        fi
+        if [ "$TASK_ATTEMPT_STATUS" = "incomplete_no_terminal_evidence" ] \
+            && [ "$TASK_PROGRESS" != true ]; then
+            echo "    WARNING: Task $TASK_NUM ended without terminal evidence or file progress (attempt $ATTEMPT)."
+            TASK_ATTEMPT_STATUS="analysis_only_no_terminal_evidence"
+        fi
         append_task_attempt_evidence \
             "$TASK_ID" "implementation" "$ATTEMPT" "$TASK_STAGE_NAME" \
             "transcripts/${TASK_STAGE_NAME}.log" "$TASK_EXIT" "$TASK_ATTEMPT_STATUS" || true
@@ -1918,15 +1933,13 @@ TEOF
             INTERRUPTED=true
         elif [ "$TASK_ATTEMPT_STATUS" = "incomplete_no_terminal_evidence" ]; then
             INTERRUPTED=true
+        elif [ "$TASK_ATTEMPT_STATUS" = "analysis_only_no_terminal_evidence" ]; then
+            INTERRUPTED=true
         elif grep -q '\[Agent stopped:' "$TASK_LOG" 2>/dev/null; then
             INTERRUPTED=true
         fi
 
         # Checkpoint-restart: retry if interrupted with partial progress
-        TASK_PROGRESS=false
-        if task_has_progress_since_base "$PRE_TASK_SHA"; then
-            TASK_PROGRESS=true
-        fi
         if [ "$INTERRUPTED" = true ] && [ "$TASK_PROGRESS" = true ] && [ "$ATTEMPT" -eq 1 ]; then
             echo "    Partial progress detected — building checkpoint for retry..."
 
@@ -1981,6 +1994,27 @@ and commit if needed."
             echo "    Retrying Task $TASK_NUM with checkpoint (attempt 2)..."
             rm -f "$TASK_LOG"
             continue
+        elif [ "$INTERRUPTED" = true ] && [ "$ATTEMPT" -eq 1 ]; then
+            echo "    No file progress detected — retrying once with action-first checkpoint..."
+            TASK_TRANSCRIPT_TAIL=$(tail -80 "$TASK_LOG" 2>/dev/null || true)
+            CHECKPOINT_SECTION="=== CHECKPOINT: PREVIOUS ATTEMPT WAS ANALYSIS-ONLY ===
+
+The previous implementation attempt ended without landed file progress and
+without TASK_TERMINAL_EVIDENCE. Do not continue broad source archaeology.
+
+By your third tool turn in this retry, do exactly one of:
+- write or edit a focused regression test in the listed task surface,
+- edit one listed task-scope source file,
+- write session_plan/${TASK_ID}_obsolete.md with exact evidence that the task is already satisfied,
+- write session_plan/${TASK_ID}_blocked.md with the concrete blocker and missing evidence.
+
+Previous transcript tail:
+\`\`\`
+${TASK_TRANSCRIPT_TAIL:-no transcript tail captured}
+\`\`\`"
+            echo "    Retrying Task $TASK_NUM with action-first checkpoint (attempt 2)..."
+            rm -f "$TASK_LOG"
+            continue
         fi
 
         # Not interrupted, or no progress, or already retried — proceed
@@ -1992,6 +2026,9 @@ and commit if needed."
     rm -f "session_plan/checkpoint_task_${TASK_NUM}.md"
     if [ -s "$TASK_OBSOLETE_NOTE" ] && [ "$TASK_OBSOLETE_NOTE_PREEXISTED" != true ]; then
         cp "$TASK_OBSOLETE_NOTE" "$TASK_EVIDENCE_DIR/obsolete.md" 2>/dev/null || true
+    fi
+    if [ -s "$TASK_BLOCKED_NOTE" ] && [ "$TASK_BLOCKED_NOTE_PREEXISTED" != true ]; then
+        cp "$TASK_BLOCKED_NOTE" "$TASK_EVIDENCE_DIR/blocked.md" 2>/dev/null || true
     fi
 
     # Preserve original break behavior for API errors
@@ -2018,6 +2055,15 @@ and commit if needed."
         REVERT_DETAILS="Obsolete-task evidence:
 \`\`\`
 $(cat "$TASK_OBSOLETE_NOTE")
+\`\`\`"
+    fi
+    if [ "$TASK_OK" = true ] && [ -s "$TASK_BLOCKED_NOTE" ] && [ "$TASK_BLOCKED_NOTE_PREEXISTED" != true ]; then
+        echo "    Task $TASK_NUM marked blocked by implementation agent — no code will be landed."
+        TASK_OK=false
+        REVERT_REASON="Task blocked by agent; no implementation landed"
+        REVERT_DETAILS="Blocked-task evidence:
+\`\`\`
+$(cat "$TASK_BLOCKED_NOTE")
 \`\`\`"
     fi
 
