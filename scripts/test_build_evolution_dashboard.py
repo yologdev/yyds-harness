@@ -3423,6 +3423,22 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 states["sessions"][0]["tool_failures"]["summary"]["category_counts"],
                 {"search_tool_error": 1},
             )
+            self.assertEqual(
+                states["sessions"][0]["action_evidence"]["transcripts"]["failed_tool_count"],
+                1,
+            )
+            self.assertEqual(
+                states["summary"]["latest_action_evidence_summary"]["transcripts"]["failed_tool_count"],
+                1,
+            )
+            self.assertEqual(
+                states["summary"]["recent_action_evidence_summary"]["transcript_only_failed_tool_count"],
+                1,
+            )
+            self.assertEqual(
+                states["summary"]["action_evidence_summary"]["transcript_only_failed_tool_session_count"],
+                1,
+            )
             html = (root / "out/index.html").read_text(encoding="utf-8")
             data_json = (root / "out/data.json").read_text(encoding="utf-8")
             self.assertIn("tool fails", html)

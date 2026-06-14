@@ -4614,6 +4614,9 @@ def session_state_projection(session: dict[str, Any]) -> dict[str, Any]:
             if isinstance(work.get("unrecovered_failed_tool_summary"), dict)
             else {},
         },
+        "action_evidence": work.get("action_evidence")
+        if isinstance(work.get("action_evidence"), dict)
+        else {},
         "lifecycle": {
             "observed": lifecycle.get("observed"),
             "healthy": lifecycle.get("healthy"),
@@ -4640,6 +4643,55 @@ def session_state_projection(session: dict[str, Any]) -> dict[str, Any]:
             or gnome_audit.get("corrections_by_source")
             or {},
         },
+    }
+
+
+def action_evidence_summary_for_sessions(session_states: list[dict[str, Any]]) -> dict[str, Any]:
+    buckets = {
+        "state": Counter(),
+        "transcripts": Counter(),
+        "audit": Counter(),
+        "merged": Counter(),
+    }
+    totals = Counter()
+    observed_session_count = 0
+
+    for row in session_states:
+        action_evidence = (
+            row.get("action_evidence") if isinstance(row.get("action_evidence"), dict) else {}
+        )
+        if action_evidence:
+            observed_session_count += 1
+        for bucket_name, bucket in buckets.items():
+            source = (
+                action_evidence.get(bucket_name)
+                if isinstance(action_evidence.get(bucket_name), dict)
+                else {}
+            )
+            for key, value in source.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    bucket[str(key)] += int(value)
+        for key in ("state_only_failed_tool_count", "transcript_only_failed_tool_count"):
+            value = action_evidence.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                totals[key] += int(value)
+                if int(value) > 0:
+                    if key == "state_only_failed_tool_count":
+                        totals["state_only_failed_tool_session_count"] += 1
+                    else:
+                        totals["transcript_only_failed_tool_session_count"] += 1
+
+    return {
+        "session_count": len(session_states),
+        "observed_session_count": observed_session_count,
+        "state": dict(sorted(buckets["state"].items())),
+        "transcripts": dict(sorted(buckets["transcripts"].items())),
+        "audit": dict(sorted(buckets["audit"].items())),
+        "merged": dict(sorted(buckets["merged"].items())),
+        "state_only_failed_tool_count": totals["state_only_failed_tool_count"],
+        "state_only_failed_tool_session_count": totals["state_only_failed_tool_session_count"],
+        "transcript_only_failed_tool_count": totals["transcript_only_failed_tool_count"],
+        "transcript_only_failed_tool_session_count": totals["transcript_only_failed_tool_session_count"],
     }
 
 
@@ -4797,6 +4849,12 @@ def build_states_projection(
     latest_session = session_states[-1] if session_states else {}
     latest_task_summary = task_state_summary_for_sessions([latest_session]) if latest_session else {}
     recent_task_summary = task_state_summary_for_sessions(session_states[-recent_window_size:])
+    latest_action_evidence_summary = (
+        action_evidence_summary_for_sessions([latest_session]) if latest_session else {}
+    )
+    recent_action_evidence_summary = action_evidence_summary_for_sessions(
+        session_states[-recent_window_size:]
+    )
     latest_tool_failure_summary = (
         tool_failure_summary_for_sessions([latest_session]) if latest_session else {}
     )
@@ -4811,6 +4869,9 @@ def build_states_projection(
             "latest_task_summary": latest_task_summary,
             "recent_window_size": recent_window_size,
             "recent_task_summary": recent_task_summary,
+            "latest_action_evidence_summary": latest_action_evidence_summary,
+            "recent_action_evidence_summary": recent_action_evidence_summary,
+            "action_evidence_summary": action_evidence_summary_for_sessions(session_states),
             "lifecycle_summary": state_lifecycle_summary_for_sessions(session_states),
             "latest_tool_failure_summary": latest_tool_failure_summary,
             "recent_tool_failure_summary": recent_tool_failure_summary,

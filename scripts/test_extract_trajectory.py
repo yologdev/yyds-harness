@@ -613,6 +613,8 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("recent tool failures:", rendered)
             self.assertIn("unrecovered=1/1", rendered)
             self.assertIn("failed_commands=1", rendered)
+            self.assertIn("recent action evidence:", rendered)
+            self.assertIn("transcript_only_failed_tools=1", rendered)
             self.assertIn("search_tool_error=1", rendered)
             self.assertIn("lifecycle gnomes:", rendered)
             self.assertIn("state_run_incomplete_count=1", rendered)

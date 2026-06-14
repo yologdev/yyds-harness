@@ -1033,6 +1033,11 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
         if isinstance(state_summary.get("recent_task_summary"), dict)
         else {}
     )
+    recent_action_evidence_summary = (
+        state_summary.get("recent_action_evidence_summary")
+        if isinstance(state_summary.get("recent_action_evidence_summary"), dict)
+        else {}
+    )
     recent_state_counts = (
         recent_task_summary.get("state_counts")
         if isinstance(recent_task_summary.get("state_counts"), dict)
@@ -1249,6 +1254,20 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                     tool_parts.append(f"failed_commands={failed_commands}")
                 tool_label = "recent tool failures" if recent_tool_failure_summary else "tool failures"
                 summary_parts.append(tool_label + ": " + ", ".join(tool_parts))
+        if recent_action_evidence_summary:
+            action_parts = []
+            state_only_failed_tools = int(
+                recent_action_evidence_summary.get("state_only_failed_tool_count") or 0
+            )
+            transcript_only_failed_tools = int(
+                recent_action_evidence_summary.get("transcript_only_failed_tool_count") or 0
+            )
+            if state_only_failed_tools:
+                action_parts.append(f"state_only_failed_tools={state_only_failed_tools}")
+            if transcript_only_failed_tools:
+                action_parts.append(f"transcript_only_failed_tools={transcript_only_failed_tools}")
+            if action_parts:
+                summary_parts.append("recent action evidence: " + ", ".join(action_parts))
         if top_tool_failures:
             tool_summary = []
             for category, count in top_tool_failures[:3]:
