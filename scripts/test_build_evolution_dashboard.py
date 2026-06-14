@@ -111,6 +111,55 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(lessons[0]["metric"], "provider_blocked_session_count")
             self.assertIn("configure fallback", lessons[0]["action"])
 
+    def test_dashboard_publishes_evo_readiness_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "evo_readiness.json",
+                {
+                    "classification": "provider_blocked",
+                    "can_drive_evolution": False,
+                    "session_id": "day-1",
+                    "issues": [
+                        "provider blocked before task selection or task attempts; task success is not measurable"
+                    ],
+                    "evidence": {
+                        "provider_error_count": 3,
+                        "selected_task_count": 0,
+                        "tasks_attempted": 0,
+                        "task_success_rate": None,
+                    },
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+            html = (root / "out/index.html").read_text(encoding="utf-8")
+
+            self.assertEqual(session_data["evo_readiness"]["classification"], "provider_blocked")
+            self.assertIs(session_data["evo_readiness"]["can_drive_evolution"], False)
+            self.assertEqual(
+                session_data["evo_readiness"]["evidence"]["provider_error_count"],
+                3,
+            )
+            self.assertEqual(
+                data["aggregate"]["latest_evo_readiness"]["classification"],
+                "provider_blocked",
+            )
+            self.assertIn("renderEvoReadiness", html)
+            self.assertIn("Evo readiness", html)
+            self.assertIn("evo_readiness.json", html)
+
     def test_dashboard_dataset_warnings_are_durable_json_signals(self):
         warnings = dashboard_dataset_warnings(
             {

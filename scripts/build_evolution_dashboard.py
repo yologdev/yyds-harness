@@ -72,6 +72,28 @@ def read_text(path: Path) -> str:
         return ""
 
 
+def evo_readiness(session_dir: Path) -> dict[str, Any]:
+    report = load_json(session_dir / "evo_readiness.json")
+    if not report:
+        return {}
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
+    issues = report.get("issues") if isinstance(report.get("issues"), list) else []
+    warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
+    return {
+        "classification": str(report.get("classification") or "unknown"),
+        "can_drive_evolution": report.get("can_drive_evolution"),
+        "session_id": str(report.get("session_id") or session_dir.name),
+        "issues": [str(issue) for issue in issues if issue is not None],
+        "warnings": [str(warning) for warning in warnings if warning is not None],
+        "evidence": {
+            str(key): value
+            for key, value in evidence.items()
+            if value is None or isinstance(value, (bool, int, float, str))
+        },
+        "artifact_path": "evo_readiness.json",
+    }
+
+
 def log_feedback_metrics(session_dir: Path) -> dict[str, Any]:
     feedback = load_json(session_dir / "log_feedback.json")
     metrics = feedback.get("metrics") if isinstance(feedback.get("metrics"), dict) else {}
@@ -3516,6 +3538,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         commits = session_commits(outcome, repo_root)
         trace = trace_quality(summary, evals)
         work = work_summary(session_dir, outcome, summary, evals, blockers, commits)
+        readiness = evo_readiness(session_dir)
         feedback_metrics = log_feedback_metrics(session_dir)
         feedback_lessons = log_feedback_top_lessons(session_dir)
         raw_state_gnomes = summary.get("latest_gnomes") if isinstance(summary.get("latest_gnomes"), dict) else {}
@@ -3567,6 +3590,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
             "latest_eval": latest_eval,
             "latest_eval_gnome_corrections": latest_eval_corrections,
             "latest_decision": latest_decision,
+            "evo_readiness": readiness,
             "patches": summary.get("patches", []),
             "decisions": summary.get("decisions", []),
             "blockers": blockers,
@@ -3834,6 +3858,7 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     feedback_only_sessions = 0
     assessment_artifact_state_counts: dict[str, int] = {}
     gnome_audit = aggregate_gnome_audit(sessions)
+    latest_evo_readiness: dict[str, Any] = {}
 
     for session in sessions:
         evals += 1 if session.get("latest_eval") else 0
@@ -3870,6 +3895,8 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
             lifecycle_trace_sessions += 1
         if trace.get("status") == "feedback_only":
             feedback_only_sessions += 1
+        if isinstance(session.get("evo_readiness"), dict) and session.get("evo_readiness"):
+            latest_evo_readiness = session["evo_readiness"]
         latest_gnomes.update(session.get("latest_gnomes") or {})
         for key in session.get("gnome_keys") or []:
             if isinstance(key, str) and key not in gnome_keys:
@@ -3908,6 +3935,7 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         "unverified_raw_task_outcome_succeeded": unverified_raw_task_succeeded,
         "health": health,
         "assessment_artifact_state_counts": dict(sorted(assessment_artifact_state_counts.items())),
+        "latest_evo_readiness": latest_evo_readiness,
         "event_counts": event_counts,
         "latest_gnomes": latest_gnomes,
         "gnome_keys": gnome_keys,
@@ -6123,6 +6151,7 @@ HTML = r"""<!doctype html>
       let gnomeAuditAdjustedSessions = 0;
       let gnomeAuditRawCount = 0;
       let gnomeAuditCorrectedCount = 0;
+      let latestEvoReadiness = {};
       const gnomeAuditSources = {};
 
       sessions.forEach(session => {
@@ -6149,6 +6178,9 @@ HTML = r"""<!doctype html>
         if (trace.status === "full") fullTraceSessions += 1;
         if (trace.status === "lifecycle") lifecycleTraceSessions += 1;
         if (trace.status === "feedback_only") feedbackOnlySessions += 1;
+        if (session.evo_readiness && Object.keys(session.evo_readiness).length) {
+          latestEvoReadiness = session.evo_readiness;
+        }
         const gnomeAudit = session.state_gnome_audit || {};
         const adjustmentCount = Number(gnomeAudit.evidence_adjustment_count ?? gnomeAudit.correction_count ?? 0);
         gnomeAuditAdjustmentCount += adjustmentCount;
@@ -6220,7 +6252,8 @@ HTML = r"""<!doctype html>
         gnome_audit_corrections_by_source: gnomeAuditSources,
         gnome_audit_adjustment_count: gnomeAuditAdjustmentCount,
         gnome_audit_adjusted_sessions: gnomeAuditAdjustedSessions,
-        gnome_audit_adjustments_by_source: gnomeAuditSources
+        gnome_audit_adjustments_by_source: gnomeAuditSources,
+        latest_evo_readiness: latestEvoReadiness
       };
     }
 
@@ -6290,9 +6323,14 @@ HTML = r"""<!doctype html>
         ? text(work.headline || "No detailed work signals captured")
         : "Run an evolution session and push audit evidence to populate this report.";
       const healthReasons = session ? healthReasonsOf(session).map(text).join("; ") : "";
+      const readiness = session ? (session.evo_readiness || {}) : {};
+      const readinessText = readiness.classification
+        ? `readiness ${readiness.classification} / drive ${readiness.can_drive_evolution === true ? "yes" : "no"}`
+        : "";
       document.getElementById("heroSummary").innerHTML = `
         <div>
           <span class="pill ${healthClass(health)}">${text(health)}</span>
+          ${readiness.classification ? `<span class="pill ${readiness.can_drive_evolution === true ? "good" : "warn"}">${text(readinessText)}</span>` : ""}
           ${session ? `<span class="pill soft">${text(trace.label || "unknown trace")}</span>` : ""}
           <h2 class="hero-title">${heroTitle}</h2>
           <div class="hero-kicker">${heroMeta}</div>
@@ -6370,8 +6408,14 @@ HTML = r"""<!doctype html>
       const rawHint = unverified
         ? `; ${text(unverified)} raw outcome task(s) lacked strict evidence`
         : "";
+      const readiness = agg.latest_evo_readiness || {};
+      const readinessLabel = readiness.classification || "missing";
+      const readinessHint = readiness.classification
+        ? `can drive evolution: ${readiness.can_drive_evolution === true ? "yes" : "no"}`
+        : "no evo_readiness.json in latest visible session";
       const cards = [
         ["Sessions", agg.session_count || 0, "audit-backed runs"],
+        ["Evo readiness", readinessLabel, readinessHint],
         ["Strict task success", rate === null || rate === undefined ? "-" : percent(rate), `${text(agg.tasks_succeeded || 0)}/${text(agg.tasks_attempted || 0)} verified tasks${rawHint}`],
         ["Operational traces", agg.full_trace_sessions || 0, `${text(agg.lifecycle_trace_sessions || 0)} lifecycle-only / ${text(agg.feedback_only_sessions || 0)} feedback-only`],
         ["Evidence adjustments", agg.gnome_audit_adjustment_count ?? agg.gnome_audit_correction_count ?? 0, `${text(agg.gnome_audit_adjusted_sessions ?? agg.gnome_audit_correction_sessions ?? 0)} session(s) reconciled`],
@@ -6774,6 +6818,32 @@ HTML = r"""<!doctype html>
       }).join("")}</ul>`;
     }
 
+    function renderEvoReadiness(session) {
+      const readiness = session.evo_readiness || {};
+      if (!readiness.classification) return `<p class="muted">No evo_readiness.json recorded for this session.</p>`;
+      const issues = Array.isArray(readiness.issues) ? readiness.issues : [];
+      const warnings = Array.isArray(readiness.warnings) ? readiness.warnings : [];
+      const evidence = readiness.evidence || {};
+      const evidenceRows = [
+        "provider_error_count",
+        "selected_task_count",
+        "tasks_attempted",
+        "task_success_rate",
+        "task_verification_rate",
+        "task_artifact_coverage",
+        "task_lineage_capture_coverage"
+      ].filter(key => evidence[key] !== undefined && evidence[key] !== null)
+        .map(key => `${key}=${evidence[key]}`);
+      const readinessLink = readiness.artifact_path
+        ? auditLink(session, readiness.artifact_path, "evo_readiness.json")
+        : "";
+      const statusClass = readiness.can_drive_evolution === true ? "good" : "warn";
+      return `<p class="muted"><span class="${statusClass}">${text(readiness.classification)}</span>; can drive evolution ${readiness.can_drive_evolution === true ? "yes" : "no"}${readinessLink ? ` / ${readinessLink}` : ""}</p>
+        ${issues.length ? `<ul class="mini-list">${issues.slice(0, 3).map(issue => `<li>${text(issue)}</li>`).join("")}</ul>` : ""}
+        ${!issues.length && warnings.length ? `<ul class="mini-list">${warnings.slice(0, 3).map(warning => `<li>${text(warning)}</li>`).join("")}</ul>` : ""}
+        ${evidenceRows.length ? `<p class="muted">${text(evidenceRows.join(", "))}</p>` : ""}`;
+    }
+
     function renderTaskArtifacts(session, work) {
       const manifest = work.task_manifest || {};
       const verification = work.task_verification || {};
@@ -7023,6 +7093,7 @@ HTML = r"""<!doctype html>
       }
       panel.innerHTML = sessions.slice().reverse().slice(0, 12).map(session => {
         const work = session.work_summary || {};
+        const readiness = session.evo_readiness || {};
         const trace = session.trace_quality || {};
         const transcripts = work.transcripts || {};
         const verification = work.task_verification || {};
@@ -7059,6 +7130,7 @@ HTML = r"""<!doctype html>
               <div class="fact"><strong>${text(failedCommandCount || 0)}</strong>failed checks</div>
               <div class="fact"><strong>${text(work.decision_count || 0)}</strong>decisions</div>
               <div class="fact"><strong>${text(trace.trace_event_count || 0)}</strong>trace events</div>
+              <div class="fact"><strong>${text(readiness.classification || "-")}</strong>readiness</div>
             </div>
             <details class="work-details">
               <summary>Open audit evidence</summary>
@@ -7072,6 +7144,7 @@ HTML = r"""<!doctype html>
                 <div><strong>Feedback lessons</strong>${renderLogFeedbackLessons(session, work)}</div>
                 <div><strong>Task states</strong>${renderTaskStates(session, work)}</div>
                 <div><strong>Task decision evidence</strong>${renderTaskArtifacts(session, work)}</div>
+                <div><strong>Evo readiness</strong>${renderEvoReadiness(session)}</div>
                 <div><strong>Agent transcripts</strong>${renderTranscriptList(session, work)}</div>
                 <div><strong>State lifecycle</strong>${renderStateLifecycle(work)}</div>
                 <div><strong>State pipeline</strong>${renderStatePipeline(work)}</div>
@@ -7214,6 +7287,22 @@ HTML = r"""<!doctype html>
       const claimClass = status => status === "missing" ? "warn" : (status === "conflict" ? "bad" : "info");
       const latestUnresolved = hasClaimSummary ? (claimSummary.latest_unresolved || []) : [];
       const latest = latestSession(sessions);
+      const latestReadiness = latest ? (latest.evo_readiness || {}) : {};
+      if (latestReadiness.classification) {
+        const issues = Array.isArray(latestReadiness.issues) ? latestReadiness.issues : [];
+        const warnings = Array.isArray(latestReadiness.warnings) ? latestReadiness.warnings : [];
+        const evidence = latestReadiness.evidence || {};
+        const providerErrors = evidence.provider_error_count !== undefined ? `provider errors ${evidence.provider_error_count}` : "";
+        const taskEvidence = evidence.tasks_attempted !== undefined ? `tasks attempted ${evidence.tasks_attempted}` : "";
+        const detail = issues[0] || warnings[0] || [providerErrors, taskEvidence].filter(Boolean).join(", ") || "No readiness issue recorded.";
+        items.push({
+          kind: "Evo readiness",
+          className: latestReadiness.can_drive_evolution === true ? "good" : "warn",
+          session: latest.id || latestReadiness.session_id || "latest",
+          title: `${latestReadiness.classification} / can drive evolution ${latestReadiness.can_drive_evolution === true ? "yes" : "no"}`,
+          detail
+        });
+      }
       const latestTaskSummary = latest ? taskStateSummaryForSessions([latest]) : null;
       if (latestTaskSummary && latestTaskSummary.taskCount) {
         items.push({
