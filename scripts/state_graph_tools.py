@@ -938,6 +938,15 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             gnomes.get("task_unattempted_count"),
             94,
         )
+    if int(gnomes.get("task_obsolete_count") or 0) > 0:
+        add(
+            "planning",
+            "Replace stale or already-satisfied tasks",
+            "Implementation marked selected tasks obsolete or already satisfied; planning should replace stale targets or land small verification/docs improvements.",
+            "task_obsolete_count",
+            gnomes.get("task_obsolete_count"),
+            86,
+        )
     if int(gnomes.get("task_unlanded_source_count") or 0) > 0:
         add("commit", "Make source-edit outcomes land or explain reverts", "A task touched source files without a landed source commit.", "task_unlanded_source_count", gnomes.get("task_unlanded_source_count"), 88)
     if int(gnomes.get("evaluator_timeout_count") or 0) > 0:

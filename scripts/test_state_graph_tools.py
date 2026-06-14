@@ -152,6 +152,30 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(unattempted["value"], 1)
             self.assertIn("never attempted", unattempted["reason"])
 
+    def test_evolution_suggestions_surface_obsolete_selected_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "task_obsolete_count": 1,
+                        "task_artifact_coverage": 1.0,
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+            obsolete = next(
+                item
+                for item in suggestions
+                if item["title"] == "Replace stale or already-satisfied tasks"
+            )
+
+            self.assertEqual(obsolete["metric"], "task_obsolete_count")
+            self.assertEqual(obsolete["value"], 1)
+            self.assertIn("obsolete or already satisfied", obsolete["reason"])
+
     def test_evolution_suggestions_include_lifecycle_cause_detail(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
