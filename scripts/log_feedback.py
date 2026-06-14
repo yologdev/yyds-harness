@@ -325,6 +325,8 @@ def is_noise_failure_message(message: str) -> bool:
         return True
     if "|| echo" in lower or "continue-on-error" in lower or "non-fatal" in lower or "fail-soft" in lower:
         return True
+    if "work around spurious network errors in curl" in lower:
+        return True
     if re.search(r"\b0 (?:failures|failed)\b", lower) or "no failures" in lower:
         return True
     if lower.startswith("test result: ok"):
@@ -1891,6 +1893,28 @@ def run_self_tests() -> int:
     )
     check("DeepSeek network transcript errors counted as provider errors", network_provider["provider_error_count"] == 2, network_provider)
     check("DeepSeek network transcript errors fingerprinted", network_provider["distinct_failure_count"] >= 1, network_provider)
+    provider_block_with_setup_noise = parse_log(
+        "\n".join(
+            [
+                "evolve\tSetup Rust\t2026-06-14T17:21:43.9294924Z : work around spurious network errors in curl 8.0",
+                "evolve\tRun evolution session\t2026-06-14T17:27:36.5124955Z   API error in assessment agent. Recording provider failure and skipping model-dependent planning.",
+                "evolve\tRun evolution session\t2026-06-14T17:27:36.5193444Z   Phase A2: Planning skipped because assessment hit a provider/API error.",
+            ]
+        )
+    )
+    check(
+        "setup curl workaround prose is not provider failure evidence",
+        provider_block_with_setup_noise["provider_error_count"] == 2,
+        provider_block_with_setup_noise,
+    )
+    check(
+        "setup curl workaround prose is not fingerprinted as failure",
+        all(
+            "spurious network errors in curl" not in item["fingerprint"]
+            for item in provider_block_with_setup_noise["failure_fingerprints"]
+        ),
+        provider_block_with_setup_noise["failure_fingerprints"],
+    )
     noisy = parse_log(
         "\n".join(
             [
