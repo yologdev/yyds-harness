@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_evolution_dashboard import (  # noqa: E402
     build,
     build_dashboard_claim_summary,
+    corrected_coding_log_score,
     corrected_gnome_lessons,
     count_claim,
     dashboard_dataset_warnings,
@@ -44,6 +45,25 @@ def write_events(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class BuildEvolutionDashboard(unittest.TestCase):
+    def test_corrected_coding_log_score_caps_provider_blocked_before_tasks(self):
+        score = corrected_coding_log_score(
+            {
+                "coding_log_score": 0.9,
+                "workflow_success_rate": 0.0,
+                "session_success_rate": 0.0,
+                "task_success_rate": None,
+                "session_reverted": False,
+                "provider_error_count": 6,
+                "tasks_attempted": 0,
+                "distinct_failure_count": 2,
+                "state_capture_coverage": 1.0,
+                "audit_capture_coverage": 0.0,
+                "closed_loop_fix_rate": None,
+            }
+        )
+
+        self.assertLessEqual(score, 0.25)
+
     def test_dashboard_dataset_warnings_are_durable_json_signals(self):
         warnings = dashboard_dataset_warnings(
             {

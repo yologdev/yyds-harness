@@ -53,6 +53,7 @@ GNOME_KEYS = [
     "closed_loop_fix_rate",
     "evolution_friction_count",
     "provider_error_count",
+    "provider_blocked_session_count",
     "tool_error_count",
     "command_timeout_count",
     "evaluator_timeout_count",

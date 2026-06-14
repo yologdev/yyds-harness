@@ -3136,6 +3136,15 @@ def metric_float(metrics: dict[str, Any], key: str, default: float = 0.0) -> flo
     return float(value) if numeric_value(value) else default
 
 
+def provider_blocked_before_tasks(metrics: dict[str, Any]) -> bool:
+    task_rate = metrics.get("task_success_rate")
+    return bool(
+        metric_float(metrics, "provider_error_count") > 0
+        and metric_float(metrics, "tasks_attempted") == 0
+        and task_rate is None
+    )
+
+
 def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
     if not numeric_value(metrics.get("coding_log_score")):
         return None
@@ -3184,7 +3193,10 @@ def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
     efficiency = 1.0 - min(1.0, metric_float(metrics, "repair_loop_count") / 6.0)
     closed = metrics.get("closed_loop_fix_rate")
     learning = float(closed) if numeric_value(closed) else 0.5
-    return round(outcome * 0.40 + reliability * 0.25 + efficiency * 0.20 + learning * 0.15, 4)
+    score = round(outcome * 0.40 + reliability * 0.25 + efficiency * 0.20 + learning * 0.15, 4)
+    if provider_blocked_before_tasks(metrics):
+        return min(score, 0.25)
+    return score
 
 
 def gnome_corrections(raw: dict[str, Any], corrected: dict[str, Any]) -> dict[str, dict[str, Any]]:

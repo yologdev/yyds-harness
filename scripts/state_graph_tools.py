@@ -38,6 +38,7 @@ GNOME_COMPARE_KEYS = [
     "recurring_failure_count",
     "max_failure_fingerprint_recurrence",
     "provider_error_count",
+    "provider_blocked_session_count",
     "tool_error_count",
     "prompt_heredoc_expansion_error_count",
     "command_timeout_count",

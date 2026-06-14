@@ -2258,11 +2258,13 @@ fn promotion_comparison(baseline: &EvalResult, candidate: &EvalResult) -> Promot
         }
         if metric_less(candidate, baseline, "recurring_failure_count")
             || metric_less(candidate, baseline, "max_failure_fingerprint_recurrence")
+            || metric_less(candidate, baseline, "provider_error_count")
+            || metric_less(candidate, baseline, "provider_blocked_session_count")
         {
             return PromotionDecision::compared(
                 true,
                 Some("log_feedback_reliability_improved"),
-                "candidate recurring GitHub Actions log failures are lower with no pass-rate regression",
+                "candidate GitHub Actions log failure pressure is lower with no pass-rate regression",
                 baseline,
                 candidate,
             );
@@ -2343,6 +2345,8 @@ fn harness_quality_regression(baseline: &EvalResult, candidate: &EvalResult) -> 
         "fim_rollback_rate",
         "recurring_failure_count",
         "max_failure_fingerprint_recurrence",
+        "provider_error_count",
+        "provider_blocked_session_count",
     ] {
         if metric_greater(candidate, baseline, key) {
             return Some(format!("candidate {key} regresses harness quality gate"));
@@ -4413,6 +4417,35 @@ mod tests {
             decision.criterion.as_deref(),
             Some("log_feedback_reliability_improved")
         );
+
+        let mut baseline = eval_payload("eval-base", None, 1.0, 2, 0);
+        baseline["metrics"]["state_metrics"] = json!({
+            "coding_log_score": 0.25,
+            "workflow_success_rate": 0.0,
+            "session_success_rate": 0.0,
+            "provider_error_count": 6,
+            "provider_blocked_session_count": 1
+        });
+        let mut candidate = eval_payload("eval-candidate", Some("patch-1"), 1.0, 2, 0);
+        candidate["metrics"]["state_metrics"] = json!({
+            "coding_log_score": 0.25,
+            "workflow_success_rate": 0.0,
+            "session_success_rate": 0.0,
+            "provider_error_count": 0,
+            "provider_blocked_session_count": 0
+        });
+        let events = vec![
+            event("PatchEvaluated", baseline),
+            event("PatchEvaluated", candidate),
+        ];
+
+        let decision = promotion_decision(&events, "patch-1", None, None);
+
+        assert!(decision.eligible);
+        assert_eq!(
+            decision.criterion.as_deref(),
+            Some("log_feedback_reliability_improved")
+        );
     }
 
     #[test]
@@ -4463,6 +4496,36 @@ mod tests {
         assert_eq!(
             decision.reason,
             "candidate recurring_failure_count regresses harness quality gate"
+        );
+
+        let mut baseline = eval_payload("eval-base", None, 1.0, 2, 0);
+        baseline["metrics"]["state_metrics"] = json!({
+            "coding_log_score": 0.90,
+            "state_capture_coverage": 1.0,
+            "audit_capture_coverage": 1.0,
+            "provider_error_count": 0,
+            "provider_blocked_session_count": 0
+        });
+        let mut candidate = eval_payload("eval-candidate", Some("patch-1"), 1.0, 2, 0);
+        candidate["metrics"]["state_metrics"] = json!({
+            "cost_usd": 0.10,
+            "coding_log_score": 0.90,
+            "state_capture_coverage": 1.0,
+            "audit_capture_coverage": 1.0,
+            "provider_error_count": 2,
+            "provider_blocked_session_count": 1
+        });
+        let events = vec![
+            event("PatchEvaluated", baseline),
+            event("PatchEvaluated", candidate),
+        ];
+
+        let decision = promotion_decision(&events, "patch-1", None, None);
+
+        assert!(!decision.eligible);
+        assert_eq!(
+            decision.reason,
+            "candidate provider_error_count regresses harness quality gate"
         );
     }
 

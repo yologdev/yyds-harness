@@ -142,6 +142,7 @@ GNOME_KEYS = [
     "closed_loop_fix_rate",
     "evolution_friction_count",
     "provider_error_count",
+    "provider_blocked_session_count",
     "provider_blocked_transcript_task_attempt_count",
     "tool_error_count",
     "prompt_heredoc_expansion_error_count",
@@ -1288,6 +1289,15 @@ def ratio(numerator: float, denominator: float) -> float | None:
     return numerator / denominator
 
 
+def provider_blocked_before_tasks(metrics: dict[str, Any]) -> bool:
+    task_rate = metrics.get("task_success_rate")
+    return bool(
+        int(metrics.get("provider_error_count") or 0) > 0
+        and int(metrics.get("tasks_attempted") or 0) == 0
+        and task_rate is None
+    )
+
+
 def score_assessment(metrics: dict[str, Any]) -> float:
     task_rate = metrics.get("task_success_rate")
     outcome_parts = [
@@ -1334,7 +1344,10 @@ def score_assessment(metrics: dict[str, Any]) -> float:
     closed = metrics.get("closed_loop_fix_rate")
     learning = float(closed) if isinstance(closed, (int, float)) else 0.5
 
-    return round(outcome * 0.40 + reliability * 0.25 + efficiency * 0.20 + learning * 0.15, 4)
+    score = round(outcome * 0.40 + reliability * 0.25 + efficiency * 0.20 + learning * 0.15, 4)
+    if provider_blocked_before_tasks(metrics):
+        return min(score, 0.25)
+    return score
 
 
 def build_assessment(
@@ -1463,6 +1476,7 @@ def build_assessment(
             int(metrics.get("evaluator_unverified_count") or 0) - explained_evaluator_gaps,
             0,
         )
+    metrics["provider_blocked_session_count"] = 1 if provider_blocked_before_tasks(metrics) else 0
     metrics["coding_log_score"] = score_assessment(metrics)
     deltas = gnome_deltas(metrics, previous)
 
@@ -2133,6 +2147,8 @@ def run_self_tests() -> int:
         check("provider-blocked transcript task counted separately", provider_blocked_metrics["provider_blocked_transcript_task_attempt_count"] == 1, provider_blocked_metrics)
         check("provider-blocked transcript task is not task-attempted", provider_blocked_metrics["transcript_task_attempt_count"] == 0, provider_blocked_metrics)
         check("provider-blocked transcript does not depress task success", provider_blocked_metrics["task_success_rate"] is None, provider_blocked_metrics)
+        check("provider-blocked transcript marks provider-blocked session", provider_blocked_metrics["provider_blocked_session_count"] == 1, provider_blocked_metrics)
+        check("provider-blocked transcript caps coding log score", provider_blocked_metrics["coding_log_score"] <= 0.25, provider_blocked_metrics)
         staging = root / ".yoyo" / "session_staging"
         staging_transcripts = staging / "transcripts"
         staging_transcripts.mkdir(parents=True)
