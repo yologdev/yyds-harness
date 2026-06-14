@@ -1713,6 +1713,7 @@ First read and follow \`skills/evolve/SKILL.md\`. That skill is the canonical
 implementation contract for yyds self-evolution.
 
 Follow the evolve skill rules:
+- Before editing, identify the task's Objective, Why this matters, Success Criteria, Verification, and Expected Evidence sections. Your change should make the Expected Evidence true in task lineage, dashboard artifacts, state events, or gnome metrics.
 - Write a test first if possible
 - Use edit_file for surgical changes
 - Verify guessed file paths with \`list_files\` or \`git ls-files <path>\` before reading/searching them; if a path is absent, search for the owning module, binary entrypoint, or symbol instead of retrying the missing path.

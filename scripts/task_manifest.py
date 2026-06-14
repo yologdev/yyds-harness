@@ -99,13 +99,14 @@ def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[
     lower = text.lower()
     has_success = "success criteria" in lower or "acceptance criteria" in lower
     has_verification = "verification" in lower or "test plan" in lower
+    has_expected_evidence = "expected evidence" in lower
     has_goal = bool(GOAL_RE.search(text))
     generic = (
         fields.get("title", "").strip().lower() == "self-improvement"
         and "identify the most impactful improvement" in lower
     )
     alignment = assessment_alignment(text, assessment_text)
-    quality_score = sum([has_success, has_verification, has_goal, not generic]) / 4.0
+    quality_score = sum([has_success, has_verification, has_expected_evidence, has_goal, not generic]) / 5.0
     if alignment["contradicted_by_assessment"]:
         quality_score = min(quality_score, 0.5)
     title = fields.get("title") or f"Task {task_number}"
@@ -124,6 +125,7 @@ def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[
             "has_goal": has_goal,
             "has_success_criteria": has_success,
             "has_verification": has_verification,
+            "has_expected_evidence": has_expected_evidence,
             "generic_self_improvement": generic,
             "assessment_alignment": alignment,
             "score": round(quality_score, 4),
@@ -157,6 +159,8 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             warnings.append(f"{task['task_id']}:assessment_contradiction")
         if not task.get("files"):
             warnings.append(f"{task['task_id']}:missing_files")
+        if not quality.get("has_expected_evidence"):
+            warnings.append(f"{task['task_id']}:missing_expected_evidence")
         if float(quality.get("score") or 0.0) < 0.75:
             warnings.append(f"{task['task_id']}:thin_task_spec")
 

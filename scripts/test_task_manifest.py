@@ -65,6 +65,7 @@ Expected Evidence:
             self.assertFalse(manifest["planner"]["planning_failed"])
             self.assertEqual(manifest["planner"]["selected_task_count"], 1)
             self.assertEqual(manifest["selected_tasks"][0]["task_id"], "task_01")
+            self.assertTrue(manifest["selected_tasks"][0]["quality"]["has_expected_evidence"])
             self.assertEqual(manifest["selected_tasks"][0]["quality"]["score"], 1.0)
             self.assertEqual(payload["tasks"][0]["task_title"], "Improve evaluator timeout evidence")
             self.assertEqual(payload["tasks"][0]["planned_files"], ["scripts/log_feedback.py", "scripts/build_evolution_dashboard.py"])
@@ -203,6 +204,8 @@ Verification:
             self.assertEqual(task["title"], "Wire crash reporter into pre-agent bootstrap path")
             self.assertEqual(task["files"], ["src/lib.rs"])
             self.assertTrue(task["quality"]["has_goal"])
+            self.assertFalse(task["quality"]["has_expected_evidence"])
+            self.assertIn("task_01:missing_expected_evidence", manifest["warnings"])
             self.assertNotIn("task_01:missing_files", manifest["warnings"])
 
     def test_manifest_records_planning_failure_without_fake_task(self):
