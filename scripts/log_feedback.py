@@ -1473,6 +1473,14 @@ def build_assessment(
 
 def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     lessons: list[dict[str, Any]] = []
+    if int(metrics.get("provider_error_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "provider_error",
+                "fingerprint": "DeepSeek/provider API errors appeared in the coding loop",
+                "action": "preserve provider-error evidence and route recovery or retry before spending implementation attempts",
+            }
+        )
     if int(metrics.get("planner_no_task_count") or 0) > 0:
         lessons.append(
             {
@@ -1511,14 +1519,6 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "task_no_edit_revert",
                 "fingerprint": "implementation task reverted without touching files",
                 "action": "force implementation agents to either make an early scoped edit, write an obsolete note, or fail with a concrete blocker",
-            }
-        )
-    if int(metrics.get("provider_error_count") or 0) > 0:
-        lessons.append(
-            {
-                "kind": "provider_error",
-                "fingerprint": "DeepSeek/provider API errors appeared in the coding loop",
-                "action": "preserve provider-error evidence and route recovery or retry before spending implementation attempts",
             }
         )
     if int(metrics.get("task_api_error_count") or 0) > 0:
@@ -1918,6 +1918,12 @@ def run_self_tests() -> int:
         "cache hit ratio parsed from tokens",
         abs(float(operational["deepseek_cache_hit_ratio"]) - 0.843842) < 0.00001,
         operational,
+    )
+    provider_blocked_lessons = top_lessons({"provider_error_count": 2, "planner_no_task_count": 1})
+    check(
+        "provider errors outrank provider-blocked planning lessons",
+        provider_blocked_lessons[0]["kind"] == "provider_error",
+        provider_blocked_lessons,
     )
     prompt_expansion = parse_log(
         "\n".join(

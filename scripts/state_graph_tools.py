@@ -876,6 +876,8 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
     gnomes = corrected_latest_gnomes(session_dir)
     manifest = task_manifest(session_dir)
     suggestions: list[dict[str, Any]] = []
+    provider_errors = int_metric(gnomes, "provider_error_count")
+    task_api_errors = int_metric(gnomes, "task_api_error_count")
 
     def add(kind: str, title: str, reason: str, metric: str, value: Any, priority: int) -> None:
         suggestions.append(
@@ -890,7 +892,17 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
         )
 
     if int(gnomes.get("planner_no_task_count") or 0) > 0 or (manifest and (manifest.get("planner") or {}).get("planning_failed")):
-        add("planner", "Make planning failure actionable", "The planner produced no concrete task files.", "planner_no_task_count", gnomes.get("planner_no_task_count"), 100)
+        if provider_errors > 0:
+            add(
+                "planner",
+                "Treat planning failure as provider-blocked",
+                "The planner produced no concrete task files while provider errors were present; recover provider access before tuning task-selection prompts.",
+                "planner_no_task_count",
+                gnomes.get("planner_no_task_count"),
+                88,
+            )
+        else:
+            add("planner", "Make planning failure actionable", "The planner produced no concrete task files.", "planner_no_task_count", gnomes.get("planner_no_task_count"), 100)
     assessment_gap = assessment_artifact_gap(session_dir, manifest)
     if assessment_gap:
         add(
@@ -1179,8 +1191,6 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             gnomes.get("task_seed_contradiction_count"),
             89,
         )
-    provider_errors = int_metric(gnomes, "provider_error_count")
-    task_api_errors = int_metric(gnomes, "task_api_error_count")
     if provider_errors > 0 and provider_errors > task_api_errors:
         add(
             "deepseek",
@@ -1188,7 +1198,7 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             "DeepSeek/provider API errors appeared outside task-scoped API reverts; preserve the failure evidence and route retry or provider recovery before spending implementation attempts.",
             "provider_error_count",
             provider_errors,
-            96,
+            101,
         )
     if int(gnomes.get("task_api_error_count") or 0) > 0:
         add(

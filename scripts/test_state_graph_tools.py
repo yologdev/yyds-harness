@@ -373,6 +373,32 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(suggestions[0]["title"], "Recover provider errors before task attempts")
             self.assertEqual(suggestions[0]["metric"], "provider_error_count")
 
+    def test_evolution_suggestions_prioritize_provider_recovery_over_provider_blocked_planning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "provider_error_count": 2,
+                        "planner_no_task_count": 1,
+                        "task_artifact_coverage": 0.0,
+                    }
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {"planner": {"planning_failed": True, "task_count": 0, "selected_task_count": 0}},
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=5)
+
+            self.assertEqual(suggestions[0]["title"], "Recover provider errors before task attempts")
+            self.assertEqual(suggestions[0]["metric"], "provider_error_count")
+            blocked = next(item for item in suggestions if item["metric"] == "planner_no_task_count")
+            self.assertEqual(blocked["title"], "Treat planning failure as provider-blocked")
+            self.assertLess(blocked["priority"], suggestions[0]["priority"])
+
     def test_evolution_suggestions_surface_low_task_lineage_capture_pressure(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
