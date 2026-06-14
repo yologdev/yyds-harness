@@ -1038,6 +1038,16 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
         if isinstance(recent_task_summary.get("state_counts"), dict)
         else {}
     )
+    lifecycle_aggregate = (
+        state_summary.get("lifecycle_summary")
+        if isinstance(state_summary.get("lifecycle_summary"), dict)
+        else {}
+    )
+    tool_failure_aggregate = (
+        state_summary.get("tool_failure_summary")
+        if isinstance(state_summary.get("tool_failure_summary"), dict)
+        else {}
+    )
     tool_failures: Counter[str] = Counter()
     addressed_tool_failures = recently_addressed_tool_failure_categories(audit_dir)
     latest_lifecycle_counts: Counter[str] = Counter()
@@ -1189,6 +1199,27 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                     break
             if cause_summary:
                 summary_parts.append("lifecycle causes: " + ", ".join(cause_summary))
+        if lifecycle_aggregate:
+            lifecycle_parts = []
+            session_count = int(lifecycle_aggregate.get("session_count") or 0)
+            observed = int(lifecycle_aggregate.get("observed_session_count") or 0)
+            unhealthy = int(lifecycle_aggregate.get("unhealthy_session_count") or 0)
+            runs = lifecycle_aggregate.get("runs") if isinstance(lifecycle_aggregate.get("runs"), dict) else {}
+            model_calls = (
+                lifecycle_aggregate.get("model_calls")
+                if isinstance(lifecycle_aggregate.get("model_calls"), dict)
+                else {}
+            )
+            if session_count:
+                lifecycle_parts.append(f"observed={observed}/{session_count}")
+            if unhealthy:
+                lifecycle_parts.append(f"unhealthy={unhealthy}")
+            if int(runs.get("incomplete") or 0):
+                lifecycle_parts.append(f"run_incomplete={int(runs.get('incomplete') or 0)}")
+            if int(model_calls.get("incomplete") or 0):
+                lifecycle_parts.append(f"model_incomplete={int(model_calls.get('incomplete') or 0)}")
+            if lifecycle_parts:
+                summary_parts.append("lifecycle aggregate: " + ", ".join(lifecycle_parts[:4]))
         if recent_task_issue_states:
             summary_parts.append(
                 "recent task issues: "
@@ -1202,6 +1233,15 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                     for state, count in recent_assessment_counts.most_common(3)
                 )
             )
+        if tool_failure_aggregate:
+            failed_tools = int(tool_failure_aggregate.get("failed_tool_count") or 0)
+            unrecovered_tools = int(tool_failure_aggregate.get("unrecovered_failed_tool_count") or 0)
+            failed_commands = int(tool_failure_aggregate.get("failed_command_count") or 0)
+            if unrecovered_tools:
+                tool_parts = [f"unrecovered={unrecovered_tools}/{failed_tools}"]
+                if failed_commands:
+                    tool_parts.append(f"failed_commands={failed_commands}")
+                summary_parts.append("tool failures: " + ", ".join(tool_parts))
         if top_tool_failures:
             tool_summary = []
             for category, count in top_tool_failures[:3]:
