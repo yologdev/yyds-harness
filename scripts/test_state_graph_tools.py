@@ -475,6 +475,27 @@ class StateGraphTools(unittest.TestCase):
             self.assertIn("state/events.jsonl", suggestion["reason"])
             self.assertIn("task artifacts", suggestion["reason"])
 
+    def test_evolution_suggestions_skip_replay_integrity_for_live_staging_feedback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / ".yoyo/session_staging"
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "state_feedback_source": "live_staging",
+                        "state_capture_coverage": 1.0,
+                        "state_replay_integrity_rate": 0.0,
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=10)
+
+            self.assertNotIn(
+                "Repair state replay integrity",
+                [item["title"] for item in suggestions],
+            )
+
     def test_evolution_suggestions_surface_state_failure_count_pressure(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

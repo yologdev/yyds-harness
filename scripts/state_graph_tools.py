@@ -1005,7 +1005,13 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             90,
         )
     replay_integrity = gnomes.get("state_replay_integrity_rate")
-    if isinstance(replay_integrity, (int, float)) and not isinstance(replay_integrity, bool) and replay_integrity < 1.0:
+    live_staging_feedback = gnomes.get("state_feedback_source") == "live_staging"
+    if (
+        not live_staging_feedback
+        and isinstance(replay_integrity, (int, float))
+        and not isinstance(replay_integrity, bool)
+        and replay_integrity < 1.0
+    ):
         add(
             "state",
             "Repair state replay integrity",
