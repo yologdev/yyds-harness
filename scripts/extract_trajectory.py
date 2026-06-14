@@ -1274,7 +1274,13 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                 suffix = " addressed" if category in addressed_tool_failures else ""
                 tool_summary.append(f"{category}={count}{suffix}")
             summary_parts.append("historical unrecovered tool failures: " + ", ".join(tool_summary))
-        lines.append("; ".join(summary_parts))
+        headline = summary_parts[0]
+        detail_parts = summary_parts[1:]
+        if detail_parts and detail_parts[0].startswith("recent non-proven claims:"):
+            headline += "; " + detail_parts[0]
+            detail_parts = detail_parts[1:]
+        lines.append(headline)
+        lines.extend(f"- {part}" for part in detail_parts)
     if latest_lifecycle_counts:
         keys = (
             "state_run_started_count",

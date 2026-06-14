@@ -597,6 +597,7 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("model_lifecycle=1 missing", rendered)
             self.assertIn("run_lifecycle=1 missing", rendered)
             self.assertIn("lifecycle gaps:", rendered)
+            self.assertIn("\n- lifecycle gaps:", rendered)
             self.assertIn("state_incomplete=1", rendered)
             self.assertIn("model_incomplete=1", rendered)
             self.assertIn("lifecycle causes:", rendered)
@@ -611,9 +612,11 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("latest=day-1", rendered)
             self.assertIn("unlanded_source_edits=1", rendered)
             self.assertIn("recent tool failures:", rendered)
+            self.assertIn("\n- recent tool failures:", rendered)
             self.assertIn("unrecovered=1/1", rendered)
             self.assertIn("failed_commands=1", rendered)
             self.assertIn("recent action evidence:", rendered)
+            self.assertIn("\n- recent action evidence:", rendered)
             self.assertIn("transcript_only_failed_tools=1", rendered)
             self.assertIn("search_tool_error=1", rendered)
             self.assertIn("lifecycle gnomes:", rendered)
@@ -777,9 +780,9 @@ class ExtractTrajectoryTests(unittest.TestCase):
             rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
             first_line = next(line for line in rendered.splitlines() if line.startswith("claims:"))
 
-            self.assertIn("recent assessment artifacts: missing_with_diagnostic=1", first_line)
+            self.assertNotIn("recent assessment artifacts:", first_line)
             self.assertIn(
-                "recent assessment artifacts: missing_with_diagnostic=1",
+                "\n- recent assessment artifacts: missing_with_diagnostic=1",
                 rendered,
             )
 
