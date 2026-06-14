@@ -128,6 +128,38 @@ class StateGraphTools(unittest.TestCase):
                 [item["title"] for item in suggestions],
             )
 
+    def test_evolution_suggestions_surface_abnormal_model_completion_pressure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "deepseek_model_call_abnormal_completed_count": 1,
+                    },
+                    "state_lifecycle": {
+                        "model_calls": {
+                            "abnormal_completed_runs": [
+                                {
+                                    "run_id": "run-abnormal",
+                                    "last_event": {"kind": "ModelCallCompleted"},
+                                }
+                            ]
+                        }
+                    },
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+
+            self.assertEqual(
+                suggestions[0]["title"],
+                "Close yyds state and model lifecycle gaps",
+            )
+            self.assertEqual(suggestions[0]["metric"], "deepseek_model_call_abnormal_completed_count")
+            self.assertIn("model calls abnormal=1", suggestions[0]["reason"])
+            self.assertIn("model_abnormal/model_completion_without_start=1", suggestions[0]["reason"])
+
     def test_evolution_suggestions_surface_unattempted_selected_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

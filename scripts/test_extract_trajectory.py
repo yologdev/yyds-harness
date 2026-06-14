@@ -1191,6 +1191,40 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("deepseek_model_call_incomplete_count=1", rendered)
             self.assertIn("model_incomplete/open_after_command=1", rendered)
 
+    def test_graph_suggestions_surface_abnormal_model_completion_pressure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(
+                session / "outcome.json",
+                {"day": 1, "ts": "2026-01-01T00:00:00Z"},
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "deepseek_model_call_abnormal_completed_count": 1,
+                    },
+                    "state_lifecycle": {
+                        "model_calls": {
+                            "abnormal_completed_runs": [
+                                {
+                                    "run_id": "run-abnormal",
+                                    "last_event": {"kind": "ModelCallCompleted"},
+                                }
+                            ]
+                        }
+                    },
+                },
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("Close yyds state and model lifecycle gaps", rendered)
+            self.assertIn("deepseek_model_call_abnormal_completed_count=1", rendered)
+            self.assertIn("model_abnormal/model_completion_without_start=1", rendered)
+
     def test_graph_suggestions_include_unattempted_task_pressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

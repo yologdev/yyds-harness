@@ -40,6 +40,7 @@ GNOME_COMPARE_KEYS = [
     "deepseek_cache_hit_ratio",
     "state_run_incomplete_count",
     "state_run_unmatched_non_validation_completed_count",
+    "deepseek_model_call_abnormal_completed_count",
     "deepseek_model_call_incomplete_count",
     "deepseek_model_call_unmatched_completed_count",
 ]
@@ -637,6 +638,7 @@ def lifecycle_imbalance_causes(session_dir: Path) -> list[dict[str, Any]]:
     model_calls = lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {}
     add("run_incomplete", runs.get("incomplete_runs"))
     add("run_unmatched_completed", runs.get("unmatched_completed_details"))
+    add("model_call_abnormal_completed", model_calls.get("abnormal_completed_runs"))
     add("model_call_incomplete", model_calls.get("incomplete_runs"))
     add("model_call_unmatched_completed", model_calls.get("unmatched_completed_details"))
     return sorted(
@@ -653,6 +655,7 @@ def lifecycle_cause_summary(session_dir: Path, limit: int = 3) -> str:
     category_labels = {
         "run_incomplete": "state_incomplete",
         "run_unmatched_completed": "state_unmatched",
+        "model_call_abnormal_completed": "model_abnormal",
         "model_call_incomplete": "model_incomplete",
         "model_call_unmatched_completed": "model_unmatched",
     }
@@ -903,6 +906,7 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
     lifecycle_metrics = (
         ("deepseek_model_call_incomplete_count", "model calls incomplete"),
         ("deepseek_model_call_unmatched_completed_count", "model calls unmatched"),
+        ("deepseek_model_call_abnormal_completed_count", "model calls abnormal"),
         ("state_run_incomplete_count", "runs incomplete"),
         ("state_run_unmatched_non_validation_completed_count", "runs unmatched"),
     )
@@ -918,7 +922,7 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
         reason = (
             f"Lifecycle causes: {cause_detail}; gaps: {detail}."
             if cause_detail
-            else f"Lifecycle gnomes show unpaired terminal events: {detail}."
+            else f"Lifecycle gnomes show abnormal or unpaired terminal events: {detail}."
         )
         add(
             "state",
