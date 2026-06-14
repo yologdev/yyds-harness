@@ -216,6 +216,52 @@ Verification:
             self.assertIn("task_01:missing_expected_evidence", manifest["warnings"])
             self.assertNotIn("task_01:missing_files", manifest["warnings"])
 
+    def test_manifest_requires_nonempty_expected_evidence_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "task_01.md").write_text(
+                """Title: Tighten task evidence scoring
+Files: scripts/task_manifest.py
+Issue: none
+Origin: planner
+
+Objective:
+Prevent empty evidence sections from looking complete.
+
+Success Criteria:
+- empty evidence sections are warned
+
+Verification:
+- python3 -m unittest scripts.test_task_manifest
+
+Expected Evidence:
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+            task = manifest["selected_tasks"][0]
+
+            self.assertIsNone(task["expected_evidence"])
+            self.assertFalse(task["quality"]["has_expected_evidence"])
+            self.assertLess(task["quality"]["score"], 1.0)
+            self.assertIn("task_01:missing_expected_evidence", manifest["warnings"])
+            self.assertNotIn("task_01:thin_task_spec", manifest["warnings"])
+
     def test_manifest_records_planning_failure_without_fake_task(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

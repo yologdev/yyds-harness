@@ -129,8 +129,8 @@ def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[
     lower = text.lower()
     has_success = "success criteria" in lower or "acceptance criteria" in lower
     has_verification = "verification" in lower or "test plan" in lower
-    has_expected_evidence = "expected evidence" in lower
     expected_evidence = section_summary(text, "Expected Evidence")
+    has_expected_evidence = bool(expected_evidence)
     has_goal = bool(GOAL_RE.search(text))
     generic = (
         fields.get("title", "").strip().lower() == "self-improvement"
