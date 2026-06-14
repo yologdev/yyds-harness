@@ -533,6 +533,29 @@ def int_metric(metrics: dict[str, Any], key: str) -> int:
     return 0
 
 
+def dominant_task_failure_detail(metrics: dict[str, Any]) -> str:
+    failure_keys = [
+        ("task_unattempted_count", "unattempted selected tasks"),
+        ("task_api_error_count", "provider/API task failures"),
+        ("task_scope_mismatch_count", "scope-mismatched task edits"),
+        ("task_unlanded_source_count", "source edits not landed"),
+        ("evaluator_unverified_count", "unverified task outcomes"),
+        ("task_no_edit_revert_count", "reverted tasks without edits"),
+        ("protected_file_revert_count", "protected-file reverts"),
+        ("task_obsolete_count", "obsolete selected tasks"),
+    ]
+    rows = [
+        (int_metric(metrics, key), key, label)
+        for key, label in failure_keys
+        if int_metric(metrics, key) > 0
+    ]
+    if not rows:
+        return ""
+    rows.sort(key=lambda item: (-item[0], item[1]))
+    count, key, label = rows[0]
+    return f" Dominant task failure: {label} ({key}={count})."
+
+
 def latest_log_feedback_metrics(session_dir: Path) -> dict[str, Any]:
     feedback = load_json(session_dir / "log_feedback.json")
     metrics = feedback.get("metrics") if isinstance(feedback.get("metrics"), dict) else {}
@@ -1159,10 +1182,12 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
         task_success_rate = outcome_task_success_rate(session_dir)
         task_success_metric = "outcome_task_success_rate"
     if task_success_rate is not None and task_success_rate < 1.0:
+        failure_detail = dominant_task_failure_detail(gnomes)
         add(
             "task",
             "Raise verified task success rate",
-            "Selected or attempted tasks did not all finish as verified successful outcomes; use task artifacts, action logs, and transcripts to remove the highest-frequency failure class before optimizing secondary gnomes.",
+            "Selected or attempted tasks did not all finish as verified successful outcomes; use task artifacts, action logs, and transcripts to remove the highest-frequency failure class before optimizing secondary gnomes."
+            + failure_detail,
             task_success_metric,
             task_success_rate,
             91,

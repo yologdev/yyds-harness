@@ -603,6 +603,8 @@ class StateGraphTools(unittest.TestCase):
                         "task_artifact_coverage": 1.0,
                         "task_success_rate": 0.5,
                         "session_success_rate": 0.0,
+                        "task_scope_mismatch_count": 2,
+                        "evaluator_unverified_count": 1,
                     }
                 },
             )
@@ -615,6 +617,8 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(suggestion["metric"], "task_success_rate")
             self.assertEqual(suggestion["value"], 0.5)
             self.assertIn("highest-frequency failure class", suggestion["reason"])
+            self.assertIn("Dominant task failure: scope-mismatched task edits", suggestion["reason"])
+            self.assertIn("task_scope_mismatch_count=2", suggestion["reason"])
 
     def test_evolution_suggestions_fall_back_to_outcome_task_success_rate(self):
         with tempfile.TemporaryDirectory() as tmp:
