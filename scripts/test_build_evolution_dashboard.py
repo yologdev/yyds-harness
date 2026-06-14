@@ -2425,6 +2425,12 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(tools["category_counts"], {"search_tool_error": 1})
             self.assertEqual(tools["unrecovered_category_counts"], {"search_tool_error": 1})
             self.assertEqual(tools["top_categories"][0]["category"], "search_tool_error")
+            latest_tools = states["summary"]["latest_tool_failure_summary"]
+            self.assertEqual(latest_tools["unrecovered_failed_tool_count"], 1)
+            self.assertEqual(latest_tools["failed_command_count"], 1)
+            recent_tools = states["summary"]["recent_tool_failure_summary"]
+            self.assertEqual(recent_tools["session_count"], 1)
+            self.assertEqual(recent_tools["unrecovered_category_counts"], {"search_tool_error": 1})
 
     def test_dashboard_marks_lifecycle_run_ids_reused_across_sessions(self):
         with tempfile.TemporaryDirectory() as tmp:

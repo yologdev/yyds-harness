@@ -4797,6 +4797,12 @@ def build_states_projection(
     latest_session = session_states[-1] if session_states else {}
     latest_task_summary = task_state_summary_for_sessions([latest_session]) if latest_session else {}
     recent_task_summary = task_state_summary_for_sessions(session_states[-recent_window_size:])
+    latest_tool_failure_summary = (
+        tool_failure_summary_for_sessions([latest_session]) if latest_session else {}
+    )
+    recent_tool_failure_summary = tool_failure_summary_for_sessions(
+        session_states[-recent_window_size:]
+    )
     gnome_audit = aggregate_gnome_audit(sessions)
     summary.update(
         {
@@ -4806,6 +4812,8 @@ def build_states_projection(
             "recent_window_size": recent_window_size,
             "recent_task_summary": recent_task_summary,
             "lifecycle_summary": state_lifecycle_summary_for_sessions(session_states),
+            "latest_tool_failure_summary": latest_tool_failure_summary,
+            "recent_tool_failure_summary": recent_tool_failure_summary,
             "tool_failure_summary": tool_failure_summary_for_sessions(session_states),
             "gnome_audit": gnome_audit,
         }

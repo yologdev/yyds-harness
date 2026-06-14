@@ -1048,6 +1048,11 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
         if isinstance(state_summary.get("tool_failure_summary"), dict)
         else {}
     )
+    recent_tool_failure_summary = (
+        state_summary.get("recent_tool_failure_summary")
+        if isinstance(state_summary.get("recent_tool_failure_summary"), dict)
+        else {}
+    )
     tool_failures: Counter[str] = Counter()
     addressed_tool_failures = recently_addressed_tool_failure_categories(audit_dir)
     latest_lifecycle_counts: Counter[str] = Counter()
@@ -1233,15 +1238,17 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                     for state, count in recent_assessment_counts.most_common(3)
                 )
             )
-        if tool_failure_aggregate:
-            failed_tools = int(tool_failure_aggregate.get("failed_tool_count") or 0)
-            unrecovered_tools = int(tool_failure_aggregate.get("unrecovered_failed_tool_count") or 0)
-            failed_commands = int(tool_failure_aggregate.get("failed_command_count") or 0)
+        actionable_tool_summary = recent_tool_failure_summary or tool_failure_aggregate
+        if actionable_tool_summary:
+            failed_tools = int(actionable_tool_summary.get("failed_tool_count") or 0)
+            unrecovered_tools = int(actionable_tool_summary.get("unrecovered_failed_tool_count") or 0)
+            failed_commands = int(actionable_tool_summary.get("failed_command_count") or 0)
             if unrecovered_tools:
                 tool_parts = [f"unrecovered={unrecovered_tools}/{failed_tools}"]
                 if failed_commands:
                     tool_parts.append(f"failed_commands={failed_commands}")
-                summary_parts.append("tool failures: " + ", ".join(tool_parts))
+                tool_label = "recent tool failures" if recent_tool_failure_summary else "tool failures"
+                summary_parts.append(tool_label + ": " + ", ".join(tool_parts))
         if top_tool_failures:
             tool_summary = []
             for category, count in top_tool_failures[:3]:

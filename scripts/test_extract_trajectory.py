@@ -610,7 +610,7 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("deepseek_model_call_lifecycle_balanced", rendered)
             self.assertIn("latest=day-1", rendered)
             self.assertIn("unlanded_source_edits=1", rendered)
-            self.assertIn("tool failures:", rendered)
+            self.assertIn("recent tool failures:", rendered)
             self.assertIn("unrecovered=1/1", rendered)
             self.assertIn("failed_commands=1", rendered)
             self.assertIn("search_tool_error=1", rendered)
@@ -663,6 +663,12 @@ class ExtractTrajectoryTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 if index == 0:
+                    transcript_dir = session / "transcripts"
+                    transcript_dir.mkdir(parents=True)
+                    transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                        "  ▶ search 'fn old\\(' in src/lib.rs ✗ (17ms)\n",
+                        encoding="utf-8",
+                    )
                     write_json(
                         session / "tasks/task_01/outcome.json",
                         {
@@ -700,6 +706,8 @@ class ExtractTrajectoryTests(unittest.TestCase):
 
             self.assertNotIn("top task states:", first_line)
             self.assertNotIn("recent task issues:", first_line)
+            self.assertNotIn("recent tool failures:", first_line)
+            self.assertIn("historical unrecovered tool failures:", rendered)
             self.assertNotIn("reverted_scope_mismatch", rendered)
 
     def test_structured_state_snapshot_prioritizes_recent_unresolved_claims(self) -> None:
