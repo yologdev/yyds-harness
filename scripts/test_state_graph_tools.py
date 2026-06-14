@@ -611,6 +611,21 @@ class StateGraphTools(unittest.TestCase):
             self.assertIn("missing_files=1", spec["reason"])
             self.assertIn("thin_task_spec=1", spec["reason"])
 
+    def test_evolution_suggestions_surface_low_task_spec_quality_gnome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {"latest_gnomes": {"task_spec_quality_score": 0.5}},
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+            spec = next(item for item in suggestions if item["title"] == "Tighten selected task specs")
+
+            self.assertEqual(spec["metric"], "task_spec_quality_score")
+            self.assertEqual(spec["value"], 0.5)
+            self.assertIn("detailed manifest warnings were unavailable", spec["reason"])
+
     def test_lifecycle_cause_summary_skips_input_validation_exits(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

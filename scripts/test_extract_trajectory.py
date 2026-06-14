@@ -1525,6 +1525,22 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("Require task evidence specs", rendered)
             self.assertIn("missing_expected_evidence_count=1", rendered)
 
+    def test_graph_suggestions_include_low_task_spec_quality_pressure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(session / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z"})
+            write_json(
+                session / "state/summary.json",
+                {"latest_gnomes": {"task_spec_quality_score": 0.5}},
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("Tighten selected task specs", rendered)
+            self.assertIn("task_spec_quality_score=0.5", rendered)
+
     def test_graph_suggestions_include_missing_assessment_artifact_pressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

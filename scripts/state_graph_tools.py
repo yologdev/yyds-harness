@@ -903,6 +903,21 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             other_spec_warnings,
             81,
         )
+    spec_quality = gnomes.get("task_spec_quality_score")
+    if (
+        spec_warning_total == 0
+        and isinstance(spec_quality, (int, float))
+        and not isinstance(spec_quality, bool)
+        and spec_quality < 0.75
+    ):
+        add(
+            "planning",
+            "Tighten selected task specs",
+            "Task spec quality score fell below the thin-spec threshold, but detailed manifest warnings were unavailable; require concrete file scope, non-generic objective, and expected evidence before implementation.",
+            "task_spec_quality_score",
+            spec_quality,
+            81,
+        )
     lifecycle_metrics = (
         ("deepseek_model_call_incomplete_count", "model calls incomplete"),
         ("deepseek_model_call_unmatched_completed_count", "model calls unmatched"),
