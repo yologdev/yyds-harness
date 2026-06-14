@@ -85,6 +85,84 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("deepseek_model_call_incomplete_count=1", rendered)
             self.assertNotIn("## Structured state snapshot\n... (truncated", rendered)
 
+    def test_render_evo_readiness_surfaces_provider_blocked_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(session / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z"})
+            write_json(
+                session / "evo_readiness.json",
+                {
+                    "classification": "provider_blocked",
+                    "can_drive_evolution": False,
+                    "issues": [
+                        "provider blocked before task selection or task attempts; task success is not measurable"
+                    ],
+                    "evidence": {
+                        "provider_error_count": 3,
+                        "selected_task_count": 0,
+                        "tasks_attempted": 0,
+                        "task_success_rate": None,
+                    },
+                },
+            )
+
+            rendered = extract_trajectory.render_evo_readiness(audit_dir)
+
+            self.assertIn("## Evo readiness", rendered)
+            self.assertIn("classification=provider_blocked", rendered)
+            self.assertIn("can_drive_evolution=false", rendered)
+            self.assertIn("provider_error_count=3", rendered)
+            self.assertIn("selected_task_count=0", rendered)
+            self.assertIn("recover provider access or configure fallback", rendered)
+
+    def test_main_places_evo_readiness_before_graph_pressure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "trajectory.md"
+            audit_dir = Path(tmp) / "sessions"
+            session = audit_dir / "day-2"
+            write_json(session / "outcome.json", {"day": 2, "ts": "2026-01-02T00:00:00Z"})
+            write_json(
+                session / "evo_readiness.json",
+                {
+                    "classification": "actionable",
+                    "can_drive_evolution": True,
+                    "issues": [],
+                    "evidence": {
+                        "selected_task_count": 1,
+                        "tasks_attempted": 1,
+                        "task_success_rate": 0.0,
+                        "task_verification_rate": 0.0,
+                    },
+                },
+            )
+            env = {
+                "YOYO_AUDIT_DIR": str(audit_dir),
+                "YOYO_REPO": "owner/repo",
+                "YOYO_DAY": "106",
+                "YOYO_TRAJECTORY_OUT": str(out),
+            }
+            graph = "## Graph-derived next-task pressure\n- Raise verified task success rate"
+            with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(extract_trajectory, "collect_task_commits", return_value=([], 0)), \
+                mock.patch.object(extract_trajectory, "collect_provider_errors", return_value=(0, 0)), \
+                mock.patch.object(extract_trajectory, "collect_failed_ci_fingerprints", return_value=[]), \
+                mock.patch.object(extract_trajectory, "load_log_feedback", return_value=[]), \
+                mock.patch.object(extract_trajectory, "load_corrected_log_feedback_lessons", return_value=[]), \
+                mock.patch.object(extract_trajectory, "render_graph_suggestions", return_value=graph), \
+                mock.patch.object(extract_trajectory, "render_structured_state_snapshot", return_value=""):
+
+                self.assertEqual(extract_trajectory.main(), 0)
+
+            rendered = out.read_text(encoding="utf-8")
+            self.assertIn("## Evo readiness", rendered)
+            self.assertIn("classification=actionable", rendered)
+            self.assertIn("task_success_rate=0.0", rendered)
+            self.assertLess(
+                rendered.index("## Evo readiness"),
+                rendered.index("## Graph-derived next-task pressure"),
+            )
+
     def test_main_keeps_structured_state_before_verbose_log_feedback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "trajectory.md"

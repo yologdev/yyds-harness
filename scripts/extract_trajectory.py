@@ -173,6 +173,65 @@ def load_json(path: Path) -> Any:
         return None
 
 
+def latest_evo_readiness(audit_dir: Path) -> Optional[tuple[Path, dict[str, Any]]]:
+    for session_dir in reversed(ordered_sessions(audit_dir)):
+        report = load_json(session_dir / "evo_readiness.json")
+        if isinstance(report, dict):
+            return session_dir, report
+    return None
+
+
+def render_evo_readiness(audit_dir: Path) -> str:
+    latest = latest_evo_readiness(audit_dir)
+    if latest is None:
+        return ""
+    session_dir, report = latest
+    classification = str(report.get("classification") or "unknown")
+    can_drive = report.get("can_drive_evolution")
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
+    issues = report.get("issues") if isinstance(report.get("issues"), list) else []
+    warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
+
+    lines = ["## Evo readiness"]
+    lines.append(
+        "- latest {}: classification={}, can_drive_evolution={}".format(
+            session_dir.name,
+            classification,
+            "true" if can_drive is True else "false" if can_drive is False else "unknown",
+        )
+    )
+    if issues:
+        lines.append(f"- issue: {truncate_text(issues[0], 130)}")
+    elif warnings:
+        lines.append(f"- warning: {truncate_text(warnings[0], 130)}")
+
+    counters = []
+    for key in (
+        "provider_error_count",
+        "selected_task_count",
+        "tasks_attempted",
+        "task_success_rate",
+        "task_verification_rate",
+        "task_artifact_coverage",
+        "task_lineage_capture_coverage",
+    ):
+        value = evidence.get(key)
+        if value is not None:
+            counters.append(f"{key}={value}")
+    if counters:
+        lines.append("- evidence: " + ", ".join(counters[:7]))
+
+    if classification == "provider_blocked":
+        lines.append(
+            "- action: recover provider access or configure fallback before scoring task success or selecting implementation work"
+        )
+    elif classification == "not_ready":
+        lines.append("- action: repair the named evidence gap before trusting the next evolution step")
+    elif classification in {"verified_success", "actionable"}:
+        lines.append("- action: use this readiness evidence to select the next concrete, verifiable task")
+    return "\n".join(lines)
+
+
 def session_sort_time(session_dir: Path) -> float:
     fallback = 0.0
     for name in ("outcome.json", "log_feedback.json"):
@@ -1656,6 +1715,9 @@ def main() -> int:
 
     sections: list[str] = []
     s = render_outcomes(outcomes)
+    if s:
+        sections.append(s)
+    s = render_evo_readiness(audit_dir)
     if s:
         sections.append(s)
     s = render_graph_suggestions(audit_dir)
