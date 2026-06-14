@@ -966,8 +966,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("unmatched completed model call", html)
             self.assertIn("Task evidence: raw outcome", html)
             self.assertIn("artifact bundles", html)
-            self.assertIn("Metric backfills", html)
+            self.assertIn("Evidence adjustments", html)
             self.assertIn("not a raw bug count", html)
+            self.assertIn("not a direct yyds input", html)
             self.assertIn('String(session.health || "").trim()', html)
             self.assertIn(
                 "const harnessAttention = failedToolCount > 0 || failedCommandCount > failedToolCount || lifecycleMissing || lifecycleUnhealthy || assessmentMissing",
@@ -1771,7 +1772,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 session_data["latest_gnomes"]["coding_log_score"],
             )
             html = (root / "out/index.html").read_text(encoding="utf-8")
-            self.assertIn("corrected gnome(s)", html)
+            self.assertIn("gnome adjustment(s)", html)
             self.assertIn("function summarizeGnomeMovement", html)
             self.assertIn("Task success", html)
             self.assertIn("metricDeltaValue", html)
@@ -3611,12 +3612,20 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["corrected_gnome_lessons"][0]["count"], 10)
             self.assertEqual(work["corrected_gnome_lessons"][0]["source"], "corrected_gnomes")
             self.assertGreaterEqual(audit["correction_count"], 1)
+            self.assertGreaterEqual(audit["evidence_adjustment_count"], 1)
             self.assertEqual(audit["corrections_by_source"].get("transcripts"), 1)
+            self.assertEqual(audit["adjustments_by_source"].get("transcripts"), 1)
+            self.assertIn("evidence_adjustments", audit)
             self.assertGreaterEqual(data["aggregate"]["gnome_audit_correction_count"], 1)
+            self.assertGreaterEqual(data["aggregate"]["gnome_audit_adjustment_count"], 1)
             self.assertEqual(data["aggregate"]["gnome_audit_correction_sessions"], 1)
+            self.assertEqual(data["aggregate"]["gnome_audit_adjusted_sessions"], 1)
             self.assertEqual(data["aggregate"]["gnome_audit_corrections_by_source"].get("transcripts"), 1)
+            self.assertEqual(data["aggregate"]["gnome_audit_adjustments_by_source"].get("transcripts"), 1)
             self.assertEqual(states["summary"]["gnome_audit"]["corrected_session_count"], 1)
+            self.assertEqual(states["summary"]["gnome_audit"]["adjusted_session_count"], 1)
             self.assertEqual(states["summary"]["gnome_audit"]["corrections_by_source"].get("transcripts"), 1)
+            self.assertEqual(states["summary"]["gnome_audit"]["adjustments_by_source"].get("transcripts"), 1)
             tool_error_audit = next(row for row in audit["corrections"] if row["key"] == "tool_error_count")
             self.assertEqual(
                 tool_error_audit,
@@ -3625,18 +3634,19 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "from": 0,
                     "to": 10,
                     "source": "transcripts",
-                    "reason": "transcript action parsing corrected the gnome",
+                    "reason": "transcript action parsing reconciled the gnome",
                 },
             )
+            self.assertEqual(audit["evidence_adjustments"], audit["corrections"])
             self.assertEqual(failed_tool_claim["expected"]["minimum_count"], 10)
             self.assertEqual(len(failed_tool_claim["evidence"]), 8)
             html = (root / "out/index.html").read_text(encoding="utf-8")
             data_json = (root / "out/data.json").read_text(encoding="utf-8")
             self.assertIn("Feedback lessons", html)
-            self.assertIn("Corrected gnome pressure", html)
+            self.assertIn("Evidence-adjusted pressure", html)
             self.assertIn("State/gnome audit", html)
             self.assertIn("failed tool actions were recovered from transcripts", data_json)
-            self.assertIn("transcript action parsing corrected the gnome", data_json)
+            self.assertIn("transcript action parsing reconciled the gnome", data_json)
 
     def test_corrected_lessons_use_failed_tool_categories(self):
         with tempfile.TemporaryDirectory() as tmp:

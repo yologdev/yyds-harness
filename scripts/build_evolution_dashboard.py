@@ -3182,13 +3182,13 @@ def gnome_correction_source(key: str, corrected_value: Any, feedback_metrics: di
         "search_error_count",
         "failed_command_count",
     }:
-        return ("transcripts", "transcript action parsing corrected the gnome")
+        return ("transcripts", "transcript action parsing reconciled the gnome")
     if key.startswith("deepseek_model_call_"):
-        return ("state_lifecycle.model_calls", "model-call lifecycle events corrected the gnome")
+        return ("state_lifecycle.model_calls", "model-call lifecycle events reconciled the gnome")
     if key.startswith("state_run_"):
-        return ("state_lifecycle.runs", "run lifecycle events corrected the gnome")
+        return ("state_lifecycle.runs", "run lifecycle events reconciled the gnome")
     if key.startswith("deepseek_cache_"):
-        return ("deepseek_cache_metrics", "token-backed DeepSeek cache/model metrics corrected the gnome")
+        return ("deepseek_cache_metrics", "token-backed DeepSeek cache/model metrics reconciled the gnome")
     if key in {
         "task_success_rate",
         "session_success_rate",
@@ -3212,7 +3212,7 @@ def gnome_correction_source(key: str, corrected_value: Any, feedback_metrics: di
         "avg_task_turn_count",
         "total_task_turn_count",
     }:
-        return ("task_artifacts", "task artifacts, verifier rows, or raw outcome evidence corrected the gnome")
+        return ("task_artifacts", "task artifacts, verifier rows, or raw outcome evidence reconciled the gnome")
     if key in {
         "state_live_baseline_shrink_count",
         "state_operational_capture_coverage",
@@ -3220,10 +3220,10 @@ def gnome_correction_source(key: str, corrected_value: Any, feedback_metrics: di
         "task_lineage_capture_coverage",
         "task_lineage_event_count",
     }:
-        return ("state_pipeline", "state replay, merge, or trace-quality evidence corrected the gnome")
+        return ("state_pipeline", "state replay, merge, or trace-quality evidence reconciled the gnome")
     if key == "coding_log_score":
-        return ("derived_score", "coding log score was recomputed from corrected gnome inputs")
-    return ("dashboard_correction", "dashboard normalization corrected the gnome")
+        return ("derived_score", "coding log score was recomputed from reconciled gnome inputs")
+    return ("dashboard_correction", "dashboard normalization reconciled the gnome")
 
 
 def state_gnome_audit(
@@ -3252,8 +3252,11 @@ def state_gnome_audit(
         "raw_state_gnome_count": len(raw_state_gnomes),
         "corrected_gnome_count": len(corrected_gnomes),
         "correction_count": len(corrections),
+        "evidence_adjustment_count": len(corrections),
         "corrections_by_source": dict(sorted(source_counts.items())),
+        "adjustments_by_source": dict(sorted(source_counts.items())),
         "corrections": rows,
+        "evidence_adjustments": rows,
     }
 
 
@@ -3656,13 +3659,13 @@ def aggregate_gnome_audit(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     source_counts: dict[str, int] = {}
     for session in sessions:
         audit = session.get("state_gnome_audit") if isinstance(session.get("state_gnome_audit"), dict) else {}
-        session_corrections = int(audit.get("correction_count") or 0)
+        session_corrections = int(audit.get("evidence_adjustment_count") or audit.get("correction_count") or 0)
         correction_count += session_corrections
         if session_corrections:
             corrected_session_count += 1
         raw_state_gnome_count += int(audit.get("raw_state_gnome_count") or 0)
         corrected_gnome_count += int(audit.get("corrected_gnome_count") or 0)
-        source_counts_raw = audit.get("corrections_by_source")
+        source_counts_raw = audit.get("adjustments_by_source") or audit.get("corrections_by_source")
         if not isinstance(source_counts_raw, dict):
             continue
         for source, count in source_counts_raw.items():
@@ -3674,10 +3677,14 @@ def aggregate_gnome_audit(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "correction_count": correction_count,
         "corrected_session_count": corrected_session_count,
+        "evidence_adjustment_count": correction_count,
+        "adjusted_session_count": corrected_session_count,
         "raw_state_gnome_count": raw_state_gnome_count,
         "corrected_gnome_count": corrected_gnome_count,
         "corrections_by_source": dict(sorted(source_counts.items())),
+        "adjustments_by_source": dict(sorted(source_counts.items())),
         "top_sources": top_sources,
+        "top_adjustment_sources": top_sources,
     }
 
 
@@ -3784,6 +3791,9 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         "gnome_audit_correction_count": gnome_audit["correction_count"],
         "gnome_audit_correction_sessions": gnome_audit["corrected_session_count"],
         "gnome_audit_corrections_by_source": gnome_audit["corrections_by_source"],
+        "gnome_audit_adjustment_count": gnome_audit["evidence_adjustment_count"],
+        "gnome_audit_adjusted_sessions": gnome_audit["adjusted_session_count"],
+        "gnome_audit_adjustments_by_source": gnome_audit["adjustments_by_source"],
         "latest_ts": sessions[-1].get("ts") if sessions else None,
     }
 
@@ -4618,7 +4628,12 @@ def session_state_projection(session: dict[str, Any]) -> dict[str, Any]:
             "raw_state_gnome_count": gnome_audit.get("raw_state_gnome_count"),
             "corrected_gnome_count": gnome_audit.get("corrected_gnome_count"),
             "correction_count": gnome_audit.get("correction_count"),
+            "evidence_adjustment_count": gnome_audit.get("evidence_adjustment_count"),
+            "adjusted_session_count": gnome_audit.get("adjusted_session_count"),
             "corrections_by_source": gnome_audit.get("corrections_by_source") or {},
+            "adjustments_by_source": gnome_audit.get("adjustments_by_source")
+            or gnome_audit.get("corrections_by_source")
+            or {},
         },
     }
 
@@ -5732,8 +5747,8 @@ HTML = r"""<!doctype html>
       let fullTraceSessions = 0;
       let lifecycleTraceSessions = 0;
       let feedbackOnlySessions = 0;
-      let gnomeAuditCorrectionCount = 0;
-      let gnomeAuditCorrectionSessions = 0;
+      let gnomeAuditAdjustmentCount = 0;
+      let gnomeAuditAdjustedSessions = 0;
       let gnomeAuditRawCount = 0;
       let gnomeAuditCorrectedCount = 0;
       const gnomeAuditSources = {};
@@ -5763,12 +5778,12 @@ HTML = r"""<!doctype html>
         if (trace.status === "lifecycle") lifecycleTraceSessions += 1;
         if (trace.status === "feedback_only") feedbackOnlySessions += 1;
         const gnomeAudit = session.state_gnome_audit || {};
-        const correctionCount = Number(gnomeAudit.correction_count || 0);
-        gnomeAuditCorrectionCount += correctionCount;
-        if (correctionCount) gnomeAuditCorrectionSessions += 1;
+        const adjustmentCount = Number(gnomeAudit.evidence_adjustment_count ?? gnomeAudit.correction_count ?? 0);
+        gnomeAuditAdjustmentCount += adjustmentCount;
+        if (adjustmentCount) gnomeAuditAdjustedSessions += 1;
         gnomeAuditRawCount += Number(gnomeAudit.raw_state_gnome_count || 0);
         gnomeAuditCorrectedCount += Number(gnomeAudit.corrected_gnome_count || 0);
-        Object.entries(gnomeAudit.corrections_by_source || {}).forEach(([source, count]) => {
+        Object.entries(gnomeAudit.adjustments_by_source || gnomeAudit.corrections_by_source || {}).forEach(([source, count]) => {
           gnomeAuditSources[source] = (gnomeAuditSources[source] || 0) + Number(count || 0);
         });
         Object.entries(session.event_counts || {}).forEach(([kind, count]) => {
@@ -5811,19 +5826,29 @@ HTML = r"""<!doctype html>
         latest_gnomes: latestGnomes,
         gnome_keys: gnomeKeys,
         gnome_audit: {
-          correction_count: gnomeAuditCorrectionCount,
-          corrected_session_count: gnomeAuditCorrectionSessions,
+          correction_count: gnomeAuditAdjustmentCount,
+          corrected_session_count: gnomeAuditAdjustedSessions,
+          evidence_adjustment_count: gnomeAuditAdjustmentCount,
+          adjusted_session_count: gnomeAuditAdjustedSessions,
           raw_state_gnome_count: gnomeAuditRawCount,
           corrected_gnome_count: gnomeAuditCorrectedCount,
           corrections_by_source: gnomeAuditSources,
+          adjustments_by_source: gnomeAuditSources,
           top_sources: Object.entries(gnomeAuditSources)
+            .sort((a, b) => Number(b[1]) - Number(a[1]) || String(a[0]).localeCompare(String(b[0])))
+            .slice(0, 8)
+            .map(([source, count]) => ({ source, count })),
+          top_adjustment_sources: Object.entries(gnomeAuditSources)
             .sort((a, b) => Number(b[1]) - Number(a[1]) || String(a[0]).localeCompare(String(b[0])))
             .slice(0, 8)
             .map(([source, count]) => ({ source, count }))
         },
-        gnome_audit_correction_count: gnomeAuditCorrectionCount,
-        gnome_audit_correction_sessions: gnomeAuditCorrectionSessions,
-        gnome_audit_corrections_by_source: gnomeAuditSources
+        gnome_audit_correction_count: gnomeAuditAdjustmentCount,
+        gnome_audit_correction_sessions: gnomeAuditAdjustedSessions,
+        gnome_audit_corrections_by_source: gnomeAuditSources,
+        gnome_audit_adjustment_count: gnomeAuditAdjustmentCount,
+        gnome_audit_adjusted_sessions: gnomeAuditAdjustedSessions,
+        gnome_audit_adjustments_by_source: gnomeAuditSources
       };
     }
 
@@ -5974,7 +5999,7 @@ HTML = r"""<!doctype html>
         ["Sessions", agg.session_count || 0, "audit-backed runs"],
         ["Strict task success", rate === null || rate === undefined ? "-" : percent(rate), `${text(agg.tasks_succeeded || 0)}/${text(agg.tasks_attempted || 0)} verified tasks${rawHint}`],
         ["Operational traces", agg.full_trace_sessions || 0, `${text(agg.lifecycle_trace_sessions || 0)} lifecycle-only / ${text(agg.feedback_only_sessions || 0)} feedback-only`],
-        ["Metric backfills", agg.gnome_audit_correction_count || 0, `${text(agg.gnome_audit_correction_sessions || 0)} session(s) recomputed`],
+        ["Evidence adjustments", agg.gnome_audit_adjustment_count ?? agg.gnome_audit_correction_count ?? 0, `${text(agg.gnome_audit_adjusted_sessions ?? agg.gnome_audit_correction_sessions ?? 0)} session(s) reconciled`],
         ["Blockers", agg.blocker_count || 0, "real blocking signals"],
       ];
       document.getElementById("summary").innerHTML = cards.map(([label, value, hint]) => `
@@ -6080,19 +6105,21 @@ HTML = r"""<!doctype html>
         });
       }
       const gnomeAudit = agg.gnome_audit || {};
-      const gnomeCorrectionCount = Number(gnomeAudit.correction_count || agg.gnome_audit_correction_count || 0);
-      if (gnomeCorrectionCount > 0) {
-        const topSources = Array.isArray(gnomeAudit.top_sources)
-          ? gnomeAudit.top_sources
-          : Object.entries(agg.gnome_audit_corrections_by_source || {})
+      const gnomeAdjustmentCount = Number(gnomeAudit.evidence_adjustment_count ?? gnomeAudit.correction_count ?? agg.gnome_audit_adjustment_count ?? agg.gnome_audit_correction_count ?? 0);
+      if (gnomeAdjustmentCount > 0) {
+        const topSources = Array.isArray(gnomeAudit.top_adjustment_sources)
+          ? gnomeAudit.top_adjustment_sources
+          : Array.isArray(gnomeAudit.top_sources)
+            ? gnomeAudit.top_sources
+            : Object.entries(agg.gnome_audit_adjustments_by_source || agg.gnome_audit_corrections_by_source || {})
             .sort((a, b) => Number(b[1]) - Number(a[1]) || String(a[0]).localeCompare(String(b[0])))
             .slice(0, 3)
             .map(([source, count]) => ({ source, count }));
         const sourceText = topSources.slice(0, 3).map(row => `${text(row.source || "unknown")} ${text(row.count || 0)}`).join(", ");
         notes.push({
-          kind: "Metric audit",
+          kind: "Evidence audit",
           className: "info",
-          text: `${text(gnomeCorrectionCount)} gnome metric value(s) were backfilled or corrected from stronger dashboard evidence across ${text(gnomeAudit.corrected_session_count || agg.gnome_audit_correction_sessions || 0)} session(s); this is a mix of historical backfill and real stale-metric fixes, not a raw bug count.${sourceText ? ` Top sources: ${sourceText}.` : ""}`
+          text: `${text(gnomeAdjustmentCount)} gnome metric value(s) were reconciled from stronger evidence across ${text(gnomeAudit.adjusted_session_count ?? gnomeAudit.corrected_session_count ?? agg.gnome_audit_adjusted_sessions ?? agg.gnome_audit_correction_sessions ?? 0)} session(s). This improves dashboard and trajectory evidence; it is not a raw bug count, not a raw harness-bug count, and not a direct yyds input by itself.${sourceText ? ` Top sources: ${sourceText}.` : ""}`
         });
       }
       document.getElementById("metricNotes").innerHTML = notes.length
@@ -6352,23 +6379,23 @@ HTML = r"""<!doctype html>
 
     function renderStateGnomeAudit(session) {
       const audit = session.state_gnome_audit || {};
-      const rows = Array.isArray(audit.corrections) ? audit.corrections : [];
-      const sourceCounts = audit.corrections_by_source || {};
+      const rows = Array.isArray(audit.evidence_adjustments) ? audit.evidence_adjustments : (Array.isArray(audit.corrections) ? audit.corrections : []);
+      const sourceCounts = audit.adjustments_by_source || audit.corrections_by_source || {};
       const sourceBits = Object.entries(sourceCounts)
         .map(([source, count]) => `${source} ${count}`)
         .join(", ");
       const summary = [
         `raw ${text(audit.raw_state_gnome_count || 0)}`,
         `corrected ${text(audit.corrected_gnome_count || 0)}`,
-        `changed ${text(audit.correction_count || 0)}`
+        `adjusted ${text(audit.evidence_adjustment_count ?? audit.correction_count ?? 0)}`
       ].join(" / ");
       if (!rows.length) {
-        return `<p class="muted">${summary}. Raw state gnomes already match dashboard-corrected gnomes.</p>`;
+        return `<p class="muted">${summary}. Raw state gnomes already match dashboard-reconciled gnomes.</p>`;
       }
       return `<p class="muted">${summary}${sourceBits ? `; ${text(sourceBits)}` : ""}</p><ul class="mini-list">${rows.slice(0, 8).map(row => {
         const fromValue = metricValue(row.key || "", row.from);
         const toValue = metricValue(row.key || "", row.to);
-        return `<li><strong>${text(row.source || "correction")}: ${text(row.key || "")}</strong><br><span class="muted">${fromValue} → ${toValue}; ${text(row.reason || "")}</span></li>`;
+        return `<li><strong>${text(row.source || "adjustment")}: ${text(row.key || "")}</strong><br><span class="muted">${fromValue} → ${toValue}; ${text(row.reason || "")}</span></li>`;
       }).join("")}</ul>`;
     }
 
@@ -6550,7 +6577,7 @@ HTML = r"""<!doctype html>
         const problemText = problems ? ` (${text(problems)})` : "";
         const deltaCount = Object.keys(row.gnome_deltas || {}).length;
         const correctionCount = Object.keys(row.gnome_corrections || {}).length;
-        const correctionText = correctionCount ? ` / ${correctionCount} corrected gnome(s)` : "";
+        const correctionText = correctionCount ? ` / ${correctionCount} gnome adjustment(s)` : "";
         const movement = summarizeGnomeMovement(row);
         const movementText = movement || `${text(deltaCount)} gnome delta(s)${text(correctionText)}`;
         return `<li>${text(row.task_id || "")}: ${text(row.title || "")}<br><span class="muted">plan ${text(planned)} → touched ${text(touched)} → ${text(commits)} → eval ${text(evalText)}${strictText}${problemText} → ${movementText}</span></li>`;
@@ -6609,7 +6636,7 @@ HTML = r"""<!doctype html>
           return `<li><strong>${kind}${text(row.fingerprint || "lesson")}${count}</strong><br><span class="muted">${text(row.action || "")}</span></li>`;
         }).join("")}</ul>`;
       };
-      return `${renderRows("Raw log-feedback", rawRows)}${renderRows("Corrected gnome pressure", correctedRows)}`;
+      return `${renderRows("Raw log-feedback", rawRows)}${renderRows("Evidence-adjusted pressure", correctedRows)}`;
     }
 
     function renderSessionWork(sessions) {
@@ -6791,7 +6818,7 @@ HTML = r"""<!doctype html>
         const deltaCount = Object.keys(task.gnome_deltas || {}).length;
         const deltaText = deltaCount ? ` / ${deltaCount} gnome delta(s)` : "";
         const correctionCount = Object.keys(task.gnome_corrections || {}).length;
-        const correctionText = correctionCount ? ` / ${correctionCount} corrected gnome(s)` : "";
+        const correctionText = correctionCount ? ` / ${correctionCount} gnome adjustment(s)` : "";
         const method = task.commit_linkage_method ? ` / ${task.commit_linkage_method}` : "";
         const strict = task.verification_status || (task.strict_success ? "strict_pass" : "");
         const strictClass = strict === "strict_pass" ? "good" : (strict === "strict_failed" ? "warn" : "muted");
@@ -6888,7 +6915,7 @@ HTML = r"""<!doctype html>
           const strictFailed = task.verification_status === "strict_failed";
           const className = strictFailed ? "warn" : (task.verification_status === "strict_pass" || deltas || corrections ? "good" : "info");
           const verification = task.verification_status ? ` / ${task.verification_status.replace("_", " ")}` : "";
-          items.push({ kind: "Task link", className, session: session.id, title: `${task.task_id || ""} ${task.task_title || ""}`, detail: `${task.status || "-"}${verification} / ${files} files / ${commits} commits / ${deltas} gnome deltas / ${corrections} corrected gnomes` });
+          items.push({ kind: "Task link", className, session: session.id, title: `${task.task_id || ""} ${task.task_title || ""}`, detail: `${task.status || "-"}${verification} / ${files} files / ${commits} commits / ${deltas} gnome deltas / ${corrections} gnome adjustments` });
         });
         (session.evals || []).slice(-2).forEach(evalData => {
           items.push({ kind: "Eval", className: evalData.status === "passed" ? "good" : "warn", session: session.id, title: evalData.eval_id || evalData.suite || "evaluation", detail: `${evalData.suite || "-"} ${evalData.status || "-"} score ${evalData.score === undefined ? "-" : evalData.score}` });
