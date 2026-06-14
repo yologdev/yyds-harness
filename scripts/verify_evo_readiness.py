@@ -101,13 +101,17 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
         elif "Dominant task failure:" not in graph_pressure:
             issues.append("low task success lacks prompt-visible dominant failure pressure")
     else:
-        warnings.append("no task evidence expected in latest session")
+        issues.append(
+            "no selected or attempted task evidence captured; task success is not measurable"
+        )
 
     if graph_pressure and "## Graph-derived next-task pressure" not in graph_pressure:
         issues.append("graph pressure rendered without expected section heading")
 
     if provider_blocked:
         classification = "provider_blocked"
+    elif not evidence_expected:
+        classification = "no_task_evidence"
     elif issues:
         classification = "not_ready"
     elif task_success is not None and task_success >= 1.0:
@@ -158,6 +162,28 @@ def run_self_tests() -> int:
         report = readiness_report(root)
         check("provider blocked classified", report["classification"] == "provider_blocked", report)
         check("provider blocked not ready", report["can_drive_evolution"] is False, report)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        session = root / "day-1"
+        write_json(
+            session / "state/summary.json",
+            {
+                "latest_gnomes": {
+                    "provider_error_count": 0,
+                    "selected_task_count": 0,
+                    "tasks_attempted": 0,
+                }
+            },
+        )
+        report = readiness_report(root)
+        check("no task evidence classified", report["classification"] == "no_task_evidence", report)
+        check("no task evidence not ready", report["can_drive_evolution"] is False, report)
+        check(
+            "no task evidence issue named",
+            any("no selected or attempted task evidence" in issue for issue in report["issues"]),
+            report,
+        )
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

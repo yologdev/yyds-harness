@@ -116,6 +116,35 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("selected_task_count=0", rendered)
             self.assertIn("recover provider access or configure fallback", rendered)
 
+    def test_render_evo_readiness_blocks_empty_task_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(session / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z"})
+            write_json(
+                session / "evo_readiness.json",
+                {
+                    "classification": "no_task_evidence",
+                    "can_drive_evolution": False,
+                    "issues": [
+                        "no selected or attempted task evidence captured; task success is not measurable"
+                    ],
+                    "evidence": {
+                        "provider_error_count": 0,
+                        "selected_task_count": 0,
+                        "tasks_attempted": 0,
+                        "task_success_rate": None,
+                    },
+                },
+            )
+
+            rendered = extract_trajectory.render_evo_readiness(audit_dir)
+
+            self.assertIn("classification=no_task_evidence", rendered)
+            self.assertIn("can_drive_evolution=false", rendered)
+            self.assertIn("no selected or attempted task evidence", rendered)
+            self.assertIn("repair planning/task selection", rendered)
+
     def test_main_places_evo_readiness_before_graph_pressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "trajectory.md"

@@ -225,6 +225,10 @@ def render_evo_readiness(audit_dir: Path) -> str:
         lines.append(
             "- action: recover provider access or configure fallback before scoring task success or selecting implementation work"
         )
+    elif classification == "no_task_evidence":
+        lines.append(
+            "- action: repair planning/task selection so the next run captures selected tasks, attempted tasks, and verifier evidence before scoring evolution"
+        )
     elif classification == "not_ready":
         lines.append("- action: repair the named evidence gap before trusting the next evolution step")
     elif classification in {"verified_success", "actionable"}:
