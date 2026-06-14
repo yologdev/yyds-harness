@@ -1184,6 +1184,65 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(gnomes["task_seed_contradiction_count"], 0)
             self.assertEqual(gnomes["task_seed_replacement_count"], 1)
 
+    def test_stale_seed_obsolete_note_does_not_mark_replacement_obsolete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {"latest_gnomes": {"task_obsolete_count": 1, "task_success_rate": 0.0}},
+            )
+            write_json(
+                session / "log_feedback.json",
+                {"metrics": {"task_obsolete_count": 1}},
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Replacement task",
+                            "origin": "planner",
+                            "files": ["src/state.rs"],
+                        }
+                    ]
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            (session / "tasks/task_01/obsolete.md").write_text(
+                "# task_01_obsolete - Seed Contradiction\n\n"
+                "**Original seed**: stale task\n\n"
+                "## Replacement\n\nSee task_01.md for the replacement task.\n",
+                encoding="utf-8",
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Task marked obsolete by agent; no implementation landed",
+                    "planned_files": ["src/state.rs"],
+                    "touched_files": [],
+                    "source_files": [],
+                    "commit_shas": [],
+                },
+            )
+
+            gnomes = state_graph_tools.corrected_latest_gnomes(session)
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=10)
+
+            self.assertEqual(gnomes["task_obsolete_count"], 0)
+            self.assertEqual(gnomes["task_stale_seed_obsolete_note_count"], 1)
+            self.assertNotIn(
+                "Replace stale or already-satisfied tasks",
+                [item["title"] for item in suggestions],
+            )
+            task_success = next(
+                item for item in suggestions if item["title"] == "Raise verified task success rate"
+            )
+            self.assertIn("task_stale_seed_obsolete_note_count=1", task_success["reason"])
+
     def test_task_artifacts_clear_stale_raw_and_evaluator_gnomes(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

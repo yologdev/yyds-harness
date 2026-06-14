@@ -65,6 +65,13 @@ def load_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 def log_feedback_metrics(session_dir: Path) -> dict[str, Any]:
     feedback = load_json(session_dir / "log_feedback.json")
     metrics = feedback.get("metrics") if isinstance(feedback.get("metrics"), dict) else {}
@@ -684,6 +691,18 @@ def file_overlap(planned: list[str], touched: list[str]) -> bool:
     return any(path_matches(planned_file, touched_file) for planned_file in planned for touched_file in touched)
 
 
+def stale_seed_obsolete_note(task: dict[str, Any], note_text: str) -> bool:
+    lowered = str(note_text or "").lower()
+    origin = str(task.get("origin") or "").lower()
+    return bool(
+        "seed contradiction" in lowered
+        and "original seed" in lowered
+        and "replacement" in lowered
+        and "see task_01.md" in lowered
+        and "harness-seed" not in origin
+    )
+
+
 def protected_file_revert(reason: str) -> bool:
     return "modified protected files" in str(reason or "").lower()
 
@@ -1109,6 +1128,7 @@ def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
                 "has_task_file": task_file.is_file(),
                 "has_obsolete_note": obsolete_file.is_file(),
                 "obsolete_note_path": f"tasks/{task_id}/obsolete.md" if obsolete_file.is_file() else None,
+                "obsolete_note_text": read_text(obsolete_file) if obsolete_file.is_file() else "",
                 "has_outcome": bool(outcome),
                 "task_title": outcome.get("task_title") if isinstance(outcome, dict) else None,
                 "status": outcome.get("status") if isinstance(outcome, dict) else None,
@@ -1393,7 +1413,15 @@ def task_verification_summary(
         revert_reason = str(artifact.get("revert_reason") or lineage.get("revert_reason") or "").strip()
         api_error = "api error" in revert_reason.lower()
         protected_revert = protected_file_revert(revert_reason)
-        obsolete = bool(artifact.get("has_obsolete_note") or lineage.get("has_obsolete_note"))
+        stale_seed_note = stale_seed_obsolete_note(
+            task,
+            str(artifact.get("obsolete_note_text") or ""),
+        )
+        obsolete = bool(
+            artifact.get("has_obsolete_note")
+            or lineage.get("has_obsolete_note")
+            or "marked obsolete" in revert_reason.lower()
+        ) and not stale_seed_note
         problems: list[str] = []
         if not planned:
             problems.append("missing_planned_files")
@@ -1440,6 +1468,7 @@ def task_verification_summary(
                 "latest_eval_attempt": eval_attempts[-1] if eval_attempts else None,
                 "problems": problems,
                 "obsolete": obsolete,
+                "stale_seed_obsolete_note": stale_seed_note,
                 "obsolete_note_path": artifact.get("obsolete_note_path") or lineage.get("obsolete_note_path"),
                 "strict_success": outcome_status == "completed" and overlap and verified and not problems,
             }
@@ -2794,6 +2823,11 @@ def corrected_gnomes(
             if isinstance(row, dict)
             and (row.get("obsolete") or "task_marked_obsolete" in (row.get("problems") or []))
         )
+        stale_seed_obsolete = sum(
+            1
+            for row in (verification.get("rows") or [])
+            if isinstance(row, dict) and row.get("stale_seed_obsolete_note")
+        )
         api_error = sum(
             1
             for row in (verification.get("rows") or [])
@@ -2836,6 +2870,13 @@ def corrected_gnomes(
             int(gnomes.get("task_obsolete_count") or 0),
             obsolete,
         )
+        if stale_seed_obsolete:
+            gnomes["task_stale_seed_obsolete_note_count"] = stale_seed_obsolete
+            gnomes["task_obsolete_count"] = max(
+                obsolete,
+                int(gnomes.get("task_obsolete_count") or 0) - stale_seed_obsolete,
+                0,
+            )
         gnomes["task_api_error_count"] = max(
             int(gnomes.get("task_api_error_count") or 0),
             api_error,
@@ -3277,6 +3318,7 @@ def gnome_correction_source(key: str, corrected_value: Any, feedback_metrics: di
         "evaluator_unverified_count",
         "evaluator_timeout_with_verdict_count",
         "task_obsolete_count",
+        "task_stale_seed_obsolete_note_count",
         "task_seed_contradiction_count",
         "task_no_edit_revert_count",
         "task_api_error_count",
@@ -5790,6 +5832,7 @@ HTML = r"""<!doctype html>
       planner_no_task_count: "Planner no-task count",
       task_unattempted_count: "Unattempted selected tasks",
       task_obsolete_count: "Obsolete/stale tasks",
+      task_stale_seed_obsolete_note_count: "Stale seed obsolete notes",
       task_seed_contradiction_count: "Contradicted seed tasks",
       task_no_edit_revert_count: "No-edit task reverts",
       task_api_error_count: "Task API-error reverts",
@@ -6865,6 +6908,7 @@ HTML = r"""<!doctype html>
         "evaluator_unverified_count",
         "evaluator_timeout_with_verdict_count",
         "task_obsolete_count",
+        "task_stale_seed_obsolete_note_count",
         "task_seed_contradiction_count",
         "task_no_edit_revert_count",
         "task_api_error_count",

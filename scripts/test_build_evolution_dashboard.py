@@ -4982,6 +4982,91 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_obsolete_count"], 1)
             self.assertEqual(data["sessions"][0]["latest_gnomes"]["evaluator_unverified_count"], 0)
 
+    def test_stale_seed_obsolete_note_does_not_make_replacement_task_obsolete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "coding_log_score": 0.8,
+                        "task_obsolete_count": 1,
+                    },
+                    "gnome_keys": ["coding_log_score", "task_obsolete_count"],
+                },
+            )
+            write_json(
+                session / "log_feedback.json",
+                {"metrics": {"task_obsolete_count": 1}},
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Replacement task",
+                            "origin": "planner",
+                            "files": ["src/state.rs"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            (session / "tasks/task_01/task.md").write_text("Title: Replacement task\n", encoding="utf-8")
+            (session / "tasks/task_01/obsolete.md").write_text(
+                "# task_01_obsolete - Seed Contradiction\n\n"
+                "**Original seed**: stale task\n\n"
+                "## Replacement\n\nSee task_01.md for the replacement task.\n",
+                encoding="utf-8",
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Replacement task",
+                    "status": "reverted",
+                    "revert_reason": "Task marked obsolete by agent; no implementation landed",
+                    "planned_files": ["src/state.rs"],
+                    "source_files": [],
+                    "touched_files": [],
+                    "commit_shas": [],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            work = data["sessions"][0]["work_summary"]
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+            latest = data["sessions"][0]["latest_gnomes"]
+
+            self.assertEqual(latest["task_obsolete_count"], 0)
+            self.assertEqual(latest["task_stale_seed_obsolete_note_count"], 1)
+            self.assertEqual(latest["task_no_edit_revert_count"], 1)
+            verification_row = work["task_verification"]["rows"][0]
+            self.assertFalse(verification_row["obsolete"])
+            self.assertTrue(verification_row["stale_seed_obsolete_note"])
+            self.assertIn("no_edit_revert", verification_row["problems"])
+            task_state = work["task_states"]["tasks"][0]
+            self.assertEqual(task_state["state"], "reverted_no_edit")
+            self.assertEqual(states["summary"]["state_counts"], {"reverted_no_edit": 1})
+
     def test_api_error_task_artifact_has_distinct_state_and_gnome(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

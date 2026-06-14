@@ -833,6 +833,62 @@ class TaskLineageFeedback(unittest.TestCase):
                 any(lesson["kind"] == "task_obsolete" for lesson in assessment["top_lessons"])
             )
 
+    def test_log_feedback_ignores_stale_seed_obsolete_note_on_replacement_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [{"task_id": "task_01", "origin": "planner"}],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Task marked obsolete by agent; no implementation landed",
+                    "source_files": [],
+                    "touched_files": [],
+                    "commit_shas": [],
+                },
+            )
+            (session / "tasks/task_01/obsolete.md").write_text(
+                "# task_01_obsolete - Seed Contradiction\n\n"
+                "**Original seed**: stale task\n\n"
+                "## Replacement\n\nSee task_01.md for the replacement task.\n",
+                encoding="utf-8",
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["task_obsolete_count"], 0)
+            self.assertEqual(metrics["task_stale_seed_obsolete_note_count"], 1)
+            self.assertEqual(metrics["task_no_edit_revert_count"], 1)
+            self.assertFalse(
+                any(lesson["kind"] == "task_obsolete" for lesson in assessment["top_lessons"])
+            )
+
     def test_log_feedback_counts_api_error_reverts_separately(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

@@ -121,6 +121,18 @@ def file_overlap(planned: list[str], touched: list[str]) -> bool:
     return any(path_matches(planned_file, touched_file) for planned_file in planned for touched_file in touched)
 
 
+def stale_seed_obsolete_note(task: dict[str, Any], note_text: str) -> bool:
+    lowered = str(note_text or "").lower()
+    origin = str(task.get("origin") or "").lower()
+    return bool(
+        "seed contradiction" in lowered
+        and "original seed" in lowered
+        and "replacement" in lowered
+        and "see task_01.md" in lowered
+        and "harness-seed" not in origin
+    )
+
+
 def seed_task_contradiction_text(text: str) -> bool:
     return bool(SEED_TASK_CONTRADICTION_RE.search(str(text or "")))
 
@@ -151,6 +163,7 @@ GNOME_KEYS = [
     "search_error_count",
     "protected_file_revert_count",
     "task_revert_count",
+    "task_stale_seed_obsolete_note_count",
     "task_verification_rate",
     "task_mechanical_verification_rate",
     "planner_no_task_count",
@@ -1052,6 +1065,8 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     no_edit_revert_count = 0
     explained_unverified_ids: set[str] = set()
     unlanded_source = 0
+    tasks_by_id = {str(task.get("task_id") or ""): task for task in tasks if isinstance(task, dict)}
+    stale_seed_obsolete_note_count = 0
     for task_dir in task_dirs:
         task_key = task_dir.name
         outcome = load_json(task_dir / "outcome.json")
@@ -1059,9 +1074,17 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         evals = [row for row in evals if row]
         has_pass = any(clean_eval_pass(row) for row in evals)
         has_timeout_with_verdict = any(eval_timed_out_after_verdict(row) for row in evals)
-        obsolete = (task_dir / "obsolete.md").is_file() or "marked obsolete" in str(
-            outcome.get("revert_reason") or ""
-        ).lower()
+        obsolete_note_path = task_dir / "obsolete.md"
+        stale_seed_note = stale_seed_obsolete_note(
+            tasks_by_id.get(task_key, {}),
+            read_text(obsolete_note_path) if obsolete_note_path.is_file() else "",
+        )
+        if stale_seed_note:
+            stale_seed_obsolete_note_count += 1
+        obsolete = (
+            obsolete_note_path.is_file()
+            or "marked obsolete" in str(outcome.get("revert_reason") or "").lower()
+        ) and not stale_seed_note
         api_error = "api error" in str(outcome.get("revert_reason") or "").lower()
         revert_reason = str(outcome.get("revert_reason") or "").lower()
         protected_revert = "modified protected files" in revert_reason
@@ -1133,6 +1156,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "evaluator_unverified_count": evaluator_unverified,
         "evaluator_timeout_with_verdict_count": evaluator_timeout_with_verdict,
         "task_obsolete_count": obsolete_count,
+        "task_stale_seed_obsolete_note_count": stale_seed_obsolete_note_count,
         "task_manifest_seed_contradiction_count": manifest_seed_contradictions,
         "task_api_error_count": api_error_count,
         "task_no_edit_revert_count": no_edit_revert_count,

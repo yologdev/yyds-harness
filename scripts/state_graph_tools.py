@@ -44,6 +44,7 @@ GNOME_COMPARE_KEYS = [
     "command_timeout_count",
     "evaluator_timeout_count",
     "evaluator_unverified_count",
+    "task_stale_seed_obsolete_note_count",
     "task_unlanded_source_count",
     "search_error_count",
     "max_task_turn_count",
@@ -284,15 +285,33 @@ def task_artifact_rows(session_dir: Path) -> dict[str, dict[str, Any]]:
                 evals.append(value)
         attempts = load_jsonl(child / "attempts.jsonl")
         outcome = load_json(child / "outcome.json")
+        obsolete_note = child / "obsolete.md"
         rows[task_id] = {
             "task_id": task_id,
             "task_file": f"tasks/{task_id}/task.md" if (child / "task.md").is_file() else None,
             "decision_file": f"tasks/{task_id}/decision.json" if (child / "decision.json").is_file() else None,
+            "obsolete_note_path": f"tasks/{task_id}/obsolete.md" if obsolete_note.is_file() else None,
+            "obsolete_note_text": read_text(obsolete_note) if obsolete_note.is_file() else "",
             "attempts": attempts,
             "evals": evals,
             "outcome": outcome,
         }
     return rows
+
+
+def stale_seed_obsolete_note(task: dict[str, Any], artifact: dict[str, Any]) -> bool:
+    note = str(artifact.get("obsolete_note_text") or "")
+    if not note:
+        return False
+    lowered = note.lower()
+    origin = str(task.get("origin") or "").lower()
+    return bool(
+        "seed contradiction" in lowered
+        and "original seed" in lowered
+        and "replacement" in lowered
+        and "see task_01.md" in lowered
+        and "harness-seed" not in origin
+    )
 
 
 def eval_passed(evals: list[Any]) -> bool:
@@ -336,7 +355,10 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             problems.append("no_planned_file_overlap")
         api_error = "api error" in revert_reason.lower()
         protected_revert = "modified protected files" in revert_reason.lower()
-        obsolete = bool(outcome.get("has_obsolete_note"))
+        stale_obsolete_note = stale_seed_obsolete_note(task, artifact)
+        obsolete = bool(outcome.get("has_obsolete_note") or artifact.get("obsolete_note_path")) and not stale_obsolete_note
+        if not obsolete and "marked obsolete" in revert_reason.lower() and not stale_obsolete_note:
+            obsolete = True
         if obsolete:
             problems.append("task_marked_obsolete")
         if api_error:
@@ -357,6 +379,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
                 "verified": passed,
                 "problems": problems,
                 "obsolete": obsolete,
+                "stale_seed_obsolete_note": stale_obsolete_note,
                 "api_error": api_error,
                 "protected_revert": protected_revert,
             }
@@ -375,6 +398,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
         "task_verification_rate": strict_verified / len(rows),
         "task_mechanical_verification_rate": mechanical_verified / len(rows),
         "task_obsolete_count": sum(1 for row in rows if row["obsolete"] or "task_marked_obsolete" in row["problems"]),
+        "task_stale_seed_obsolete_note_count": sum(1 for row in rows if row["stale_seed_obsolete_note"]),
         "task_api_error_count": sum(1 for row in rows if row["api_error"] or "implementation_api_error" in row["problems"]),
         "task_no_edit_revert_count": sum(1 for row in rows if "no_edit_revert" in row["problems"]),
         "protected_file_revert_count": sum(1 for row in rows if row["protected_revert"] or "modified_protected_files" in row["problems"]),
@@ -535,6 +559,7 @@ def int_metric(metrics: dict[str, Any], key: str) -> int:
 
 def dominant_task_failure_detail(metrics: dict[str, Any]) -> str:
     failure_keys = [
+        ("task_stale_seed_obsolete_note_count", "stale seed-obsolete note contamination"),
         ("task_unattempted_count", "unattempted selected tasks"),
         ("task_api_error_count", "provider/API task failures"),
         ("task_scope_mismatch_count", "scope-mismatched task edits"),
@@ -545,14 +570,14 @@ def dominant_task_failure_detail(metrics: dict[str, Any]) -> str:
         ("task_obsolete_count", "obsolete selected tasks"),
     ]
     rows = [
-        (int_metric(metrics, key), key, label)
-        for key, label in failure_keys
+        (int_metric(metrics, key), index, key, label)
+        for index, (key, label) in enumerate(failure_keys)
         if int_metric(metrics, key) > 0
     ]
     if not rows:
         return ""
     rows.sort(key=lambda item: (-item[0], item[1]))
-    count, key, label = rows[0]
+    count, _index, key, label = rows[0]
     return f"Dominant task failure: {key}={count} ({label})."
 
 
@@ -829,6 +854,14 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
                 "task_unlanded_source_count",
             ):
                 gnomes[key] = max(int_metric(gnomes, key), int_metric(artifact_metrics, key))
+            stale_seed_obsolete = int_metric(artifact_metrics, "task_stale_seed_obsolete_note_count")
+            if stale_seed_obsolete > 0:
+                gnomes["task_stale_seed_obsolete_note_count"] = stale_seed_obsolete
+                gnomes["task_obsolete_count"] = max(
+                    int_metric(artifact_metrics, "task_obsolete_count"),
+                    int_metric(gnomes, "task_obsolete_count") - stale_seed_obsolete,
+                    0,
+                )
 
     if resolved_seed_replacement_metrics(gnomes):
         seed_contradictions = int_metric(gnomes, "task_seed_contradiction_count")
