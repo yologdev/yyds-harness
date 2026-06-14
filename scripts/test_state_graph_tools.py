@@ -1261,6 +1261,60 @@ class StateGraphTools(unittest.TestCase):
             )
         )
 
+    def test_task_artifacts_count_legacy_completed_attempt_without_terminal_transcript(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Guard task terminality",
+                            "files": ["src/prompt.rs"],
+                        }
+                    ]
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "no terminal",
+                    "planned_files": ["src/prompt.rs"],
+                    "touched_files": ["src/prompt.rs"],
+                    "source_files": ["src/prompt.rs"],
+                    "commit_shas": [],
+                },
+            )
+            write_jsonl(
+                session / "tasks/task_01/attempts.jsonl",
+                [
+                    {
+                        "task_id": "task_01",
+                        "phase": "implementation",
+                        "attempt": 1,
+                        "exit_code": 0,
+                        "status": "completed",
+                        "transcript_path": "transcripts/task_01_attempt1.log",
+                    }
+                ],
+            )
+            transcript = session / "transcripts/task_01_attempt1.log"
+            transcript.parent.mkdir(parents=True, exist_ok=True)
+            transcript.write_text(
+                "── Thinking ──\n"
+                "Now update `handle_prompt_events` to use the guard.\n"
+                "▶ edit src/prompt.rs\n",
+                encoding="utf-8",
+            )
+
+            metrics = state_graph_tools.task_artifact_verification_metrics(session)
+
+            self.assertEqual(metrics["task_incomplete_terminal_count"], 1)
+
     def test_task_artifacts_clear_stale_raw_and_evaluator_gnomes(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

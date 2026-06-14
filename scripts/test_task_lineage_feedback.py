@@ -1305,6 +1305,74 @@ class TaskLineageFeedback(unittest.TestCase):
                 {lesson["kind"] for lesson in assessment["top_lessons"]},
             )
 
+    def test_log_feedback_counts_legacy_completed_attempt_without_terminal_transcript(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [{"task_id": "task_01"}],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {"task_id": "task_01", "status": "reverted", "revert_reason": "no terminal"},
+            )
+            transcript = session / "transcripts/task_01_attempt1.log"
+            transcript.parent.mkdir(parents=True, exist_ok=True)
+            transcript.write_text(
+                "── Thinking ──\n"
+                "Now replace the AgentEnd handler to use `guard.mark_completed()`:\n"
+                "▶ edit src/prompt.rs\n",
+                encoding="utf-8",
+            )
+            attempts_path = session / "tasks/task_01/attempts.jsonl"
+            attempts_path.parent.mkdir(parents=True, exist_ok=True)
+            attempts_path.write_text(
+                json.dumps(
+                    {
+                        "task_id": "task_01",
+                        "phase": "implementation",
+                        "attempt": 1,
+                        "exit_code": 0,
+                        "status": "completed",
+                        "transcript_path": "transcripts/task_01_attempt1.log",
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["task_incomplete_terminal_count"], 1)
+            self.assertIn(
+                "task_incomplete_terminal",
+                {lesson["kind"] for lesson in assessment["top_lessons"]},
+            )
+
     def test_log_feedback_counts_reverted_source_task_as_unlanded(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

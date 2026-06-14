@@ -17,6 +17,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+TASK_TERMINAL_EVIDENCE_RE = re.compile(
+    r"TASK_TERMINAL_EVIDENCE:\s*(?:changed|obsolete|blocked)"
+    r"|^## Summary\b"
+    r"|^Done\."
+    r"|Task completed"
+    r"|All gates passed"
+    r"|obsolete-task note"
+    r"|concrete blocker"
+    r"|committed",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 
 GNOME_COMPARE_KEYS = [
     "coding_log_score",
@@ -89,6 +101,36 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
             if isinstance(value, dict):
                 rows.append(value)
     return rows
+
+
+def transcript_has_terminal_evidence(text: str) -> bool:
+    tail = "\n".join(str(text or "").splitlines()[-80:])
+    return bool(TASK_TERMINAL_EVIDENCE_RE.search(tail))
+
+
+def implementation_attempt_missing_terminal_evidence(
+    session_dir: Path,
+    attempt: dict[str, Any],
+) -> bool:
+    if str(attempt.get("phase") or "") != "implementation":
+        return False
+    if str(attempt.get("status") or "") == "incomplete_no_terminal_evidence":
+        return True
+    if str(attempt.get("status") or "") != "completed":
+        return False
+    try:
+        exit_code = int(attempt.get("exit_code") or 0)
+    except (TypeError, ValueError):
+        return False
+    if exit_code != 0:
+        return False
+    transcript = str(attempt.get("transcript_path") or "")
+    if not transcript:
+        return False
+    transcript_path = session_dir / transcript
+    if not transcript_path.is_file():
+        return False
+    return not transcript_has_terminal_evidence(read_text(transcript_path))
 
 
 def event_kind(event: dict[str, Any]) -> str:
@@ -357,9 +399,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
         revert_reason = str(outcome.get("revert_reason") or "")
         attempts = artifact.get("attempts") if isinstance(artifact.get("attempts"), list) else []
         incomplete_terminal = any(
-            isinstance(row, dict)
-            and str(row.get("phase") or "") == "implementation"
-            and str(row.get("status") or "") == "incomplete_no_terminal_evidence"
+            isinstance(row, dict) and implementation_attempt_missing_terminal_evidence(session_dir, row)
             for row in attempts
         )
         problems: list[str] = []

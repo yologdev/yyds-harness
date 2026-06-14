@@ -78,6 +78,17 @@ YOYO_USAGE_CACHE_RE = re.compile(
 )
 PROMPT_CACHE_HIT_RE = re.compile(r"\bprompt_cache_hit_tokens\b['\"]?\s*[:=]\s*([\d,]+)", re.IGNORECASE)
 PROMPT_CACHE_MISS_RE = re.compile(r"\bprompt_cache_miss_tokens\b['\"]?\s*[:=]\s*([\d,]+)", re.IGNORECASE)
+TASK_TERMINAL_EVIDENCE_RE = re.compile(
+    r"TASK_TERMINAL_EVIDENCE:\s*(?:changed|obsolete|blocked)"
+    r"|^## Summary\b"
+    r"|^Done\."
+    r"|Task completed"
+    r"|All gates passed"
+    r"|obsolete-task note"
+    r"|concrete blocker"
+    r"|committed",
+    re.IGNORECASE | re.MULTILINE,
+)
 TASK_TRANSCRIPT_RE = re.compile(r"(?:(task)|(fix)|(bfix))_(?:task)?(\d+)_attempt(\d+)\.log$")
 TURN_MARKER_RE = re.compile(r"\bTurn\s+(\d+)\b")
 ACTION_LINE_RE = re.compile(r"^\s*▶\s+", re.MULTILINE)
@@ -807,6 +818,36 @@ def transcript_turn_count(text: str) -> int:
     return 1 if text.strip() else 0
 
 
+def transcript_has_terminal_evidence(text: str) -> bool:
+    tail = "\n".join(str(text or "").splitlines()[-80:])
+    return bool(TASK_TERMINAL_EVIDENCE_RE.search(tail))
+
+
+def implementation_attempt_missing_terminal_evidence(
+    session_dir: Path,
+    attempt: dict[str, Any],
+) -> bool:
+    if str(attempt.get("phase") or "") != "implementation":
+        return False
+    if str(attempt.get("status") or "") == "incomplete_no_terminal_evidence":
+        return True
+    if str(attempt.get("status") or "") != "completed":
+        return False
+    try:
+        exit_code = int(attempt.get("exit_code") or 0)
+    except (TypeError, ValueError):
+        return False
+    if exit_code != 0:
+        return False
+    transcript = str(attempt.get("transcript_path") or "")
+    if not transcript:
+        return False
+    transcript_path = session_dir / transcript
+    if not transcript_path.is_file():
+        return False
+    return not transcript_has_terminal_evidence(read_text(transcript_path))
+
+
 def task_turn_metrics(session_dir: Path) -> dict[str, Any]:
     transcript_dir = session_dir / "transcripts"
     if not transcript_dir.is_dir():
@@ -1102,8 +1143,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         incomplete_terminal += sum(
             1
             for row in attempts
-            if str(row.get("phase") or "") == "implementation"
-            and str(row.get("status") or "") == "incomplete_no_terminal_evidence"
+            if implementation_attempt_missing_terminal_evidence(session_dir, row)
         )
         evals = [load_json(path) for path in sorted(task_dir.glob("eval_attempt_*.json"))]
         evals = [row for row in evals if row]
