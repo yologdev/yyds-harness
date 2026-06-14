@@ -747,6 +747,22 @@ class StateGraphTools(unittest.TestCase):
             self.assertIn("Max recurrence=3", recurring["reason"])
             self.assertIn("cargo test failed in eval fixture", recurring["reason"])
 
+    def test_evolution_suggestions_surface_repair_loop_churn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "log_feedback.json",
+                {"metrics": {"repair_loop_count": 2}},
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=10)
+            repair = next(item for item in suggestions if item["title"] == "Reduce repair-loop churn")
+
+            self.assertEqual(repair["metric"], "repair_loop_count")
+            self.assertEqual(repair["value"], 2)
+            self.assertIn("retry-after-failure churn", repair["reason"])
+            self.assertIn("targeted fixtures", repair["reason"])
+
     def test_evolution_suggestions_reframe_verified_high_turn_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

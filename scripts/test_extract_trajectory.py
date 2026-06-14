@@ -1358,6 +1358,22 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("Break recurring log failure fingerprints", rendered)
             self.assertIn("recurring_failure_count=1", rendered)
 
+    def test_graph_suggestions_surface_repair_loop_churn_pressure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(session / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z"})
+            write_json(
+                session / "log_feedback.json",
+                {"metrics": {"repair_loop_count": 2}},
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("Reduce repair-loop churn", rendered)
+            self.assertIn("repair_loop_count=2", rendered)
+
     def test_graph_suggestions_surface_low_state_capture_pressure(self) -> None:
         cases = [
             (

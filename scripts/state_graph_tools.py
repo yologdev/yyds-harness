@@ -29,6 +29,7 @@ GNOME_COMPARE_KEYS = [
     "state_operational_capture_coverage",
     "state_replay_integrity_rate",
     "evolution_friction_count",
+    "repair_loop_count",
     "recurring_failure_count",
     "max_failure_fingerprint_recurrence",
     "provider_error_count",
@@ -1009,6 +1010,16 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             "recurring_failure_count",
             recurring_failures,
             87,
+        )
+    repair_loops = int_metric(gnomes, "repair_loop_count")
+    if repair_loops > 0:
+        add(
+            "logs",
+            "Reduce repair-loop churn",
+            "Coding logs showed repair-loop or retry-after-failure churn; add narrower task context, earlier bounded diagnostics, or targeted fixtures so DeepSeek does not spend turns rediscovering the same failure.",
+            "repair_loop_count",
+            repair_loops,
+            78,
         )
     if int(gnomes.get("evaluator_unverified_count") or 0) > 0:
         add("eval", "Bound evaluator checks so verdicts are not skipped", "Some task evals were unverified or timed out.", "evaluator_unverified_count", gnomes.get("evaluator_unverified_count"), 90)
