@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from state_graph_tools import evolution_suggestions, ordered_sessions, session_dirs
+from state_graph_tools import corrected_latest_gnomes, evolution_suggestions, ordered_sessions, session_dirs
 
 # ── Configuration constants ──────────────────────────────────────────────
 WINDOW_SESSIONS = 10           # last N sessions in the outcomes section
@@ -1524,6 +1524,19 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
 
 
 GRAPH_SUGGESTION_RENDER_LIMIT = 5
+RECENT_TASK_PRESSURE_WINDOW = 5
+TASK_PRESSURE_KINDS = {"task", "planning", "implementation", "commit", "eval"}
+TASK_PRESSURE_METRIC_PREFIXES = (
+    "task_",
+    "evaluator_",
+    "missing_expected_evidence",
+)
+GENERIC_TASK_PRESSURE_METRICS = {
+    "task_success_rate",
+    "outcome_task_success_rate",
+    "task_verification_rate",
+    "task_mechanical_verification_rate",
+}
 
 
 def failed_tool_graph_title(category: str, kind: str) -> str:
@@ -1654,14 +1667,66 @@ def action_evidence_graph_suggestions(audit_dir: Path) -> list[dict[str, Any]]:
     return suggestions
 
 
+def has_selected_or_attempted_tasks(session_dir: Path) -> bool:
+    gnomes = corrected_latest_gnomes(session_dir)
+    return int_metric(gnomes, "selected_task_count") > 0 or int_metric(gnomes, "tasks_attempted") > 0
+
+
+def task_pressure_suggestion(suggestion: dict[str, Any]) -> bool:
+    kind = str(suggestion.get("kind") or "")
+    metric = str(suggestion.get("metric") or "")
+    return kind in TASK_PRESSURE_KINDS or metric.startswith(TASK_PRESSURE_METRIC_PREFIXES)
+
+
+def recent_task_pressure_suggestions(sessions: list[Path], latest: Path) -> list[dict[str, Any]]:
+    if has_selected_or_attempted_tasks(latest):
+        return []
+    carried: list[dict[str, Any]] = []
+    for session in reversed(sessions[:-1][-RECENT_TASK_PRESSURE_WINDOW:]):
+        if not has_selected_or_attempted_tasks(session):
+            continue
+        session_suggestions = [
+            suggestion
+            for suggestion in evolution_suggestions(session, limit=GRAPH_SUGGESTION_RENDER_LIMIT + 5)
+            if task_pressure_suggestion(suggestion)
+        ]
+        concrete = [
+            suggestion
+            for suggestion in session_suggestions
+            if str(suggestion.get("metric") or "") not in GENERIC_TASK_PRESSURE_METRICS
+        ]
+        if concrete:
+            session_suggestions = concrete
+        for suggestion in session_suggestions:
+            row = dict(suggestion)
+            row["priority"] = min(int(row.get("priority") or 0), 87)
+            reason = str(row.get("reason") or "")
+            row["reason"] = f"Recent task session {session.name}: {reason}"
+            carried.append(row)
+        break
+    return carried
+
+
 def render_graph_suggestions(audit_dir: Path) -> str:
     sessions = ordered_sessions(audit_dir)
     if not sessions:
         return ""
     latest = sessions[-1]
     suggestions = evolution_suggestions(latest, limit=GRAPH_SUGGESTION_RENDER_LIMIT + 5)
+    suggestions.extend(recent_task_pressure_suggestions(sessions, latest))
     suggestions.extend(action_evidence_graph_suggestions(audit_dir))
-    suggestions.sort(key=lambda item: (-int(item.get("priority") or 0), str(item.get("title") or "")))
+    deduped: list[dict[str, Any]] = []
+    seen_metrics: set[str] = set()
+    for suggestion in sorted(
+        suggestions,
+        key=lambda item: (-int(item.get("priority") or 0), str(item.get("title") or "")),
+    ):
+        metric = str(suggestion.get("metric") or "")
+        if metric in seen_metrics:
+            continue
+        seen_metrics.add(metric)
+        deduped.append(suggestion)
+    suggestions = deduped
     suggestions = suggestions[:GRAPH_SUGGESTION_RENDER_LIMIT]
     if not suggestions:
         return ""

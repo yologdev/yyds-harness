@@ -1442,6 +1442,37 @@ class ExtractTrajectoryTests(unittest.TestCase):
                 self.assertIn(title, rendered)
                 self.assertIn(f"{metric}=1", rendered)
 
+    def test_graph_suggestions_carry_recent_task_pressure_after_provider_blocked_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            previous = audit_dir / "day-1"
+            latest = audit_dir / "day-2"
+            write_json(previous / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z"})
+            write_json(
+                previous / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "selected_task_count": 1,
+                        "tasks_attempted": 1,
+                        "task_success_rate": 0.0,
+                        "task_incomplete_terminal_count": 1,
+                        "task_artifact_coverage": 1.0,
+                    }
+                },
+            )
+            write_json(latest / "outcome.json", {"day": 2, "ts": "2026-01-02T00:00:00Z"})
+            write_json(
+                latest / "state/summary.json",
+                {"latest_gnomes": {"provider_error_count": 3}},
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            self.assertIn("Recover provider errors before task attempts", rendered)
+            self.assertIn("Require terminal task evidence before completion", rendered)
+            self.assertIn("task_incomplete_terminal_count=1", rendered)
+            self.assertIn("Recent task session day-1", rendered)
+
     def test_graph_suggestions_surface_recurring_log_failure_pressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)
