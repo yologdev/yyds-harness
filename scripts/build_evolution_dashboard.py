@@ -2590,12 +2590,17 @@ def corrected_gnomes(
             recalc_score = True
     cache_hit_tokens = gnomes.get("deepseek_cache_hit_tokens")
     cache_miss_tokens = gnomes.get("deepseek_cache_miss_tokens")
-    if gnomes.get("deepseek_cache_hit_ratio") is not None and not (
+    cache_token_backed = (
         isinstance(cache_hit_tokens, (int, float))
         and not isinstance(cache_hit_tokens, bool)
         and isinstance(cache_miss_tokens, (int, float))
         and not isinstance(cache_miss_tokens, bool)
-    ):
+    )
+    if gnomes.get("deepseek_cache_hit_ratio") is not None and cache_token_backed:
+        if int(gnomes.get("deepseek_cache_ratio_unverified_count") or 0) != 0:
+            gnomes["deepseek_cache_ratio_unverified_count"] = 0
+            recalc_score = True
+    elif gnomes.get("deepseek_cache_hit_ratio") is not None:
         gnomes["deepseek_cache_hit_ratio"] = None
         recalc_score = True
         gnomes["deepseek_cache_ratio_unverified_count"] = max(

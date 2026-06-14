@@ -1892,6 +1892,75 @@ class BuildEvolutionDashboard(unittest.TestCase):
             html = (root / "out/index.html").read_text(encoding="utf-8")
             self.assertIn("DeepSeek cache ratio report(s) were withheld", html)
 
+    def test_token_backed_cache_ratio_clears_stale_unverified_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "deepseek_cache_hit_ratio": 0.8,
+                        "deepseek_cache_hit_tokens": 800,
+                        "deepseek_cache_miss_tokens": 200,
+                        "deepseek_cache_prose_mention_count": 1,
+                        "deepseek_cache_ratio_unverified_count": 1,
+                    },
+                    "gnome_keys": [
+                        "deepseek_cache_hit_ratio",
+                        "deepseek_cache_hit_tokens",
+                        "deepseek_cache_miss_tokens",
+                        "deepseek_cache_prose_mention_count",
+                        "deepseek_cache_ratio_unverified_count",
+                    ],
+                    "evals": [
+                        {
+                            "suite": "log-feedback",
+                            "status": "passed",
+                            "gnomes": {
+                                "deepseek_cache_hit_ratio": 0.8,
+                                "deepseek_cache_hit_tokens": 800,
+                                "deepseek_cache_miss_tokens": 200,
+                                "deepseek_cache_prose_mention_count": 1,
+                                "deepseek_cache_ratio_unverified_count": 1,
+                            },
+                            "top_lessons": [
+                                {
+                                    "kind": "deepseek_cache_unverified",
+                                    "fingerprint": "DeepSeek cache ratio was mentioned without token evidence",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            session_data = data["sessions"][0]
+            latest = session_data["latest_gnomes"]
+
+            self.assertEqual(latest["deepseek_cache_hit_ratio"], 0.8)
+            self.assertEqual(latest["deepseek_cache_ratio_unverified_count"], 0)
+            self.assertEqual(
+                session_data["latest_eval"]["gnome_corrections"]["deepseek_cache_ratio_unverified_count"],
+                {"from": 1, "to": 0},
+            )
+            self.assertEqual(data["gnome_history"][0]["values"]["deepseek_cache_ratio_unverified_count"], 0.0)
+            corrected_kinds = [
+                lesson["kind"]
+                for lesson in session_data["work_summary"].get("corrected_gnome_lessons", [])
+            ]
+            self.assertNotIn("deepseek_cache_unverified", corrected_kinds)
+
     def test_missing_deepseek_cache_metric_events_are_claimed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
