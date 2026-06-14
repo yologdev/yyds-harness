@@ -617,8 +617,9 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(suggestion["metric"], "task_success_rate")
             self.assertEqual(suggestion["value"], 0.5)
             self.assertIn("highest-frequency failure class", suggestion["reason"])
-            self.assertIn("Dominant task failure: scope-mismatched task edits", suggestion["reason"])
+            self.assertTrue(suggestion["reason"].startswith("Dominant task failure:"))
             self.assertIn("task_scope_mismatch_count=2", suggestion["reason"])
+            self.assertIn("scope-mismatched task edits", suggestion["reason"])
 
     def test_evolution_suggestions_fall_back_to_outcome_task_success_rate(self):
         with tempfile.TemporaryDirectory() as tmp:

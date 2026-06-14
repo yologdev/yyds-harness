@@ -553,7 +553,7 @@ def dominant_task_failure_detail(metrics: dict[str, Any]) -> str:
         return ""
     rows.sort(key=lambda item: (-item[0], item[1]))
     count, key, label = rows[0]
-    return f" Dominant task failure: {label} ({key}={count})."
+    return f"Dominant task failure: {key}={count} ({label})."
 
 
 def latest_log_feedback_metrics(session_dir: Path) -> dict[str, Any]:
@@ -1183,11 +1183,12 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
         task_success_metric = "outcome_task_success_rate"
     if task_success_rate is not None and task_success_rate < 1.0:
         failure_detail = dominant_task_failure_detail(gnomes)
+        reason_prefix = f"{failure_detail} " if failure_detail else ""
         add(
             "task",
             "Raise verified task success rate",
-            "Selected or attempted tasks did not all finish as verified successful outcomes; use task artifacts, action logs, and transcripts to remove the highest-frequency failure class before optimizing secondary gnomes."
-            + failure_detail,
+            reason_prefix
+            + "Selected or attempted tasks did not all finish as verified successful outcomes; use task artifacts, action logs, and transcripts to remove the highest-frequency failure class before optimizing secondary gnomes.",
             task_success_metric,
             task_success_rate,
             91,

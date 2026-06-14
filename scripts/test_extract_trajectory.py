@@ -1545,25 +1545,33 @@ class ExtractTrajectoryTests(unittest.TestCase):
     def test_graph_suggestions_surface_low_task_success_pressure(self) -> None:
         cases = [
             (
-                {"task_success_rate": 0.5, "session_success_rate": 0.0},
+                {
+                    "task_success_rate": 0.5,
+                    "session_success_rate": 0.0,
+                    "task_scope_mismatch_count": 2,
+                    "evaluator_unverified_count": 1,
+                },
                 {},
                 "Raise verified task success rate",
                 "task_success_rate=0.5",
+                "Dominant task failure: task_scope_mismatch_count=2",
             ),
             (
                 {},
                 {"tasks_attempted": 2, "tasks_succeeded": 1},
                 "Raise verified task success rate",
                 "outcome_task_success_rate=0.5",
+                None,
             ),
             (
                 {"task_success_rate": 1.0, "session_success_rate": 0.0},
                 {},
                 "Raise session success rate",
                 "session_success_rate=0.0",
+                None,
             ),
         ]
-        for gnomes, outcome_metrics, title, metric_text in cases:
+        for gnomes, outcome_metrics, title, metric_text, reason_text in cases:
             with self.subTest(title=title, metric_text=metric_text), tempfile.TemporaryDirectory() as tmp:
                 audit_dir = Path(tmp)
                 session = audit_dir / "day-1"
@@ -1579,6 +1587,8 @@ class ExtractTrajectoryTests(unittest.TestCase):
                 self.assertIn("## Graph-derived next-task pressure", rendered)
                 self.assertIn(title, rendered)
                 self.assertIn(metric_text, rendered)
+                if reason_text:
+                    self.assertIn(reason_text, rendered)
 
     def test_graph_suggestions_surface_recent_action_evidence_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
