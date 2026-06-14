@@ -3052,6 +3052,27 @@ PYEOF
         echo "  WARNING: outcome.json write failed — continuing session-end cleanup anyway" >&2
     fi
 
+    # Persist a machine-readable readiness classification beside the session
+    # evidence. Non-ready is expected for provider-blocked sessions, so keep
+    # this non-fatal and publish the JSON whenever the checker could render it.
+    READINESS_TMP="$SESSION_STAGING/evo_readiness.json.tmp"
+    READINESS_RC=0
+    PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/tmp/yoyo-pycache}" \
+        python3 scripts/verify_evo_readiness.py \
+        --audit-dir "$SESSION_STAGING" \
+        --json > "$READINESS_TMP" || READINESS_RC=$?
+    if [ -s "$READINESS_TMP" ]; then
+        mv "$READINESS_TMP" "$SESSION_STAGING/evo_readiness.json"
+        if [ "$READINESS_RC" -eq 0 ]; then
+            echo "  Evo readiness: wrote evo_readiness.json"
+        else
+            echo "  Evo readiness: not ready (exit $READINESS_RC); wrote evo_readiness.json"
+        fi
+    else
+        rm -f "$READINESS_TMP"
+        echo "  WARNING: evo_readiness.json write failed — continuing session-end cleanup anyway" >&2
+    fi
+
     # Push to audit-log branch. Failures are non-fatal but tracked: after 3
     # consecutive misses we emit a loud warning so a misconfigured token (push
     # protection rule, missing branch perms, etc.) doesn't silently kill the

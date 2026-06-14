@@ -78,6 +78,7 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn("Read your source architecture, not every source file", evolve)
         self.assertIn("the harness already ran \\`cargo build\\` and \\`cargo test\\`", evolve)
         self.assertIn("Do not rerun full \\`cargo test\\`, full clippy, broad\n   source scans", evolve)
+
         self.assertNotIn("all .rs files under src/ (this is YOU)", evolve)
         self.assertNotIn("run \\`cargo build\\` and \\`cargo test\\`. Try running the binary", evolve)
         self.assertIn("Do not commit \\`session_plan/assessment.md\\`", evolve)
@@ -192,6 +193,21 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('outcome.json', evolve)
         self.assertIn('record_state_event "TaskLineageLinked" "$(task_lineage_payload "started" "$PRE_TASK_SHA")"', evolve)
         self.assertNotIn('record_state_event "RunStarted" "$(task_lineage_payload "started" "$PRE_TASK_SHA")"', evolve)
+
+    def test_evolve_persists_readiness_report_in_audit_artifact(self):
+        evolve = Path(__file__).with_name("evolve.sh").read_text(encoding="utf-8")
+
+        self.assertIn('READINESS_TMP="$SESSION_STAGING/evo_readiness.json.tmp"', evolve)
+        self.assertIn("scripts/verify_evo_readiness.py", evolve)
+        self.assertIn('--audit-dir "$SESSION_STAGING"', evolve)
+        self.assertIn('--json > "$READINESS_TMP" || READINESS_RC=$?', evolve)
+        self.assertIn('mv "$READINESS_TMP" "$SESSION_STAGING/evo_readiness.json"', evolve)
+        self.assertIn("Evo readiness: not ready", evolve)
+        self.assertIn("continuing session-end cleanup anyway", evolve)
+        self.assertLess(
+            evolve.index("scripts/verify_evo_readiness.py"),
+            evolve.index('cp -R "$SESSION_STAGING/." "$AUDIT_PUSH_WT/$SESSION_DIR/"'),
+        )
 
     def test_task_lineage_payload_captures_source_commits(self):
         with tempfile.TemporaryDirectory() as tmp:
