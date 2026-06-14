@@ -357,6 +357,27 @@ class StateGraphTools(unittest.TestCase):
             self.assertIn("commit SHAs", suggestion["reason"])
             self.assertIn("gnome deltas", suggestion["reason"])
 
+    def test_evolution_suggestions_surface_state_replay_integrity_pressure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "state_replay_integrity_rate": 0.0,
+                        "task_artifact_coverage": 1.0,
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=10)
+            suggestion = next(item for item in suggestions if item["title"] == "Repair state replay integrity")
+
+            self.assertEqual(suggestion["metric"], "state_replay_integrity_rate")
+            self.assertEqual(suggestion["value"], 0.0)
+            self.assertIn("state/events.jsonl", suggestion["reason"])
+            self.assertIn("task artifacts", suggestion["reason"])
+
     def test_evolution_suggestions_surface_low_task_verification_pressure(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

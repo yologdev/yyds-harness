@@ -27,6 +27,7 @@ GNOME_COMPARE_KEYS = [
     "task_lineage_capture_coverage",
     "task_spec_quality_score",
     "state_operational_capture_coverage",
+    "state_replay_integrity_rate",
     "evolution_friction_count",
     "provider_error_count",
     "tool_error_count",
@@ -966,6 +967,16 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             "state_capture_coverage",
             state_capture,
             90,
+        )
+    replay_integrity = gnomes.get("state_replay_integrity_rate")
+    if isinstance(replay_integrity, (int, float)) and not isinstance(replay_integrity, bool) and replay_integrity < 1.0:
+        add(
+            "state",
+            "Repair state replay integrity",
+            "State replay did not match recorded session artifacts; reconcile state/events.jsonl, state/summary.json, and task artifacts before trusting gnome movement.",
+            "state_replay_integrity_rate",
+            replay_integrity,
+            92,
         )
     if int(gnomes.get("state_live_baseline_shrink_count") or 0) > 0:
         add(
