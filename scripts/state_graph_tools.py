@@ -113,6 +113,36 @@ def task_manifest(session_dir: Path) -> dict[str, Any]:
     return load_json(session_dir / "tasks" / "manifest.json")
 
 
+def assessment_artifact_gap(session_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    planner = manifest.get("planner") if isinstance(manifest.get("planner"), dict) else {}
+    artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), dict) else {}
+    assessment_path = session_dir / "tasks" / "assessment.md"
+    diagnostic_path = session_dir / "tasks" / "assessment_missing.md"
+    transcript_path = session_dir / "transcripts" / "assess.log"
+    artifact_present = bool(planner.get("assessment_present") or artifacts.get("assessment") or assessment_path.is_file())
+    diagnostic_present = bool(
+        planner.get("assessment_missing_present")
+        or artifacts.get("assessment_missing")
+        or diagnostic_path.is_file()
+    )
+    transcript_present = transcript_path.is_file() and transcript_path.stat().st_size > 0
+    missing_with_evidence = not artifact_present and (diagnostic_present or transcript_present)
+    if not missing_with_evidence:
+        return {}
+    if diagnostic_present and transcript_present:
+        classification = "missing_with_diagnostic_and_transcript"
+    elif diagnostic_present:
+        classification = "missing_with_diagnostic"
+    else:
+        classification = "missing_transcript_only"
+    return {
+        "missing": True,
+        "classification": classification,
+        "diagnostic_present": diagnostic_present,
+        "transcript_present": transcript_present,
+    }
+
+
 def selected_tasks(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     tasks = manifest.get("selected_tasks") or manifest.get("tasks") or []
     return [task for task in tasks if isinstance(task, dict)]
@@ -824,6 +854,16 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
 
     if int(gnomes.get("planner_no_task_count") or 0) > 0 or (manifest and (manifest.get("planner") or {}).get("planning_failed")):
         add("planner", "Make planning failure actionable", "The planner produced no concrete task files.", "planner_no_task_count", gnomes.get("planner_no_task_count"), 100)
+    assessment_gap = assessment_artifact_gap(session_dir, manifest)
+    if assessment_gap:
+        add(
+            "planning",
+            "Preserve assessment artifacts",
+            "Assessment evidence exists but tasks/assessment.md was not preserved, so planner context is degraded for the next DeepSeek task selection.",
+            "assessment_artifact_missing_count",
+            1,
+            89,
+        )
     spec_warning_counts = task_spec_warning_counts(manifest)
     spec_warning_total = sum(spec_warning_counts.values())
     spec_warning_detail = task_spec_warning_detail(spec_warning_counts)

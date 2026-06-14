@@ -166,6 +166,49 @@ class StateGraphTools(unittest.TestCase):
             self.assertIn("model_incomplete/open_after_command=1", suggestions[0]["reason"])
             self.assertIn("state_incomplete/open_after_cache_metrics=1", suggestions[0]["reason"])
 
+    def test_evolution_suggestions_preserve_missing_assessment_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 0, "selected_task_count": 0},
+                    "artifacts": {"assessment": None, "assessment_missing": None},
+                },
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("assess.log").write_text("assessment phase ran\n", encoding="utf-8")
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+            assessment = next(
+                item for item in suggestions if item["title"] == "Preserve assessment artifacts"
+            )
+
+            self.assertEqual(assessment["metric"], "assessment_artifact_missing_count")
+            self.assertEqual(assessment["value"], 1)
+            self.assertIn("Assessment evidence exists", assessment["reason"])
+
+    def test_evolution_suggestions_accept_preserved_assessment_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 0, "selected_task_count": 0},
+                    "artifacts": {"assessment": "tasks/assessment.md", "assessment_missing": None},
+                },
+            )
+            (session / "tasks").mkdir(parents=True, exist_ok=True)
+            (session / "tasks/assessment.md").write_text("# Assessment\n", encoding="utf-8")
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("assess.log").write_text("assessment phase ran\n", encoding="utf-8")
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=3)
+
+            self.assertNotIn("Preserve assessment artifacts", [item["title"] for item in suggestions])
+
     def test_evolution_suggestions_require_task_expected_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

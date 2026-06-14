@@ -1222,6 +1222,31 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("Require task evidence specs", rendered)
             self.assertIn("missing_expected_evidence_count=1", rendered)
 
+    def test_graph_suggestions_include_missing_assessment_artifact_pressure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(
+                session / "outcome.json",
+                {"day": 1, "ts": "2026-01-01T00:00:00Z"},
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 0, "selected_task_count": 0},
+                    "artifacts": {"assessment": None, "assessment_missing": None},
+                },
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("assess.log").write_text("assessment phase ran\n", encoding="utf-8")
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("Preserve assessment artifacts", rendered)
+            self.assertIn("assessment_artifact_missing_count=1", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
