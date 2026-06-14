@@ -80,6 +80,11 @@ def log_feedback_metrics(session_dir: Path) -> dict[str, Any]:
         scalar_metrics["task_seed_contradiction_count"] = 1
     failure_fingerprints = metrics.get("failure_fingerprints")
     if isinstance(failure_fingerprints, list):
+        benign = [
+            item
+            for item in failure_fingerprints
+            if isinstance(item, dict) and benign_log_failure_text(str(item.get("fingerprint") or ""))
+        ]
         active = [
             item
             for item in failure_fingerprints
@@ -91,12 +96,24 @@ def log_feedback_metrics(session_dir: Path) -> dict[str, Any]:
             for item in active
             if isinstance(item.get("count"), (int, float)) and not isinstance(item.get("count"), bool)
         )
+        benign_provider_count = sum(
+            int(item.get("count") or 0)
+            for item in benign
+            if isinstance(item.get("count"), (int, float))
+            and not isinstance(item.get("count"), bool)
+            and ASSESSMENT_PROVIDER_ERROR_RE.search(str(item.get("fingerprint") or ""))
+        )
+        if benign_provider_count and isinstance(scalar_metrics.get("provider_error_count"), (int, float)):
+            scalar_metrics["provider_error_count"] = max(
+                0,
+                int(scalar_metrics.get("provider_error_count") or 0) - benign_provider_count,
+            )
     return scalar_metrics
 
 
 def benign_log_failure_text(text: str) -> bool:
     lower = str(text or "").strip().lower()
-    return lower.startswith(
+    return "work around spurious network errors in curl" in lower or lower.startswith(
         (
             "**edit ",
             "**edit:",

@@ -22,6 +22,7 @@ from build_evolution_dashboard import (  # noqa: E402
     dashboard_dataset_warnings,
     failed_tool_summary_count_claim,
     failed_tool_pattern_summary,
+    log_feedback_metrics,
     run_health,
     run_health_reasons,
     summarize_events_for_work,
@@ -4577,6 +4578,38 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["gnome_history"][0]["values"]["state_live_baseline_shrink_count"], 1.0)
             self.assertIn("state_live_baseline_shrink_count", data["aggregate"]["gnome_keys"])
             self.assertEqual(data["sessions"][0]["latest_eval"]["gnomes"]["state_live_baseline_shrink_count"], 1)
+
+    def test_dashboard_corrects_benign_provider_like_log_feedback_fingerprints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "provider_error_count": 3,
+                        "failure_fingerprints": [
+                            {
+                                "fingerprint": ": work around spurious network errors in curl 8.0",
+                                "count": 1,
+                            },
+                            {
+                                "fingerprint": "api error in assessment agent. recording provider failure and skipping model-dependent planning.",
+                                "count": 1,
+                            },
+                            {
+                                "fingerprint": "phase a2: planning skipped because assessment hit a provider/api error.",
+                                "count": 1,
+                            },
+                        ],
+                    }
+                },
+            )
+
+            metrics = log_feedback_metrics(session)
+
+            self.assertEqual(metrics["provider_error_count"], 2)
+            self.assertEqual(metrics["failure_count"], 2)
+            self.assertEqual(metrics["distinct_failure_count"], 2)
 
     def test_dashboard_suppresses_legacy_projection_reset_as_state_shrink(self):
         with tempfile.TemporaryDirectory() as tmp:
