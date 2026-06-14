@@ -3909,6 +3909,17 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["claims_summary"]["claim_count"], claims["summary"]["claim_count"])
             self.assertEqual(data["claims_summary"]["status_counts"], claims["summary"]["status_counts"])
             self.assertGreaterEqual(data["claims_summary"]["unresolved_count"], 1)
+            self.assertEqual(claims["summary"]["session_count"], 1)
+            self.assertEqual(claims["summary"]["unresolved_count"], data["claims_summary"]["unresolved_count"])
+            self.assertEqual(
+                claims["summary"]["latest_unresolved_count"],
+                data["claims_summary"]["latest_unresolved_count"],
+            )
+            self.assertEqual(
+                claims["summary"]["recent_top_unresolved"],
+                data["claims_summary"]["recent_top_unresolved"],
+            )
+            self.assertEqual(claims["summary"]["top_unresolved"], data["claims_summary"]["top_unresolved"])
             self.assertTrue(
                 any(
                     row["name"] == "assessment_artifact_and_transcript_state"

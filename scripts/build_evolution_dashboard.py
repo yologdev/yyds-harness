@@ -7008,7 +7008,10 @@ def build(audit_sessions: Path, output_dir: Path, repo_root: Path | None = None)
         "sessions": sessions,
     }
     claims = build_claims_projection(sessions, generated_at, audit_sessions)
-    data["claims_summary"] = build_dashboard_claim_summary(claims)
+    claim_summary = build_dashboard_claim_summary(claims)
+    claims_summary = claims.get("summary") if isinstance(claims.get("summary"), dict) else {}
+    claims["summary"] = {**claims_summary, **claim_summary}
+    data["claims_summary"] = claim_summary
     states = build_states_projection(sessions, generated_at, audit_sessions)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "data.json").write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
