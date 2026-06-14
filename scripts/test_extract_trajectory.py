@@ -1334,6 +1334,30 @@ class ExtractTrajectoryTests(unittest.TestCase):
                 self.assertIn(title, rendered)
                 self.assertIn(f"{metric}=1", rendered)
 
+    def test_graph_suggestions_surface_recurring_log_failure_pressure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(session / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z"})
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "recurring_failure_count": 1,
+                        "max_failure_fingerprint_recurrence": 3,
+                        "failure_fingerprints": [
+                            {"fingerprint": "cargo test failed in eval fixture", "count": 2}
+                        ],
+                    }
+                },
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("Break recurring log failure fingerprints", rendered)
+            self.assertIn("recurring_failure_count=1", rendered)
+
     def test_graph_suggestions_surface_low_state_capture_pressure(self) -> None:
         cases = [
             (

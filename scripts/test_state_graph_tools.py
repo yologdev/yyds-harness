@@ -721,6 +721,32 @@ class StateGraphTools(unittest.TestCase):
                 [item["title"] for item in suggestions],
             )
 
+    def test_evolution_suggestions_surface_recurring_log_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "log_feedback.json",
+                {
+                    "metrics": {
+                        "recurring_failure_count": 1,
+                        "max_failure_fingerprint_recurrence": 3,
+                        "failure_fingerprints": [
+                            {"fingerprint": "cargo test failed in eval fixture", "count": 2}
+                        ],
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=10)
+            recurring = next(
+                item for item in suggestions if item["title"] == "Break recurring log failure fingerprints"
+            )
+
+            self.assertEqual(recurring["metric"], "recurring_failure_count")
+            self.assertEqual(recurring["value"], 1)
+            self.assertIn("Max recurrence=3", recurring["reason"])
+            self.assertIn("cargo test failed in eval fixture", recurring["reason"])
+
     def test_evolution_suggestions_reframe_verified_high_turn_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

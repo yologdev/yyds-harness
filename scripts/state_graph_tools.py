@@ -29,6 +29,8 @@ GNOME_COMPARE_KEYS = [
     "state_operational_capture_coverage",
     "state_replay_integrity_rate",
     "evolution_friction_count",
+    "recurring_failure_count",
+    "max_failure_fingerprint_recurrence",
     "provider_error_count",
     "tool_error_count",
     "prompt_heredoc_expansion_error_count",
@@ -986,6 +988,27 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             "state_live_baseline_shrink_count",
             gnomes.get("state_live_baseline_shrink_count"),
             91,
+        )
+    recurring_failures = int_metric(gnomes, "recurring_failure_count")
+    if recurring_failures > 0:
+        max_recurrence = int_metric(gnomes, "max_failure_fingerprint_recurrence")
+        fingerprints = gnomes.get("failure_fingerprints")
+        dominant = ""
+        if isinstance(fingerprints, list):
+            for item in fingerprints:
+                if isinstance(item, dict) and item.get("fingerprint"):
+                    dominant = str(item.get("fingerprint") or "")[:90]
+                    break
+        detail = f" Max recurrence={max_recurrence}." if max_recurrence > 0 else ""
+        if dominant:
+            detail += f" Dominant fingerprint: {dominant}."
+        add(
+            "logs",
+            "Break recurring log failure fingerprints",
+            f"GitHub/action log feedback repeated failure fingerprints across sessions; inspect the dominant phase and add a targeted harness guard or eval fixture.{detail}",
+            "recurring_failure_count",
+            recurring_failures,
+            87,
         )
     if int(gnomes.get("evaluator_unverified_count") or 0) > 0:
         add("eval", "Bound evaluator checks so verdicts are not skipped", "Some task evals were unverified or timed out.", "evaluator_unverified_count", gnomes.get("evaluator_unverified_count"), 90)
