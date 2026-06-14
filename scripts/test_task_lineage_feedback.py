@@ -144,6 +144,8 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('Assessment Missing - Day $DAY ($SESSION_TIME)', evolve)
         self.assertIn("agent_log_has_api_error()", evolve)
         self.assertIn("api error|network error|dns error|reqwest::error", evolve)
+        self.assertIn("status_code", evolve)
+        self.assertNotIn("|\\b(429|5[0-9][0-9])\\b)", evolve)
         self.assertIn("PROVIDER_UNAVAILABLE=true", evolve)
         self.assertIn("provider_error_detected: $ASSESS_PROVIDER_ERROR", evolve)
         self.assertIn("Planning skipped because assessment hit a provider/API error", evolve)

@@ -30,12 +30,16 @@ ERROR_LINE_RE = re.compile(
     r"(##\[error\]|::error::|\berror(?:\[[^\]]+\])?:|\berror\[[^\]]+\]|\bfatal:|\bpanicked\b|\bexception\b|\btraceback\b|timed out|api error|network error|dns error|exit code [1-9]\d*|process completed with exit code [1-9]\d*|test result: failed)",
     re.IGNORECASE,
 )
+PROVIDER_STATUS_RE = (
+    r"(?:(?:http|status|status_code|response|request|code)\W{0,24}(?:429|5\d\d)\b)"
+    r"|(?:\b(?:429|5\d\d)\b\W{0,24}(?:http|status|response|api|rate limit))"
+)
 PROVIDER_ERROR_RE = re.compile(
-    r"(provider_error|rate_limit|rate limit|\b(?:http\s*)?(?:429|5\d\d)\b|api error|network error|dns error|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded)",
+    rf"(provider_error|rate_limit|rate limit|api error|network error|dns error|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded|{PROVIDER_STATUS_RE})",
     re.IGNORECASE,
 )
 EXPLICIT_PROVIDER_SIGNAL_RE = re.compile(
-    r"(provider_error|rate_limit|rate limit|\b(?:http\s*)?(?:429|5\d\d)\b|api error|network error|dns error|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded)",
+    rf"(provider_error|rate_limit|rate limit|api error|network error|dns error|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded|{PROVIDER_STATUS_RE})",
     re.IGNORECASE,
 )
 JSON_ERROR_RE = re.compile(r"(json|schema|deserialize|parse).*(error|fail)", re.IGNORECASE)
@@ -2018,6 +2022,25 @@ def run_self_tests() -> int:
     )
     check("DeepSeek network transcript errors counted as provider errors", network_provider["provider_error_count"] == 2, network_provider)
     check("DeepSeek network transcript errors fingerprinted", network_provider["distinct_failure_count"] >= 1, network_provider)
+    assessment_numbers = parse_log(
+        "\n".join(
+            [
+                "| `commands_state.rs` | 23,548 | 580 | State CLI commands |",
+                "| `commands_evolve.rs` | 5,527 | 202 | Evolution subcommand |",
+                "`yyds state graph hotspots --limit 10` shows bash (1294), read_file (968), search (580).",
+            ]
+        )
+    )
+    check("assessment line counts are not provider status errors", assessment_numbers["provider_error_count"] == 0, assessment_numbers)
+    contextual_provider_status = parse_log(
+        "\n".join(
+            [
+                "error: provider response status 500 from DeepSeek",
+                "error: http 429 rate limit from provider",
+            ]
+        )
+    )
+    check("contextual provider status errors counted", contextual_provider_status["provider_error_count"] == 2, contextual_provider_status)
     provider_block_with_setup_noise = parse_log(
         "\n".join(
             [
