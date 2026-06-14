@@ -1669,6 +1669,9 @@ mkdir -p "$SESSION_STAGING/tasks"
 for _obsolete_note in session_plan/task_[0-9][0-9]_obsolete.md; do
     [ -f "$_obsolete_note" ] || continue
     _obsolete_task_id=$(basename "$_obsolete_note" _obsolete.md)
+    if [ -f "session_plan/${_obsolete_task_id}.md" ]; then
+        continue
+    fi
     mkdir -p "$SESSION_STAGING/tasks/$_obsolete_task_id"
     cp "$_obsolete_note" "$SESSION_STAGING/tasks/$_obsolete_task_id/obsolete.md" 2>/dev/null || true
 done
@@ -1720,6 +1723,11 @@ for TASK_FILE in session_plan/task_[0-9][0-9].md; do
     task_title="${task_title:-Task $TASK_NUM}"
     TASK_ID=$(printf 'task_%02d' "$TASK_NUM")
     TASK_EVIDENCE_DIR="$SESSION_STAGING/tasks/$TASK_ID"
+    TASK_OBSOLETE_NOTE="session_plan/${TASK_ID}_obsolete.md"
+    TASK_OBSOLETE_NOTE_PREEXISTED=false
+    if [ -s "$TASK_OBSOLETE_NOTE" ]; then
+        TASK_OBSOLETE_NOTE_PREEXISTED=true
+    fi
     mkdir -p "$TASK_EVIDENCE_DIR"
     cp "$TASK_FILE" "$TASK_EVIDENCE_DIR/task.md" 2>/dev/null || true
 
@@ -1934,8 +1942,7 @@ and commit if needed."
 
     # Clean up checkpoint file if any
     rm -f "session_plan/checkpoint_task_${TASK_NUM}.md"
-    TASK_OBSOLETE_NOTE="session_plan/${TASK_ID}_obsolete.md"
-    if [ -s "$TASK_OBSOLETE_NOTE" ]; then
+    if [ -s "$TASK_OBSOLETE_NOTE" ] && [ "$TASK_OBSOLETE_NOTE_PREEXISTED" != true ]; then
         cp "$TASK_OBSOLETE_NOTE" "$TASK_EVIDENCE_DIR/obsolete.md" 2>/dev/null || true
     fi
 
@@ -1956,7 +1963,7 @@ and commit if needed."
     # If the implementation agent proves the task is stale/already satisfied
     # and cannot make an honest scoped improvement, preserve that evidence as a
     # non-landed outcome instead of letting it masquerade as implementation.
-    if [ -s "$TASK_OBSOLETE_NOTE" ]; then
+    if [ -s "$TASK_OBSOLETE_NOTE" ] && [ "$TASK_OBSOLETE_NOTE_PREEXISTED" != true ]; then
         echo "    Task $TASK_NUM marked obsolete by implementation agent — no code will be landed."
         TASK_OK=false
         REVERT_REASON="Task marked obsolete by agent; no implementation landed"
