@@ -1272,6 +1272,35 @@ class ExtractTrajectoryTests(unittest.TestCase):
                 self.assertIn(title, rendered)
                 self.assertIn(f"{metric}=1", rendered)
 
+    def test_graph_suggestions_render_five_ranked_pressures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(
+                session / "outcome.json",
+                {"day": 1, "ts": "2026-01-01T00:00:00Z"},
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "state_live_baseline_shrink_count": 1,
+                        "evaluator_unverified_count": 1,
+                        "task_unlanded_source_count": 1,
+                        "task_api_error_count": 1,
+                        "task_obsolete_count": 1,
+                        "task_artifact_coverage": 1.0,
+                    }
+                },
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            bullets = [line for line in rendered.splitlines() if line.startswith("- ")]
+            self.assertEqual(len(bullets), 5)
+            self.assertIn("task_api_error_count=1", rendered)
+            self.assertIn("task_obsolete_count=1", rendered)
+
     def test_graph_suggestions_include_missing_expected_evidence_pressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

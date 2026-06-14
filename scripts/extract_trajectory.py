@@ -1458,12 +1458,15 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
     return "\n".join(lines)
 
 
+GRAPH_SUGGESTION_RENDER_LIMIT = 5
+
+
 def render_graph_suggestions(audit_dir: Path) -> str:
     sessions = ordered_sessions(audit_dir)
     if not sessions:
         return ""
     latest = sessions[-1]
-    suggestions = evolution_suggestions(latest, limit=3)
+    suggestions = evolution_suggestions(latest, limit=GRAPH_SUGGESTION_RENDER_LIMIT)
     if not suggestions:
         return ""
     lines = ["## Graph-derived next-task pressure"]
