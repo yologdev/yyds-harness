@@ -1328,13 +1328,21 @@ class ExtractTrajectoryTests(unittest.TestCase):
             transcript_dir = session / "transcripts"
             transcript_dir.mkdir(parents=True)
             transcript_dir.joinpath("task_01_attempt1.log").write_text(
-                "  ▶ search 'fn handle_run\\(' in src/commands.rs ✗ (17ms)\n",
+                "\n".join(
+                    [
+                        "  ▶ search 'fn handle_run\\(' in src/commands.rs ✗ (17ms)",
+                        "      │ Search error: grep: Unmatched ( or \\(",
+                    ]
+                )
+                + "\n",
                 encoding="utf-8",
             )
 
             rendered = extract_trajectory.render_graph_suggestions(audit_dir)
 
             self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("Use fixed-string search for regex-like patterns", rendered)
+            self.assertIn("failed_tool_summary.search_regex_error=1", rendered)
             self.assertIn("Reconcile transcript-only tool failures", rendered)
             self.assertIn("transcript_only_failed_tool_count=1", rendered)
             self.assertIn("Restore action evidence coverage", rendered)

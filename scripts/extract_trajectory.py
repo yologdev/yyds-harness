@@ -1461,9 +1461,25 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
 GRAPH_SUGGESTION_RENDER_LIMIT = 5
 
 
+def failed_tool_graph_title(category: str, kind: str) -> str:
+    titles = {
+        "search_regex_error": "Use fixed-string search for regex-like patterns",
+        "search_binary_match": "Exclude binary artifacts from search",
+        "missing_file_read": "Verify paths before reading guessed files",
+        "read_error": "Verify readable paths before file reads",
+        "edit_context_mismatch": "Read tighter context before editing",
+        "bash_tool_error": "Bound failing shell commands before retrying",
+    }
+    return titles.get(category, kind.replace("_", " ").title())
+
+
 def action_evidence_graph_suggestions(audit_dir: Path) -> list[dict[str, Any]]:
     try:
-        from build_evolution_dashboard import build_states_projection, load_sessions
+        from build_evolution_dashboard import (
+            build_states_projection,
+            failed_tool_category_lesson,
+            load_sessions,
+        )
     except Exception as e:  # pragma: no cover - defensive degradation for cron
         warn(f"could not import action-evidence projection for graph pressure: {e}")
         return []
@@ -1492,6 +1508,38 @@ def action_evidence_graph_suggestions(audit_dir: Path) -> list[dict[str, Any]]:
         return []
 
     suggestions: list[dict[str, Any]] = []
+    tool_summary = (
+        summary.get("recent_tool_failure_summary")
+        if isinstance(summary.get("recent_tool_failure_summary"), dict)
+        else summary.get("tool_failure_summary")
+        if isinstance(summary.get("tool_failure_summary"), dict)
+        else {}
+    )
+    top_unrecovered_categories = (
+        tool_summary.get("top_unrecovered_categories")
+        if isinstance(tool_summary.get("top_unrecovered_categories"), list)
+        else []
+    )
+    for row in top_unrecovered_categories[:1]:
+        if not isinstance(row, dict):
+            continue
+        category = str(row.get("category") or "")
+        count = int(row.get("count") or 0)
+        lesson = failed_tool_category_lesson(category)
+        if not lesson or count <= 0:
+            continue
+        kind, _fingerprint, action = lesson
+        suggestions.append(
+            {
+                "kind": "tooling",
+                "title": failed_tool_graph_title(category, kind),
+                "reason": f"{action}; recent unrecovered {category} failures={count}.",
+                "metric": f"failed_tool_summary.{category}",
+                "value": count,
+                "priority": 86,
+            }
+        )
+
     transcript_only = int(evidence.get("transcript_only_failed_tool_count") or 0)
     state_only = int(evidence.get("state_only_failed_tool_count") or 0)
     session_count = int(evidence.get("session_count") or 0)
