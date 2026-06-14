@@ -118,6 +118,24 @@ def selected_tasks(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return [task for task in tasks if isinstance(task, dict)]
 
 
+def path_matches(planned: str, touched: str) -> bool:
+    planned = str(planned).strip().strip("/")
+    touched = str(touched).strip().strip("/")
+    if not planned or not touched:
+        return False
+    return touched == planned or touched.startswith(f"{planned}/")
+
+
+def file_overlap(planned: list[str], touched: list[str]) -> bool:
+    return any(path_matches(planned_file, touched_file) for planned_file in planned for touched_file in touched)
+
+
+def source_file(path: str) -> bool:
+    if not path or path.endswith(".bak"):
+        return False
+    return not path.startswith((".yoyo/", "journals/", "memory/", "session_plan/", "sessions/", "site/"))
+
+
 def task_artifact_rows(session_dir: Path) -> dict[str, dict[str, Any]]:
     rows: dict[str, dict[str, Any]] = {}
     tasks_dir = session_dir / "tasks"
@@ -143,6 +161,95 @@ def task_artifact_rows(session_dir: Path) -> dict[str, dict[str, Any]]:
             "outcome": outcome,
         }
     return rows
+
+
+def eval_passed(evals: list[Any]) -> bool:
+    for item in evals:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        verdict = str(item.get("verdict") or "").upper()
+        if status == "pass" or ("PASS" in verdict and "FAIL" not in verdict):
+            return True
+    return False
+
+
+def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
+    manifest = task_manifest(session_dir)
+    tasks = selected_tasks(manifest)
+    if not tasks:
+        return {}
+    artifacts = task_artifact_rows(session_dir)
+    rows: list[dict[str, Any]] = []
+    for task in tasks:
+        task_id = str(task.get("task_id") or "")
+        if not task_id:
+            continue
+        artifact = artifacts.get(task_id) or {}
+        outcome = artifact.get("outcome") if isinstance(artifact.get("outcome"), dict) else {}
+        planned = [str(path) for path in (outcome.get("planned_files") or task.get("files") or []) if path]
+        source_files = [str(path) for path in (outcome.get("source_files") or []) if path]
+        touched = [str(path) for path in (outcome.get("touched_files") or source_files or []) if path]
+        source_touched = [path for path in source_files + touched if source_file(path)]
+        commits = [str(sha) for sha in (outcome.get("commit_shas") or []) if sha]
+        outcome_status = str(outcome.get("status") or "").strip().lower()
+        revert_reason = str(outcome.get("revert_reason") or "")
+        problems: list[str] = []
+        overlap = file_overlap(planned, touched) if planned and touched else False
+        if not planned:
+            problems.append("missing_planned_files")
+        if not touched:
+            problems.append("no_touched_files")
+        if planned and touched and not overlap:
+            problems.append("no_planned_file_overlap")
+        api_error = "api error" in revert_reason.lower()
+        protected_revert = "modified protected files" in revert_reason.lower()
+        obsolete = bool(outcome.get("has_obsolete_note"))
+        if obsolete:
+            problems.append("task_marked_obsolete")
+        if api_error:
+            problems.append("implementation_api_error")
+        if protected_revert:
+            problems.append("modified_protected_files")
+        if outcome_status == "reverted" and not touched and not obsolete and not api_error and not protected_revert:
+            problems.append("no_edit_revert")
+        if source_touched and not commits:
+            problems.append("source_edits_not_landed")
+        passed = eval_passed(artifact.get("evals") if isinstance(artifact.get("evals"), list) else [])
+        if not passed and not obsolete:
+            problems.append("no_passing_verifier")
+        strict_success = outcome_status == "completed" and overlap and passed and not problems
+        rows.append(
+            {
+                "strict_success": strict_success,
+                "problems": problems,
+                "obsolete": obsolete,
+                "api_error": api_error,
+                "protected_revert": protected_revert,
+            }
+        )
+    if not rows:
+        return {}
+    unverified = sum(1 for row in rows if not row["strict_success"])
+    return {
+        "selected_task_count": len(tasks),
+        "task_count": len(rows),
+        "task_strict_verified_count": sum(1 for row in rows if row["strict_success"]),
+        "task_verified_count": sum(1 for row in rows if row["strict_success"]),
+        "task_obsolete_count": sum(1 for row in rows if row["obsolete"] or "task_marked_obsolete" in row["problems"]),
+        "task_api_error_count": sum(1 for row in rows if row["api_error"] or "implementation_api_error" in row["problems"]),
+        "task_no_edit_revert_count": sum(1 for row in rows if "no_edit_revert" in row["problems"]),
+        "protected_file_revert_count": sum(1 for row in rows if row["protected_revert"] or "modified_protected_files" in row["problems"]),
+        "task_scope_mismatch_count": sum(1 for row in rows if "no_planned_file_overlap" in row["problems"]),
+        "task_unlanded_source_count": sum(
+            1
+            for row in rows
+            if ("source_edits_not_landed" in row["problems"] or "no_landed_source_commit" in row["problems"])
+            and not row["protected_revert"]
+            and "no_planned_file_overlap" not in row["problems"]
+        ),
+        "evaluator_unverified_raw_count": unverified,
+    }
 
 
 def lineage_rows(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -479,6 +586,54 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
     feedback_metrics = latest_log_feedback_metrics(session_dir)
     if feedback_metrics:
         gnomes.update(feedback_metrics)
+    artifact_metrics = task_artifact_verification_metrics(session_dir)
+    if artifact_metrics:
+        selected = int_metric(artifact_metrics, "selected_task_count")
+        task_count = int_metric(artifact_metrics, "task_count")
+        verified = int_metric(artifact_metrics, "task_strict_verified_count")
+        if selected > 0:
+            gnomes["selected_task_count"] = max(int_metric(gnomes, "selected_task_count"), selected)
+        if verified > 0 or task_count > 0:
+            gnomes["task_strict_verified_count"] = max(
+                int_metric(gnomes, "task_strict_verified_count"),
+                verified,
+            )
+            gnomes["task_verified_count"] = max(int_metric(gnomes, "task_verified_count"), verified)
+            gnomes["tasks_succeeded"] = max(int_metric(gnomes, "tasks_succeeded"), verified)
+        if task_count > 0 and verified == task_count:
+            gnomes["task_success_rate"] = 1.0
+            gnomes["session_success_rate"] = 1.0
+            gnomes["evaluator_unverified_count"] = 0
+            gnomes["task_unverified_raw_attempt_count"] = 0
+            gnomes["task_unverified_raw_success_count"] = 0
+        elif task_count > 0:
+            seed_contradictions = int_metric(gnomes, "task_seed_contradiction_count")
+            no_edit = max(int_metric(artifact_metrics, "task_no_edit_revert_count") - seed_contradictions, 0)
+            explained = (
+                max(seed_contradictions, int_metric(artifact_metrics, "task_no_edit_revert_count"))
+                + int_metric(artifact_metrics, "task_obsolete_count")
+                + int_metric(artifact_metrics, "task_api_error_count")
+                + int_metric(artifact_metrics, "protected_file_revert_count")
+                + int_metric(artifact_metrics, "task_scope_mismatch_count")
+            )
+            gnomes["evaluator_unverified_count"] = max(
+                int_metric(artifact_metrics, "evaluator_unverified_raw_count")
+                - explained
+                - int_metric(gnomes, "task_unattempted_count"),
+                0,
+            )
+            gnomes["task_no_edit_revert_count"] = max(
+                int_metric(gnomes, "task_no_edit_revert_count"),
+                no_edit,
+            )
+            for key in (
+                "task_obsolete_count",
+                "task_api_error_count",
+                "protected_file_revert_count",
+                "task_scope_mismatch_count",
+                "task_unlanded_source_count",
+            ):
+                gnomes[key] = max(int_metric(gnomes, key), int_metric(artifact_metrics, key))
 
     if resolved_seed_replacement_metrics(gnomes):
         seed_contradictions = int_metric(gnomes, "task_seed_contradiction_count")

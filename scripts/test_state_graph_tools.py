@@ -317,6 +317,109 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(gnomes["task_seed_contradiction_count"], 0)
             self.assertEqual(gnomes["task_seed_replacement_count"], 1)
 
+    def test_task_artifacts_clear_stale_raw_and_evaluator_gnomes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "evaluator_unverified_count": 1,
+                        "task_unverified_raw_attempt_count": 1,
+                        "task_unverified_raw_success_count": 1,
+                    }
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Verified task",
+                            "files": ["src/eval.rs"],
+                        }
+                    ]
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "planned_files": ["src/eval.rs"],
+                    "touched_files": ["src/eval.rs"],
+                    "source_files": ["src/eval.rs"],
+                    "commit_shas": ["abc123"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "PASS"},
+            )
+
+            gnomes = state_graph_tools.corrected_latest_gnomes(session)
+            suggestions = state_graph_tools.evolution_suggestions(session)
+
+            self.assertEqual(gnomes["evaluator_unverified_count"], 0)
+            self.assertEqual(gnomes["task_unverified_raw_attempt_count"], 0)
+            self.assertEqual(gnomes["task_unverified_raw_success_count"], 0)
+            self.assertEqual(gnomes["task_success_rate"], 1.0)
+            self.assertNotIn(
+                "Bound evaluator checks so verdicts are not skipped",
+                [item["title"] for item in suggestions],
+            )
+
+    def test_seed_contradiction_artifact_suppresses_evaluator_pressure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {"latest_gnomes": {"evaluator_unverified_count": 1}},
+            )
+            write_json(
+                session / "log_feedback.json",
+                {"metrics": {"task_seed_contradiction_count": 1}},
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Contradicted seed",
+                            "origin": "harness-seed",
+                            "files": ["src/eval.rs"],
+                        }
+                    ]
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Task scope mismatch: task produced no git-visible file changes",
+                    "planned_files": ["src/eval.rs"],
+                    "touched_files": [],
+                    "source_files": [],
+                    "commit_shas": [],
+                },
+            )
+
+            gnomes = state_graph_tools.corrected_latest_gnomes(session)
+            suggestions = state_graph_tools.evolution_suggestions(session)
+
+            self.assertEqual(gnomes["task_seed_contradiction_count"], 1)
+            self.assertEqual(gnomes["evaluator_unverified_count"], 0)
+            self.assertEqual(gnomes["task_no_edit_revert_count"], 0)
+            self.assertNotIn(
+                "Bound evaluator checks so verdicts are not skipped",
+                [item["title"] for item in suggestions],
+            )
+
     def test_compare_previous_session(self):
         with tempfile.TemporaryDirectory() as tmp:
             sessions = Path(tmp) / "sessions"
