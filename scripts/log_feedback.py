@@ -1528,7 +1528,15 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "action": "preserve provider-error evidence and route recovery or retry before spending implementation attempts",
             }
         )
-    if int(metrics.get("planner_no_task_count") or 0) > 0:
+    if int(metrics.get("planner_no_task_count") or 0) > 0 and provider_blocked_before_tasks(metrics):
+        lessons.append(
+            {
+                "kind": "provider_blocked_planning",
+                "fingerprint": "planning produced no task files after provider/API failure",
+                "action": "recover provider access before tuning task-selection or schema prompts",
+            }
+        )
+    elif int(metrics.get("planner_no_task_count") or 0) > 0:
         lessons.append(
             {
                 "kind": "planner_no_tasks",
@@ -1995,6 +2003,18 @@ def run_self_tests() -> int:
         "provider errors outrank provider-blocked planning lessons",
         provider_blocked_lessons[0]["kind"] == "provider_error",
         provider_blocked_lessons,
+    )
+    check(
+        "provider-blocked planning avoids schema-tuning lesson",
+        [lesson["kind"] for lesson in provider_blocked_lessons[:2]]
+        == ["provider_error", "provider_blocked_planning"],
+        provider_blocked_lessons,
+    )
+    planning_lessons = top_lessons({"planner_no_task_count": 1, "tasks_attempted": 0, "task_success_rate": None})
+    check(
+        "non-provider planning still asks for concrete tasks",
+        planning_lessons[0]["kind"] == "planner_no_tasks",
+        planning_lessons,
     )
     provider_fingerprint_lessons = top_lessons(
         {
