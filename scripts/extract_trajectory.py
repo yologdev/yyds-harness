@@ -1084,6 +1084,7 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
     recent_window_size = int(state_summary.get("recent_window_size") or 5)
     recent_state_sessions = state_sessions[-recent_window_size:] if recent_window_size > 0 else []
     recent_assessment_counts: Counter[str] = Counter()
+    recent_expected_evidence_examples: list[str] = []
     for session in recent_state_sessions:
         if not isinstance(session, dict):
             continue
@@ -1091,6 +1092,21 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
         classification = str(assessment.get("classification") or "")
         if classification and classification != "assessment_present":
             recent_assessment_counts[classification] += 1
+        tasks = session.get("tasks") if isinstance(session.get("tasks"), list) else []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            task_state = str(task.get("state") or "")
+            if task_state in {"verified_landed", "obsolete_already_satisfied"}:
+                continue
+            expected = " ".join(str(task.get("expected_evidence") or "").split())
+            if expected:
+                task_id = str(task.get("task_id") or "task")
+                recent_expected_evidence_examples.append(f"{task_id}={expected[:90]}")
+            if len(recent_expected_evidence_examples) >= 3:
+                break
+        if len(recent_expected_evidence_examples) >= 3:
+            break
 
     for session in state_sessions:
         if not isinstance(session, dict):
@@ -1252,6 +1268,19 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
             summary_parts.append(
                 "recent task issues: "
                 + ", ".join(f"{state}={count}" for state, count in recent_task_issue_states[:3])
+            )
+        recent_expected_count = int(recent_task_summary.get("expected_evidence_count") or 0)
+        recent_task_count = int(recent_task_summary.get("task_count") or 0)
+        recent_missing_expected = int(recent_task_summary.get("missing_expected_evidence_count") or 0)
+        if recent_task_count and recent_missing_expected:
+            summary_parts.append(
+                f"recent task evidence specs: expected={recent_expected_count}/{recent_task_count}, "
+                f"missing={recent_missing_expected}"
+            )
+        if recent_expected_evidence_examples:
+            summary_parts.append(
+                "recent task expected evidence: "
+                + "; ".join(recent_expected_evidence_examples[:2])
             )
         if recent_assessment_counts:
             summary_parts.append(

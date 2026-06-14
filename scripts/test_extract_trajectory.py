@@ -786,6 +786,51 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("recent action evidence:", rendered)
             self.assertIn("coverage=state 1/2, transcripts 1/2", rendered)
 
+    def test_structured_state_snapshot_surfaces_recent_task_expected_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Expose expected evidence",
+                            "files": ["scripts/task_manifest.py"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            task_dir = session / "tasks/task_01"
+            task_dir.mkdir(parents=True)
+            task_dir.joinpath("task.md").write_text(
+                "Title: Expose expected evidence\n"
+                "Files: scripts/task_manifest.py\n"
+                "Expected Evidence:\n"
+                "- states.json task row carries expected evidence text\n",
+                encoding="utf-8",
+            )
+
+            rendered = extract_trajectory.render_structured_state_snapshot(audit_dir)
+
+            self.assertIn("recent task issues:", rendered)
+            self.assertIn("recent task expected evidence:", rendered)
+            self.assertIn("task_01=states.json task row carries expected evidence text", rendered)
+
     def test_structured_state_snapshot_prioritizes_recent_unresolved_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

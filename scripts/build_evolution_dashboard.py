@@ -1580,6 +1580,7 @@ def structured_task_states(
                 "title": row.get("title") or manifest_task.get("title") or lineage.get("task_title"),
                 "state": classify_task_state(row, attempted),
                 "origin": manifest_task.get("origin"),
+                "expected_evidence": manifest_task.get("expected_evidence"),
                 "attempted": attempted,
                 "planned_files": row.get("planned_files") or [],
                 "touched_files": row.get("touched_files") or [],
@@ -1833,6 +1834,7 @@ def task_manifest_summary(session_dir: Path) -> dict[str, Any]:
                 "issue": task.get("issue") or parsed_task.get("issue"),
                 "origin": task.get("origin") or parsed_task.get("origin"),
                 "artifact_path": artifact_path,
+                "expected_evidence": task.get("expected_evidence") or parsed_task.get("expected_evidence"),
                 "quality_score": quality.get("score", parsed_quality.get("score")),
                 "generic_self_improvement": quality.get(
                     "generic_self_improvement",
@@ -4709,6 +4711,7 @@ def task_state_summary_for_sessions(session_states: list[dict[str, Any]]) -> dic
     state_counts: dict[str, int] = {}
     task_count = 0
     strict_success_count = 0
+    expected_evidence_count = 0
     for row in session_states:
         tasks = row.get("tasks") if isinstance(row.get("tasks"), list) else []
         task_count += len(tasks)
@@ -4717,6 +4720,11 @@ def task_state_summary_for_sessions(session_states: list[dict[str, Any]]) -> dic
             for task in tasks
             if isinstance(task, dict) and task.get("strict_success")
         )
+        expected_evidence_count += sum(
+            1
+            for task in tasks
+            if isinstance(task, dict) and str(task.get("expected_evidence") or "").strip()
+        )
         for state, count in (row.get("task_summary", {}).get("state_counts") or {}).items():
             state_counts[str(state)] = state_counts.get(str(state), 0) + int(count or 0)
     return {
@@ -4724,6 +4732,8 @@ def task_state_summary_for_sessions(session_states: list[dict[str, Any]]) -> dic
         "task_count": task_count,
         "strict_success_count": strict_success_count,
         "unverified_count": task_count - strict_success_count,
+        "expected_evidence_count": expected_evidence_count,
+        "missing_expected_evidence_count": max(task_count - expected_evidence_count, 0),
         "state_counts": dict(sorted(state_counts.items())),
     }
 

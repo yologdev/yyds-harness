@@ -19,6 +19,11 @@ FILE_ANNOTATION_RE = re.compile(
     re.IGNORECASE,
 )
 FILE_TRAILING_NOTE_RE = re.compile(r"\s+(?:-|--|—)\s+.*$")
+SECTION_STOP_RE = re.compile(
+    r"^(?:#+\s*)?(?:title|files|issue|origin|objective|goal|why this matters|"
+    r"success criteria|acceptance criteria|verification|test plan|expected evidence)\s*:?\s*",
+    re.IGNORECASE,
+)
 
 
 def assessment_alignment(task_text: str, assessment_text: str) -> dict[str, Any]:
@@ -78,6 +83,31 @@ def read_text(path: Path | None) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def section_summary(text: str, label: str, limit: int = 360) -> str:
+    label_re = re.compile(rf"^(?:#+\s*)?{re.escape(label)}\s*:?\s*(.*)$", re.IGNORECASE)
+    lines: list[str] = []
+    in_section = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        match = label_re.match(line)
+        if match:
+            in_section = True
+            first = match.group(1).strip()
+            if first:
+                lines.append(first)
+            continue
+        if not in_section:
+            continue
+        if line and SECTION_STOP_RE.match(line):
+            break
+        if line.startswith("#"):
+            break
+        if not line:
+            continue
+        lines.append(re.sub(r"^(?:[-*]|\d+[.)])\s*", "", line))
+    return " ".join(" ".join(lines).split())[:limit]
+
+
 def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[str, Any]:
     text = read_text(path)
     fields: dict[str, str] = {}
@@ -100,6 +130,7 @@ def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[
     has_success = "success criteria" in lower or "acceptance criteria" in lower
     has_verification = "verification" in lower or "test plan" in lower
     has_expected_evidence = "expected evidence" in lower
+    expected_evidence = section_summary(text, "Expected Evidence")
     has_goal = bool(GOAL_RE.search(text))
     generic = (
         fields.get("title", "").strip().lower() == "self-improvement"
@@ -120,6 +151,7 @@ def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[
         "origin": fields.get("origin") or "planner",
         "artifact_path": f"tasks/task_{task_number:02d}/task.md",
         "session_plan_path": str(path),
+        "expected_evidence": expected_evidence or None,
         "body_preview": " ".join(" ".join(body_lines).split())[:360],
         "quality": {
             "has_goal": has_goal,
@@ -210,6 +242,7 @@ def decision_payload(manifest: dict[str, Any]) -> dict[str, Any]:
                 "task_number": task.get("task_number"),
                 "task_title": task.get("title"),
                 "planned_files": task.get("files") or [],
+                "expected_evidence": task.get("expected_evidence"),
                 "issue": task.get("issue"),
                 "origin": task.get("origin"),
                 "quality": task.get("quality"),

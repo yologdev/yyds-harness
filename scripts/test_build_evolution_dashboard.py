@@ -868,6 +868,7 @@ class BuildEvolutionDashboard(unittest.TestCase):
                             "origin": "planner",
                             "artifact_path": "tasks/task_01/task.md",
                             "quality": {"score": 1.0, "generic_self_improvement": False},
+                            "expected_evidence": "dashboard task evidence shows strict verification",
                         }
                     ],
                     "artifacts": {
@@ -878,7 +879,13 @@ class BuildEvolutionDashboard(unittest.TestCase):
                 },
             )
             (session / "tasks/assessment.md").write_text("# Assessment\n", encoding="utf-8")
-            (session / "tasks/task_01/task.md").write_text("Title: Improve dashboard\nFiles: scripts/build_evolution_dashboard.py\n", encoding="utf-8")
+            (session / "tasks/task_01/task.md").write_text(
+                "Title: Improve dashboard\n"
+                "Files: scripts/build_evolution_dashboard.py\n"
+                "Expected Evidence:\n"
+                "- dashboard task evidence shows strict verification\n",
+                encoding="utf-8",
+            )
             (session / "tasks/task_01/attempts.jsonl").write_text(
                 json.dumps(
                     {
@@ -976,6 +983,16 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(work["task_manifest"]["selected_task_count"], 1)
             self.assertFalse(work["task_manifest"]["planning_failed"])
             self.assertEqual(work["task_manifest"]["tasks"][0]["quality_score"], 1.0)
+            self.assertEqual(
+                work["task_manifest"]["tasks"][0]["expected_evidence"],
+                "dashboard task evidence shows strict verification",
+            )
+            self.assertEqual(
+                work["task_states"]["tasks"][0]["expected_evidence"],
+                "dashboard task evidence shows strict verification",
+            )
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+            self.assertEqual(states["summary"]["latest_task_summary"]["expected_evidence_count"], 1)
             self.assertEqual(work["task_artifacts"][0]["task_id"], "task_01")
             self.assertEqual(work["task_artifacts"][0]["attempt_count"], 1)
             self.assertEqual(work["task_artifacts"][0]["max_turn_count"], 4)

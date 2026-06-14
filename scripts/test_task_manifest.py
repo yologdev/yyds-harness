@@ -66,9 +66,17 @@ Expected Evidence:
             self.assertEqual(manifest["planner"]["selected_task_count"], 1)
             self.assertEqual(manifest["selected_tasks"][0]["task_id"], "task_01")
             self.assertTrue(manifest["selected_tasks"][0]["quality"]["has_expected_evidence"])
+            self.assertEqual(
+                manifest["selected_tasks"][0]["expected_evidence"],
+                "task_verification_rate drops when evaluator times out",
+            )
             self.assertEqual(manifest["selected_tasks"][0]["quality"]["score"], 1.0)
             self.assertEqual(payload["tasks"][0]["task_title"], "Improve evaluator timeout evidence")
             self.assertEqual(payload["tasks"][0]["planned_files"], ["scripts/log_feedback.py", "scripts/build_evolution_dashboard.py"])
+            self.assertEqual(
+                payload["tasks"][0]["expected_evidence"],
+                "task_verification_rate drops when evaluator times out",
+            )
 
     def test_manifest_parses_blank_separated_task_header_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
