@@ -1239,6 +1239,39 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("Replace stale or already-satisfied tasks", rendered)
             self.assertIn("task_obsolete_count=1", rendered)
 
+    def test_graph_suggestions_include_measured_execution_state_and_cache_pressure(self) -> None:
+        cases = [
+            ("state_live_baseline_shrink_count", "Keep live state append-only"),
+            ("task_api_error_count", "Recover API-error tasks instead of generic reverts"),
+            ("task_scope_mismatch_count", "Align implementation edits with task file scope"),
+            ("protected_file_revert_count", "Route protected-file work through explicit approval"),
+            ("deepseek_cache_ratio_unverified_count", "Ignore prose-only DeepSeek cache ratios"),
+            ("deepseek_cache_metric_missing_count", "Record token-backed DeepSeek cache metrics"),
+        ]
+        for metric, title in cases:
+            with self.subTest(metric=metric), tempfile.TemporaryDirectory() as tmp:
+                audit_dir = Path(tmp)
+                session = audit_dir / "day-1"
+                write_json(
+                    session / "outcome.json",
+                    {"day": 1, "ts": "2026-01-01T00:00:00Z"},
+                )
+                write_json(
+                    session / "state/summary.json",
+                    {
+                        "latest_gnomes": {
+                            metric: 1,
+                            "task_artifact_coverage": 1.0,
+                        }
+                    },
+                )
+
+                rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+                self.assertIn("## Graph-derived next-task pressure", rendered)
+                self.assertIn(title, rendered)
+                self.assertIn(f"{metric}=1", rendered)
+
     def test_graph_suggestions_include_missing_expected_evidence_pressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

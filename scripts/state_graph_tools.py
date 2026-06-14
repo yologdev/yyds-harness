@@ -925,6 +925,15 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             value,
             96,
         )
+    if int(gnomes.get("state_live_baseline_shrink_count") or 0) > 0:
+        add(
+            "state",
+            "Keep live state append-only",
+            "The live state log had fewer events than the replay baseline; inspect concurrent state writers before trusting merged session evidence.",
+            "state_live_baseline_shrink_count",
+            gnomes.get("state_live_baseline_shrink_count"),
+            91,
+        )
     if int(gnomes.get("evaluator_unverified_count") or 0) > 0:
         add("eval", "Bound evaluator checks so verdicts are not skipped", "Some task evals were unverified or timed out.", "evaluator_unverified_count", gnomes.get("evaluator_unverified_count"), 90)
     if int(gnomes.get("evaluator_timeout_with_verdict_count") or 0) > 0:
@@ -947,10 +956,37 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             gnomes.get("task_obsolete_count"),
             86,
         )
+    if int(gnomes.get("task_api_error_count") or 0) > 0:
+        add(
+            "implementation",
+            "Recover API-error tasks instead of generic reverts",
+            "Implementation hit provider/API errors before landed work; preserve the error evidence and retry with provider recovery.",
+            "task_api_error_count",
+            gnomes.get("task_api_error_count"),
+            87,
+        )
     if int(gnomes.get("task_unlanded_source_count") or 0) > 0:
         add("commit", "Make source-edit outcomes land or explain reverts", "A task touched source files without a landed source commit.", "task_unlanded_source_count", gnomes.get("task_unlanded_source_count"), 88)
     if int(gnomes.get("evaluator_timeout_count") or 0) > 0:
         add("eval", "Make evaluator timeouts resumable or cheaper", "Evaluator timeout friction still appears in action logs.", "evaluator_timeout_count", gnomes.get("evaluator_timeout_count"), 85)
+    if int(gnomes.get("task_scope_mismatch_count") or 0) > 0:
+        add(
+            "implementation",
+            "Align implementation edits with task file scope",
+            "Implementation changed files outside the selected task surface; tighten task Files entries and implementation prompts.",
+            "task_scope_mismatch_count",
+            gnomes.get("task_scope_mismatch_count"),
+            84,
+        )
+    if int(gnomes.get("protected_file_revert_count") or 0) > 0:
+        add(
+            "implementation",
+            "Route protected-file work through explicit approval",
+            "Evolution tasks modified protected files and were reverted; route protected workflow/release changes through explicit allowlists or human-owned issues.",
+            "protected_file_revert_count",
+            gnomes.get("protected_file_revert_count"),
+            83,
+        )
     if int(gnomes.get("search_error_count") or 0) > 0:
         add("tooling", "Harden search commands and pattern escaping", "Search/grep errors created avoidable evolution friction.", "search_error_count", gnomes.get("search_error_count"), 80)
     if int(gnomes.get("command_timeout_count") or 0) > 0:
@@ -970,6 +1006,24 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             add("planning", "Split high-turn tasks into narrower plans", "A task used many turns, suggesting the task was too broad or under-specified.", "max_task_turn_count", max_turns, 70)
     if gnomes.get("task_artifact_coverage") == 0:
         add("state", "Restore task artifact coverage", "Task decisions or artifacts were missing from the audit bundle.", "task_artifact_coverage", 0, 95)
+    if int(gnomes.get("deepseek_cache_ratio_unverified_count") or 0) > 0:
+        add(
+            "deepseek",
+            "Ignore prose-only DeepSeek cache ratios",
+            "DeepSeek cache ratios were reported without token-backed cache metrics; use measured cache hit/miss tokens before optimizing prompts.",
+            "deepseek_cache_ratio_unverified_count",
+            gnomes.get("deepseek_cache_ratio_unverified_count"),
+            63,
+        )
+    if int(gnomes.get("deepseek_cache_metric_missing_count") or 0) > 0:
+        add(
+            "deepseek",
+            "Record token-backed DeepSeek cache metrics",
+            "Expected DeepSeek cache metric events were missing, so prompt-cache improvements cannot be trusted yet.",
+            "deepseek_cache_metric_missing_count",
+            gnomes.get("deepseek_cache_metric_missing_count"),
+            62,
+        )
     if isinstance(gnomes.get("deepseek_cache_hit_ratio"), (int, float)) and gnomes.get("deepseek_cache_hit_ratio") < 0.5:
         add("deepseek", "Improve stable prompt prefix reuse", "DeepSeek prompt cache hit ratio is low.", "deepseek_cache_hit_ratio", gnomes.get("deepseek_cache_hit_ratio"), 60)
 

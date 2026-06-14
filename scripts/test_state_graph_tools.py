@@ -176,6 +176,59 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(obsolete["value"], 1)
             self.assertIn("obsolete or already satisfied", obsolete["reason"])
 
+    def test_evolution_suggestions_surface_measured_execution_state_and_cache_pressure(self):
+        cases = [
+            (
+                "state_live_baseline_shrink_count",
+                "Keep live state append-only",
+                "fewer events than the replay baseline",
+            ),
+            (
+                "task_api_error_count",
+                "Recover API-error tasks instead of generic reverts",
+                "provider/API errors",
+            ),
+            (
+                "task_scope_mismatch_count",
+                "Align implementation edits with task file scope",
+                "outside the selected task surface",
+            ),
+            (
+                "protected_file_revert_count",
+                "Route protected-file work through explicit approval",
+                "protected files",
+            ),
+            (
+                "deepseek_cache_ratio_unverified_count",
+                "Ignore prose-only DeepSeek cache ratios",
+                "without token-backed cache metrics",
+            ),
+            (
+                "deepseek_cache_metric_missing_count",
+                "Record token-backed DeepSeek cache metrics",
+                "cache metric events were missing",
+            ),
+        ]
+        for metric, title, reason_snippet in cases:
+            with self.subTest(metric=metric), tempfile.TemporaryDirectory() as tmp:
+                session = Path(tmp) / "sessions/day-1"
+                write_json(
+                    session / "state/summary.json",
+                    {
+                        "latest_gnomes": {
+                            metric: 1,
+                            "task_artifact_coverage": 1.0,
+                        }
+                    },
+                )
+
+                suggestions = state_graph_tools.evolution_suggestions(session, limit=10)
+                suggestion = next(item for item in suggestions if item["title"] == title)
+
+                self.assertEqual(suggestion["metric"], metric)
+                self.assertEqual(suggestion["value"], 1)
+                self.assertIn(reason_snippet, suggestion["reason"])
+
     def test_evolution_suggestions_include_lifecycle_cause_detail(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
