@@ -649,6 +649,27 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(suggestion["value"], 0.0)
             self.assertIn("session outcome pass end to end", suggestion["reason"])
 
+    def test_evolution_suggestions_do_not_blame_session_success_when_provider_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "provider_error_count": 3,
+                        "session_success_rate": 0.0,
+                        "task_artifact_coverage": None,
+                        "task_success_rate": None,
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=10)
+            titles = [item["title"] for item in suggestions]
+
+            self.assertIn("Recover provider errors before task attempts", titles)
+            self.assertNotIn("Raise session success rate", titles)
+
     def test_evolution_suggestions_surface_low_mechanical_verification_pressure(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

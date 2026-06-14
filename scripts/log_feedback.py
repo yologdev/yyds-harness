@@ -142,6 +142,7 @@ GNOME_KEYS = [
     "closed_loop_fix_rate",
     "evolution_friction_count",
     "provider_error_count",
+    "provider_blocked_transcript_task_attempt_count",
     "tool_error_count",
     "prompt_heredoc_expansion_error_count",
     "command_timeout_count",
@@ -783,7 +784,8 @@ def task_turn_metrics(session_dir: Path) -> dict[str, Any]:
         task_number = int(match.group(4))
         attempt = int(match.group(5))
         task_id = f"task_{task_number:02d}"
-        turns = transcript_turn_count(read_text(path))
+        text = read_text(path)
+        turns = transcript_turn_count(text)
         per_task[task_id] = max(per_task.get(task_id, 0), turns)
         attempts.append(
             {
@@ -793,6 +795,7 @@ def task_turn_metrics(session_dir: Path) -> dict[str, Any]:
                 "phase": phase,
                 "turn_count": turns,
                 "transcript": str(path.relative_to(session_dir)),
+                "provider_error": bool(PROVIDER_ERROR_RE.search(text)),
             }
         )
     counts = list(per_task.values())
@@ -1357,12 +1360,18 @@ def build_assessment(
     recurrences = recurrence_metrics(parsed["failure_fingerprints"], previous)
 
     outcome_attempted = int(outcome.get("tasks_attempted") or 0)
+    implementation_attempts_by_task: dict[str, list[dict[str, Any]]] = {}
+    for row in turn_metrics.get("task_turn_attempts") or []:
+        if not isinstance(row, dict) or row.get("phase") != "implementation" or not row.get("task_id"):
+            continue
+        implementation_attempts_by_task.setdefault(str(row["task_id"]), []).append(row)
+    provider_blocked_transcript_tasks = {
+        task_id
+        for task_id, rows in implementation_attempts_by_task.items()
+        if rows and all(bool(row.get("provider_error")) for row in rows)
+    }
     transcript_attempted = len(
-        {
-            str(row.get("task_id") or "")
-            for row in turn_metrics.get("task_turn_attempts") or []
-            if isinstance(row, dict) and row.get("phase") == "implementation" and row.get("task_id")
-        }
+        set(implementation_attempts_by_task) - provider_blocked_transcript_tasks
     )
     attempted = max(outcome_attempted, transcript_attempted)
     succeeded = int(outcome.get("tasks_succeeded") or 0)
@@ -1429,6 +1438,7 @@ def build_assessment(
         "tasks_attempted": attempted,
         "raw_tasks_attempted": outcome_attempted,
         "transcript_task_attempt_count": transcript_attempted,
+        "provider_blocked_transcript_task_attempt_count": len(provider_blocked_transcript_tasks),
         "tasks_succeeded": counted_succeeded,
         "raw_tasks_succeeded": succeeded,
         "retry_success_rate": retry_success_rate,
@@ -2079,6 +2089,32 @@ def run_self_tests() -> int:
         check("transcript fallback counts implementation task attempts", transcript_metrics["transcript_task_attempt_count"] == 2, transcript_metrics)
         check("transcript fallback promotes attempted tasks", transcript_metrics["tasks_attempted"] == 2, transcript_metrics)
         check("transcript fallback makes task success measurable", transcript_metrics["task_success_rate"] == 0.0, transcript_metrics)
+        provider_blocked = root / "provider-blocked-session"
+        provider_blocked_transcripts = provider_blocked / "transcripts"
+        provider_blocked_transcripts.mkdir(parents=True)
+        (provider_blocked / "outcome.json").write_text(
+            json.dumps({"tasks_attempted": 0, "tasks_succeeded": 0}) + "\n",
+            encoding="utf-8",
+        )
+        (provider_blocked_transcripts / "task_01_attempt1.log").write_text(
+            'error: Network error: reqwest::Error { source: dns error, error: "failed to lookup address information" }\n'
+            "API error with no fallback configured. Exiting.\n",
+            encoding="utf-8",
+        )
+        provider_blocked_assessment = build_assessment(
+            session_dir=provider_blocked,
+            log_available=False,
+            log_error="fetch disabled",
+            log_text="",
+            repo="",
+            run_id="",
+            run_attempt="",
+            workflow_conclusion="unknown",
+        )
+        provider_blocked_metrics = provider_blocked_assessment["metrics"]
+        check("provider-blocked transcript task counted separately", provider_blocked_metrics["provider_blocked_transcript_task_attempt_count"] == 1, provider_blocked_metrics)
+        check("provider-blocked transcript task is not task-attempted", provider_blocked_metrics["transcript_task_attempt_count"] == 0, provider_blocked_metrics)
+        check("provider-blocked transcript does not depress task success", provider_blocked_metrics["task_success_rate"] is None, provider_blocked_metrics)
         staging = root / ".yoyo" / "session_staging"
         staging_transcripts = staging / "transcripts"
         staging_transcripts.mkdir(parents=True)

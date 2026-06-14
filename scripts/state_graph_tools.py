@@ -1119,8 +1119,11 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             91,
         )
     session_success_rate = float_metric(gnomes, "session_success_rate")
-    if session_success_rate is not None and session_success_rate < 1.0 and (
-        task_success_rate is None or task_success_rate >= 1.0
+    if (
+        provider_errors <= 0
+        and session_success_rate is not None
+        and session_success_rate < 1.0
+        and (task_success_rate is None or task_success_rate >= 1.0)
     ):
         add(
             "task",
