@@ -325,6 +325,52 @@ class StateGraphTools(unittest.TestCase):
             self.assertIn("commit SHAs", suggestion["reason"])
             self.assertIn("gnome deltas", suggestion["reason"])
 
+    def test_evolution_suggestions_surface_low_task_verification_pressure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "task_artifact_coverage": 1.0,
+                        "task_verification_rate": 0.5,
+                        "evaluator_unverified_count": 0,
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=10)
+            suggestion = next(
+                item for item in suggestions if item["title"] == "Require strict verifier evidence for tasks"
+            )
+
+            self.assertEqual(suggestion["metric"], "task_verification_rate")
+            self.assertEqual(suggestion["value"], 0.5)
+            self.assertIn("verifier artifacts", suggestion["reason"])
+
+    def test_evolution_suggestions_surface_low_mechanical_verification_pressure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "task_artifact_coverage": 1.0,
+                        "task_verification_rate": 1.0,
+                        "task_mechanical_verification_rate": 0.0,
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=10)
+            suggestion = next(
+                item for item in suggestions if item["title"] == "Preserve mechanical verification artifacts"
+            )
+
+            self.assertEqual(suggestion["metric"], "task_mechanical_verification_rate")
+            self.assertEqual(suggestion["value"], 0.0)
+            self.assertIn("deterministic build, test, or eval artifacts", suggestion["reason"])
+
     def test_evolution_suggestions_include_lifecycle_cause_detail(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

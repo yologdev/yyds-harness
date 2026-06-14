@@ -961,6 +961,40 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
         add("eval", "Bound evaluator checks so verdicts are not skipped", "Some task evals were unverified or timed out.", "evaluator_unverified_count", gnomes.get("evaluator_unverified_count"), 90)
     if int(gnomes.get("evaluator_timeout_with_verdict_count") or 0) > 0:
         add("eval", "Stop evaluator once verdict evidence exists", "An evaluator wrote a verdict but still timed out, making the verifier evidence ambiguous.", "evaluator_timeout_with_verdict_count", gnomes.get("evaluator_timeout_with_verdict_count"), 92)
+    verification_rate = gnomes.get("task_verification_rate")
+    if (
+        isinstance(verification_rate, (int, float))
+        and not isinstance(verification_rate, bool)
+        and verification_rate < 1.0
+        and int(gnomes.get("evaluator_unverified_count") or 0) <= 0
+    ):
+        add(
+            "eval",
+            "Require strict verifier evidence for tasks",
+            "Task verification rate was below complete without a counted evaluator-unverified bucket; preserve bounded verifier artifacts before scoring task success.",
+            "task_verification_rate",
+            verification_rate,
+            88,
+        )
+    mechanical_rate = gnomes.get("task_mechanical_verification_rate")
+    if (
+        isinstance(mechanical_rate, (int, float))
+        and not isinstance(mechanical_rate, bool)
+        and mechanical_rate < 1.0
+        and (
+            not isinstance(verification_rate, (int, float))
+            or isinstance(verification_rate, bool)
+            or verification_rate >= 1.0
+        )
+    ):
+        add(
+            "eval",
+            "Preserve mechanical verification artifacts",
+            "Mechanical task verification rate was below complete; record deterministic build, test, or eval artifacts for every selected task.",
+            "task_mechanical_verification_rate",
+            mechanical_rate,
+            76,
+        )
     if int(gnomes.get("task_unattempted_count") or 0) > 0:
         add(
             "implementation",
