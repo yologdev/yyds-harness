@@ -1328,6 +1328,27 @@ class ExtractTrajectoryTests(unittest.TestCase):
                 self.assertIn(title, rendered)
                 self.assertIn(metric_text, rendered)
 
+    def test_graph_suggestions_surface_low_task_lineage_capture_pressure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(session / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z"})
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "task_artifact_coverage": 1.0,
+                        "task_lineage_capture_coverage": 0.0,
+                    }
+                },
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("Restore explicit task lineage capture", rendered)
+            self.assertIn("task_lineage_capture_coverage=0.0", rendered)
+
     def test_graph_suggestions_surface_recent_action_evidence_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

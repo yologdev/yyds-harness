@@ -1076,6 +1076,16 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             add("planning", "Split high-turn tasks into narrower plans", "A task used many turns, suggesting the task was too broad or under-specified.", "max_task_turn_count", max_turns, 70)
     if gnomes.get("task_artifact_coverage") == 0:
         add("state", "Restore task artifact coverage", "Task decisions or artifacts were missing from the audit bundle.", "task_artifact_coverage", 0, 95)
+    lineage_capture = gnomes.get("task_lineage_capture_coverage")
+    if isinstance(lineage_capture, (int, float)) and not isinstance(lineage_capture, bool) and lineage_capture < 1.0:
+        add(
+            "state",
+            "Restore explicit task lineage capture",
+            "Task lineage was incomplete; link task_id, touched files, commit SHAs, evaluator verdicts, and gnome deltas directly in yoagent-state.",
+            "task_lineage_capture_coverage",
+            lineage_capture,
+            89,
+        )
     if int(gnomes.get("deepseek_cache_ratio_unverified_count") or 0) > 0:
         add(
             "deepseek",
