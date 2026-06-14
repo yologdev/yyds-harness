@@ -754,6 +754,35 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(assessment["value"], 1)
             self.assertIn("Assessment evidence exists", assessment["reason"])
 
+    def test_evolution_suggestions_classify_provider_blocked_assessment_diagnostic_gap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": True, "task_count": 0, "selected_task_count": 0},
+                    "artifacts": {"assessment": None, "assessment_missing": None},
+                },
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("assess.log").write_text(
+                "error: Network error: reqwest::Error { source: dns error }\n"
+                "API error with no fallback configured. Exiting.\n",
+                encoding="utf-8",
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=5)
+            assessment = next(
+                item
+                for item in suggestions
+                if item["title"] == "Preserve provider-blocked assessment diagnostic"
+            )
+
+            self.assertEqual(assessment["metric"], "assessment_artifact_missing_count")
+            self.assertIn("assessment_missing.md diagnostic", assessment["reason"])
+            self.assertIn("recovers provider access", assessment["reason"])
+
     def test_evolution_suggestions_accept_preserved_assessment_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

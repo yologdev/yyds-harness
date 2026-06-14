@@ -3300,6 +3300,60 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("neither assessment.md nor assessment_missing.md", assessment_claim["detail"])
             self.assertEqual(assessment_claim["evidence"], ["transcripts/assess.log"])
 
+    def test_provider_blocked_assessment_transcript_marks_missing_diagnostic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "build_ok": False,
+                    "test_ok": False,
+                },
+            )
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("assess.log").write_text(
+                "error: Network error: reqwest::Error { source: dns error }\n"
+                "API error with no fallback configured. Exiting.\n",
+                encoding="utf-8",
+            )
+
+            data = build(root / "sessions", root / "out")
+            claims = json.loads((root / "out/claims.json").read_text(encoding="utf-8"))
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+            work = data["sessions"][0]["work_summary"]
+            assessment_claim = next(
+                claim
+                for claim in claims["sessions"][0]["claims"]
+                if claim["name"] == "assessment_artifact_and_transcript_state"
+            )
+
+            self.assertEqual(
+                work["assessment_artifact_state"]["classification"],
+                "missing_provider_blocked_diagnostic",
+            )
+            self.assertEqual(
+                data["aggregate"]["assessment_artifact_state_counts"],
+                {"missing_provider_blocked_diagnostic": 1},
+            )
+            self.assertEqual(
+                states["sessions"][0]["assessment"]["classification"],
+                "missing_provider_blocked_diagnostic",
+            )
+            self.assertEqual(assessment_claim["status"], "observed")
+            self.assertTrue(assessment_claim["actual"]["transcript_summary"]["provider_error_evidence"])
+            self.assertEqual(
+                assessment_claim["actual"]["transcript_classification"],
+                "provider_blocked",
+            )
+            self.assertIn("provider/API error", assessment_claim["detail"])
+            self.assertEqual(assessment_claim["evidence"], ["transcripts/assess.log"])
+
     def test_assessment_transcript_write_evidence_is_classified(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

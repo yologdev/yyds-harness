@@ -46,6 +46,10 @@ ASSESSMENT_NOTE_RE = re.compile(
     r"(key findings|interesting findings|tests pass|tests failed|state tail|state failures|ci run|failure|crash|cache)",
     re.IGNORECASE,
 )
+ASSESSMENT_PROVIDER_ERROR_RE = re.compile(
+    r"(provider_error|rate_limit|rate limit|\b(?:http\s*)?(?:429|5\d\d)\b|api error|network error|dns error|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded)",
+    re.IGNORECASE,
+)
 SEED_TASK_CONTRADICTION_RE = re.compile(
     r"\bseed(?:ed)? task[\w.-]*\b.*\b(factual error|assessment clearly shows|contradict\w*)\b"
     r"|\b(factual error|assessment clearly shows|contradict\w*)\b.*\bseed(?:ed)? task[\w.-]*\b",
@@ -832,13 +836,19 @@ def assessment_transcript_summary(session_dir: Path) -> dict[str, Any]:
     write_evidence = False
     synthesis_evidence = False
     note_evidence = False
+    provider_error_evidence = False
     write_phrases: list[str] = []
     synthesis_phrases: list[str] = []
     note_phrases: list[str] = []
+    provider_phrases: list[str] = []
     for line in lines:
         clean = line.strip()
         if not clean:
             continue
+        if ASSESSMENT_PROVIDER_ERROR_RE.search(clean):
+            provider_error_evidence = True
+            if len(provider_phrases) < 3:
+                provider_phrases.append(clean[:220])
         if ASSESSMENT_WRITE_RE.search(clean):
             write_evidence = True
             if len(write_phrases) < 3:
@@ -853,6 +863,8 @@ def assessment_transcript_summary(session_dir: Path) -> dict[str, Any]:
                 note_phrases.append(clean[:220])
     if write_evidence:
         classification = "write_evidence"
+    elif provider_error_evidence:
+        classification = "provider_blocked"
     elif synthesis_evidence:
         classification = "synthesis_reached"
     elif note_evidence:
@@ -868,7 +880,8 @@ def assessment_transcript_summary(session_dir: Path) -> dict[str, Any]:
         "write_evidence": write_evidence,
         "synthesis_evidence": synthesis_evidence,
         "audit_note_evidence": note_evidence,
-        "evidence_phrases": (write_phrases + synthesis_phrases + note_phrases)[:5],
+        "provider_error_evidence": provider_error_evidence,
+        "evidence_phrases": (write_phrases + provider_phrases + synthesis_phrases + note_phrases)[:5],
     }
 
 
@@ -1884,6 +1897,12 @@ def assessment_artifact_state(
     elif diagnostic_present:
         classification = "missing_with_diagnostic"
         detail = "Assessment artifact is missing, and assessment_missing.md explains the missing output."
+    elif transcript_present and transcript_classification == "provider_blocked":
+        classification = "missing_provider_blocked_diagnostic"
+        detail = (
+            "Assessment transcript shows a provider/API error, but no assessment_missing.md "
+            "diagnostic was preserved."
+        )
     elif transcript_present and transcript_classification == "write_evidence":
         classification = "missing_written_not_preserved"
         detail = (

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -60,6 +61,13 @@ def load_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -125,6 +133,12 @@ def task_manifest(session_dir: Path) -> dict[str, Any]:
     return load_json(session_dir / "tasks" / "manifest.json")
 
 
+ASSESSMENT_PROVIDER_ERROR_RE = re.compile(
+    r"(provider_error|rate_limit|rate limit|\b(?:http\s*)?(?:429|5\d\d)\b|api error|network error|dns error|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded)",
+    re.IGNORECASE,
+)
+
+
 def assessment_artifact_gap(session_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     planner = manifest.get("planner") if isinstance(manifest.get("planner"), dict) else {}
     artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), dict) else {}
@@ -141,11 +155,16 @@ def assessment_artifact_gap(session_dir: Path, manifest: dict[str, Any]) -> dict
     missing_with_evidence = not artifact_present and not diagnostic_present and transcript_present
     if not missing_with_evidence:
         return {}
+    transcript_text = read_text(transcript_path)
+    provider_blocked = bool(ASSESSMENT_PROVIDER_ERROR_RE.search(transcript_text))
     return {
         "missing": True,
-        "classification": "missing_transcript_only",
+        "classification": "missing_provider_blocked_diagnostic"
+        if provider_blocked
+        else "missing_transcript_only",
         "diagnostic_present": diagnostic_present,
         "transcript_present": transcript_present,
+        "provider_blocked": provider_blocked,
     }
 
 
@@ -899,10 +918,17 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             add("planner", "Make planning failure actionable", "The planner produced no concrete task files.", "planner_no_task_count", gnomes.get("planner_no_task_count"), 100)
     assessment_gap = assessment_artifact_gap(session_dir, manifest)
     if assessment_gap:
+        provider_blocked_assessment = bool(assessment_gap.get("provider_blocked"))
         add(
             "planning",
-            "Preserve assessment artifacts",
-            "Assessment evidence exists but tasks/assessment.md was not preserved, so planner context is degraded for the next DeepSeek task selection.",
+            "Preserve provider-blocked assessment diagnostic"
+            if provider_blocked_assessment
+            else "Preserve assessment artifacts",
+            (
+                "Assessment hit a provider/API error and no tasks/assessment_missing.md diagnostic was preserved; keep the provider-blocked evidence explicit so the next planner recovers provider access before selecting tasks."
+                if provider_blocked_assessment
+                else "Assessment evidence exists but tasks/assessment.md was not preserved, so planner context is degraded for the next DeepSeek task selection."
+            ),
             "assessment_artifact_missing_count",
             1,
             89,
