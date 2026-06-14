@@ -77,8 +77,9 @@ def run_cmd(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
         # Best-effort kill of the whole process group; subprocess.run already
         # killed the immediate child but grandchildren may persist.
         try:
-            if e.pid is not None:
-                os.killpg(os.getpgid(e.pid), 9)  # SIGKILL
+            pid = getattr(e, "pid", None)
+            if pid is not None:
+                os.killpg(os.getpgid(pid), 9)  # SIGKILL
         except (ProcessLookupError, PermissionError, OSError):
             pass
         return 124, "", "timeout"

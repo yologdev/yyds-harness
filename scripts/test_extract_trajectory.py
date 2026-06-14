@@ -22,6 +22,18 @@ def write_json(path: Path, value: object) -> None:
 
 
 class ExtractTrajectoryTests(unittest.TestCase):
+    def test_run_cmd_timeout_without_pid_degrades(self) -> None:
+        with mock.patch.object(
+            extract_trajectory.subprocess,
+            "run",
+            side_effect=extract_trajectory.subprocess.TimeoutExpired(["gh", "run", "list"], 1),
+        ):
+            rc, stdout, stderr = extract_trajectory.run_cmd(["gh", "run", "list"], timeout=1)
+
+        self.assertEqual(rc, 124)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "timeout")
+
     def test_drop_dangling_trailing_section_header(self) -> None:
         rendered = extract_trajectory.drop_dangling_trailing_section_header(
             "# YOUR TRAJECTORY\n\n## Graph-derived next-task pressure\n- keep me\n\n## Structured state snapshot"
