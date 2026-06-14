@@ -1334,6 +1334,17 @@ def main() -> int:
     s = render_outcomes(outcomes)
     if s:
         sections.append(s)
+    s = render_graph_suggestions(audit_dir)
+    if s:
+        sections.append(s)
+    log_feedback_section = render_log_feedback(log_feedback, corrected_feedback_lessons)
+    if corrected_feedback_lessons and log_feedback_section:
+        sections.append(log_feedback_section)
+    s = render_structured_state_snapshot(audit_dir)
+    if s:
+        sections.append(s)
+    if not corrected_feedback_lessons and log_feedback_section:
+        sections.append(log_feedback_section)
     s = render_task_success(tasks)
     if s:
         sections.append(s)
@@ -1344,15 +1355,6 @@ def main() -> int:
     if s:
         sections.append(s)
     s = render_provider_health(sessions_audited, provider_hits)
-    if s:
-        sections.append(s)
-    s = render_graph_suggestions(audit_dir)
-    if s:
-        sections.append(s)
-    s = render_structured_state_snapshot(audit_dir)
-    if s:
-        sections.append(s)
-    s = render_log_feedback(log_feedback, corrected_feedback_lessons)
     if s:
         sections.append(s)
 
