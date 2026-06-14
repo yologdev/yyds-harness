@@ -1,0 +1,598 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to extract one self-contained handler group from `commands_state.rs` into its own module, following the pattern of existing extractions like `commands_state_memory.rs`.
+
+Let me first:
+1. Read the evolve skill
+2. Examine the current state of `commands_state.rs` to understand its structure
+3. Look at the existing extraction patterns (commands_state_memory.rs, etc.)
+4. Pick a good candidate group
+5. Execute the extraction
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ ls src (commands_state*) ✓ (9ms)
+ ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the existing extraction patterns and understand the structure of commands_state.rs. I'll look at how the dispatch works, examine the existing extracted modules, and then pick a good candidate.
+
+Let me look at:
+1. The dispatch function `handle_state_subcommand()` in commands_state.rs
+2. One of the existing extracted modules (commands_state_memory.rs) to understand the pattern
+3. The lib.rs to see module declarations
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_state_subcommand' in src/commands_state.rs  ▶ read src/commands_state_memory.rs (60 lines)  ▶ search 'commands_state_memory' in src/lib.rs ✓ (19ms)
+ ✓ (20ms)
+ ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the dispatch function and see what handler groups exist. I need to find the dispatch table in commands_state.rs and understand how functions are called.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1..131 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the dispatch table. Let me identify the candidate groups:
+
+1. `handle_cache` + `handle_policies` (cache & policy diagnostics) - lines 72-73
+2. `handle_evals` + `handle_patches` (eval & patch state queries) - lines 76-77
+3. `handle_failures` + `handle_fixes` + `handle_rollbacks` (error/fix tracking) - lines 70, 74-75
+4. `handle_export` + `handle_import` (state data I/O) - lines 55-68
+5. `handle_tail` + `handle_trace` (log inspection) - lines 31-47
+6. `handle_lifecycle` + `handle_project` (lifecycle/project queries) - lines 48-49
+
+Let me look at each to understand their size and dependencies. Let me search for each function definition to find their locations.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^fn handle_cache\|^fn… ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me size each candidate group by looking at line numbers:
+
+1. **cache (764) + policies (673)**: need to find end of each
+2. **evals (783) + patches (806)**: 
+3. **failures (745) + fixes (692) + rollbacks (712)**:
+4. **export (641) + import (654)**:
+5. **tail (412) + trace (433)**:
+6. **lifecycle (445) + project (466)**:
+
+Let me look at how these functions relate to each other. I should look for the simplest, most self-contained group. Let me read sections around these to understand them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:641..781  ▶ read src/commands_state.rs:673..863 ✓ (11ms)
+ ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the sizes. Let me find where each function group ends and what helper functions/report builders they depend on.
+
+Let me look at the groups more carefully:
+
+Group: cache + policies
+- handle_cache: 764-781 (18 lines)
+- handle_policies: 673-690 (18 lines)
+- These are small and simple. Let me check what build_cache_recent_report and build_policy_report look like.
+
+Group: evals + patches  
+- handle_evals: 783-804 (22 lines)
+- handle_patches: 806-834 (29 lines)
+
+Group: failures + fixes + rollbacks
+- handle_failures: 745-762 (18 lines)
+- handle_fixes: 692-710 (19 lines)
+- handle_rollbacks: 712-743 (32 lines)
+
+Group: export + import
+- handle_export: 641-652 (12 lines)
+- handle_import: 654-671 (18 lines)
+
+All of these are relatively small handler functions. The task says "at least 200 lines, at most 800 lines". So I need to include the helper/report-building functions that these handlers call too.
+
+Let me search for the report-building functions to understand their sizes.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.6s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^fn build_cache_recen… ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me think about the best groups. The evals + patches group is interesting and quite recent in the file (around lines 12628+). Let me check the size of the cache and policy groups too.
+
+Let me check each candidate's total size by looking at where these functions and their helper functions end.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:12730..12775  ▶ read src/commands_state.rs:12628..12728 ✓ (29ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The eval and patch functions are at very different locations:
+- build_eval_report: line 12628
+- build_cache_recent_report: line 12736
+- build_patch_list_report: line 13213
+- build_patch_show_report: line 13264
+
+These are quite far from the handlers. Let me think about which group is most self-contained - meaning whose report-building functions are nearby and not intertwined with other functions.
+
+Actually, looking at the structure, the handlers (cache, policies, evals, patches, failures, fixes, rollbacks) all follow a very similar pattern - they're thin dispatchers that call report-building functions. The real work is in those builder functions.
+
+Let me take a different approach. Let me look at what the `commands_state_memory.rs` pattern actually extracted. It extracted `handle_memory` plus the supporting functions. Let me see what it imported from `commands_state`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.3s (2 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_memory.rs:1..16  ▶ $ wc -l /home/runner/work/yyds-harness/yyds-harness/src/commands_state_memory.rs /… ✓ (26ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. So the existing extracted modules are `commands_state_memory.rs` (584 lines), `commands_state_crashes.rs` (209 lines), and `commands_state_graph.rs` (1306 lines). The task wants at least 200 lines and at most 800 lines.
+
+Let me check which of the public functions in `commands_state.rs` are already used by the extracted modules (as they import from `crate::commands_state`):
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^pub ' src/commands_s… ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only `handle_state_subcommand` is `pub`. Everything else is `pub(crate)` or private. Let me check what's `pub(crate)`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^pub(crate) ' src/com… ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at evals + patches as a candidate more carefully. The handlers are small, but the report builders are large. Let me look at what functions are used by build_eval_report and build_patch_show_report/build_patch_list_report, and also where build_cache_recent_report ends.
+
+Let me first check the total size of cache + policies handlers and their builders. Then evals + patches.
+
+Let me look at the end lines of each builder function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^fn build_cache_recen… ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The build_cache_recent_report is at line 12736, and build_eval_report is at 12628. They're adjacent in the file. The build_patch_list_report is at 13213 and build_patch_show_report at 13264. These are quite far apart from the evals/cache report builders.
+
+Let me look at this differently. I should choose a grouping that's cohesive. Let me look at what's between 12628 and 13264 (between eval reports and patch reports) and also what's between the cache report end and patch reports start.
+
+Actually, let me think about the best approach. The handlers themselves are tiny - 20-30 lines each. The real work is in the report builders. Let me find the end of each builder to compute sizes.
+
+Let me look for a natural group. Looking at the existing extractions:
+- memory: self-contained (memory commands + state memory synthesis)
+- crashes: self-contained (crash report)
+- graph: self-contained (graph subcommands)
+
+The groups that look most naturally cohesive:
+1. **cache + policies** - both deal with diagnostics (cache metrics + policy decisions)
+2. **evals + patches** - both deal with evaluation artifacts (eval results + harness patches)
+
+Let me check how big these builder functions are and figure out which group is the best candidate.
+
+Let me read the key sections more systematically.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && awk '/^fn build_cache_recent_r… ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's not giving me what I need. Let me try a different approach - find the next function after each builder.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^fn ' src/commands_st… ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So:
+- build_policy_report: 1804 to 1873 (69 lines)
+- build_eval_report: 12628 to 12736 (108 lines)
+- build_cache_recent_report: 12736 to 12798 (62 lines)
+- build_patch_list_report: 13213 to 13264 (51 lines)
+- build_patch_show_report: 13264 to 13375 (111 lines)
+
+Now let me also check helper functions that these depend on. For evals:
+- eval_artifact_uri
+- eval_artifact_uri_from_payload
+- eval_reproducibility_detail
+- eval_fixture_suite_detail
+- eval_pass_fail_detail
+- eval_failure_ids_detail
+- serialized_label
+- is_eval_event
+
+For patches:
+- patch_summaries
+
+These helpers might be shared between the two.
+
+Let me think about which group to pick. The task mentions "Pick a handler group that forms a natural unit." Let me consider:
+
+**evals + patches** - these form a natural unit (evaluation artifacts: eval results + harness patches). They're close together in the file (handlers at 783-834, builders at 12628-13375). This could work.
+
+**cache + policies** - these are diagnostics-oriented. But build_policy_report is at line 1804, while build_cache_recent_report is at 12736 - they're far apart in the file. This suggests they may have different dependencies.
+
+Actually wait - let me reconsider. The handlers in `commands_state.rs` are thin wrappers. The actual logic is in the builder functions. If I choose handlers that are near each other in the dispatch table AND whose builders are in the same region of the file, that's a better extraction.
+
+Let me look more carefully at the evals + patches group. Their handlers are at 783-834, and their main builders are at 12628-13375. But there might be helper functions between them.
+
+Let me check what eval helper functions exist between 783 and 13375.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^fn eval_\|^fn is_eva… ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+These helper functions (eval_*) at lines 13003-13187 are bundled between the eval/build_cache reports and the patch reports. The helpers used by evals and patches are clustered together in the 13003-13441 range. This is good - the whole eval+patch subsystem's helper functions are in one region.
+
+Now let me compute the total size. Let me map out:
+
+Handlers (in commands_state.rs):
+- handle_evals: 783-804 (~22 lines)
+- handle_patches: 806-834 (~29 lines)
+
+Main builders:
+- build_eval_report: 12628-12736 (~108 lines)
+- build_cache_recent_report: 12736-12798 (~62 lines) - this is for cache, not evals/patches
+- build_patch_list_report: 13213-13264 (~51 lines)
+- build_patch_show_report: 13264-13375 (~111 lines)
+
+Helper functions between:
+- is_eval_event: 13003-13014 (~12 lines)
+- eval_artifact_uri: 13014-13018 (~5 lines)
+- eval_reproducibility_detail: 13018-13041 (~24 lines)
+- eval_fixture_suite_detail: 13041-13088 (~48 lines)
+- eval_pass_fail_detail: 13088-13104 (~17 lines)
+- eval_failure_ids_detail: 13104-13187 (~84 lines)
+- eval_artifact_uri_from_payload: 13187-13200 (~14 lines)
+- PatchSummary struct: 13200-13213 (~14 lines)
+- patch_summaries: 13375-13441 (~67 lines)
+- serialized_label: 13441-? (need to find end)
+
+Total estimate for evals + patches: 22+29+108+51+111+12+5+24+48+17+84+14+14+67 = ~606 lines
+
+Plus there might be more. Let me also check if there are additional helper functions.
+
+But wait, I also need to check if handle_cache is between handle_evals and handle_patches helpers. build_cache_recent_report is at 12736, interleaved with the eval functions.
+
+Actually, looking more carefully:
+- build_cache_recent_report is at 12736
+- is_eval_event is at 13003
+
+There's a gap between 12798 (end of build_cache_recent_report or next fn) and 13003. Let me check what's in that gap.
+
+Actually I think build_cache_recent_report ends around 12798 and the next function might be at 12798. Let me read the area.
+
+Actually wait, let me see these functions again. The build_cache_recent_report is between build_eval_report and the eval helpers. This means the cache report was inserted in the middle of the eval code. That makes the extraction a bit tricky since we can't just take a contiguous block.
+
+Let me reconsider. Perhaps a different group would be easier. Let me look at `failures + fixes + rollbacks`:
+
+Handlers:
+- handle_failures: 745-762 (~18 lines)
+- handle_fixes: 692-710 (~19 lines)
+- handle_rollbacks: 712-743 (~32 lines)
+
+Builders:
+- build_recent_failure_report: 1636-1804 (~169 lines)
+- build_failure_fix_report: 1873-? (need to find end)
+- build_rollback_report: 2109-2161 (~53 lines)
+- build_rollback_payload: 2161-? (need to find end)
+
+Let me check this group's builder functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^fn build_failure_fix… ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So between the failure/fix/rollback builders, we have:
+- build_recent_failure_report: 1636-1804 (169 lines)
+- build_policy_report: 1804-1873 (69 lines) - interleaved!
+- build_failure_fix_report: 1873-2109 (237 lines)
+- build_rollback_report: 2109-2161 (53 lines)
+- build_rollback_payload: 2161-? (need to find end)
+
+The `build_policy_report` is interleaved between the failure/fix builders. That complicates extraction of failures+fixes+rollbacks. 
+
+Let me try another approach. Let me look at the cache + policies group. Their builders are:
+- build_policy_report: 1804-1873
+- build_cache_recent_report: 12736-12798
+
+These are in completely different parts of the file. Not ideal.
+
+Let me look at the evals + patches group again. The cache report at 12736 is between the eval builder (12628) and eval helpers (13003). This isn't ideal either, but let me check if we can extract evals+patches with the interleaved cache report.
+
+Actually, I think the cleanest extraction would be to look at what's contiguous. Let me look at from line 12628 (build_eval_report) through some natural boundary. Let me check what's at line 12798.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:12795..12805  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^fn \|^struct \|^enum… ✓ (28ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the pattern more clearly. The eval + patch code spans from:
+- 12628 (build_eval_report) through at least 13456
+
+But there's an interleaved function:
+- build_cache_recent_report at 12736-12798 - this is for cache, not evals/patches
+- build_state_journal_draft at 12798-13003 - this is for journal, not evals/patches
+
+Wait, build_state_journal_draft ends at 13003? That's 205 lines for a journal draft builder - that seems like it belongs to journal commands.
+
+Let me reconsider. The functions that logically belong to evals+patches are:
+- build_eval_report (12628-12736)
+- is_eval_event (13003-13014)
+- eval_artifact_uri (13014-13018)
+- eval_reproducibility_detail (13018-13041)
+- eval_fixture_suite_detail (13041-13088)
+- eval_pass_fail_detail (13088-13104)
+- eval_failure_ids_detail (13104-13187) 
+- eval_artifact_uri_from_payload (13187-13200)
+- PatchSummary struct (13200-13213)
+- build_patch_list_report (13213-13264)
+- build_patch_show_report (13264-13375)
+- patch_summaries (13375-13441)
+- serialized_label (13441-13452) - this is a general helper, might be used elsewhere
+- format_json_count_map, compact_id_list, format_count_map, format_u64_count_map - these are helpers
+
+There are two interleaved functions: build_cache_recent_report and build_state_journal_draft. These would need to stay in commands_state.rs.
+
+This makes the extraction more complex - I'd need to:
+1. Move the eval+patch functions to the new module
+2. Leave the interleaved functions (cache, journal) in commands_state.rs
+3. Add a call from the new module's handler entrypoint
+
+Actually wait - the task description says "Pick a handler group that forms a natural unit." The eval and patch handlers are at 783-834. But their builder functions are interleaved with cache and journal builders. Let me try a different approach.
+
+Let me look at a simpler group. What about `tail + trace` (log inspection)?
+
+handle_tail: 412-433 (~22 lines)
+handle_trace: 433-444 (~12 lines)
+
+Let me check their builders.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.8s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:412..462 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at what `handle_tail` and `handle_trace` depend on. They depend on:
+- `read_tail` 
+- `print_event_line`
+- `build_trace_report`
+- `read_events`
+
+These are all private functions in commands_state.rs. Let me search for them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^fn read_tail\|^fn bu… ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+read_tail at 919, read_limited_events at 935, read_tail_events at 946 - these are general-purpose functions used by many handlers, not just tail/trace.
+print_event_line at 1325 - general purpose, used by many.
+build_trace_report at 1561 - specific to trace.
+
+Let me try to find a group where the builder functions are truly self-contained and in a contiguous region. Let me step back and look for the simplest extraction.
+
+Actually, let me look at the `export + import` group. These are very simple functions with their own private functions:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:961..1021 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The export+import group is really tiny - maybe 100 lines total. That's below the 200 line minimum.
+
+Let me take a completely different approach. Let me find the largest contiguous self-contained block that I can extract. Let me look at a few of the bigger functions in detail and figure out what group gives me 200-800 lines with clean boundaries.
+
+Let me look at `handle_evals` and `handle_patches` again but this time just look at the total span from the first relevant function to the last, counting both the eval and patch code.
+
+Actually, let me look at this differently. Let me consider the lifecycle + project group:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:445..565 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The lifecycle + project group is very small. Let me reconsider my approach.
+
+I think the best approach is to pick the `evals + patches` group. Even though build_cache_recent_report is interleaved (at 12736-12798), I can simply:
+1. Move the eval functions (12628-12736 and 13003-13200) and patch functions (13200-13441+) to the new module
+2. Leave build_cache_recent_report and build_state_journal_draft in commands_state.rs
+3. Call into the new module from the dispatch
+
+Let me figure out the exact boundaries. The key functions I need to move:
+
+From the evals group:
+- handle_evals (783-804)
+- handle_patches (806-834) 
+- build_eval_report (12628-12736)
+- is_eval_event (13003-13014)
+- eval_artifact_uri (13014-13018)
+- eval_reproducibility_detail (13018-13041)
+- eval_fixture_suite_detail (13041-13088)
+- eval_pass_fail_detail (13088-13104)
+- eval_failure_ids_detail (13104-13187)
+- eval_artifact_uri_from_payload (13187-13200)
+- PatchSummary (13200-13213)
+- build_patch_list_report (13213-13264)
+- build_patch_show_report (13264-13375)
+- patch_summaries (13375-13441)
+- serialized_label (13441-13452) - might be used elsewhere, check
+- format_json_count_map, compact_id_list, format_count_map, format_u64_count_map - used by eval/patch code
+
+Wait, this is getting complex. Let me check if serialized_label and those helper format functions are used elsewhere.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'serialized_label\|for… ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Those helpers are used all over the place. They're not specific to evals+patches. They need to stay in commands_state.rs or be made pub(crate).
+
+Let me try yet another approach. Let me look for the simplest, most self-contained extraction. Let me look at the `cache + policies` group more carefully:
+
+handle_cache: 764-781
+handle_policies: 673-690 
+build_cache_recent_report: 12736-12798
+build_policy_report: 1804-1873
+
+These are simple and small. But the total is still only about 120 lines. Below 200.
+
+OK, let me try the `failures + fixes + rollbacks` group:
+- handle_failures: 745-762
+- handle_fixes: 692-710
+- handle_rollbacks: 712-743
+- build_recent_failure_report: 1636-1804
+- build_failure_fix_report: 1873-2109
+- build_rollback_report: 2109-2161
+- build_rollback_payload: 2161-? (let me find end)
+
+That's about 18+19+32+169+237+53+? = ~600+ lines. This is within the 200-800 range.
+
+But build_policy_report is interleaved at 1804-1873. Not ideal.
+
+Let me try a completely different approach. Let me look at the `handle_evals` + `handle_patches` with their helper functions and see if I can make it work by including the interleaved cache/journal functions or by extracting just the relevant ones.
+
+Actually, let me re-read the task instructions:
+
+"Pick a handler group that forms a natural unit. Candidates from the dispatch table:
+  - handle_cache + handle_policies (cache & policy diagnostics)
+  - handle_evals + handle_patches (eval & patch state queries)
+  - handle_failures + handle_fixes + handle_rollbacks (error/fix tracking)
+  ...
+- Choose the group that has the clearest internal boundaries and fewest cross-references into commands_state.rs private functions/types"
+
+The key constraint is "fewest cross-references into commands_state.rs private functions/types." Let me check what each handler depends on:
+
+All handlers depend on:
+- default_events_path() - pub(crate)
+- read_events() - pub(crate)
+- flag_value() - pub(crate)
+- format::* - already imported
+
+Then specific dependencies:
+- cache: build_cache_recent_report (private)
+- policies: build_policy_report (private)
+- evals: build_eval_report (private)
+- patches: build_patch_list_report, build_patch_show_report (private)
+- failures: build_recent_failure_report (private)
+- fixes: build_failure_fix_report (private)
+- rollbacks: build_rollback_report, build_rollback_payload (private)
+
+All these builder functions also call various helpers. Let me try to find which group has the fewest cross-dependencies.
+
+Actually, let me take a step back. The simplest approach might be to not try to extract a "natural group" by semantic boundaries, but rather to extract a contiguous chunk of code. Given that the report builders are somewhat scattered, maybe I should focus on extracting the evals + patches group since they're semantically related and most of their code is in one region (12628-13441).
+
+Let me look at what functions in the range 12628-13441 exist and which are needed by evals/patches vs other handlers.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^fn \|^struct \|^enum… ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The awk might need adjustment. Let me try a different approach.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^fn \|^struct \|^enum… ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me try a simpler approach.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -n '12628,13500p' src/comm… ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, now I can see the layout better. The range 12628-13441 has:
+
+Eval-related:
+- build_eval_report (line 1 of output = 12628)
+- is_eval_event (376 = 13003)
+- eval_artifact_uri (387 = 13014)
+- eval_reproducibility_detail (391 = 13018)
+- eval_fixture_suite_detail (414 = 13041)
+- eval_pass_fail_detail (461 = 13088)
+- eval_failure_ids_detail (477 = 13104)
+- eval_artifact_uri_from_payload (560 = 13187)
+
+Interleaved (not eval/patch):
+- build_cache_recent_report (109 = 12736)
+- build_state_journal_draft (171 = 12798)
+
+Helper format functions (used by eval/patch but also elsewhere):
+- format_json_count_map (449 = 13076)
+- compact_id_list (501 = 13128)
+- format_count_map (515 = 13142)
+- format_u64_count_map (526 = 13153)
+
+Patch-related:
+- PatchSummary struct (573 = 13200)
+- build_patch_list_report (586 = 13213)
+- build_patch_show_report (637 = 13264)
+- patch_summaries (748 = 13375)
+
+General helpers:
+- serialized_label (814 = 13441)
+- payload_u64 (825 = 13452)
+- payload_u64_count_map (829 = 13456)
+- value_u64_count_map (842 = 13469)
+- payload_value_u64 (854 = 13481)
+- payload_bool (858 = 13485)
+- payload_f64 (862 = 13489)
+- patch_status (866 = 13493)
+
+So the eval+patch code spans about 814 lines (from 12628 through 13493+). Good, within the 200-800 range.
+
+But extracting this would require either:
+1. Also extracting build_cache_recent_report and build_state_journal_draft (which are handler groups, not eval/patch)
+2. Or splitting the extraction into two non-contiguous blocks
+
+Option 2 is messy. Let me look at option 1. If I extract the entire contiguous block from 12628 through the end of patch helpers, I'd get cache and journal too. That's too much.
+
+Actually, let me reconsider. The task says to pick "the group that has the clearest internal boundaries and fewest cross-references." Let me look at the `failures + fixes + rollbacks` group.
+
+Let me check the contiguousness of failure/fix/rollback code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -n '1636,2230p' src/comman… ✓ (17ms)
+
+
