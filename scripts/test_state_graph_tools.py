@@ -189,6 +189,11 @@ class StateGraphTools(unittest.TestCase):
                 "provider/API errors",
             ),
             (
+                "task_no_edit_revert_count",
+                "Force reverted tasks to leave concrete evidence",
+                "reverted without touching files",
+            ),
+            (
                 "task_scope_mismatch_count",
                 "Align implementation edits with task file scope",
                 "outside the selected task surface",

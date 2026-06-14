@@ -965,6 +965,15 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             gnomes.get("task_api_error_count"),
             87,
         )
+    if int(gnomes.get("task_no_edit_revert_count") or 0) > 0:
+        add(
+            "implementation",
+            "Force reverted tasks to leave concrete evidence",
+            "Implementation tasks reverted without touching files; require an early scoped edit, obsolete note, or concrete blocker instead of analysis-only work.",
+            "task_no_edit_revert_count",
+            gnomes.get("task_no_edit_revert_count"),
+            86,
+        )
     if int(gnomes.get("task_unlanded_source_count") or 0) > 0:
         add("commit", "Make source-edit outcomes land or explain reverts", "A task touched source files without a landed source commit.", "task_unlanded_source_count", gnomes.get("task_unlanded_source_count"), 88)
     if int(gnomes.get("evaluator_timeout_count") or 0) > 0:
