@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import subprocess
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -4614,6 +4615,10 @@ def session_state_projection(session: dict[str, Any]) -> dict[str, Any]:
             else {},
         },
         "lifecycle": {
+            "observed": lifecycle.get("observed"),
+            "healthy": lifecycle.get("healthy"),
+            "balanced": lifecycle.get("balanced"),
+            "strict_balanced": lifecycle.get("strict_balanced"),
             "runs": lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {},
             "model_calls": lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {},
             "imbalance_causes": lifecycle.get("imbalance_causes")
@@ -4661,6 +4666,126 @@ def task_state_summary_for_sessions(session_states: list[dict[str, Any]]) -> dic
     }
 
 
+def state_lifecycle_summary_for_sessions(session_states: list[dict[str, Any]]) -> dict[str, Any]:
+    runs = Counter()
+    model_calls = Counter()
+    cause_counts: dict[tuple[str, str], dict[str, Any]] = {}
+    observed_session_count = 0
+    healthy_session_count = 0
+    for row in session_states:
+        lifecycle = row.get("lifecycle") if isinstance(row.get("lifecycle"), dict) else {}
+        run_data = lifecycle.get("runs") if isinstance(lifecycle.get("runs"), dict) else {}
+        model_data = lifecycle.get("model_calls") if isinstance(lifecycle.get("model_calls"), dict) else {}
+        observed = lifecycle.get("observed") is True
+        if observed:
+            observed_session_count += 1
+        if observed and lifecycle.get("healthy") is True:
+            healthy_session_count += 1
+        for key in (
+            "started",
+            "completed",
+            "incomplete",
+            "unmatched_completed",
+            "unmatched_non_validation_completed",
+            "unstarted_input_validation_error",
+        ):
+            runs[key] += int(run_data.get(key) or 0)
+        for key in (
+            "started",
+            "completed",
+            "incomplete",
+            "unmatched_completed",
+            "abnormal_completed",
+        ):
+            model_calls[key] += int(model_data.get(key) or 0)
+        for cause in lifecycle.get("imbalance_causes") or []:
+            if not isinstance(cause, dict):
+                continue
+            category = str(cause.get("category") or "unknown")
+            reason = str(cause.get("cause") or "unknown")
+            key = (category, reason)
+            row_data = cause_counts.setdefault(
+                key,
+                {"category": category, "cause": reason, "count": 0, "examples": []},
+            )
+            row_data["count"] += int(cause.get("count") or 0)
+            examples = cause.get("examples") if isinstance(cause.get("examples"), list) else []
+            for example in examples:
+                if len(row_data["examples"]) >= 5:
+                    break
+                row_data["examples"].append(str(example))
+    top_causes = sorted(
+        cause_counts.values(),
+        key=lambda row: (-int(row.get("count") or 0), str(row.get("category") or ""), str(row.get("cause") or "")),
+    )[:8]
+    return {
+        "session_count": len(session_states),
+        "observed_session_count": observed_session_count,
+        "healthy_session_count": healthy_session_count,
+        "unhealthy_session_count": observed_session_count - healthy_session_count,
+        "missing_session_count": len(session_states) - observed_session_count,
+        "runs": dict(sorted(runs.items())),
+        "model_calls": dict(sorted(model_calls.items())),
+        "top_imbalance_causes": top_causes,
+    }
+
+
+def tool_failure_summary_for_sessions(session_states: list[dict[str, Any]]) -> dict[str, Any]:
+    totals = Counter()
+    category_counts = Counter()
+    unrecovered_category_counts = Counter()
+    examples_by_category: dict[str, list[str]] = {}
+    unrecovered_examples_by_category: dict[str, list[str]] = {}
+
+    def add_categories(summary: Any, counts: Counter, examples: dict[str, list[str]]) -> None:
+        if not isinstance(summary, dict):
+            return
+        for category, count in (summary.get("category_counts") or {}).items():
+            category_key = str(category)
+            counts[category_key] += int(count or 0)
+        for row in summary.get("top_categories") or []:
+            if not isinstance(row, dict):
+                continue
+            category_key = str(row.get("category") or "")
+            if not category_key:
+                continue
+            bucket = examples.setdefault(category_key, [])
+            for example in row.get("examples") or []:
+                if len(bucket) >= 5:
+                    break
+                bucket.append(str(example))
+
+    for row in session_states:
+        failures = row.get("tool_failures") if isinstance(row.get("tool_failures"), dict) else {}
+        for key in (
+            "failed_tool_count",
+            "recovered_failed_tool_count",
+            "unrecovered_failed_tool_count",
+            "failed_command_count",
+        ):
+            totals[key] += int(failures.get(key) or 0)
+        add_categories(failures.get("summary"), category_counts, examples_by_category)
+        add_categories(failures.get("unrecovered_summary"), unrecovered_category_counts, unrecovered_examples_by_category)
+
+    def top_rows(counts: Counter, examples: dict[str, list[str]]) -> list[dict[str, Any]]:
+        return [
+            {"category": category, "count": count, "examples": examples.get(category, [])[:5]}
+            for category, count in sorted(counts.items(), key=lambda item: (-int(item[1] or 0), item[0]))[:8]
+        ]
+
+    return {
+        "session_count": len(session_states),
+        "failed_tool_count": totals["failed_tool_count"],
+        "recovered_failed_tool_count": totals["recovered_failed_tool_count"],
+        "unrecovered_failed_tool_count": totals["unrecovered_failed_tool_count"],
+        "failed_command_count": totals["failed_command_count"],
+        "category_counts": dict(sorted(category_counts.items())),
+        "unrecovered_category_counts": dict(sorted(unrecovered_category_counts.items())),
+        "top_categories": top_rows(category_counts, examples_by_category),
+        "top_unrecovered_categories": top_rows(unrecovered_category_counts, unrecovered_examples_by_category),
+    }
+
+
 def build_states_projection(
     sessions: list[dict[str, Any]],
     generated_at: str,
@@ -4680,6 +4805,8 @@ def build_states_projection(
             "latest_task_summary": latest_task_summary,
             "recent_window_size": recent_window_size,
             "recent_task_summary": recent_task_summary,
+            "lifecycle_summary": state_lifecycle_summary_for_sessions(session_states),
+            "tool_failure_summary": tool_failure_summary_for_sessions(session_states),
             "gnome_audit": gnome_audit,
         }
     )

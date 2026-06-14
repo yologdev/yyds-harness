@@ -2352,6 +2352,80 @@ class BuildEvolutionDashboard(unittest.TestCase):
         self.assertEqual(lessons[0]["kind"], "state_run_incomplete")
         self.assertIn("state_incomplete/open_after_file_edit=1", lessons[0]["fingerprint"])
 
+    def test_states_summary_aggregates_lifecycle_and_tool_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                },
+            )
+            write_json(session / "state/summary.json", {"latest_gnomes": {}, "gnome_keys": []})
+            write_events(
+                session / "state/events.jsonl",
+                [
+                    {"kind": "RunStarted", "run_id": "run-open", "payload": {"status": "started"}},
+                    {
+                        "kind": "ModelCallStarted",
+                        "run_id": "run-open",
+                        "payload": {"model": "deepseek-v4-pro"},
+                    },
+                    {
+                        "kind": "FileEdited",
+                        "run_id": "run-open",
+                        "payload": {"path": "/home/runner/work/yyds-harness/yyds-harness/src/lib.rs"},
+                    },
+                    {
+                        "kind": "RunCompleted",
+                        "run_id": "run-closed-without-start",
+                        "payload": {"status": "completed"},
+                    },
+                ],
+            )
+            transcript_dir = session / "transcripts"
+            transcript_dir.mkdir(parents=True)
+            transcript_dir.joinpath("task_01_attempt1.log").write_text(
+                "  ▶ search 'needle' in src/lib.rs ✗ (17ms)\n",
+                encoding="utf-8",
+            )
+
+            build(root / "sessions", root / "out")
+            states = json.loads((root / "out/states.json").read_text(encoding="utf-8"))
+
+            lifecycle = states["summary"]["lifecycle_summary"]
+            self.assertEqual(lifecycle["session_count"], 1)
+            self.assertEqual(lifecycle["observed_session_count"], 1)
+            self.assertEqual(lifecycle["healthy_session_count"], 0)
+            self.assertEqual(lifecycle["unhealthy_session_count"], 1)
+            self.assertEqual(lifecycle["runs"]["started"], 1)
+            self.assertEqual(lifecycle["runs"]["completed"], 1)
+            self.assertEqual(lifecycle["runs"]["incomplete"], 1)
+            self.assertEqual(lifecycle["runs"]["unmatched_completed"], 1)
+            self.assertEqual(lifecycle["model_calls"]["started"], 1)
+            self.assertEqual(lifecycle["model_calls"]["incomplete"], 1)
+            self.assertIn(
+                {
+                    "category": "run_incomplete",
+                    "cause": "open_after_file_edit:src/lib.rs",
+                    "count": 1,
+                    "examples": ["run-open"],
+                },
+                lifecycle["top_imbalance_causes"],
+            )
+
+            tools = states["summary"]["tool_failure_summary"]
+            self.assertEqual(tools["failed_tool_count"], 1)
+            self.assertEqual(tools["unrecovered_failed_tool_count"], 1)
+            self.assertEqual(tools["failed_command_count"], 1)
+            self.assertEqual(tools["category_counts"], {"search_tool_error": 1})
+            self.assertEqual(tools["unrecovered_category_counts"], {"search_tool_error": 1})
+            self.assertEqual(tools["top_categories"][0]["category"], "search_tool_error")
+
     def test_dashboard_marks_lifecycle_run_ids_reused_across_sessions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
