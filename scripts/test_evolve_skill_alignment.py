@@ -95,6 +95,9 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("top unresolved claim families", text)
         self.assertIn("recent tool failures", text)
         self.assertIn("recent action evidence", text)
+        self.assertIn("Graph-derived next-task pressure", text)
+        self.assertIn("graph-pressure rows are\n   graph-ranked state/log evidence, not dashboard-only display", text)
+        self.assertIn("graph-derived next-task pressure rows + metrics", text)
         self.assertIn("historical unrecovered tool failures", text)
 
     def test_self_assess_skill_preserves_bounded_assessment_contract(self):

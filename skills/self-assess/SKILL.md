@@ -36,12 +36,15 @@ evidence that lets the planner choose small, useful, verifiable work.
 5. **Read yoagent-state feedback.** Prefer concrete state evidence:
    `state tail`, `state why`, graph hotspots, replay integrity, cache reports,
    model/tool events, task lineage, and `PatchEvaluated` gnome values.
-6. **Print the structured state snapshot.** Summarize claim health, top
-   unresolved claim families, task-state counts, recent tool failures, recent
-   action evidence, and top historical tool-failure categories before choosing
-   candidate tasks. Use the trajectory snapshot when present; otherwise derive
-   the compact view from current dashboard/state artifacts. Treat `recent tool
-   failures` and `recent action evidence` as current harness pressure. Treat
+6. **Print the structured state snapshot and graph pressure.** Summarize claim
+   health, top unresolved claim families, task-state counts, recent tool
+   failures, recent action evidence, `Graph-derived next-task pressure` rows
+   with their metrics, and top historical tool-failure categories before
+   choosing candidate tasks. Use the trajectory snapshot when present; otherwise
+   derive the compact view from current dashboard/state artifacts. Treat
+   `Graph-derived next-task pressure`, `recent tool failures`, and `recent
+   action evidence` as current harness pressure. The graph-pressure rows are
+   graph-ranked state/log evidence, not dashboard-only display. Treat
    `historical unrecovered tool failures` as cumulative context unless fresh
    evidence shows the failure still reproduces.
 7. **Compare intent to evidence.** Ask whether task artifacts, action logs,
@@ -79,7 +82,7 @@ Write findings as prioritized evidence, not guesses:
 
 ```markdown
 SELF-ASSESSMENT Day [N]:
-Structured State Snapshot: [claim health; top unresolved claim families; task-state counts; recent tool failures; recent action evidence; historical unrecovered tool-failure categories]
+Structured State Snapshot: [claim health; top unresolved claim families; task-state counts; recent tool failures; recent action evidence; graph-derived next-task pressure rows + metrics; historical unrecovered tool-failure categories]
 1. [CRITICAL/HIGH/MEDIUM/LOW] [issue]
    Evidence: [file, session id, metric, transcript, command, or dashboard field]
    Impact: [why this matters for yyds as a DeepSeek coding agent]
