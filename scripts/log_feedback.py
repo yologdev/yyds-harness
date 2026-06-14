@@ -1483,7 +1483,8 @@ def build_assessment(
 
 def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     lessons: list[dict[str, Any]] = []
-    if int(metrics.get("provider_error_count") or 0) > 0:
+    provider_errors_present = int(metrics.get("provider_error_count") or 0) > 0
+    if provider_errors_present:
         lessons.append(
             {
                 "kind": "provider_error",
@@ -1662,6 +1663,8 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
             break
         fp = str(item.get("fingerprint") or "")
         if not fp:
+            continue
+        if provider_errors_present and EXPLICIT_PROVIDER_SIGNAL_RE.search(fp):
             continue
         recurring = int(metrics.get("recurring_failure_count") or 0) > 0
         lessons.append(
@@ -1934,6 +1937,21 @@ def run_self_tests() -> int:
         "provider errors outrank provider-blocked planning lessons",
         provider_blocked_lessons[0]["kind"] == "provider_error",
         provider_blocked_lessons,
+    )
+    provider_fingerprint_lessons = top_lessons(
+        {
+            "provider_error_count": 2,
+            "state_capture_coverage": 1.0,
+            "failure_fingerprints": [
+                {"fingerprint": "api error with no fallback configured. exiting.", "count": 3},
+                {"fingerprint": "error: network error: reqwest::error { source: dns error", "count": 3},
+            ],
+        }
+    )
+    check(
+        "provider fingerprints collapse into provider lesson",
+        [lesson["kind"] for lesson in provider_fingerprint_lessons] == ["provider_error"],
+        provider_fingerprint_lessons,
     )
     prompt_expansion = parse_log(
         "\n".join(
