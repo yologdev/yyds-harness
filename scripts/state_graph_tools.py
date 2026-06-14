@@ -19,6 +19,7 @@ from typing import Any
 
 GNOME_COMPARE_KEYS = [
     "coding_log_score",
+    "json_parse_failure_rate",
     "session_success_rate",
     "task_success_rate",
     "task_verification_rate",
@@ -28,6 +29,7 @@ GNOME_COMPARE_KEYS = [
     "task_spec_quality_score",
     "state_operational_capture_coverage",
     "state_replay_integrity_rate",
+    "state_failure_count",
     "evolution_friction_count",
     "repair_loop_count",
     "recurring_failure_count",
@@ -981,6 +983,16 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             replay_integrity,
             92,
         )
+    state_failures = int_metric(gnomes, "state_failure_count")
+    if state_failures > 0:
+        add(
+            "state",
+            "Repair recorded state failure events",
+            "State metrics recorded failure events; inspect the failing state/event path and add a targeted harness guard or replay fixture before trusting downstream gnomes.",
+            "state_failure_count",
+            state_failures,
+            86,
+        )
     if int(gnomes.get("state_live_baseline_shrink_count") or 0) > 0:
         add(
             "state",
@@ -1010,6 +1022,16 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             "recurring_failure_count",
             recurring_failures,
             87,
+        )
+    json_parse_rate = gnomes.get("json_parse_failure_rate")
+    if isinstance(json_parse_rate, (int, float)) and not isinstance(json_parse_rate, bool) and json_parse_rate > 0.0:
+        add(
+            "deepseek",
+            "Reduce DeepSeek JSON parse failures",
+            "State/eval metrics recorded JSON parse failures; tighten structured-output prompts, parser recovery, or fixtures before scoring general coding reliability.",
+            "json_parse_failure_rate",
+            json_parse_rate,
+            86,
         )
     repair_loops = int_metric(gnomes, "repair_loop_count")
     if repair_loops > 0:

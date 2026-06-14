@@ -1423,6 +1423,38 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("Repair state replay integrity", rendered)
             self.assertIn("state_replay_integrity_rate=0.0", rendered)
 
+    def test_graph_suggestions_surface_state_failure_count_pressure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(session / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z"})
+            write_json(
+                session / "state/summary.json",
+                {"latest_gnomes": {"state_failure_count": 2, "task_artifact_coverage": 1.0}},
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("Repair recorded state failure events", rendered)
+            self.assertIn("state_failure_count=2", rendered)
+
+    def test_graph_suggestions_surface_json_parse_failure_pressure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(session / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z"})
+            write_json(
+                session / "state/summary.json",
+                {"latest_gnomes": {"json_parse_failure_rate": 0.25, "task_artifact_coverage": 1.0}},
+            )
+
+            rendered = extract_trajectory.render_graph_suggestions(audit_dir)
+
+            self.assertIn("## Graph-derived next-task pressure", rendered)
+            self.assertIn("Reduce DeepSeek JSON parse failures", rendered)
+            self.assertIn("json_parse_failure_rate=0.25", rendered)
+
     def test_graph_suggestions_surface_low_task_lineage_capture_pressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)
