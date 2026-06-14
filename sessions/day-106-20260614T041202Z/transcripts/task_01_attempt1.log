@@ -1,0 +1,689 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The user wants me to implement a task to close state lifecycle gaps in the yyds-harness project. Let me break down what I need to do:
+
+1. Read `skills/evolve/SKILL.md` first for the canonical implementation contract
+2. Understand the two problems:
+   - ModelCallCompleted not recorded on panic in `src/prompt.rs`
+   - RunCompleted not recorded on panic after state init in `src/state.rs`
+3. Implement fixes, write tests, verify, commit
+
+Let me start by reading the evolve skill and the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the evolve skill and the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read skills/evolve/SKILL.md  ▶ read src/state.rs  ▶ read src/prompt.rs ✓ (47ms)
+ ✓ (38ms)
+ ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is a large file. Let me now look at the key areas:
+
+1. `src/prompt.rs` - The `handle_prompt_events` function around lines 768 (ModelCallStarted), 922 (AgentEnd), 993 (ctrl_c), and 1033 (after loop).
+2. `src/state.rs` - The `RunCompletionGuard` around line 334, and the panic hook around line 30.
+
+Let me also look at the state module more carefully around the RunCompletionGuard.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.5s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now focus on the critical areas. I need to:
+1. Look at `handle_prompt_events` in prompt.rs around the ModelCallStarted/Completed emissions
+2. Look at `RunCompletionGuard` in state.rs
+3. Check what `record()` function is available in state.rs
+
+Let me read the key sections.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me read the key sections of both files.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:750..850  ▶ read src/prompt.rs:900..1050  ▶ read src/state.rs:310..390 ✓ (48ms)
+ ✓ (40ms)
+ ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the full picture of panic handling, the `exit_with_state` function, and how the panic hook currently handles the RunCompleted event. Let me also check `lib.rs` to see where `install_panic_hook` is called.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.6s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'install_panic_hook' (*.rs)  ▶ search 'exit_with_state' (*.rs)  ▶ search 'RunCompletionGuard' (*.rs) ✓ (34ms)
+ ✓ (32ms)
+ ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read:
+1. The `exit_with_state` function in `lib.rs`
+2. The panic hook in `state.rs` more carefully - it already records `FailureObserved` but does it record `RunCompleted`?
+3. How the panic hook interacts with the RunCompletionGuard
+
+The key issue is:
+- Problem 1: `handle_prompt_events` records ModelCallStarted at line 768, but if the event loop panics (between that and the after-loop cleanup), ModelCallCompleted is never emitted.
+- Problem 2: If `run_cli` panics after state init but before the RunCompletionGuard is created, RunCompleted is never emitted. The panic hook records FailureObserved but not RunCompleted.
+
+Let me check: the panic hook currently records FailureObserved only. It does NOT record RunCompleted. The RunCompletionGuard is created at line 1048 in lib.rs: `let _run_completion = state::RunCompletionGuard::completed_on_drop();`
+
+If a panic happens AFTER init_global but BEFORE that guard is created, the guard never drops, so RunCompleted is never emitted. But the panic hook DOES fire - it could emit RunCompleted too.
+
+Let me also look at `exit_with_state` and how it handles the RunCompleted event.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.5s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:970..1050  ▶ read src/lib.rs:1030..1090 ✓ (29ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me also check how `handle_prompt_events` is called and how the prompt flow works, to understand where the panic could happen between ModelCallStarted and the after-loop cleanup.
+
+Let me also check if there's an `EventType::ModelCallCompleted` defined in state.rs:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted' (*.rs)  ▶ search 'ModelCallStarted' (*.rs) ✓ (20ms)
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the panic problem better. The `handle_prompt_events` function in `prompt.rs` is called at lines 768 by... let me search for where `handle_prompt_events` is called.
+
+Actually wait - I see that `handle_prompt_events` is defined at line 759. Let me check where it's called from.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_prompt_events' (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the calling context more carefully. The function is called at lines 315 and 327.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:290..340 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the architecture. Let me also check the `run_prompt_auto_retry` and the overall flow to see where `handle_prompt_events` is called in context. Also, let me check whether `handle_prompt_events` can actually panic - what might panic in the event loop?
+
+Actually, looking at this more carefully, the key insight is:
+
+**Problem 1 (ModelCallCompleted):** `handle_prompt_events` records `ModelCallStarted` at line 768, then processes events in a loop. If a panic occurs anywhere in the loop body (e.g., in `crate::state::record()` calls, string formatting, etc.), `ModelCallCompleted` is never recorded. The fix is to use a guard pattern.
+
+**Problem 2 (RunCompleted):** The panic hook in `state.rs` currently records `FailureObserved` but NOT `RunCompleted`. The `RunCompletionGuard` is created at `lib.rs:1048`, AFTER `init_global` succeeds but BEFORE `install_panic_hook`. So if a panic happens between lines 1048 and 1050, the guard drops and calls `mark_run_completed`. But if a panic happens BETWEEN `init_global` (line 1007) and the guard creation (line 1048), the panic hook fires but RunCompleted is never recorded. The fix is to have the panic hook also call `mark_run_completed_with_error`.
+
+Wait, let me re-read the issue description more carefully:
+
+> Problem 2: RunCompleted not recorded on panic after state init
+> In src/state.rs, the RunCompletionGuard (line 334) marks "completed" on drop.
+> But if run_cli panics after state::init_global but before the prompt loop
+> starts (e.g., in agent building), the guard drops and marks "completed" even
+> though the run failed.
+> 
+> The install_panic_hook (called at line 1050 in lib.rs) should handle this, but
+> verify it records a RunCompleted (or relies on the guard's drop). The panic hook
+> should set the guard's status to "error" or record a separate RunCompleted with
+> error status.
+
+So the issue is:
+1. `init_global` happens at line 1007
+2. `RunCompletionGuard` is created at line 1048
+3. `install_panic_hook` is called at line 1050
+
+If a panic happens between 1007 and 1048, the guard doesn't exist yet, so its Drop never fires. The panic hook records `FailureObserved` but not `RunCompleted`.
+
+If a panic happens between 1048 and 1050, the guard does exist, but the panic hook isn't installed yet. When the guard drops, it records `RunCompleted` with status "completed", which is wrong - it should be "error" since there was a panic.
+
+Wait, actually: between 1048 and 1050, the guard exists AND the panic hook is not installed. When a panic unwinds, the guard's Drop fires, recording `RunCompleted` with status "completed". This is wrong - should be "error". But actually, the panic hook also wouldn't fire (it's not installed yet). So the guard is still needed for the RunCompleted. But the guard records "completed" when it should record "error".
+
+Hmm, looking at the implementation note again:
+
+> Fix: In the panic hook (state.rs), call mark_run_completed_with_error if the
+> run hasn't already been marked completed. Or ensure the RunCompletionGuard records
+> "error" instead of "completed" when dropping during a panic.
+
+So two approaches:
+A. Have the panic hook also emit RunCompleted (with error status). But this would cause a double-emission when both the guard drops and the hook fires (both on unwinding).
+B. Have the RunCompletionGuard detect whether it's dropping during a panic and record "error" instead of "completed".
+
+Option B is cleaner. We can use `std::thread::panicking()` in the Drop impl to check if we're unwinding due to a panic.
+
+Actually, wait. Let me re-read the analysis:
+
+> The RunCompletionGuard (line 334) marks "completed" on drop.
+> But if run_cli panics after state::init_global but before the prompt loop
+> starts (e.g., in agent building), the guard drops and marks "completed" even
+> though the run failed.
+
+So the guard is already being used correctly in the common case. The issue is:
+- If a panic happens between init_global and the guard creation, NO RunCompleted is recorded
+- If a panic happens after guard creation, the guard records RunCompleted with "completed" status (wrong - should be "error" since we panic'd)
+
+The fix for Problem 2 should be:
+1. Have the panic hook ALSO emit RunCompleted (with error status), solving the "guard not yet created" gap
+2. Have the guard detect `std::thread::panicking()` in its Drop and record "error" instead of "completed"
+
+But we need to be careful about double-emission. If both the guard drops AND the panic hook fires (both during unwinding), we'd get two RunCompleted events. We need to avoid that.
+
+Simpler approach: Have the panic hook record RunCompleted. Have the guard detect panicking and skip recording if the hook already did it. Or: have the guard NOT record if panicking, and let the hook handle it.
+
+Actually, let me think about this differently. The cleanest approach:
+1. Panic hook already records `FailureObserved`. ADD `mark_run_completed_with_error` to the panic hook.
+2. Modify RunCompletionGuard to check `std::thread::panicking()` in Drop and, if panicking, skip recording (since the panic hook will handle it).
+
+This way:
+- Normal exit: guard drops → records "completed" ✓
+- Panic after guard creation: guard drops → detects panicking → skips. panic hook fires → records both FailureObserved and RunCompleted("error") ✓
+- Panic before guard creation: panic hook fires → records both FailureObserved and RunCompleted("error") ✓
+
+Wait, but there's a subtlety: the panic hook fires BEFORE unwinding (set_hook takes a closure that runs before unwinding), but the guard drops DURING unwinding. So the order would be:
+1. panic! occurs
+2. panic hook fires → records FailureObserved + RunCompleted("error")  
+3. unwinding starts → guard's Drop fires → detects panicking → skips
+
+That's correct! No double emission.
+
+Now for Problem 1 (ModelCallGuard):
+
+Looking at the code:
+- Line 767-771: ModelCallStarted recorded
+- Lines 920-936: AgentEnd → ModelCallCompleted recorded, model_call_terminal_recorded = true
+- Lines 992-1006: ctrl_c → ModelCallCompleted recorded 
+- Lines 1033-1047: after loop → ModelCallCompleted recorded if not already
+
+The issue: if the event loop panics, execution never reaches line 1033, and ModelCallCompleted is never recorded.
+
+The fix with a guard:
+```rust
+struct ModelCallGuard {
+    recorded: bool,
+    model: String,
+    thinking_observed: bool, // need to reference state
+    // Actually, we need to borrow state which isn't straightforward with a guard
+}
+```
+
+Hmm, the guard needs access to `state.usage`, `state.thinking_observed`, `state.collected_text`, `state.last_tool_name` to create the payload. But borrowing those into a guard is tricky because `state` is a local mutable variable.
+
+Alternative: Instead of creating the full payload in the guard, we could have the guard just record a basic ModelCallCompleted event with status "panicked" (or "guard_drop_no_explicit_completion"). The guard doesn't need the model/usage info - it just needs to ensure the event fires.
+
+Actually, looking at the implementation note in the task:
+```rust
+struct ModelCallGuard { recorded: bool, model: String, ... }
+impl ModelCallGuard {
+    fn mark_completed(&mut self) { self.recorded = true; }
+}
+impl Drop for ModelCallGuard {
+    fn drop(&mut self) {
+        if !self.recorded {
+            record(EventType::ModelCallCompleted, ..., "guard_drop_no_explicit_completion", ...);
+        }
+    }
+}
+```
+
+So the guard records a minimal event if it drops without being marked. The three existing ModelCallCompleted recording sites would be replaced with `guard.mark_completed()` calls.
+
+This is clean. The guard needs the model name (available at creation) and that's it. The Drop handler can record a simple payload: `{"model": model, "status": "panicked", "reason": "guard_drop_no_explicit_completion"}`.
+
+Now, let me also think about whether `handle_prompt_events` needs the guard. Let me check if there's a Rust .await point between ModelCallStarted and the cleanup - because if the event handler panics, it could be at one of the .await points.
+
+Actually, the function is:
+```rust
+async fn handle_prompt_events(...) -> PromptResult {
+    ...
+    crate::state::record(ModelCallStarted, ...); // line 767
+    loop {
+        tokio::select! { ... }  // .await point
+    }
+    // after loop cleanup, ModelCallCompleted recorded here
+}
+```
+
+The `tokio::select!` is an await point. If the event handler itself panics (e.g., in `record()` calls inside the match arms), the guard would catch it.
+
+But actually the guard doesn't protect against panics inside the async function itself - it protects against unwinding. In async code, if a panic occurs and unwinds, the guard's Drop fires correctly (even across .await points, since Drop runs during unwinding regardless).
+
+Let me now plan the implementation:
+
+1. **Create `ModelCallGuard` in `src/prompt.rs`** (or in `src/state.rs`? The task says keep changes to prompt.rs and state.rs. I'll put the guard in prompt.rs since it's only used there.)
+
+2. **Modify `handle_prompt_events`** to use the guard after ModelCallStarted
+
+3. **Modify the panic hook in `src/state.rs`** to also emit `RunCompleted`
+
+4. **Modify `RunCompletionGuard`** to skip recording if panicking (since hook will handle it)
+
+Let me also check: does `event_type_from_str` in state.rs need to handle a "panicked" status for ModelCallCompleted? No - the payload carries the status as a JSON field, not the event type.
+
+Let me now look at how `record_cache_metrics` works, since it's called alongside ModelCallCompleted at line 936.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at `record_cache_metrics` and also look at how ctrl_c handling works (the return at line 1011 doesn't record cache metrics):
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record_cache_metrics' (*.rs)  ▶ read src/prompt.rs:1049..1079 ✓ (10ms)
+ ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check `record_cache_metrics`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:399..429 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a full understanding. Let me also check the test for `install_panic_hook` to understand the testing pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6450..6510 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a comprehensive understanding. Let me now plan the changes:
+
+### Changes to `src/state.rs`:
+
+1. **Modify `RunCompletionGuard`** to detect `std::thread::panicking()` in Drop and skip recording since the panic hook will handle it.
+
+2. **Modify `install_panic_hook`** to also call `mark_run_completed_with_error("panic")` before the FailureObserved event.
+
+### Changes to `src/prompt.rs`:
+
+1. **Create `ModelCallGuard`** struct that records `ModelCallCompleted` on Drop if not explicitly completed.
+
+2. **Modify `handle_prompt_events`** to:
+   - Create a `ModelCallGuard` after line 771
+   - Replace the three ModelCallCompleted emission points with `guard.mark_completed()`
+   - The guard's Drop handles the panic path
+
+3. **Add tests** for the guard.
+
+Let me now implement these changes. Let me start with the state.rs changes.
+
+Actually, wait. Let me think about the double-emission issue more carefully.
+
+When a panic occurs:
+1. Panic hook fires → records FailureObserved + RunCompleted("error", "panic")
+2. Unwinding proceeds → RunCompletionGuard drops → detects panicking → skips
+
+That's correct order because `set_hook` closures run before unwinding.
+
+But wait: what if `mark_run_completed_with_error` itself panics? Then we never get to the FailureObserved event. But that's true of the existing code too, and `record` is fail-soft by default, so it shouldn't panic.
+
+One more thing: the existing panic hook calls `prev_hook(info)` after recording. We should preserve that. Let me make sure the RunCompleted is recorded BEFORE the FailureObserved (since the RunCompleted should precede the FailureObserved chronologically - the run ends, then the failure is observed).
+
+Actually, let me think about the order: the run completed because of a panic. So RunCompleted should come first, then FailureObserved. That makes sense.
+
+Now let me also think about whether `ModelCallGuard` needs to handle the ctrl_c case properly. Currently:
+- ctrl_c: returns PromptResult::Done{...} early at line 1011. The guard won't be dropped here because... wait, the guard WOULD be dropped here because `return` triggers drop of all locals. So the guard would try to record ModelCallCompleted with status "guard_drop_no_explicit_completion". But we already recorded it with "interrupted" at line 993.
+
+So the flow for ctrl_c:
+1. ctrl_c fires
+2. We record ModelCallCompleted with "interrupted" at line 993
+3. We `return PromptResult::Done{...}` at line 1011
+4. The guard drops → but `model_call_terminal_recorded` is... hmm, actually we'd need to also mark the guard.
+
+Wait, let me re-read: the guard has a `mark_completed()` method. Currently the code does:
+- ctrl_c path: records ModelCallCompleted directly, sets model_call_terminal_recorded = true (wait, it doesn't actually set it! Let me re-read...)
+
+Looking at lines 988-1016:
+```rust
+_ = tokio::signal::ctrl_c() => {
+    if let Some(s) = state.spinner.take() { s.stop(); }
+    agent.abort();
+    if !model_call_terminal_recorded {
+        crate::state::record(
+            crate::state::EventType::ModelCallCompleted,
+            ...
+        );
+    }
+    ...
+    return PromptResult::Done { ... };
+}
+```
+
+It does NOT set `model_call_terminal_recorded = true`! So if the guard approach is used, we'd need `guard.mark_completed()` here too. Then when we return, the guard drops, but `recorded` is true so it doesn't record again.
+
+OK so the plan for `handle_prompt_events`:
+1. Remove the `model_call_terminal_recorded` bool variable
+2. Create `ModelCallGuard` after line 771
+3. Replace the ModelCallCompleted recording at line 922-934 with `guard.mark_completed()`  
+4. Replace the ctrl_c ModelCallCompleted recording at line 993 with `guard.mark_completed()`
+5. Remove the after-loop ModelCallCompleted recording at lines 1033-1047 (guard will handle it on drop)
+6. The guard's Drop handles the panic case automatically
+
+Wait, but there's a subtlety: the ctrl_c path returns early, and the guard drops. If we haven't called `mark_completed()`, the guard will record "guard_drop_no_explicit_completion". But we want to record "interrupted" with proper payload. So we still need to record the proper ModelCallCompleted in the ctrl_c path, and also mark the guard.
+
+Actually, looking more carefully at the ctrl_c path, it records ModelCallCompleted with a specific payload (interrupted/ctrl_c). We want to keep that specific payload. So the approach should be:
+1. In the ctrl_c handler: call `guard.mark_completed()` (so the guard doesn't double-record)
+2. In the AgentEnd handler: call `guard.mark_completed()` 
+3. In the after-loop fallback: call `guard.mark_completed()`
+4. The guard's Drop should record a minimal ModelCallCompleted with status "panicked" only if `!self.recorded`
+
+Now, let me think about whether the `record_cache_metrics` call should also be guarded. Looking at line 936: `crate::state::record_cache_metrics(model, &state.usage);` - this is only called alongside ModelCallCompleted on AgentEnd. For the ctrl_c path, it's NOT called. For the after-loop path, it's NOT called. So the current behavior is that cache metrics are only recorded on normal completion. The guard doesn't need to handle cache metrics.
+
+Actually wait - I see that in the AgentEnd handler at line 936:
+```rust
+model_call_terminal_recorded = true;
+crate::state::record_cache_metrics(model, &state.usage);
+```
+
+These are the two things that happen after ModelCallCompleted is recorded. With the guard, we'd still want `record_cache_metrics` called on AgentEnd. So we keep that line, but replace the ModelCallCompleted recording + `model_call_terminal_recorded = true` with `guard.mark_completed()`.
+
+OK, let me now implement.
+
+Let me also check: does `state.rs` already have a `now_ms()` function?
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn now_ms' (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also check what `crate::state::` exports look like - the key types I need:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:100..140 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the full structure. Let me also check what exports I might need from state.rs for the guard. The `record` function, `EventType`, `Actor`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub enum Actor' (*.rs) ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have enough information. Let me start implementing.
+
+## Implementation Plan:
+
+### Step 1: Modify `src/state.rs` - Panic hook + RunCompletionGuard
+
+1. Modify the `install_panic_hook` function to also call `mark_run_completed_with_error("panic")` before recording `FailureObserved`
+2. Modify `RunCompletionGuard::drop()` to skip recording if `std::thread::panicking()` is true (panic hook will handle it)
+
+### Step 2: Add `ModelCallGuard` to `src/prompt.rs`
+
+1. Add a `ModelCallGuard` struct before `handle_prompt_events`
+2. Modify `handle_prompt_events` to use it
+
+### Step 3: Add tests
+
+1. Add test for ModelCallGuard
+2. Add test for panic hook emitting RunCompleted
+3. Add test for RunCompletionGuard not double-recording on panic
+
+### Step 4: Verify
+
+Let me implement now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me start implementing. First, the state.rs changes.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.0s (5 ✓)
+
+Now let me start with the state.rs changes.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me implement the changes to `install_panic_hook` and `RunCompletionGuard::drop`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                    .location()
+                    .map(|loc| format!("{}:{}", loc.file(), loc.line()))
+                    .unwrap_or_else(|| "unknown location".to_string());
+  +             // Record RunCompleted before FailureObserved so the run lifecycle
+  +             // is always closed, even when the RunCompletionGuard hasn't been
+  +             // created yet (e.g., panic between init_global and guard creation).
+  +             mark_run_completed_with_error(&format!("panic: {msg}"));
+                let payload = json!({
+                    "failure_class": "rust_panic",
+                    "panic_message": msg,
+  ✓ Auto-approved: edit: src/state.rs (24 → 28 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (24 → 28 lines)
+                    .location()
+                    .map(|loc| format!("{}:{}", loc.file(), loc.line()))
+                    .unwrap_or_else(|| "unknown location".to_string());
+  +             // Record RunCompleted before FailureObserved so the run lifecycle
+  +             // is always closed, even when the RunCompletionGuard hasn't been
+  +             // created yet (e.g., panic between init_global and guard creation).
+  +             mark_run_completed_with_error(&format!("panic: {msg}"));
+                let payload = json!({
+                    "failure_class": "rust_panic",
+                    "panic_message": msg,
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now modify `RunCompletionGuard::drop` to skip recording when panicking (since the panic hook already records RunCompleted):
+────────────────────────────────────────────────────────────────────────────────
+
+
+    impl Drop for RunCompletionGuard {
+        fn drop(&mut self) {
+  +         // When the thread is panicking, the panic hook (install_panic_hook)
+  +         // already recorded RunCompleted with error status. Skip here to
+  +         // avoid double-recording.
+  +         if std::thread::panicking() {
+  +             return;
+  +         }
+            mark_run_completed(self.status);
+        }
+    }
+  ✓ Auto-approved: edit: src/state.rs (5 → 11 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (5 → 11 lines)
+    impl Drop for RunCompletionGuard {
+        fn drop(&mut self) {
+  +         // When the thread is panicking, the panic hook (install_panic_hook)
+  +         // already recorded RunCompleted with error status. Skip here to
+  +         // avoid double-recording.
+  +         if std::thread::panicking() {
+  +             return;
+  +         }
+            mark_run_completed(self.status);
+        }
+    }
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me update the test for the panic hook to also verify RunCompleted is emitted:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the panic hook test to also verify RunCompleted is emitted:
+            assert!(
+                raw.contains("FailureObserved"),
+                "should be FailureObserved: {raw}"
+  +         );
+  +         assert!(
+  +             raw.contains("RunCompleted"),
+  +             "panic hook should also emit RunCompleted: {raw}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn panic_hook_run_completed_has_error_status() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (38 → 106 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (38 → 106 lines)
+            assert!(
+                raw.contains("FailureObserved"),
+                "should be FailureObserved: {raw}"
+  +         );
+  +         assert!(
+  +             raw.contains("RunCompleted"),
+  +             "panic hook should also emit RunCompleted: {raw}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn panic_hook_run_completed_has_error_status() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  +         };
+  ... (53 more lines)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me implement the `ModelCallGuard` in `prompt.rs`. First, let me also check if `record_cache_metrics` is exposed from state.rs to prompt.rs (it should be - prompt.rs already calls `crate::state::record_cache_metrics`).
+────────────────────────────────────────────────────────────────────────────────
+
+Now let's implement the `ModelCallGuard` in `src/prompt.rs`. First, let me read around the start of `handle_prompt_events` to understand where to place the guard:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:755..810 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the `ModelCallGuard` struct. I'll place it right before `handle_prompt_events`. Let me also read what comes right after (the AgentEnd handler):
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the `ModelCallGuard` struct before `handle_prompt_events`:
+  + }
+  + 
+  + /// RAII guard that ensures every ModelCallStarted gets a matching ModelCallCompleted,
+  + /// even if the event loop panics between the two events.
+  + ///
+  + /// Created immediately after ModelCallStarted. Call `mark_completed()` when
+  + /// ModelCallCompleted is explicitly recorded. If the guard drops without being
+  + /// marked (e.g., due to a panic), it records a minimal ModelCallCompleted with
+  + /// status "panicked".
+  + struct ModelCallGuard {
+  +     recorded: bool,
+  +     model: String,
+  + }
+  + 
+  + impl ModelCallGuard {
+  +     fn new(model: &str) -> Self {
+  +         Self {
+  +             recorded: false,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/prompt.rs (3 → 44 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (3 → 44 lines)
+  + }
+  + 
+  + /// RAII guard that ensures every ModelCallStarted gets a matching ModelCallCompleted,
+  + /// even if the event loop panics between the two events.
+  + ///
+  + /// Created immediately after ModelCallStarted. Call `mark_completed()` when
+  + /// ModelCallCompleted is explicitly recorded. If the guard drops without being
+  + /// marked (e.g., due to a panic), it records a minimal ModelCallCompleted with
+  + /// status "panicked".
+  + struct ModelCallGuard {
+  +     recorded: bool,
+  +     model: String,
+  + }
+  + 
+  + impl ModelCallGuard {
+  +     fn new(model: &str) -> Self {
+  +         Self {
+  +             recorded: false,
+  +             model: model.to_string(),
+  +         }
+  ... (24 more lines)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now modify `handle_prompt_events` to use the guard. I need to:
+1. Replace `let mut model_call_terminal_recorded = false;` with the guard
+2. Replace the ModelCallCompleted recording at AgentEnd with `guard.mark_completed()`
+3. Replace the ctrl_c ModelCallCompleted recording with `guard.mark_completed()`
+4. Remove the after-loop ModelCallCompleted recording
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now modify the handle_prompt_events function. Let me read the full function with line numbers to make the changes precisely.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `handle_prompt_events` to use the guard. First, replace the bool with the guard:
+        let mut state = PromptEventState::new();
+  -     let mut model_call_terminal_recorded = false;
+  +     let mut model_guard = ModelCallGuard::new(model);
+        crate::state::record(
+            crate::state::EventType::ModelCallStarted,
+            crate::state::Actor::Yoyo,
+  ✓ Auto-approved: edit: src/prompt.rs (7 → 7 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (7 → 7 lines)
+        let mut state = PromptEventState::new();
+  -     let mut model_call_terminal_recorded = false;
+  +     let mut model_guard = ModelCallGuard::new(model);
+        crate::state::record(
+            crate::state::EventType::ModelCallStarted,
+            crate::state::Actor::Yoyo,
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now replace the AgentEnd ModelCallCompleted recording with `guard.mark_completed()`:
+────────────────────────────────────────────────────────────────────────────────
+
+Now replace the AgentEnd handler to use `guard.mark_completed()`:
+                                    state.last_tool_name.as_deref(),
+                                ),
+                            );
+  -                         model_call_terminal_recorded = true;
+  +                         model_guard.mark_completed();
+                            crate::state::record_cache_metrics(model, &state.usage);
+                        }
+  ✓ Auto-approved: edit: src/prompt.rs (18 → 18 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (18 → 18 lines)
+                                    state.last_tool_name.as_deref(),
+                                ),
+                            );
+  -                         model_call_terminal_recorded = true;
+  +                         model_guard.mark_completed();
+                            crate::state::record_cache_metrics(model, &state.usage);
+                        }
+ ✓ (9ms)
+
+
