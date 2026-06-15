@@ -930,7 +930,7 @@ def collect_provider_errors(audit_dir: Path) -> tuple[int, int]:
                         hits += 1
         except OSError as e:
             warn(f"skipped {audit}: {e}")
-        if sessions >= WINDOW_SESSIONS:
+        if sessions_examined >= WINDOW_SESSIONS:
             break
     return sessions_examined, hits
 

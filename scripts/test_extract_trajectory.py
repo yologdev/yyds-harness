@@ -49,6 +49,27 @@ class ExtractTrajectoryTests(unittest.TestCase):
         self.assertIn("## Graph-derived next-task pressure", rendered)
         self.assertNotIn("## Structured state snapshot", rendered)
 
+    def test_collect_provider_errors_stops_at_window_without_name_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            for index in range(extract_trajectory.WINDOW_SESSIONS + 2):
+                session = audit_dir / f"day-{index:02d}"
+                write_json(
+                    session / "outcome.json",
+                    {"ts": f"2026-01-{index + 1:02d}T00:00:00Z"},
+                )
+                audit_line = (
+                    '{"type":"error","message":"provider_error"}\n'
+                    if index >= 2
+                    else '{"type":"info","message":"ok"}\n'
+                )
+                (session / "audit.jsonl").write_text(audit_line, encoding="utf-8")
+
+            sessions_examined, hits = extract_trajectory.collect_provider_errors(audit_dir)
+
+            self.assertEqual(sessions_examined, extract_trajectory.WINDOW_SESSIONS)
+            self.assertEqual(hits, extract_trajectory.WINDOW_SESSIONS)
+
     def test_main_keeps_graph_pressure_before_truncated_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "trajectory.md"
