@@ -328,16 +328,7 @@ PY
 agent_log_has_terminal_evidence() {
     local log_file="$1"
     [ -s "$log_file" ] || return 1
-    if grep -Eq 'TASK_TERMINAL_EVIDENCE:[[:space:]]*(changed|obsolete|blocked)' "$log_file" 2>/dev/null; then
-        return 0
-    fi
-    # Backward-compatible fallback for older agents that produced a final prose
-    # summary before the explicit marker existed.
-    if tail -80 "$log_file" 2>/dev/null | grep -Eiq \
-        '(^## Summary|^Done\.|Task completed|All gates passed|Verification|obsolete-task note|concrete blocker|committed)'; then
-        return 0
-    fi
-    return 1
+    grep -Eq 'TASK_TERMINAL_EVIDENCE:[[:space:]]*(changed|obsolete|blocked)' "$log_file" 2>/dev/null
 }
 
 task_has_progress_since_base() {
@@ -1860,6 +1851,8 @@ Follow the evolve skill rules:
 - If \`git diff --name-only\` is empty and you did not write session_plan/${TASK_ID}_obsolete.md or session_plan/${TASK_ID}_blocked.md, the task is not complete. Keep working inside the task scope instead of ending with analysis only.
 - End your final answer with exactly one terminal evidence marker:
   \`TASK_TERMINAL_EVIDENCE: changed\`, \`TASK_TERMINAL_EVIDENCE: obsolete\`, or \`TASK_TERMINAL_EVIDENCE: blocked\`.
+  The harness only recognizes that exact marker line; prose like "task completed",
+  "verification passed", or "committed" is not terminal task evidence.
 - Run cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test after changes
 - If any check fails, read the error and fix it. Keep trying until it passes.
 - Only if you've tried 3+ times and are stuck, revert with: git checkout -- . (keeps previous commits)
@@ -1987,7 +1980,7 @@ Continue from the committed state. The uncommitted diff shows what
 the previous agent was working on — use it as a hint, not gospel.
 Do NOT redo work that's already committed. Focus on what's remaining.
 If the task appears complete, verify with cargo build && cargo test
-and commit if needed."
+and commit if needed, then end with the exact TASK_TERMINAL_EVIDENCE marker."
                 echo "    Using mechanical checkpoint (git state)."
             fi
 
