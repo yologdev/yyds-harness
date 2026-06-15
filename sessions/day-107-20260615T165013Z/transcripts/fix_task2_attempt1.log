@@ -1,0 +1,750 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task and evaluator feedback:
+
+1. The task requires:
+   - A unit test for lifecycle pairing with synthetic events (ModelCallStarted + ModelCallCompleted)
+   - A unit test for unpaired ModelCallStarted producing open_model_calls > 0
+   - Hardening the post-loop fallback in prompt.rs
+
+2. The evaluator says:
+   - Only a single defensive line was added (model_call_terminal_recorded = true in Ctrl+C handler)
+   - No tests were added
+   - The primary deliverables are entirely absent
+
+I need to:
+1. Find and understand `build_state_lifecycle_json` in `src/commands_state.rs`
+2. Find the post-loop fallback in `src/prompt.rs`
+3. Add the two tests
+4. Harden the post-loop fallback if needed
+
+Let me start by examining the relevant code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the relevant code sections.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 2.5s (6 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2440..2490  ▶ read src/prompt.rs:1035..1075 ✓ (7ms)
+ ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the lifecycle pairing. I see the `model_lifecycle_key` function is used. Let me find that function and also look at the post-loop fallback more carefully, especially what happens before it (early returns).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn model_lifecycle_key' in src/commands_state.rs  ▶ read src/commands_state.rs:2489..2569 ✓ (6ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the `model_lifecycle_key` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2581..2611 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the lifecycle key: it matches on `run_id` if non-empty, otherwise falls back to `event_id`. So a ModelCallStarted and ModelCallCompleted pair with the same run_id will be matched.
+
+Now let me look at the post-loop fallback and surrounding code more carefully. Let me check what comes before line 1046 to see if there are early returns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:960..1050  ▶ search 'model_call_terminal_recorded' in src/prompt.rs ✓ (13ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now understand the full flow:
+
+1. Line 769: `model_call_terminal_recorded` initialized to `false`
+2. Line 946: Set to `true` when `AgentEnd` event is received (normal completion)
+3. Line 1003-1018: Ctrl+C handler - records ModelCallCompleted with status "interrupted", sets the flag to `true`, and then returns. The evaluator says this was already added.
+4. Line 1046-1061: Post-loop fallback - records ModelCallCompleted if the flag is still `false`.
+
+Now let me check: is there any early `return` between the loop exit (line 1031) and the fallback (line 1046)? Looking at lines 1031-1045, there's no return - they're just spinner stop and flush operations. Good, the fallback path looks clean.
+
+But wait, let me look more carefully at what happens after line 1031. The `select!` macro is at play - let me see where it starts.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:760..820 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the sections around lines 930-950 where the ModelCallCompleted is recorded on normal completion:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:930..960 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the code. Let me look at what helper functions exist in commands_state.rs that I might need for tests - like `event_string`, `payload_str`, `payload_u64`, and importantly, the `build_state_lifecycle_json` function.
+
+Now, the task is clear:
+1. Add two unit tests in either `src/prompt.rs` or `src/state.rs`:
+   - Test 1: Create synthetic ModelCallStarted + ModelCallCompleted pair and verify they're properly paired
+   - Test 2: Create an unpaired ModelCallStarted and verify open_model_calls > 0
+
+2. Harden the post-loop fallback (reviewed - it looks like it's already in good shape, but I need to check for edge cases)
+
+Let me now look at what's available in the test infrastructure and understand how `build_state_lifecycle_json` can be tested. The function is in `commands_state.rs` which is 23740 lines. Let me check if there are existing tests in that file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search '#\[cfg(test)\]' in src/commands_state.rs  ▶ search '#\[cfg(test)\]' in src/prompt.rs ✓ (14ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Neither file has existing tests. Let me check where the test modules are. Let me search for `mod tests` in these files.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'mod test' in src/commands_state.rs  ▶ search 'mod test' in src/prompt.rs ✓ (7ms)
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test module in commands_state.rs and prompt.rs to understand the testing conventions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13854..13884  ▶ read src/prompt.rs:1771..1801 ✓ (20ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a nice `event` helper in `commands_state.rs` tests! This is perfect. I can add the two lifecycle pairing tests there. Let me check the end of the test module to see where to add tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l src/commands_state.rs ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where the tests end in commands_state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^}' src/commands_state.rs | tail -5 ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read around line 13851 to see the last test before the test module closing brace.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13815..13875 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find the end of the test module to know where to add tests. Let me also look at whether `build_state_lifecycle_json` is accessible from tests (it's `pub` or just `fn`?).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn build_state_lifecycle_json' src/commands_state.rs ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It's a private function (`fn`, not `pub fn`), but it's in the same module so the `mod tests` with `use super::*` should be able to access it. Good.
+
+Now let me find the end of the test module and look at its structure more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^}' src/commands_state.rs ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the test module end specifically. The test module starts at line 13854, so I need to find the closing brace after that.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:23700..23760 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So line 23740 is the end of the test module and the file. Let me look at a few lines before 23740 to understand the last test, then I'll add my tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:23710..23740 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check what helpers are available in the test module - `event_string`, `payload_str`, `event_timestamp_ms`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at the helper functions used in the test module:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13854..13904 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me now understand what needs to happen:
+
+1. I need to add two tests in `src/commands_state.rs` in the test module:
+   - Test 1: Create synthetic ModelCallStarted + ModelCallCompleted events with the same run_id, call `build_state_lifecycle_json`, and verify pairing works (run_completed=1, model_completed=1, no unmatched completions, balanced=true, incomplete_model_call_count=0).
+   - Test 2: Create an unpaired ModelCallStarted (no matching ModelCallCompleted), verify `open_model_calls > 0` → `incomplete_model_call_count > 0`.
+
+2. For post-loop hardening: Let me re-examine the code. Looking at lines 1031-1061:
+   - The loop exits when `rx.recv()` returns `None` (break) or on Ctrl+C (return).
+   - After loop exit, there's spinner stop, flush, then the fallback at 1046.
+   - The only early return before the fallback is the Ctrl+C handler which already sets `model_call_terminal_recorded = true`.
+   - So the fallback IS reached in the normal loop exit path when AgentEnd wasn't received (channel closed without AgentEnd).
+
+Wait, but there's another possibility. What about the `_ = tokio::signal::ctrl_c()` branch at line 999? That's in the same `tokio::select!`. But actually it's a `return` - line 1024. So it returns `PromptResult::Done` which exits the function without reaching the post-loop fallback. But that's fine because the Ctrl+C handler already records the ModelCallCompleted.
+
+Actually, wait. Let me re-read lines 999-1031 more carefully:
+
+```rust
+            _ = tokio::signal::ctrl_c() => {
+                // Stop spinner if still running
+                if let Some(s) = state.spinner.take() { s.stop(); }
+                agent.abort();
+                if !model_call_terminal_recorded {
+                    crate::state::record(
+                        crate::state::EventType::ModelCallCompleted,
+                        ...
+                    );
+                    model_call_terminal_recorded = true;
+                }
+                ...
+                return PromptResult::Done { ... };
+            }
+```
+
+So this already handles the Ctrl+C case. The evaluator says this was "already added" as the single defensive line. But the evaluator says the tests are missing and the hardening was incomplete.
+
+Actually, re-reading the evaluator feedback: "Only a single defensive line was added — `model_call_terminal_recorded = true` in the Ctrl+C handler, which is in a path that already `return`s before the post-loop fallback is reached."
+
+Wait, the evaluator says the `model_call_terminal_recorded = true` in Ctrl+C handler was the only thing added. But actually, looking at the Ctrl+C handler at lines 999-1030, it already records ModelCallCompleted AND returns. The `model_call_terminal_recorded = true` at line 1018 prevents double-recording. But the evaluator says this is *already* there and the primary deliverables (tests) are absent.
+
+So my job is clear:
+1. Add the two lifecycle pairing tests
+2. The post-loop fallback at 1046 is already the hardening - the early `return` for Ctrl+C already records the completion. But let me check if there are other early returns that could skip the fallback.
+
+Let me check if there's a `break` or `return` anywhere in the event handling that could cause an early exit without recording. Let me look at the match arm for AgentEvent...
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if there are any return statements between the loop and the fallback, or any place where the loop could break without reaching the fallback.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check for returns/break in the event handling that could skip the fallback:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:785..905 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to see all event match arms and look for any returns or breaks that bypass the fallback.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:904..1004 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see the full event handling now. The only early exit paths are:
+1. `rx.recv()` returns `None` → `break` (normal exit)
+2. Ctrl+C → `return PromptResult::Done` (already records ModelCallCompleted)
+
+There's no other `return` or `break` in the event handling. The post-loop fallback at line 1046 is reached when the channel closes without AgentEnd being received.
+
+Now, the evaluator says "Only a single defensive line was added — `model_call_terminal_recorded = true` in the Ctrl+C handler." But looking at the code, line 1018 `model_call_terminal_recorded = true;` is present. Is this the line that was previously added? Let me check the git log to see what changes have been made.
+
+Actually, the evaluator feedback is about a PREVIOUS attempt at this task. The task was attempted by someone (possibly a previous agent run) and only one line was added. The evaluator rejected it. Now I need to complete the task properly.
+
+So what I need to do:
+1. Add the two lifecycle pairing tests in `src/commands_state.rs`
+2. The Ctrl+C hardening (line 1003-1018) seems to already exist - I need to verify if it's properly implemented
+3. Check if `model_call_terminal_recorded = true` is set in the Ctrl+C handler (line 1018) - if it already exists, great. If not, add it.
+
+Wait, the evaluator says "Only a single defensive line was added — `model_call_terminal_recorded = true` in the Ctrl+C handler." This suggests that before the previous attempt, the Ctrl+C handler recorded ModelCallCompleted but did NOT set `model_call_terminal_recorded = true`. The previous attempt added that one line. But the tests were never added.
+
+Now looking at the code, line 1018 already has `model_call_terminal_recorded = true;`. So that hardening is done. The missing work is the tests.
+
+But wait - let me re-read the evaluator more carefully: "which is in a path that already `return`s before the post-loop fallback is reached." The evaluator is saying the Ctrl+C path returns, so even without `model_call_terminal_recorded = true`, it wouldn't reach the post-loop fallback (because of the `return`). The line is defensive to prevent double-recording in the Ctrl+C handler itself (since it also checks `if !model_call_terminal_recorded`). But it doesn't actually help with gaps because Ctrl+C already records completion.
+
+The real question: are there other paths that can skip the fallback? Let me think...
+
+The loop is:
+```rust
+loop {
+    tokio::select! {
+        event = rx.recv() => {
+            let Some(event) = event else { break };
+            match event { ... }
+        }
+        _ = tokio::signal::ctrl_c() => { ... return ... }
+    }
+}
+// fallback at line 1046
+```
+
+The only exits are:
+1. `rx.recv()` returns `None` → `break` → reaches fallback ✓
+2. Ctrl+C → `return` → exits function, but already records completion ✓
+3. Panic? If the code panics within the match arms, we'd unwind past the fallback. But we shouldn't code for panics.
+
+Wait, there's another subtle one. What if `rx.recv()` returns `Some(event)` but processing the event causes the function to return early? Looking through all match arms... none of them have `return` or `break`. The `_ => {}` catch-all handles unknown events.
+
+So the fallback path looks solid. The hardening that already exists (Ctrl+C handler) is good.
+
+Now, for the tests, I need to:
+
+1. Add a test: `test_lifecycle_pairs_matched_model_calls` - creates synthetic events for ModelCallStarted + ModelCallCompleted and verifies `build_state_lifecycle_json` pairs them correctly.
+2. Add a test: `test_lifecycle_detects_unpaired_model_call_started` - creates an unpaired ModelCallStarted and verifies `open_model_calls > 0`.
+
+Let me write these tests. They'll go in the `mod tests` block in `src/commands_state.rs`, right before the closing `}` at line 23740.
+
+Let me construct the synthetic events. Looking at the `event` helper in the test module:
+```rust
+fn event(id: &str, kind: &str, run: &str, payload: Value) -> Value {
+    json!({
+        "event_id": id,
+        "event_type": kind,
+        "schema_version": 1,
+        "timestamp_ms": 10,
+        "actor": "harness",
+        "run_id": run,
+        "session_id": null,
+        "trace_id": "trace-1",
+        "parent_event_ids": [],
+        "payload": payload,
+    })
+}
+```
+
+And `build_state_lifecycle_json` uses:
+- `event_string(event, "event_type")` 
+- `event_string(event, "run_id")`
+- `event_string(event, "event_id")`
+- `event.get("payload")`
+- `payload_str(payload, "model")`
+
+For ModelCallStarted:
+```rust
+event("mc-1-start", "ModelCallStarted", "run-1", json!({"model_call_id": "mc-1", "model": "test-model"}))
+```
+
+For ModelCallCompleted:
+```rust
+event("mc-1-end", "ModelCallCompleted", "run-1", json!({"model_call_id": "mc-1", "model": "test-model", "status": "completed"}))
+```
+
+The `model_lifecycle_key` uses `run_id` if non-empty. So both events with the same `run_id` "run-1" will be paired.
+
+For the unpaired test:
+```rust
+event("mc-2-start", "ModelCallStarted", "run-2", json!({"model_call_id": "mc-2", "model": "test-model"}))
+```
+No matching ModelCallCompleted.
+
+Let me also check if `model_lifecycle_key` might fall back to `event_id` when `run_id` is empty. Looking at the function:
+
+```rust
+fn model_lifecycle_key(event: &Value) -> String {
+    event_string(event, "run_id")
+        .filter(|run_id| !run_id.is_empty())
+        .or_else(|| event_string(event, "event_id"))
+        .unwrap_or("-")
+        .to_string()
+}
+```
+
+So if `run_id` is empty, it falls back to `event_id`. This means if ModelCallStarted has `run_id=""` and `event_id="evt-1"`, and ModelCallCompleted also has `run_id=""` and `event_id="evt-2"`, they would NOT be paired because the keys would be different. So having a consistent `run_id` is important for pairing.
+
+Actually wait, let me re-read: both events have the same `run_id` - that's what pairs them. The `model_lifecycle_key` returns the `run_id` (since it's non-empty), so both events get key "run-1" and are paired.
+
+Now let me also check if there's something I'm missing about the `model_call_id` in the payload. Looking at the event schema in `prompt.rs`:
+- ModelCallStarted payload: `{"model_call_id": &model_call_id, "model": model}`
+- ModelCallCompleted payload: uses `model_call_terminal_payload` which includes `model_call_id` among other things.
+
+But `build_state_lifecycle_json` doesn't use `model_call_id` from the payload for matching - it uses `model_lifecycle_key` which uses `run_id`. So the matching is on `run_id`.
+
+This means in a real session, ALL ModelCallStarted and ModelCallCompleted events share the same `run_id` (since they're all part of the same run). So the pairing is by insertion order - the first ModelCallStarted pairs with the first ModelCallCompleted, etc.
+
+Hmm, that might explain the gaps! If there are interleaved runs (e.g., sub-agents), the run_ids might differ and the pairing could be wrong.
+
+But for the test, I'll use simple cases:
+- Test 1: Same run_id, one start + one completed → perfect pairing
+- Test 2: One start, no completed → unpaired
+
+Let me write the tests now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture of the code. Let me look at the `model_call_terminal_payload` function to understand the completed event schema, then write the tests.
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn model_call_terminal_payload' in src/prompt.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `model_call_terminal_payload` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:32..62 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check if there's an existing test for `model_call_terminal_payload` (at line 1835):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1835..1875 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have everything I need. Let me write the two tests. I'll add them to the test module in `commands_state.rs`, right before the closing `}`.
+
+The tests will:
+1. Create synthetic events using the `event` helper from the test module
+2. Call `build_state_lifecycle_json` 
+3. Assert the expected pairing behavior
+
+Let me also verify that `event_string` and the other helper functions used by `build_state_lifecycle_json` work correctly with the synthetic events.
+
+The `event` helper creates events with `run_id`, `event_id`, `event_type`, and `payload`. The `build_state_lifecycle_json` uses:
+- `event_string(event, "event_type")` - this extracts `event_type`
+- `event_string(event, "run_id")` - this extracts `run_id`
+- For ModelCallStarted: `event_string(event, "event_id")` for `started_event_id`
+- `model_lifecycle_key(event)` - uses `run_id` for key
+- `event.get("payload")` - for extracting payload
+- `payload_str(payload, "model")` - for model name
+
+Let me also look at how the function accesses the model field from the payload for ModelCallCompleted. Let me check `model_completion_summary`:
+
+```rust
+fn model_completion_summary(event: &Value) -> Value {
+    let payload = event.get("payload").unwrap_or(&Value::Null);
+    serde_json::json!({
+        "run_id": event_string(event, "run_id"),
+        "event_id": event_string(event, "event_id"),
+        "model": payload_str(payload, "model"),
+        "status": payload_str(payload, "status").unwrap_or("completed"),
+        "error_detail": payload_str(payload, "error_detail"),
+    })
+}
+```
+
+OK, this is for unmatched completions. The payload needs `model` and optionally `status` and `error_detail`.
+
+Now let me check: does `build_state_lifecycle_json` use `model_call_id` from the payload? Looking at lines 2463-2476 (ModelCallStarted handling):
+```rust
+"ModelCallStarted" => {
+    model_started += 1;
+    let event_id = event_string(event, "event_id").unwrap_or("").to_string();
+    let key = model_lifecycle_key(event);
+    let payload = event.get("payload").unwrap_or(&Value::Null);
+    open_model_calls.insert(
+        key,
+        OpenModelCall {
+            run_id: run_id.clone(),
+            started_event_id: event_id,
+            model: payload_str(payload, "model").unwrap_or("-").to_string(),
+        },
+    );
+}
+```
+
+And ModelCallCompleted (lines 2477-2483):
+```rust
+"ModelCallCompleted" => {
+    model_completed += 1;
+    let key = model_lifecycle_key(event);
+    if open_model_calls.remove(&key).is_none() {
+        unmatched_model_completions.push(model_completion_summary(event));
+    }
+}
+```
+
+So the key for pairing is `model_lifecycle_key(event)` which returns `run_id` if non-empty. With the same run_id, a ModelCallStarted and ModelCallCompleted will pair.
+
+Now let me write the tests and add them to `commands_state.rs`.
+
+Also, regarding the post-loop fallback hardening: I've confirmed:
+1. Lines 999-1030: Ctrl+C handler records ModelCallCompleted and sets `model_call_terminal_recorded = true`, then returns. This is already hardened.
+2. Lines 1046-1061: Post-loop fallback records ModelCallCompleted with status "stream_closed_without_agent_end" if `model_call_terminal_recorded` is false.
+
+The only edge case I can think of: if the `tokio::select!` panics (e.g., in the event match arms), the panic would unwind past the fallback. But Rust panics are generally not caught (except in tests via `catch_unwind`). We shouldn't try to prevent leaks from panics - that's a different class of problem.
+
+Another edge case: what if `agent.abort()` at line 1002 triggers some event that sets `model_call_terminal_recorded`? It doesn't appear to.
+
+I think the hardening is already adequate. The task says "hardening the fallback ensures future sessions don't accumulate new gaps" - the Ctrl+C hardening + post-loop fallback should cover the main paths. Let me see if there's anything else I should check.
+
+Actually, I notice one thing: In the main event handling loop, when AgentEnd is received (line 930-947), it records ModelCallCompleted with status "completed" and sets `model_call_terminal_recorded = true`. Good.
+
+But what about the case where AgentEnd is received with an error? Looking at the yoagent code, AgentEnd carries `messages` which could indicate an error. But the current code doesn't distinguish - it always records "completed". This might be a gap, but it's not the focus of this task.
+
+Actually wait, let me look at what happens with `AgentEvent::InputRejected` (line 949). When input is rejected, it records a FailureObserved event but does NOT record ModelCallCompleted. The loop continues. So if an InputRejected event happens and then the channel closes without AgentEnd, the fallback at 1046 will record "stream_closed_without_agent_end" which is correct.
+
+But what if InputRejected happens and then AgentEnd comes? Then AgentEnd handles the completion normally.
+
+What if the process crashes between loop exit and the fallback? E.g., if `state.spinner.take()` (line 1035) panics. Looking at it, it's `if let Some(s) = state.spinner.take() { s.stop(); }` - shouldn't panic.
+
+OK, I'm satisfied that the post-loop fallback is already robust enough. The evaluator feedback said "Only a single defensive line was added" which suggests the hardening is minimal but present. The main missing work is the tests.
+
+Let me now write the two tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me write the two tests. I'll add them to the test module in `commands_state.rs`:
+            assert!(
+                summary.contains("most recent events"),
+                "should describe what state tail shows, got: {summary}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn lifecycle_pairs_matched_model_calls_with_same_run_id() {
+  +         let started = event(
+  +             "mc-1-start",
+  +             "ModelCallStarted",
+  +             "run-1",
+  +             json!({"model_call_id": "mc-1", "model": "deepseek-v4-pro"}),
+  +         );
+  +         let completed = event(
+  +             "mc-1-end",
+  +             "ModelCallCompleted",
+  +             "run-1",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (6 → 102 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (6 → 102 lines)
+            assert!(
+                summary.contains("most recent events"),
+                "should describe what state tail shows, got: {summary}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn lifecycle_pairs_matched_model_calls_with_same_run_id() {
+  +         let started = event(
+  +             "mc-1-start",
+  +             "ModelCallStarted",
+  +             "run-1",
+  +             json!({"model_call_id": "mc-1", "model": "deepseek-v4-pro"}),
+  +         );
+  +         let completed = event(
+  +             "mc-1-end",
+  +             "ModelCallCompleted",
+  +             "run-1",
+  +             json!({"model_call_id": "mc-1", "model": "deepseek-v4-pro", "status": "completed"}),
+  +         );
+  ... (82 more lines)
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run cargo check to see if the tests compile.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run cargo check first, then run the specific tests.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 2.5s (6 ✓)
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (7.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The check passes. There's a warning about `model_call_terminal_recorded = true` at line 1018 being unused - this is because after setting it, the function immediately returns, so the value is never read again. This is the line that was added previously as hardening. Since the Ctrl+C handler returns immediately after, the variable is indeed never read again. The post-loop fallback at line 1046 is never reached after Ctrl+C, so the assignment is technically dead code in the Ctrl+C branch.
+
+However, it IS defensive - if someone later changes the code to not return after the Ctrl+C handler, the flag prevents double-recording. I'll leave it but let's suppress the warning with a `let _ =` prefix or `#[allow(unused_assignments)]`.
+
+Actually, the warning is just a warning, not an error. And it's the line that was added previously. I should address it though. Let me add `#[allow(unused_assignments)]` or use `let _ =` to suppress.
+
+Actually, a better approach: the Ctrl+C handler returns, so the flag is never consumed. But it's intended as documentation/defense-in-depth. Let me suppress the warning.
+
+Let me also now run the specific tests to verify they pass.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, it compiles. Let me fix that warning about the unused assignment and then run the tests:
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1016..1021 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The assignment `model_call_terminal_recorded = true` is on line 1018 but it's after the `}` of `if !model_call_terminal_recorded { ... }`. Let me look at the full structure to understand:
+
+```rust
+if !model_call_terminal_recorded {
+    crate::state::record(...);
+    model_call_terminal_recorded = true;
+}
+if state.in_text {
+    println!();
+}
+...
+return PromptResult::Done { ... };
+```
+
+The variable is set but never read after this point because the function returns. Let me suppress the warning with `#[allow(unused_assignments)]` on the specific line.
+
+Actually, a cleaner approach is to prefix with `let _ =`:
+
+```rust
+let _ = model_call_terminal_recorded;
+model_call_terminal_recorded = true;
+```
+
+Wait no, that's weird. Better to use `#[allow(unused_assignments)]` on the block or just inline it. Actually, the simplest fix is to suppress the warning at the let binding level by using `#[allow(unused_assignments)]` attribute.
+
+Let me look at what the actual structure looks like more carefully:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +                     #[allow(unused_assignments)]
+                        model_call_terminal_recorded = true;
+  ✓ Auto-approved: edit: src/prompt.rs (1 → 2 lines)
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (1 → 2 lines)
+  +                     #[allow(unused_assignments)]
+                        model_call_terminal_recorded = true;
+ ✗ (15ms)
+    │ old_text matches 2 locations in src/prompt.rs. Include more surrounding context to make the match unique.
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are 2 matches. Let me read the exact context around line 1018 to get a unique match.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1003..1018 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The second match must be at line 946. Let me use more context:
+────────────────────────────────────────────────────────────────────────────────
+
+
+                            ),
+                        );
+  +                     #[allow(unused_assignments)]
+                        model_call_terminal_recorded = true;
+                    }
+                    if state.in_text {
+  ✓ Auto-approved: edit: src/prompt.rs (5 → 6 lines)
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (5 → 6 lines)
+                            ),
+                        );
+  +                     #[allow(unused_assignments)]
+                        model_call_terminal_recorded = true;
+                    }
+                    if state.in_text {
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify cargo check passes without warnings now:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (6.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Right, attributes on expressions are experimental in Rust. Let me try a different approach - use `let _ =` to suppress:
+────────────────────────────────────────────────────────────────────────────────
+
+
+                            ),
+                        );
+  -                     #[allow(unused_assignments)]
+  +                     // Set flag to prevent post-loop fallback double-recording.
+  +                     // Ctrl+C above returns before reaching the fallback, so this
+  +                     // assignment appears unused — but it guards against future
+  +                     // code restructuring that removes the early return.
+  +                     let _ = &model_call_terminal_recorded;
+                        model_call_terminal_recorded = true;
+                    }
+                    if state.in_text {
+  ✓ Auto-approved: edit: src/prompt.rs (6 → 10 lines)
+  ╭─ Turn 33 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (6 → 10 lines)
+                            ),
+                        );
+  -                     #[allow(unused_assignments)]
+  +                     // Set flag to prevent post-loop fallback double-recording.
+  +                     // Ctrl+C above returns before reaching the fallback, so this
+  +                     // assignment appears unused — but it guards against future
+  +                     // code restructuring that removes the early return.
+  +                     let _ = &model_call_terminal_recorded;
+                        model_call_terminal_recorded = true;
+                    }
+                    if state.in_text {
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, `let _ = &model_call_terminal_recorded;` won't work to suppress unused_assignments because the assignment is still unused. The issue is that the assignment itself triggers the warning, not just the variable. Let me think of a better approach...
+
+Actually, the cleanest fix is to just not set the flag in the Ctrl+C handler at all. The Ctrl+C handler already returns, so it never reaches the post-loop fallback. The flag is only checked in the post-loop fallback. Setting it in the Ctrl+C handler is purely defensive but dead code.
+
+Actually, looking again at the original code before this line was added (the "single defensive line" the evaluator mentioned), what was there before? The Ctrl+C handler records ModelCallCompleted if not already recorded. Since it returns immediately after, the post-loop fallback is never reached. So the flag was unnecessary.
+
+But the evaluator says this was the only change made. The evaluator says the task ALSO requires hardening the post-loop fallback. The Ctrl+C handler hardening is done. Maybe I should just remove the flag assignment in the Ctrl+C handler since it's dead code, and focus on the tests.
+
+Wait, but the task says: "hardening the post-loop fallback in prompt.rs so no ModelCallStarted event can be left unmatched." The Ctrl+C handler already records ModelCallCompleted, and the post-loop fallback records it when the channel closes without AgentEnd. Both of these are already in place.
+
+Let me just revert the Ctrl+C handler change (remove the flag assignment) since it's dead code and causes a warning. The hardening is the Ctrl+C handling itself (which was already there).
+────────────────────────────────────────────────────────────────────────────────
+
+
+                            ),
+                        );
+  -                     // Set flag to prevent post-loop fallback double-recording.
+  -                     // Ctrl+C above returns before reaching the fallback, so this
+  -                     // assignment appears unused — but it guards against future
+  -                     // code restructuring that removes the early return.
+  -                     let _ = &model_call_terminal_recorded;
+  -                     model_call_terminal_recorded = true;
+                    }
+                    if state.in_text {
+  ✓ Auto-approved: edit: src/prompt.rs (10 → 4 lines)
+  ╭─ Turn 34 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (10 → 4 lines)
+                            ),
+                        );
+  -                     // Set flag to prevent post-loop fallback double-recording.
+  -                     // Ctrl+C above returns before reaching the fallback, so this
+  -                     // assignment appears unused — but it guards against future
+  -                     // code restructuring that removes the early return.
+  -                     let _ = &model_call_terminal_recorded;
+  -                     model_call_terminal_recorded = true;
+                    }
+                    if state.in_text {
+ ✓ (6ms)
+
+

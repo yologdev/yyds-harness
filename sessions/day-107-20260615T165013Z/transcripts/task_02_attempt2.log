@@ -1,0 +1,544 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and understanding the task requirements, then immediately move to implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/prompt.rs:1030..1080 ✓ (49ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. Add a unit test for lifecycle pairing (ModelCallStarted/ModelCallCompleted) in `src/prompt.rs` or `src/state.rs`
+2. Harden the post-loop fallback at prompt.rs:1045
+3. The test should verify `build_state_lifecycle_json` pairs events correctly
+
+The previous attempt was analysis-only. I need to act fast.
+
+Let me first understand the code:
+- The post-loop fallback at line 1045-1060 records ModelCallCompleted when `model_call_terminal_recorded` is false
+- I need to check if there are early returns that could bypass this fallback
+- `build_state_lifecycle_json` is in `src/commands_state.rs` at line ~2444
+
+Let me check:
+1. The event loop for early returns
+2. `build_state_lifecycle_json` for the pairing logic
+3. `model_call_terminal_recorded` initialization
+
+Let me be strategic - first check the key areas, then immediately start writing code.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.1s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'model_call_terminal_recorded' in src/prompt.rs  ▶ search 'fn build_state_lifecycle_json' in src/commands_state.rs ✓ (37ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at:
+1. The event loop structure around line 769-1045 to check for early returns
+2. The Ctrl+C handler at line 1003
+3. The initialization at 769
+4. `build_state_lifecycle_json` at 2444
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.3s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:760..775  ▶ read src/prompt.rs:935..965  ▶ read src/prompt.rs:990..1010  ▶ read src/commands_state.rs:2444..2644 ✓ (128ms)
+ ✓ (110ms)
+ ✓ (125ms)
+ ✓ (238ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the key areas:
+
+1. **Post-loop fallback** at 1045-1060: This records ModelCallCompleted when `model_call_terminal_recorded` is false after the event loop exits.
+
+2. **Ctrl+C handler** at 1003: Also records ModelCallCompleted, BUT it DOESN'T set `model_call_terminal_recorded = true` after recording! This is the bug the previous attempt found. Let me verify...
+
+Looking at lines 999-1009:
+```rust
+_ = tokio::signal::ctrl_c() => {
+    if let Some(s) = state.spinner.take() { s.stop(); }
+    agent.abort();
+    if !model_call_terminal_recorded {
+        crate::state::record(
+            crate::state::EventType::ModelCallCompleted,
+            ...
+        );
+    }
+```
+
+After recording, it doesn't set `model_call_terminal_recorded = true`. Then, after the loop exits, the post-loop fallback at 1045 also records a ModelCallCompleted. This would create an unmatched_model_completion (a ModelCallCompleted without a matching ModelCallStarted in the same run). Actually wait, no - the second one would have the same run_id and event_id as the first, so it would be a duplicate, not unmatched. But a duplicate would still show up as `model_completed > model_started`, which would show `unmatched_model_completion_count > 0`. Actually no, unmatched means "no matching open call" - if there IS an open call, the first completion would close it, and the second would be unmatched. So yes, Ctrl+C creates an unmatched completion!
+
+Now the task:
+1. **Fix the Ctrl+C handler**: Set `model_call_terminal_recorded = true` after recording
+2. **Add test**: Test `build_state_lifecycle_json` with synthetic paired/unpaired events
+
+Let me now look at the full Ctrl+C handler to confirm:
+
+Also I need to check the `model_lifecycle_key` function - it keys on `run_id`, or if run_id is empty, on `event_id`. So both completions would have the same key if they use the same model_call_id. Let me check what `model_call_terminal_payload` does...
+
+Actually, the key is the `run_id` from the event, not from the payload. So if both ModelCallCompleted events have the same run_id, they'd match the same open call. The first would remove it, the second would be unmatched. 
+
+Wait, but there would only be ONE ModelCallStarted... And two ModelCallCompleted. So in `build_state_lifecycle_json`:
+- model_started = 1
+- model_completed = 2
+- open_model_calls after first completion: empty
+- unmatched_model_completions after second completion: 1 entry
+
+This is a real bug. Let me fix it and add tests.
+
+Let me look at the Ctrl+C handler more completely:
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 11.2s (4 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:999..1029  ▶ search 'fn model_call_terminal_payload' in src/prompt.rs ✓ (35ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Found it! The Ctrl+C handler at line 1003-1018 records ModelCallCompleted but **does NOT set `model_call_terminal_recorded = true`**. Then it returns early at line 1023, so the post-loop fallback at 1045 never runs. But actually wait - it returns early, so the post-loop fallback is skipped. The issue is:
+
+1. Ctrl+C handler records ModelCallCompleted with `model_call_terminal_recorded` still false
+2. Then it returns early, skipping the post-loop fallback
+
+So in this case there's no DUPLICATE - the Ctrl+C handler records ModelCallCompleted and returns, bypassing the post-loop fallback. The bug is actually that `model_call_terminal_recorded` is not set to true, but since we return early, it doesn't matter for this path. The post-loop fallback never runs after Ctrl+C.
+
+BUT: there's a subtle issue. When `agent.abort()` is called, the event receiver might still have some events in the channel. The `while let Some(event) = rx.recv().await` loop might still be iterating. Let me check whether `agent.abort()` causes the channel to close.
+
+Actually, looking at the loop structure, the `select!` macro has two branches:
+1. `Some(event) = rx.recv()` 
+2. `_ = tokio::signal::ctrl_c()`
+
+When Ctrl+C fires, the second branch wins. The code records ModelCallCompleted, prints the message, and returns. It does NOT continue looping.
+
+So the Ctrl+C path:
+- Records ModelCallCompleted (correctly, just missing the `model_call_terminal_recorded = true`)
+- Returns early, skipping post-loop fallback
+
+This means the Ctrl+C handler does correctly record ModelCallCompleted. It just misses the flag. This is a cosmetic issue (unused variable) but not a functional gap. The early return means the post-loop fallback won't fire.
+
+But wait, there could be other return paths. Let me check if there are any other early returns in the event loop...
+
+Let me search for `return` inside the event handler function:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'return PromptResult' in src/prompt.rs ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only one early return in the event handler - the Ctrl+C path at line 1023. Good.
+
+Now let me also check what events are recorded at the START of the event loop - is ModelCallStarted recorded?
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallStarted' in src/prompt.rs ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read around line 778 to see how ModelCallStarted is recorded:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:775..795 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture:
+
+1. ModelCallStarted is recorded at line 778 BEFORE the event loop
+2. ModelCallCompleted is recorded at line 935 (in the `MessageEnd` event handler) with `model_call_terminal_recorded = true`
+3. Ctrl+C handler records ModelCallCompleted at line 1004 but does NOT set `model_call_terminal_recorded = true`
+4. Post-loop fallback at 1045 records ModelCallCompleted if `model_call_terminal_recorded == false`
+
+The Ctrl+C path has a bug: it doesn't set `model_call_terminal_recorded = true`. Since it returns early, the post-loop fallback doesn't fire, so there's no duplicate. But it's still a bug because it's inconsistent and the variable is left in the wrong state.
+
+Actually, wait. Let me re-read the bug more carefully. The Ctrl+C handler does `return PromptResult::Done {...}` at line 1023. This exits the function. The post-loop fallback at 1045 is AFTER the loop, so it never runs. So there's no duplication issue.
+
+But the task says "hardening the fallback ensures future sessions don't accumulate new gaps." The Ctrl+C case works fine because it DOES record ModelCallCompleted. The gap must come from somewhere else.
+
+Let me think about what could cause ModelCallStarted to be left unpaired (open_model_calls > 0):
+- If the event channel closes early (rx.recv() returns None) before MessageEnd is received
+- The `break` at line 786 handles this: `let Some(event) = event else { break };`
+- After the break, the post-loop fallback at 1045 records ModelCallCompleted
+
+But what if there's a panic or an early return we missed? Let me check if there are any `?` operators or `return` inside the event loop body itself (not in match arms):
+
+Actually, I already checked and there's only one early return (Ctrl+C). The `?` operators at lines 170, 1070, 1084 are not inside the event handler.
+
+Let me check if `crate::state::record` can panic...
+
+Actually, let me take a different approach. The task says to add a test and harden. Let me:
+
+1. Fix the Ctrl+C handler to set `model_call_terminal_recorded = true` (defensive hardening)
+2. Add a test in `src/state.rs` (or `src/prompt.rs`) that tests `build_state_lifecycle_json`
+
+Wait, `build_state_lifecycle_json` is a private function in `src/commands_state.rs`. I can't call it from `src/prompt.rs` or `src/state.rs`. But I can add the test inside `src/commands_state.rs` where it's visible.
+
+Actually, the task says "A new unit test in src/prompt.rs (or src/state.rs)". Let me check if `build_state_lifecycle_json` can be made `pub(crate)` or if there's a test pattern already in `commands_state.rs`...
+
+Let me check the existing test patterns in `commands_state.rs`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search '#\[cfg(test)\]' in src/commands_state.rs  ▶ search '#\[cfg(test)\]' in src/prompt.rs  ▶ search '#\[cfg(test)\]' in src/state.rs ✓ (50ms)
+ ✓ (50ms)
+ ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, no `cfg(test)` blocks found in any of these files. Let me search for `mod tests` which is the common Rust pattern:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src  ▶ search '#\[test\]' in src/prompt.rs ✓ (16ms)
+ ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's a `mod tests` in `src/prompt.rs` at line 1770 and in `src/state.rs` at line 3099. Let me look at the test module in prompt.rs to understand the pattern, and also check if there are existing tests related to `model_call_terminal_payload`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1770..1870 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, there's already a test module in `src/prompt.rs` at line 1770. Now let me plan my approach:
+
+1. **Harden the Ctrl+C handler**: Set `model_call_terminal_recorded = true` after recording ModelCallCompleted at line 1017.
+
+2. **Add a test**: Since `build_state_lifecycle_json` is a private function in `src/commands_state.rs`, I can't call it from `src/prompt.rs`. But I can make it `pub(crate)` and add a test in `src/prompt.rs`, or I can add the test in `src/commands_state.rs`. 
+
+Actually, the task says the test should be in `src/prompt.rs` or `src/state.rs`. But `build_state_lifecycle_json` is private in `src/commands_state.rs`. I have two options:
+- Make `build_state_lifecycle_json` `pub(crate)` so it's accessible from `src/prompt.rs`
+- Add the test in `src/commands_state.rs` (but the task says `src/prompt.rs or src/state.rs`)
+
+The simpler approach: make `build_state_lifecycle_json` `pub(crate)`, add tests in `src/prompt.rs`. But actually, there's an even better approach - I can test the lifecycle pairing by constructing synthetic events in the test, using `serde_json::json!` to create the events, and verify the pairing logic.
+
+Wait, but I can't call a private function from another module. Let me think about this differently.
+
+Option A: Make `build_state_lifecycle_json` `pub(crate)` and test from `src/prompt.rs`
+Option B: Add a `#[cfg(test)]` block in `src/commands_state.rs`
+Option C: Write the test in `src/state.rs` (but same problem - can't access private fn)
+
+The task says the test should be in `src/prompt.rs` or `src/state.rs`. Making the function `pub(crate)` is a minimal scoped change. Let me do that.
+
+Actually, looking more carefully at the task: "A new unit test in src/prompt.rs (or src/state.rs) creates synthetic ModelCallStarted + ModelCallCompleted events and verifies build_state_lifecycle_json pairs them correctly"
+
+The natural place is `src/commands_state.rs` which is where the function lives. But the task specifically says `src/prompt.rs` or `src/state.rs`. Adding it to `src/commands_state.rs` would create a mod tests there (it doesn't have one currently).
+
+Actually, I think the best approach is to add the test in `src/commands_state.rs` since that's where the function is. The task's file suggestion may be approximate. But to stay within task scope, let me make `build_state_lifecycle_json` `pub(crate)` and test from `src/prompt.rs`.
+
+Wait, let me re-read the task: "Files: src/prompt.rs, src/state.rs". So I should only modify these two files. Making `build_state_lifecycle_json` `pub(crate)` would require editing `src/commands_state.rs` which is not in the Files list.
+
+Hmm, this is a constraint issue. The task says:
+- Add test in `src/prompt.rs` or `src/state.rs`
+- Files: `src/prompt.rs`, `src/state.rs`
+
+But `build_state_lifecycle_json` is private in `src/commands_state.rs`.
+
+Option: I can write a test that doesn't call `build_state_lifecycle_json` directly but verifies the event structure. The test can verify that paired ModelCallStarted/ModelCallCompleted events have matching `run_id` values, and that the schema is consistent. This tests the *recording side* which is in `src/prompt.rs`.
+
+Actually, re-reading the task more carefully:
+
+"A new unit test in src/prompt.rs (or src/state.rs) creates synthetic ModelCallStarted + ModelCallCompleted events and verifies build_state_lifecycle_json pairs them correctly (run_completed=1, model_completed=1, no unmatched completions)."
+
+"The test also verifies that an unpaired ModelCallStarted (no matching ModelCallCompleted) produces open_model_calls > 0 in the lifecycle output."
+
+This explicitly tests `build_state_lifecycle_json`. So I need to make it accessible. Let me make it `pub(crate)` in `src/commands_state.rs` and then test from `src/prompt.rs`. The Files list might need `src/commands_state.rs` added, but the change is minimal - just adding `pub(crate)` to the function signature.
+
+Actually wait, the task's Implementation Notes say: "Do NOT refactor build_state_lifecycle_json or change its output format — only add tests and harden the recording side."
+
+Making it `pub(crate)` is not a "refactor" of the function. It's just changing visibility. This is a minimal change.
+
+Let me also check if there's a re-export or wrapper function that's already public:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_state_lifecycle_json' in src ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It's only called within `commands_state.rs` itself (line 455 and a test at 23684). Let me now check line 23684:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:23670..23730 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a test at line ~23684 that tests `build_state_lifecycle_json` with a single paired set of events! Let me see the full test to understand what already exists.
+
+Let me read this test from the beginning. Let me find the test function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:23620..23720 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK! So there are already tests in `src/commands_state.rs` that test `build_state_lifecycle_json`. There's:
+1. A test that verifies an unpaired ModelCallStarted (no ModelCallCompleted) shows `incomplete: 1`
+2. A test that verifies paired ModelCallStarted+ModelCallCompleted shows `balanced: true`
+
+But these tests are in `src/commands_state.rs`, not in `src/prompt.rs` or `src/state.rs`. The task says tests should be in those files.
+
+Let me also check the test at line 23620 more fully - it seems to test the unpaired case:
+
+Let me read from the beginning of that test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:23600..23650 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so there are already TWO tests in `src/commands_state.rs` that test exactly what the task asks for:
+1. `state_lifecycle_json_reports_dangling_model_call_last_event` - tests unpaired ModelCallStarted
+2. `state_lifecycle_json_pairs_stream_closed_terminal_model_call` - tests paired ModelCallStarted+ModelCallCompleted
+
+So the test requirements are already satisfied in `src/commands_state.rs`! But the task says tests should be in `src/prompt.rs` or `src/state.rs`.
+
+Now, the evolve skill says: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+So I have two paths:
+1. Add more/different tests in `src/prompt.rs` or `src/state.rs` that strengthen the verification
+2. Write `session_plan/task_02_obsolete.md` saying tests already exist
+
+But the task also says to "harden the post-loop fallback" and fix the Ctrl+C handler. The Ctrl+C handler bug (not setting `model_call_terminal_recorded = true`) is still real. So the task is NOT fully obsolete.
+
+Let me:
+1. Fix the Ctrl+C handler (set `model_call_terminal_recorded = true` after recording ModelCallCompleted)
+2. Since tests already exist in `commands_state.rs`, add a new test in `src/prompt.rs` that tests the event recording (not the lifecycle JSON builder). The test can verify that `model_call_terminal_payload` correctly captures the right fields for Ctrl+C interruption case.
+
+Actually, wait. Let me re-read the task success criteria more carefully:
+
+"A new unit test in src/prompt.rs (or src/state.rs) creates synthetic ModelCallStarted + ModelCallCompleted events and verifies build_state_lifecycle_json pairs them correctly"
+
+But `build_state_lifecycle_json` is private and in `commands_state.rs`. I can't call it from `src/prompt.rs` without changing visibility.
+
+Let me take a pragmatic approach:
+1. Fix the Ctrl+C handler bug
+2. Add a test in `src/prompt.rs` that tests the Ctrl+C handler properly sets `model_call_terminal_recorded`. But since that's a local variable inside an async function, I can't directly test it. 
+
+Actually, I can test `model_call_terminal_payload` with the "interrupted"/"ctrl_c" status, since that's the payload used in the Ctrl+C handler.
+
+Or I could add a test that:
+- Creates synth events matching state schema  
+- Verifies the structure is compatible with `build_state_lifecycle_json`
+
+Let me also look at the `event_at` helper function to understand the test patterns in commands_state.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_at' in src/commands_state.rs ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the `event_at` helper function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13870..13900 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also see the `event` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event\(id:' in src/commands_state.rs ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the event function differently:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn event(' src/commands_state.rs | head -5 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13862..13877 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me decide on my approach:
+
+**Already exists:**
+- `state_lifecycle_json_reports_dangling_model_call_last_event` - tests unpaired ModelCallStarted (open_model_calls > 0)
+- `state_lifecycle_json_pairs_stream_closed_terminal_model_call` - tests paired events (balanced=true)
+
+**Need to do:**
+1. Fix Ctrl+C handler: set `model_call_terminal_recorded = true` after recording ModelCallCompleted
+2. Add a test in `src/prompt.rs` - but `build_state_lifecycle_json` is private in `commands_state.rs`. I can't call it from `prompt.rs`.
+
+Given the constraint, the best approach is:
+- Make `build_state_lifecycle_json` `pub(crate)` in `commands_state.rs` (minimal visibility change)
+- Add tests in `src/prompt.rs` that test the lifecycle pairing
+- Fix the Ctrl+C handler
+
+But wait, changing `commands_state.rs` is not in the task's Files list. The task only lists `src/prompt.rs` and `src/state.rs`.
+
+Hmm, let me re-think. The task says tests should be in `src/prompt.rs` or `src/state.rs`. But `build_state_lifecycle_json` is in `commands_state.rs`. The task's Implementation Notes acknowledge this: "The build_state_lifecycle_json function in src/commands_state.rs (line 2444) is the lifecycle pairer."
+
+So maybe the task writer didn't realize the function was private. Let me take a pragmatic approach:
+
+1. Fix the Ctrl+C handler in `src/prompt.rs`
+2. Since `build_state_lifecycle_json` already has tests in `commands_state.rs`, and I can't access it from `src/prompt.rs` without changing `commands_state.rs`, I'll:
+   - Add tests in `src/prompt.rs` that test the `model_call_terminal_payload` function for the Ctrl+C "interrupted" case (this is in-scope - tests the recording side)
+   - If I want to test the lifecycle pairing itself, I need to make `build_state_lifecycle_json` `pub(crate)` in `commands_state.rs`
+
+Actually, let me think about this differently. The task's Files list says `src/prompt.rs, src/state.rs`. But the evolve skill says: "If you discover that the real owning file is outside the task's Files list, do not edit that outside file. Write session_plan/task_02_blocked.md with the exact owner file, the symbol/evidence that proves the mismatch, and the smallest corrected Files list for a future task."
+
+But the task also has `src/state.rs` in the Files list. Let me check if there's something relevant there.
+
+Actually, I think the best approach is:
+1. Fix the Ctrl+C handler in `src/prompt.rs` (harden the recording side)
+2. Add a test in `src/prompt.rs` that tests the structure of lifecycle events - specifically verifying that `model_call_terminal_payload` with "interrupted"/"ctrl_c" status has the right fields. This is a focused test of the recording side.
+3. Note that lifecycle pairing tests already exist in `commands_state.rs`
+
+This way I'm making concrete changes to the listed files. Let me also check if there's a `mod tests` in `src/state.rs`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (17ms)
+  ▶ todo ✓ (17ms)
+  ▶ todo ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the fix. First the Ctrl+C handler hardening, then the test.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.3s (3 ✓)
+
+Now let me implement. First, the Ctrl+C handler hardening:
+                                state.last_tool_name.as_deref(),
+                            ),
+                        );
+  +                     model_call_terminal_recorded = true;
+                    }
+  ✓ Auto-approved: edit: src/prompt.rs (16 → 17 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (34ms)
+  ▶ edit src/prompt.rs (16 → 17 lines)
+                                state.last_tool_name.as_deref(),
+                            ),
+                        );
+  +                     model_call_terminal_recorded = true;
+                    }
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add the test. I'll add a test to `src/prompt.rs` that verifies the structure of lifecycle events. Let me also check if `build_state_lifecycle_json` can be made available for testing. Actually, I should add tests that:
+
+1. Verify `model_call_terminal_payload` with "interrupted"/"ctrl_c" status (the Ctrl+C path)
+2. Verify event schema compatibility - that events produced by `model_call_terminal_payload` have fields matching what `build_state_lifecycle_json` expects
+
+Let me check what events are produced by `model_call_terminal_payload`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:32..82 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add a test in `src/prompt.rs`. I'll add:
+1. A test for the `model_call_terminal_payload` with "interrupted"/"ctrl_c" status (the Ctrl+C path) 
+2. A test that verifies lifecycle event structure is compatible with `build_state_lifecycle_json`
+
+For the lifecycle pairing test, I need to be able to call `build_state_lifecycle_json`. It's currently private in `commands_state.rs`. Let me make it `pub(crate)` so I can test it from `src/prompt.rs`.
+
+Actually, there's a cleaner approach. I can add a test in `src/prompt.rs` that constructs synthetic events matching the state event schema and verifies the fields that `build_state_lifecycle_json` expects (like `event_type`, `run_id`, `event_id`, `payload.model`). This tests the *recording side* - that `prompt.rs` produces events compatible with the lifecycle builder.
+
+Let me also look at the `state.rs` `record` function to understand the exact event schema:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:270..330 ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me implement the test. I'll add a test in `src/prompt.rs` that:
+
+1. Tests `model_call_terminal_payload` for the Ctrl+C "interrupted" case
+2. Tests lifecycle event schema compatibility
+
+For the lifecycle pairing test, I can't call `build_state_lifecycle_json` because it's private in `commands_state.rs`. But I CAN:
+- Write the test in `commands_state.rs` (but that's not in the Files list)
+- Make `build_state_lifecycle_json` `pub(crate)` and test from `src/prompt.rs`
+
+Actually wait - I should check if the existing `commands_state.rs` tests already cover the scenarios in the task. Let me check:
+
+1. `state_lifecycle_json_reports_dangling_model_call_last_event` - tests unpaired ModelCallStarted (incomplete=1)
+2. `state_lifecycle_json_pairs_stream_closed_terminal_model_call` - tests paired events (balanced=true)
+
+These already cover the success criteria! The task says:
+- "A new unit test... verifies build_state_lifecycle_json pairs them correctly (run_completed=1, model_completed=1, no unmatched completions)" → covered by test #2
+- "The test also verifies that an unpaired ModelCallStarted produces open_model_calls > 0" → covered by test #1
+
+But they're in `commands_state.rs`, not `prompt.rs` or `state.rs`.
+
+I think the right approach now is:
+1. Fix the Ctrl+C handler (done ✓)
+2. Add a new test in `src/prompt.rs` that tests the Ctrl+C "interrupted" payload creation (the recording side)
+3. Also add a comprehensive lifecycle event structure test in `src/prompt.rs` that verifies the event schema compatibility
+
+Let me write the test. I'll add:
+- `model_call_terminal_payload_with_interrupted_status` - tests the Ctrl+C path payload
+- A test that constructs synthetic event objects matching the state schema and verifies their structure is compatible with lifecycle pairing (same run_id, proper event types)
+
+Actually, the most valuable test I can add in `src/prompt.rs` is one that tests the lifecycle pairing using the actual `build_state_lifecycle_json` function. To do this, I need to make it `pub(crate)`. Let me check if editing `commands_state.rs` to add `pub(crate)` would be out of scope...
+
+The task says "Files: src/prompt.rs, src/state.rs". Making `build_state_lifecycle_json` `pub(crate)` requires editing `commands_state.rs`. The task's Implementation Notes say: "Do NOT refactor build_state_lifecycle_json or change its output format — only add tests and harden the recording side."
+
+Making it `pub(crate)` is not a refactor or output format change. It's just visibility. But the task explicitly limits files to `src/prompt.rs, src/state.rs`.
+
+I think the safest approach is:
+1. Fix the Ctrl+C handler (already done)
+2. Add tests in `src/prompt.rs` that test the recording side (event payload structure)
+3. Don't change `commands_state.rs` since it's not in the Files list
+
+Let me write a comprehensive test that verifies the event structure. I'll construct synthetic events matching what state.rs would produce and verify the key fields that `build_state_lifecycle_json` uses for pairing.
+
+Let me look at the existing test at line 1834 for pattern guidance:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the test. I'll add it at the end of the existing test module in `src/prompt.rs`:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1865..1885 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see where the test module ends to find the right insertion point:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^}' src/prompt.rs | tail -5 ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 2854 is the end of the file. Let me see what's at line 1768 to find the end of the test module, and also check around line 2840 for the last test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:2830..2860 ✓ (17ms)
+
+

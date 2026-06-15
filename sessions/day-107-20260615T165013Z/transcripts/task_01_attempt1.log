@@ -1,0 +1,386 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task: I need to diagnose and fix the `yyds state lifecycle --limit 5` command showing all zeros instead of real event counts. The root cause candidates are:
+
+1. `default_events_path()` returning a different path than where events are actually written
+2. `read_limited_events` having a filtering/parsing bug
+3. Event JSON serialization using different field names than what `build_state_lifecycle_json` expects
+
+Let me start by reading the relevant files to understand the current code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me investigate the root cause. I need to look at:
+
+1. `default_events_path()` in src/commands_state.rs
+2. `build_state_lifecycle_json` in src/commands_state.rs
+3. `read_limited_events` in src/commands_state.rs
+4. How events are written (in src/state.rs - `StateRecorder`)
+
+Let me start by reading the relevant sections.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me investigate the root cause. Starting with the relevant code sections.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the relevant functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn default_events_path' in src/commands_state.rs  ▶ search 'fn build_state_lifecycle_json' in src/commands_state.rs  ▶ search 'fn read_limited_events' in src/commands_state.rs ✓ (55ms)
+ ✓ (50ms)
+ ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now let me read each of these functions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.1s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1..51  ▶ read src/commands_state.rs:985..1065  ▶ read src/commands_state.rs:2440..2560 ✓ (82ms)
+ ✓ (67ms)
+ ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see how `handle_lifecycle` calls `build_state_lifecycle_json` and `read_limited_events`. Let me also look at the `event_string` function and the `event` handling to understand field naming.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_lifecycle' in src/commands_state.rs  ▶ search 'fn event_string' in src/commands_state.rs  ▶ search 'fn read_compatibility_events' in src/state.rs ✓ (49ms)
+ ✓ (33ms)
+ ✓ (67ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:445..525  ▶ read src/commands_state.rs:13755..13785  ▶ read src/state.rs:3040..3100 ✓ (16ms)
+ ✓ (97ms)
+ ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture more clearly. Let me trace the data flow:
+
+1. Events are written via `StateRecorder` in `src/state.rs` to `.yoyo/state/events.jsonl`
+2. `default_events_path()` returns `.yoyo/state/events.jsonl` (or config override)
+3. `read_limited_events` calls `read_events` → `read_compatibility_events` which reads the JSONL file
+4. `read_compatibility_events` calls `compatibility_event_json_line` → `compatibility_event_value` for each line
+
+Now the key question: `build_state_lifecycle_json` checks `event_string(event, "event_type")` to match against "RunStarted", "RunCompleted", "ModelCallStarted", "ModelCallCompleted".
+
+Looking at `compatibility_event_value`, it produces JSON with an `"event_type"` field that comes from `event_type_label(&event.event_type)`.
+
+Let me check what `event_type_label` returns.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.8s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_type_label' in src/state.rs  ▶ search 'EventType' in src/state.rs ✓ (33ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full `event_type_label` function and the `EventType` enum definition.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:110..190  ▶ read src/state.rs:2910..2970 ✓ (52ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the data flow clearly:
+
+1. Events are recorded with `EventType::RunStarted`, etc.
+2. `event_type_label` converts them to `"RunStarted"`, `"ModelCallStarted"`, etc.
+3. `compatibility_event_value` puts this into a JSON `Value` with field `"event_type"` containing those strings.
+4. `read_compatibility_events` reads lines, passes through `compatibility_event_json_line` which calls `compatibility_event_value`.
+5. `build_state_lifecycle_json` uses `event_string(event, "event_type")` to get the type and matches against `"RunStarted"`, `"ModelCallStarted"`, etc.
+
+So the field names match! The issue is not with field naming mismatch.
+
+Let me check whether `read_limited_events` might be reading zero events. Let me check if the events file actually exists and has content. Let me also check what `read_compatibility_events` does more carefully. The function reads the full file content, then processes each line through `compatibility_event_json_line`. If this fails to parse for some reason, it would return an error, but the `handle_lifecycle` function handles that error case with a "no state log found" message.
+
+Wait, actually `read_compatibility_events` returns `Result<Vec<Value>, String>`, and `read_events` converts that to `Result<Vec<Value>, std::io::Error>` using `.map_err(std::io::Error::other)`. If parsing fails, it returns an error and `handle_lifecycle` would print "no state log found".
+
+So the issue might be that the events file doesn't exist at the expected path, or the events aren't being written there.
+
+Let me check what `StateRecorder::new` does and where it writes events.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.7s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct StateRecorder' in src/state.rs  ▶ search 'fn new' in src/state.rs ✓ (34ms)
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the StateRecorder struct and its `new` method, and also look at `init_global`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:256..336 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the `StateConfig` struct to see how `events_path` is configured.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct StateConfig' in src/state.rs ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `StateConfig` and where it's created.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:90..120  ▶ search 'StateConfig' in src ✓ (33ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how `StateConfig` is initialized in `cli.rs` and `cli_config.rs` - this is where the actual path used during runtime is set.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:778..808  ▶ read src/cli_config.rs:160..190 ✓ (50ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture more clearly. 
+
+The `default_events_path()` function:
+1. Loads config from `load_deepseek_config_file()`
+2. Gets `state_events` key, or defaults to `.yoyo/state/events.jsonl`
+
+And `parse_state_config` also loads from the same config file (`state_events` key).
+
+So both should be using the same path. But let me check whether `default_events_path()` falls back correctly. It falls back to `.yoyo/state/events.jsonl`, which is the same as `StateConfig::default().events_path`. That should work.
+
+But wait - let me check whether there might be another issue. The problem says "lifecycle command can't surface any of this data" and "shows all zeros."
+
+Let me check if the events file actually exists and has content. Let me also look more carefully at the `read_compatibility_events` function to see if it might silently return zero events.
+
+Actually, wait. Let me re-read `read_compatibility_events`:
+
+```rust
+pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
+    raw.lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(idx, line)| {
+            let normalized = compatibility_event_json_line(line)
+                .map_err(|e| format!("parse event line {}: {e}", idx + 1))?;
+            serde_json::from_str::<Value>(&normalized)
+                .map_err(|e| format!("decode compatibility event line {}: {e}", idx + 1))
+        })
+        .collect()
+}
+```
+
+This reads the full file and parses each line. If any line fails to parse, the whole operation fails, and `handle_lifecycle` would print "no state log found".
+
+Now let me check `compatibility_event_json_line`:
+
+```rust
+pub fn compatibility_event_json_line(line: &str) -> Result<String, String> {
+    let event = parse_state_event_line(line)?;
+    serde_json::to_string(&compatibility_event_value(&event))
+        .map_err(|e| format!("serialize compatibility state event: {e}"))
+}
+```
+
+It calls `parse_state_event_line` - let me check what that does.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.4s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn parse_state_event_line' in src/state.rs ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `parse_state_event_line` function and also check the actual events file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:710..760  ▶ $ ls -la .yoyo/state/events.jsonl 2>/dev/null && echo "EXISTS" || echo "NOT FOUND" ✓ (49ms)
+ ✓ (49ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The events file exists and is 18.5MB! So there's plenty of data. Let me check the first few lines to understand the format.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ head -3 .yoyo/state/events.jsonl | python3 -m json.tool 2>/dev/null | head -30 ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That returned nothing. Let me try a different approach - just look at the raw first line.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ head -c 2000 .yoyo/state/events.jsonl ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the events file is full of events. Let me check if there are lifecycle events like RunStarted, RunCompleted, ModelCallStarted, ModelCallCompleted in there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -c '"event_type": "RunStarted"' .yoyo/state/events.jsonl; grep -c '"event_t… ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Zero matches! So the events file DOES NOT contain lifecycle events. That's the real problem! The lifecycle events (RunStarted, RunCompleted, ModelCallStarted, ModelCallCompleted) are NOT being recorded.
+
+Let me check what events ARE in there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -o '"event_type": "[^"]*"' .yoyo/state/events.jsonl | sort | uniq -c | sort… ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only 15 events of type "PatchEvaluated"! No lifecycle events at all! This means the `state` recorder is not recording RunStarted, ModelCallStarted, etc.
+
+But wait - the task says "The trajectory reports 22 incomplete model calls and 3 incomplete state runs." This suggests the trajectory is maybe counting something else. Let me investigate further.
+
+Let me check if there are other events files, and also see if `record` is being called for ModelCallStarted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType::ModelCallStarted' in src  ▶ search 'EventType::RunStarted' in src ✓ (34ms)
+ ✓ (36ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how `ModelCallStarted` is recorded in `prompt.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:770..800 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `record` is being called. But `record` only works if the global recorder is initialized (`is_initialized()` returns true). Let me check the `record` function more carefully:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:328..358 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `record` function silently returns if the global recorder is not initialized. That's the problem!
+
+Now, the global recorder is initialized by `init_global` which checks `config.enabled`. And `config.enabled` is set based on `harness_internal_enabled() && (env_enable || file_config.get("state_enabled"))`.
+
+Now, the events file has 15 events, all "PatchEvaluated". Those were likely added by `log_feedback.py` or some other direct mechanism, not through the `record` function.
+
+Let me check if `YOYO_HARNESS_INTERNAL` is set:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ echo "YOYO_HARNESS_INTERNAL=$YOYO_HARNESS_INTERNAL"; echo "YOYO_STATE=$YOYO_STAT… ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both env vars are set. So `config.enabled` should be `true`. But wait - the events file only has 15 "PatchEvaluated" events, not ModelCallStarted. 
+
+Let me check: maybe the `record` function is being called, but `append` (which calls `append_event_with_projection`) is failing silently because `fail_soft` is true.
+
+Or maybe the events in the file were only written by the log_feedback.py script, not by the actual Rust process.
+
+Let me check if the current process (my own process) is running with the state recorder initialized. Let me check if I can add a ModelCallStarted event right now.
+
+Actually wait - let me reconsider. The task says "The trajectory reports 22 incomplete model calls and 3 incomplete state runs". Where does the trajectory get this data? Let me check.
+
+Actually, let me look at the trajectory extraction script to understand what it reports.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'incomplete model' scripts/extract_trajectory.py | head -10 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how the trajectory gets incomplete model calls. Maybe it's from log_feedback metrics, not from the lifecycle command. The task says "The trajectory reports 22 incomplete model calls and 3 incomplete state runs, but the lifecycle command can't surface any of this data."
+
+So the issue is twofold:
+1. The lifecycle command doesn't show data because there are no lifecycle events in the events file
+2. The trajectory reports incomplete model calls through log_feedback metrics, not lifecycle events
+
+Wait, let me re-read the task more carefully: "Cold-start `state why last-failure` already works (Day 107 earlier sessions fixed it), but lifecycle querying is still broken."
+
+So the lifecycle querying problem could be:
+- The events file HAS lifecycle events, but `build_state_lifecycle_json` can't find them because the JSON structure has different field names
+- OR the events file doesn't have lifecycle events at all
+
+From my grep, the events file has ZERO lifecycle events. So that's the root cause: lifecycle events are not being recorded.
+
+But the earlier Day 107 session fixed `why last-failure` - which means it fixed the ability to read and parse events. The remaining gap is that lifecycle events (RunStarted, ModelCallStarted, etc.) are not being recorded.
+
+Wait, let me think again. If events are being recorded in the current process (my process), then after I make a model call myself, the event should appear. But the grep showed 0 events, which means either:
+1. The events file I'm looking at is the wrong one
+2. Events are not being recorded in this process
+
+Let me check if the state recorder is initialized in this process and where it points:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cat ~/.yoyo/config.toml 2>/dev/null; cat .yoyo/config.toml 2>/dev/null ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No config files. So `default_events_path()` returns `.yoyo/state/events.jsonl` by default. And `parse_state_config` also uses `StateConfig::default().events_path` which is `.yoyo/state/events.jsonl`.
+
+Both should be the same path. And the file exists at `.yoyo/state/events.jsonl` with 15 events, but none are lifecycle events.
+
+So the problem is: lifecycle events are NOT being recorded by this process. The global recorder might not be initialized, or might be writing somewhere else, or `record()` is silently failing.
+
+But wait - I just ran `record(EventType::ModelCallStarted, ...)` - that was before I was born in this process. The events in the file were written by `log_feedback.py` (PatchEvaluated events).
+
+So the real question is: why is `record()` not working? Let me trace the initialization again.
+
+`init_global()` checks `config.enabled`. `config.enabled = harness_internal_enabled() && (env_enable || state_enabled_config)`.
+- `YOYO_HARNESS_INTERNAL=1` → `harness_internal_enabled()` returns true
+- `YOYO_STATE=1` → `env_enable` is true
+- So `config.enabled = true`
+
+Then `init_global` creates a `StateRecorder::new(config)` and calls `recorder.append(EventType::RunStarted, ...)`. If this succeeds, the recorder is stored in `GLOBAL_RECORDER`. If it fails and `fail_soft` is true, it prints a warning and continues.
+
+So if initialization succeeded, there should be at least one RunStarted event in the file. But there are zero.
+
+Let me check if the current process has initialized state. Maybe the state is only initialized for specific commands.
+
+Let me search for where `init_global` is called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ search 'init_global' in src ✓ (16ms)
+
+

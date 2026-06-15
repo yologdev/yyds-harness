@@ -1,0 +1,642 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then understanding the codebase structure around the task. The task is to:
+
+1. Add a unit test in `src/prompt.rs` or `src/state.rs` for lifecycle pairing (ModelCallStarted/ModelCallCompleted)
+2. Harden the post-loop fallback in `prompt.rs` (around line 1045)
+3. Verify everything builds and passes tests
+
+Let me start by reading the evolve skill and examining the relevant code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/prompt.rs:1030..1080 ✓ (48ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the fallback at line 1045. Now let me understand the broader context. I need to:
+
+1. Look at the `build_state_lifecycle_json` function in `src/commands_state.rs` around line 2444
+2. Look at the state recording in `src/state.rs` around line 276
+3. Understand how ModelCallStarted/ModelCallCompleted events are structured
+4. Understand the `model_call_terminal_recorded` flag - where it's initialized, how it gets set
+5. Look for early returns between the loop exit and the fallback
+
+Let me first check the state.rs structure, then look at the lifecycle builder.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:260..320  ▶ search 'fn build_state_lifecycle_json' in src/commands_state.rs  ▶ search 'model_call_terminal_recorded' in src/prompt.rs ✓ (50ms)
+ ✓ (50ms)
+ ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the full context around the model_call_terminal_recorded usage to understand the flow.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.5s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:760..820  ▶ read src/prompt.rs:930..990 ✓ (16ms)
+  ▶ read src/prompt.rs:995..1035 ✓ (98ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. Let me analyze the flow:
+
+1. `model_call_terminal_recorded` is initialized to `false` at line 769
+2. ModelCallStarted is recorded before the loop at line 777
+3. In the loop, ModelCallCompleted is recorded when AgentEnd fires (line 932-946), setting `model_call_terminal_recorded = true`
+4. There's also a Ctrl+C handler (line 999-1029) that records ModelCallCompleted with status "interrupted" - but it does NOT set `model_call_terminal_recorded = true`! This is a bug: when Ctrl+C fires, the fallback at line 1045 will also fire because `model_call_terminal_recorded` is still false, resulting in TWO ModelCallCompleted events for the same ModelCallStarted.
+
+Wait, let me re-read. Ctrl+C returns `PromptResult::Done` at line 1023 - so it DOES return before reaching the fallback. Let me verify...
+
+Yes, line 1023: `return PromptResult::Done { ... }` - this returns BEFORE reaching the fallback. So when Ctrl+C fires, ModelCallCompleted IS recorded (status "interrupted") but `model_call_terminal_recorded` stays false. However since we return before the fallback, we don't get a duplicate. So this is actually fine, though a bit sloppy.
+
+But wait - the `model_call_terminal_recorded` flag is not set to true after recording the Ctrl+C completion. Is that a bug? If someone looks at the code later and adds code between the Ctrl+C return and... no, there's a `return` so we never reach the fallback. It's fine.
+
+Now let me think about what could cause unmatched ModelCallStarted events:
+
+1. The `break` at line 786 when `rx.recv()` returns `None` - this exits the loop naturally and reaches the fallback. Good.
+2. Ctrl+C - returns before fallback but records completion. Good.
+3. Panic unwinding - if any code in the loop panics, neither the fallback nor the explicit completion will fire. This could leave ModelCallStarted unmatched. A `Drop` guard would be more reliable but the task says to keep scope minimal.
+
+Let me look at what the `build_state_lifecycle_json` function does and how it pairs events.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.1s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2444..2644 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the lifecycle pairing:
+
+- `model_lifecycle_key` uses `run_id` to match ModelCallStarted with ModelCallCompleted events
+- Open model calls are those ModelCallStarted events without a matching ModelCallCompleted in the same run
+
+Now let me also look at the `ModelCallCompleted` payload in `prompt.rs` and understand the structure.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at the `model_call_terminal_payload` helper and the `ModelCallCompleted` schema:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn model_call_terminal_payload' in src/prompt.rs ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the function and the existing test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:32..82  ▶ read src/prompt.rs:1820..1870 ✓ (49ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I understand the full picture. Let me now look at the test module in `src/prompt.rs` to understand the test structure and find a good place to add the lifecycle pairing test.
+
+Let me also check if there are existing tests for `build_state_lifecycle_json` in `src/commands_state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+Let me look at the test module structure and check for existing lifecycle tests:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_state_lifecycle_json' in src/commands_state.rs  ▶ search '#\[cfg\(test\)\]' in src/prompt.rs ✓ (16ms)
+ ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the test module location in `prompt.rs`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/prompt.rs  ▶ read src/commands_state.rs:23670..23750 ✓ (16ms)
+ ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the existing test for `build_state_lifecycle_json` to understand the test pattern and the `event_at` helper:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:23600..23680 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find the `event_at` helper to understand its signature:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_at' in src/commands_state.rs ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `event_at` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13877..13907 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also see the `event` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event\(id: &str, kind: &str, run: &str, payload: Value\)' in src/commands_state.rs ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search differently:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn event(' src/commands_state.rs | head -5 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13862..13882 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me plan the implementation:
+
+1. The existing tests in `src/commands_state.rs` already have:
+   - `state_lifecycle_json_reports_dangling_model_call_last_event` - tests unpaired ModelCallStarted
+   - `state_lifecycle_json_pairs_stream_closed_terminal_model_call` - tests paired ModelCallStarted + ModelCallCompleted
+
+2. These tests already exist! The task says the code may already satisfy this. So I need to verify:
+
+What's actually missing? Let me re-read the task requirements:
+
+- "A new unit test in src/prompt.rs (or src/state.rs) creates synthetic ModelCallStarted + ModelCallCompleted events and verifies build_state_lifecycle_json pairs them correctly (run_completed=1, model_completed=1, no unmatched completions)."
+- "The test also verifies that an unpaired ModelCallStarted (no matching ModelCallCompleted) produces open_model_calls > 0 in the lifecycle output."
+- "The post-loop fallback at prompt.rs:1045 is reviewed for edge cases (panic unwinding, early return) and hardened if any gap exists."
+
+The tests in `src/commands_state.rs` already cover both pairing and unpaired cases. So the test requirement is already satisfied.
+
+Now let me focus on the hardening portion. Let me review the post-loop fallback more carefully and look for edge cases:
+
+1. The `rx.recv()` returns `None` → breaks the loop → reaches fallback ✓
+2. Ctrl+C → records ModelCallCompleted, returns before fallback ✓
+3. What about panics? If code inside the event handler panics, we won't reach the fallback.
+
+Let me check if there's a `Drop` guard or any panic handling. Also, let me look at the overall function to see if there are any other early returns:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:845..895  ▶ read src/prompt.rs:895..945 ✓ (49ms)
+ ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a full picture. Let me analyze the gaps:
+
+**Test coverage:** The tests in `src/commands_state.rs` already cover:
+1. Paired ModelCallStarted + ModelCallCompleted → balanced
+2. Unpaired ModelCallStarted (dangling) → incomplete > 0
+
+But they don't test the case where ModelCallCompleted has no matching ModelCallStarted (unmatched completion). Let me verify if that's already tested...
+
+Looking at `build_state_lifecycle_json`:
+- `open_model_calls` tracks ModelCallStarted events by key
+- ModelCallCompleted removes from `open_model_calls`; if not found, adds to `unmatched_model_completions`
+
+I don't see a test for the unmatched completion case. Though the task says the test should focus on pairing and unpaired-start.
+
+Now for hardening: Let me think about what could cause 22 unmatched ModelCallStarted events.
+
+The flow in `handle_prompt_events`:
+1. ModelCallStarted recorded at line 777
+2. Loop processes events
+3. ModelCallCompleted recorded at AgentEnd (line 932) or in fallback (line 1045)
+4. Ctrl+C records ModelCallCompleted and returns early
+
+Edge cases:
+- **Panic unwinding**: If any code in the event handler panics, `model_call_terminal_recorded` won't be set and the fallback won't be reached. A `Drop` guard would help but the task says to keep scope minimal.
+- **The `model_call_id` could differ from `run_id`**: Wait, looking at `model_lifecycle_key`, it matches on `run_id`, but the ModelCallStarted event records `model_call_id` in the payload, not as the run_id. The run_id in the event comes from `StateRecorder::run_id`.
+
+Looking at line 290: `run_id: Some(self.run_id.clone())` - this is the recorder's run_id, not the model_call_id. So the lifecycle key uses `run_id` to pair events - this means all ModelCallStarted/ModelCallCompleted events in the same run get the same key. This seems correct because each `handle_prompt_events` call creates one ModelCallStarted per call (one per agent turn), and each call uses the same `StateRecorder` (same `run_id`).
+
+Wait, but the task says there are 22 gaps. Let me think about what situations could cause this:
+
+1. Agent crashes or process is killed between ModelCallStarted and ModelCallCompleted
+2. Some code path calls `handle_prompt_events` but the event stream closes without AgentEnd AND without reaching the post-loop fallback
+3. Multiple concurrent calls to `handle_prompt_events`?
+
+Actually, looking more carefully at the `model_lifecycle_key`:
+```rust
+fn model_lifecycle_key(event: &Value) -> String {
+    event_string(event, "run_id")
+        .filter(|run_id| !run_id.is_empty())
+        .or_else(|| event_string(event, "event_id"))
+        .unwrap_or("-")
+        .to_string()
+}
+```
+
+This uses `run_id` to match. If multiple `handle_prompt_events` calls happen in the same run, there could be multiple ModelCallStarted events with the same `run_id` but different `model_call_id`s. When one completes, it removes from `open_model_calls` by `run_id` - but wait, `BTreeMap::remove` only removes one entry. Actually no, `insert` on a BTreeMap replaces the old value. So if two ModelCallStarted events have the same run_id, the second one overwrites the first in `open_model_calls`. Then when one ModelCallCompleted arrives, it removes the entry. The first ModelCallStarted is now orphaned - there's no record of it.
+
+So this IS actually a bug in the lifecycle key! If there are multiple model calls in the same run, they overwrite each other in `open_model_calls`. But wait - is this actually the case in the real flow? Let me check whether multiple `handle_prompt_events` calls happen in the same run...
+
+Actually, looking at the state recorder: `run_id: format!("run-{now}-{}", std::process::id())` - the run_id is created when the StateRecorder is created, which happens once per process. So all model calls in one process share the same run_id.
+
+And from `handle_prompt_events`:
+```rust
+let model_call_id = format!("mc-{:x}", ...);
+```
+Each call has a unique `model_call_id`, but they all share the same `run_id`.
+
+The `model_lifecycle_key` uses `run_id`, so if there are multiple model calls in one run, they'd all get the same key in `open_model_calls`, and `insert` would overwrite previous entries. Then when `ModelCallCompleted` arrives and removes the key, only the LAST `ModelCallStarted` gets paired. The earlier ones stay as orphans.
+
+Wait, but `open_model_calls` is a `BTreeMap<String, OpenModelCall>`. If the key is just `run_id`, then yes, multiple calls in the same run would collide. But actually the `insert` on line 2468-2475 inserts the latest one, and `remove` on line 2480 removes it. But there could be multiple ModelCallStarted events before any ModelCallCompleted - in that case, only the last one is tracked in `open_model_calls`.
+
+Hmm, but in practice, how are model calls sequenced? Each `handle_prompt_events` call processes one full model call (start → events → end). But multiple calls can happen in sequence within the same process. So:
+1. handle_prompt_events call 1: ModelCallStarted (run-1) → ... → ModelCallCompleted (run-1) → fallback
+2. handle_prompt_events call 2: ModelCallStarted (run-1) → ... → ModelCallCompleted (run-1) → fallback
+
+In this case, both are properly paired. The `open_model_calls` map would have them properly tracked because between call 1's completion and call 2's start, they don't overlap.
+
+But what about the retry flow? If `handle_prompt_events` is called in a retry loop, and one of the calls exits abnormally (e.g., channel closes without AgentEnd but the fallback fires), then the next retry starts a new model call. The first one has ModelCallStarted and ModelCallCompleted (via fallback). The second one also has both. So they should be paired correctly IF the fallback fires.
+
+But what if the fallback doesn't fire? Like if there's a panic. But that would crash the process.
+
+Let me think about this differently. The task says "22 gaps persist." These could be historical gaps from before the fallback was added. Let me check the git history to see when the fallback was introduced...
+
+Actually, I should focus on what the task asks me to do:
+1. Add a unit test for lifecycle pairing - already exists in `src/commands_state.rs`
+2. Harden the post-loop fallback
+
+For hardening, let me think about what could still cause unmatched ModelCallStarted:
+
+Looking at `handle_prompt_events` more carefully - is there any way the function could return WITHOUT reaching the post-loop fallback AND without having recorded ModelCallCompleted?
+
+The only early return is Ctrl+C (line 1023), which DOES record ModelCallCompleted. So the only gap would be:
+- If the function panics somewhere in the event loop. 
+
+A `Drop` guard would be the most reliable way but the task says "keep scope minimal — a `Drop` guard is a bigger change."
+
+Wait, actually there's a subtler issue. Let me re-read the event loop structure:
+
+```rust
+loop {
+    tokio::select! {
+        event = rx.recv() => {
+            let Some(event) = event else { break };
+            // ... match event ...
+        }
+        _ = tokio::signal::ctrl_c() => {
+            // ... return PromptResult::Done ...
+        }
+    }
+}
+// post-loop code including fallback
+```
+
+When `rx.recv()` returns `None`, the loop breaks naturally and reaches the fallback. That's fine.
+
+But what about this: could `agent.abort()` at line 1002 cause the event channel to close, and then `rx.recv()` returns `None`, which breaks the loop? Let me trace:
+1. Ctrl+C fires
+2. `agent.abort()` called
+3. `ModelCallCompleted` recorded 
+4. `return PromptResult::Done` - we RETURN here, don't fall through
+
+So the fallback is not reached after Ctrl+C, which is fine because ModelCallCompleted was already recorded.
+
+Now, what about the converse: could the event channel close (rx.recv() returns None) WHILE we're inside the Ctrl+C handler? No, because tokio::select! only executes one branch, and we return from that branch.
+
+Actually wait - could there be a race? What if:
+1. `rx.recv()` returns `None` (channel closed)
+2. We `break` the loop
+3. We reach the fallback and record ModelCallCompleted
+4. But between step 1 and 3, another thread panicked and unwound past us?
+
+No, that's not how Rust works.
+
+Let me think about the MULTI-CALL issue more carefully. The `model_lifecycle_key` uses `run_id`. If there are multiple concurrent or interleaved calls to `handle_prompt_events` in the same run, the `open_model_calls` BTreeMap would have only one entry per run_id. But that's in `build_state_lifecycle_json` which processes events after the fact. The events themselves are independently recorded. So:
+
+- Event 1: ModelCallStarted, run-1
+- Event 2: ModelCallStarted, run-1  (second call)
+- Event 3: ModelCallCompleted, run-1 (completes one of them)
+- Event 4: ModelCallCompleted, run-1 (completes the other)
+
+In `build_state_lifecycle_json`:
+- Event 1: insert into open_model_calls with key "run-1"
+- Event 2: insert into open_model_calls with key "run-1" - OVERWRITES event 1!
+- Event 3: remove from open_model_calls with key "run-1" - removes event 2
+- Event 4: remove from open_model_calls with key "run-1" - NOT FOUND → adds to unmatched_model_completions
+
+RESULT: `open_model_calls` is empty (event 1 was overwritten and never completed), `unmatched_model_completions` has 1 entry (event 4). So `model_started`=2, `model_completed`=2, but `incomplete_model_calls`=0 (because open_model_calls is empty), and `unmatched_model_completions`=1.
+
+This IS a bug! The lifecycle key should include something unique per model call, not just the run_id.
+
+But the task says: "Do NOT refactor `build_state_lifecycle_json` or change its output format — only add tests and harden the recording side."
+
+Hmm, but the lifecycle key bug is in `build_state_lifecycle_json` (the consumer side), not the recording side. If I can't change it, I should at least add a test that documents this edge case.
+
+Wait, let me re-read the task: "Adding a test that exercises the lifecycle JSON builder with synthetic paired events will catch any key-matching bugs."
+
+So the test should catch key-matching bugs. Let me think about what test would catch the overwrite bug.
+
+Actually, let me reconsider. In practice, does yyds have multiple concurrent model calls in the same run? Let me look at how `handle_prompt_events` is called:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 32.7s (2 ✓)
+
+Let me check how `handle_prompt_events` is called and whether there can be multiple concurrent calls:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_prompt_events' in src/prompt.rs ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how these calls are structured:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:295..345 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `handle_prompt_events` is called once per `run_prompt_once` call. It's sequential - one at a time (the `agent.prompt(input).await` creates the channel, and `handle_prompt_events` processes it fully). Since it's `async` and called with `.await`, there's no concurrency within a single `agent.prompt()` + `handle_prompt_events()` pair.
+
+But there could be multiple sequential calls to `run_prompt_once` in the same process (e.g., retries, or multiple turns in a REPL). Let me check...
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'run_prompt_once' in src/prompt.rs ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how the retry loop works to understand how many model calls happen in one process:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1220..1300 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there are retries. Each `run_prompt_once` call creates one ModelCallStarted + one ModelCallCompleted (via either AgentEnd or fallback). Since these are sequential, the previous ModelCallCompleted is recorded before the next ModelCallStarted. So in the event stream:
+
+Run-1:
+- ModelCallStarted (attempt 1)
+- ModelCallCompleted (attempt 1, e.g., stream_closed)
+- ModelCallStarted (attempt 2)
+- ModelCallCompleted (attempt 2, completed)
+- ...
+
+When `build_state_lifecycle_json` processes this, the `open_model_calls` map would work correctly because:
+1. Insert ModelCallStarted (key=run-1)
+2. Remove ModelCallCompleted (key=run-1) → found
+3. Insert ModelCallStarted (key=run-1)
+4. Remove ModelCallCompleted (key=run-1) → found
+
+So there's no issue with sequential calls in the same run. The issue must be from:
+- Historical gaps (before the fallback was added)
+- Cases where the process is killed between ModelCallStarted and ModelCallCompleted
+
+Now let me also check if there's a subtlety with the Ctrl+C handler. The Ctrl+C handler records ModelCallCompleted but does NOT set `model_call_terminal_recorded = true`. This is correct because we return before the fallback. But it means that `model_call_terminal_recorded` stays `false` after Ctrl+C. If someone refactors the code and removes the `return`, they'd get a duplicate ModelCallCompleted.
+
+Actually, looking at this more carefully, the Ctrl+C handler at line 999-1029 is inside `tokio::select!`. The `return` at line 1023 returns from `handle_prompt_events`, which is fine. But if someone changes the code to use `break` instead of `return`, the fallback would fire and record a duplicate. This is a robustness concern.
+
+Let me now focus on what I can actually do within the task scope:
+
+1. **Test**: The tests already exist. But I notice there's no test for:
+   - Two sequential model calls in the same run (start→complete→start→complete) - to verify that the `model_lifecycle_key` (which uses run_id) handles this correctly
+   
+   Let me add this test since it's directly relevant to the key-matching concern.
+
+2. **Hardening**: The fallback at line 1045 looks OK but the Ctrl+C handler doesn't set `model_call_terminal_recorded`. While this is technically harmless (due to the return), it's a latent bug waiting to happen. Let me set it to true in the Ctrl+C handler to be defensive.
+
+   Also, I should verify there are no other early returns.
+
+Let me also check whether there's the potential for `handle_prompt_events` to panic. The event handler code has many potential panic sites (unwrap, indexing, etc.). If any panics, we lose the ModelCallCompleted. A `Drop` guard would handle this but the task says to keep scope minimal.
+
+Let me plan my changes:
+
+1. In `src/commands_state.rs`: Add a test for sequential model calls in same run
+2. In `src/prompt.rs`: Set `model_call_terminal_recorded = true` in the Ctrl+C handler (defensive hardening)
+
+Let me now also look for any `?` operator or early return in the event handler that could bypass the fallback:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check for any early returns or error propagations within the event loop that could bypass the fallback:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'return\|\.await?' src/prompt.rs | grep -v '^ *//' | head -30 ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The only `return` inside the event loop is at line 1023 (Ctrl+C). There's no `?` operator on an await that would early-exit. Good.
+
+Now let me understand the exact structure. The event handler takes `&mut Agent` - but the event processing is all synchronous (match arms), no awaits inside the loop body. So no `.await` points that could panic.
+
+Now let me plan my changes:
+
+1. **Add test in `src/commands_state.rs`**: A test that creates two sequential ModelCallStarted + ModelCallCompleted pairs in the same run and verifies they're all properly paired (started=2, completed=2, incomplete=0, unmatched=0).
+
+2. **Harden `src/prompt.rs`**: Set `model_call_terminal_recorded = true` in the Ctrl+C handler to prevent the fallback from double-recording if the `return` is ever removed.
+
+Actually wait - the task says "write a test first if possible" and mentions `src/prompt.rs` or `src/state.rs` as the test location. But the existing tests for `build_state_lifecycle_json` are in `src/commands_state.rs`. The task says `src/prompt.rs` or `src/state.rs`... but `build_state_lifecycle_json` is in `src/commands_state.rs`. 
+
+The task says: "A new unit test in src/prompt.rs (or src/state.rs) creates synthetic ModelCallStarted + ModelCallCompleted events..."
+
+But the function being tested (`build_state_lifecycle_json`) is in `src/commands_state.rs`. The task's file list is `src/prompt.rs, src/state.rs` - these are the files I should edit. But the tests for `build_state_lifecycle_json` are in `src/commands_state.rs`.
+
+Hmm, but the task also says: "If you discover that the real owning file is outside the task's Files list, do not edit that outside file. Write session_plan/task_02_blocked.md..."
+
+But wait - the hardening IS in `src/prompt.rs` (the file in the task list). And I can add a test in `src/prompt.rs` that imports and exercises `build_state_lifecycle_json` from `commands_state`. But that creates a circular dependency... Let me check the module structure.
+
+Actually, looking at the task more carefully: "Add a focused test that verifies ModelCallStarted/ModelCallCompleted pairing works correctly in the lifecycle JSON builder, and harden the post-loop fallback in prompt.rs"
+
+The test in src/prompt.rs could test the RECORDING side - e.g., call `model_call_terminal_payload` and verify the payload structure. But that's already tested.
+
+Or I could add a test in `src/prompt.rs` that verifies the `model_lifecycle_key` matching logic by importing `build_state_lifecycle_json`. But functions in `commands_state` are not public...
+
+Actually, re-reading the task: "A new unit test in src/prompt.rs (or src/state.rs) creates synthetic ModelCallStarted + ModelCallCompleted events and verifies build_state_lifecycle_json pairs them correctly"
+
+The task is asking for a test that exercises `build_state_lifecycle_json`. But that function is in `src/commands_state.rs`, which is not in the task's Files list. Let me check if it's public...
+
+Let me look at the function signature again: `fn build_state_lifecycle_json(events: &[Value]) -> Value` - it's not `pub`, so it can't be called from `src/prompt.rs`.
+
+So the task's instruction to write the test in `src/prompt.rs` or `src/state.rs` is incorrect about the location. The test should properly go in `src/commands_state.rs`. 
+
+But the task says: "If you discover that the real owning file is outside the task's Files list, do not edit that outside file. Write session_plan/task_02_blocked.md..."
+
+Wait, but the task also says to add the test. And the test location mentioned is `src/prompt.rs (or src/state.rs)`. Let me re-read: the task says "Files: src/prompt.rs, src/state.rs". But `build_state_lifecycle_json` is in `src/commands_state.rs`. 
+
+I think the correct approach is to:
+1. Harden `src/prompt.rs` (in the task's Files list)
+2. Write `session_plan/task_02_blocked.md` noting that `build_state_lifecycle_json` tests belong in `src/commands_state.rs`, but they already exist there
+
+Wait, but that's unsatisfying. Let me think about what test I CAN write in `src/prompt.rs`:
+
+- I can test `model_call_terminal_payload` (already tested)
+- I can test that the `model_call_terminal_recorded` flag is properly managed
+
+But the task specifically asks for testing `build_state_lifecycle_json` pairing. Since that function is in `src/commands_state.rs`, I have two options:
+
+1. Write the test in `src/commands_state.rs` (outside task Files list) → write blocked note
+2. Write a test in `src/prompt.rs` that tests something related but not `build_state_lifecycle_json` directly
+
+I think the pragmatic approach is: the task's Files list is advisory but the actual work should be done wherever needed. However, the task explicitly says "If you discover that the real owning file is outside the task's Files list, do not edit that outside file."
+
+Let me re-read the blocked condition more carefully: "If you discover that the real owning file is outside the task's Files list, do not edit that outside file. Write session_plan/task_02_blocked.md with the exact owner file, the symbol/evidence that proves the mismatch, and the smallest corrected Files list for a future task."
+
+So if I determine that tests for `build_state_lifecycle_json` belong in `src/commands_state.rs`, I should write a blocked note.
+
+BUT - the existing tests already cover both pairing cases! Let me verify once more:
+- `state_lifecycle_json_pairs_stream_closed_terminal_model_call` - tests paired case (balanced=true, started=1, completed=1, incomplete=0)
+- `state_lifecycle_json_reports_dangling_model_call_last_event` - tests unpaired case (balanced=false, incomplete=1)
+
+The only missing test case I can think of is:
+- Two sequential pairs in the same run (to verify the `model_lifecycle_key` with run_id doesn't cause issues when events are correctly interleaved)
+- An unmatched ModelCallCompleted (completion without a start)
+
+Let me verify if the existing tests are sufficient by checking them more carefully...
+
+Actually, I think the right approach given the constraints is:
+
+1. Harden the fallback in `src/prompt.rs` (set `model_call_terminal_recorded = true` after Ctrl+C recording)
+2. Since the lifecycle pairing tests already exist in `src/commands_state.rs` and the task says not to edit files outside the Files list, I should note this. But the hardening IS in the Files list.
+
+Actually wait, let me re-read the task one more time... "Do NOT refactor build_state_lifecycle_json or change its output format — only add tests and harden the recording side."
+
+The task explicitly says to add tests. And "harden the recording side" is about prompt.rs. So I should:
+1. Add tests in prompt.rs or state.rs for the recording side
+2. Harden the fallback in prompt.rs
+
+What recording-side test could I add? I could test that the model_call_terminal_payload records proper fallback status. But that already exists at line 1834.
+
+What about testing that the fallback fires? That would be an integration test...
+
+OK, let me step back and think about what's actually most useful. The task mentions 22 gaps with `model_incomplete/open_after_file_edit=5`. 
+
+Looking at the flow: the fallback at line 1045 records ModelCallCompleted when `model_call_terminal_recorded` is false. This handles the case where the event stream closes without AgentEnd. But what if there's a case where the stream closes with AgentEnd but `model_call_terminal_recorded` is still false?
+
+Looking at lines 930-948: `AgentEvent::AgentEnd` sets `model_call_terminal_recorded = true`. So that's fine.
+
+What about `AgentEvent::InputRejected`? That doesn't record ModelCallCompleted. So if the input is rejected, the model call would record ModelCallStarted but not ModelCallCompleted (unless the fallback fires). Let me check - after `InputRejected`, does the agent end the stream?
+
+Looking at line 949-963: InputRejected just records FailureObserved and prints a message. It doesn't break the loop, doesn't return, doesn't set `model_call_terminal_recorded`. So the loop continues and eventually `rx.recv()` returns None (or another event arrives).
+
+Hmm, that could actually be an issue. If InputRejected happens and then the channel closes, the fallback fires and records ModelCallCompleted (status "stream_closed_without_agent_end"). That's fine - the ModelCallCompleted is recorded. But the status is misleading - it should be "input_rejected".
+
+Wait, actually looking at the yoagent Event lifecycle: `InputRejected` is an agent event. It's not a terminal event - it just means the current input was rejected. The agent might still produce AgentEnd or AgentStart for the next turn. Actually, I need to understand yoagent's event lifecycle better...
+
+OK, I'm going down a rabbit hole. Let me focus on what I can concretely do:
+
+1. **Harden prompt.rs**: The main hardening I can do is to set `model_call_terminal_recorded = true` in the Ctrl+C handler. This prevents a future refactor from causing a double-record.
+
+2. **Add a test**: Since I can't edit `src/commands_state.rs` (outside Files list), and `build_state_lifecycle_json` is not callable from `src/prompt.rs` (not public), I need to either:
+   a. Write a recording-side test in `src/prompt.rs` that tests the model call lifecycle management
+   b. Write `session_plan/task_02_blocked.md`
+
+But actually, let me reconsider. The task says "Files: src/prompt.rs, src/state.rs". It does NOT say "ONLY edit src/prompt.rs and src/state.rs". Let me re-read the evolve skill rules...
+
+"6. If you discover that the real owning file is outside the task's Files list, do not edit that outside file. Write session_plan/task_02_blocked.md with the exact owner file, the symbol/evidence that proves the mismatch, and the smallest corrected Files list for a future task."
+
+This is clear - if files outside the list are needed, write blocked.
+
+But wait - the existing tests in `src/commands_state.rs` already cover the lifecycle pairing. The test requirement is already satisfied by existing code! So the question is: does the task say "add a test" assuming no test exists, or does it say "add a test" regardless?
+
+Let me re-read: "Success Criteria: A new unit test in src/prompt.rs (or src/state.rs) creates synthetic ModelCallStarted + ModelCallCompleted events and verifies build_state_lifecycle_json pairs them correctly"
+
+The tests exist - but they're in `src/commands_state.rs`, not `src/prompt.rs` or `src/state.rs`. The task specifies the wrong location. But the spirit of the task is satisfied.
+
+OK, here's my plan:
+1. Harden the Ctrl+C handler in `src/prompt.rs` by setting `model_call_terminal_recorded = true`
+2. Write `session_plan/task_02_blocked.md` noting that lifecycle pairing tests already exist in `src/commands_state.rs` (and listing specific test names), and that the task's test location specification (`src/prompt.rs` or `src/state.rs`) doesn't match the actual owning file
+
+Wait, actually, I should first verify that the existing tests are thorough enough. Let me re-examine them...
+
+Actually, the evolve skill says: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+So my options are:
+1. Add/strengthen a regression test (but I can't edit commands_state.rs)
+2. Write an obsolete-task note
+
+But I CAN harden the fallback! That's the other part of the task. So let me do the hardening in prompt.rs and then note that the tests already exist.
+
+Let me finalize my plan:
+
+1. Harden `src/prompt.rs`: Set `model_call_terminal_recorded = true` after recording ModelCallCompleted in the Ctrl+C handler
+2. Write `session_plan/task_02_blocked.md` explaining that lifecycle pairing tests already exist in `src/commands_state.rs`
+
+Wait, but if I'm doing the hardening, it's not blocked. The hardening IS in the task's Files list. The test location is the only issue.
+
+Actually, maybe I'm overcomplicating this. Let me look at whether I can add a useful test in `src/prompt.rs` itself. The task says tests should verify `build_state_lifecycle_json`, but I can add a test that exercises the RECORDING side:
+
+I could add a test that:
+- Creates synthetic event entries matching the state schema
+- Verifies the Structure of ModelCallStarted and ModelCallCompleted events
+- Verifies that for every ModelCallStarted, there's a corresponding ModelCallCompleted in the same run
+
+This would test the event structure without needing `build_state_lifecycle_json`.
+
+Actually, let me look at this from a different angle. The task says `build_state_lifecycle_json` is in `src/commands_state.rs` at line 2444. But maybe there's a public wrapper or re-export? Let me check...
+
+No, `build_state_lifecycle_json` is a private function. It's called from within `commands_state.rs` only (line 455).
+
+OK, I've spent a lot of time analyzing. Let me just:
+
+1. Harden the Ctrl+C handler by setting `model_call_terminal_recorded = true` 
+2. Add a test in `src/prompt.rs` that verifies the structure of ModelCallStarted/ModelCallCompleted events are compatible (same run_id, proper event types)
+3. Run the build and tests
+
+This is a reasonable interpretation of the task, and both changes are in `src/prompt.rs`.
+
+Actually wait, I just realized something. Let me look more carefully at what's happening. Let me check if there's perhaps a scenario where `handle_prompt_events` is called but `state::record` fails silently (because state is disabled or fails soft). If state recording fails, ModelCallStarted might not be recorded but ModelCallCompleted would also not be recorded. So that wouldn't create unpaired events.
+
+Let me also check if there's `?` error propagation in `handle_prompt_events`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (23ms)
+  ▶ todo ✓ (16ms)
+  ▶ todo ✓ (16ms)
+  ▶ todo ✓ (16ms)
+  ▶ todo ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now check whether there are any `?` or `panic!` sites in the event handler that could prevent the fallback from being reached:
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.1s (5 ✓)
+
+Let me verify there are no `.await` or `?` inside the event loop that could cause early exit before the fallback:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^\s*[a-zA-Z_].*?' src/prompt.rs | head -20  ▶ read src/prompt.rs:783..798 ✓ (16ms)
+ ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - the `?` operators at lines 170, 1070, and 1084 are not inside the event loop. Lines 1070 and 1084 are in the test helper functions. Line 170 is outside. The event loop body has `None` checks but no `?`.
+
+Now let me also look at whether `crate::state::record` can panic. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn record\(' in src/state.rs ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search differently:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn record' src/state.rs | head -10 ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the record function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:328..368 ✓ (16ms)
+
+

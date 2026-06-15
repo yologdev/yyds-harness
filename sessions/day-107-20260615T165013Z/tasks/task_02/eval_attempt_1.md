@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: The task explicitly required two new unit tests (one for lifecycle pairing with synthetic events, one for unpaired ModelCallStarted producing open_model_calls > 0) plus hardening the post-loop fallback. Only a single defensive line was added — `model_call_terminal_recorded = true` in the Ctrl+C handler, which is in a path that already `return`s before the post-loop fallback is reached. No tests were added; the primary deliverables are entirely absent.
