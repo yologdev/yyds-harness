@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The implementation adds a unique timestamp-based model_call_id to both ModelCallStarted and all three ModelCallCompleted payloads in handle_prompt_events, enabling exact start/completion event pairing. The existing test model_call_terminal_payload_marks_stream_closed_without_agent_end was updated with an assertion for the new field, and the state.rs sqlite_projection test already includes model_call_id in fixtures. Both tests pass.

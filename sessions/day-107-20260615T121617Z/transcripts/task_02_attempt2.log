@@ -1,0 +1,625 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and the evolve skill rules, then take concrete action.
+
+The task is about modifying `src/commands_eval.rs` to require strict verifier evidence before counting task success. But the previous attempt got stuck in analysis. Let me follow the checkpoint instructions: by my third tool turn, do one of: write a test, edit a listed task-scope file, or write an obsolete/blocked note.
+
+Let me first read the evolve skill, then quickly survey the key file to understand the landscape, and then take action.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ ls src/commands_eval.rs ✓ (8ms)
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the file exists. Now let me understand the landscape. I need to quickly survey the key parts of `src/commands_eval.rs` - particularly `EvalStatus`, `EvalResult`, and any task evaluation logic. Let me also look at what the previous attempt uncovered about `scripts/evolve.sh` and `scripts/log_feedback.py` to understand what's already in place.
+
+Let me first understand the current state of things by reading key sections of `src/commands_eval.rs`, then I'll decide what to change.
+
+My plan:
+1. Read key sections of `src/commands_eval.rs` - the EvalStatus enum, EvalResult struct, and any task evaluation functions
+2. Read the relevant parts of `scripts/evolve.sh` that the previous attempt found (around lines 1895-1975)
+3. Check what `agent_log_has_terminal_evidence` looks like
+4. Then make a surgical edit
+
+Given the checkpoint says "by your third tool turn, do exactly one of..." - I need to move fast. Let me read the key sections.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'EvalStatus' in src/commands_eval.rs  ▶ search 'EvalResult' in src/commands_eval.rs  ▶ search 'enum EvalStatus' in src ✓ (23ms)
+ ✓ (25ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`EvalStatus` is defined in `src/state.rs`. Let me read that enum and the `EvalResult` struct, then quickly look at the task evaluation functions in `commands_eval.rs`. I need to understand:
+
+1. What variants `EvalStatus` currently has
+2. What the task evaluation flow looks like
+3. Where to add the new variant and evaluation logic
+
+Let me also check `scripts/evolve.sh` for the task evaluation that the previous attempt found.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.0s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:210..260  ▶ search 'fn handle_run' in src/commands_eval.rs  ▶ search 'fn evaluate_task' in src/commands_eval.rs ✓ (15ms)
+ ✓ (33ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the `handle_run` function and understand the eval flow. Also, let me search for where `EvalResult` is constructed with `Failed` to understand the pattern.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.1s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_eval.rs:436..556 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now search for where `EvalResult` is constructed in `commands_eval.rs` - particularly where `Failed` is used, as that's where I'd need to add the new `NoEvidence` variant.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'EvalStatus::Failed' in src/commands_eval.rs  ▶ search 'EvalStatus::Passed' in src/commands_eval.rs ✓ (15ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check the evolve.sh for how task evaluation currently works, and where EvalResult is constructed/used from bash. But first, let me understand what already exists that might detect analysis-only tasks.
+
+Let me look at the critical match statements and constructor sites in commands_eval.rs more carefully. Let me also check where `agent_log_has_terminal_evidence` is used.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'agent_log_has_terminal_evidence' in scripts  ▶ search 'analysis_only' in src/commands_eval.rs ✓ (9ms)
+ ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So currently `commands_eval.rs` doesn't have any analysis_only detection. The analysis_only detection is currently in `scripts/evolve.sh`. The task is to add it to `commands_eval.rs`.
+
+Let me read the relevant section of evolve.sh to understand the current flow, and also read more of commands_eval.rs around line 829-840 where EvalResult is constructed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1890..1970  ▶ read src/commands_eval.rs:820..880 ✓ (7ms)
+ ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. The `EvalStatus` enum has three variants: `Passed`, `Failed`, `Error`. The task wants me to add a `NoEvidence` variant (or similar) that represents "analysis-only, no evidence" tasks.
+
+The key insight from the checkpoint and task: The task says to modify `src/commands_eval.rs`. The task also says to modify `EvalStatus`. But I need to understand what actual evaluator path in `commands_eval.rs` processes task artifacts. Let me think about this...
+
+Actually, looking more carefully at the evolve.sh flow:
+1. The task implementation runs
+2. `scripts/evolve.sh` checks if there's terminal evidence and file progress
+3. It classifies as `analysis_only_no_terminal_evidence` or `incomplete_no_terminal_evidence`
+4. The eval runner in `scripts/evolve.sh` then invokes the evaluator as a sub-process
+5. The evaluator (`cargo run -- eval run` or similar) produces `EvalResult` with `EvalStatus`
+
+But the actual task-evaluation that checks transcripts is in `scripts/evolve.sh`, not in `commands_eval.rs`. The `commands_eval.rs` file handles gate-based evaluation (running cargo commands).
+
+The task says: "The evaluator lives in src/commands_eval.rs" and "The key function to modify is the task verification logic that checks task artifacts (transcript, file changes) and determines pass/fail."
+
+But from what I can see, `commands_eval.rs` does NOT currently process task artifacts/transcripts. It runs cargo build/test/fmt commands as gates.
+
+So let me look more carefully at what `commands_eval.rs` actually does. Let me search for the eval command entry point and see if there's task-artifact evaluation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.4s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn handle_eval_command' in src/commands_eval.rs  ▶ search 'fn run_eval' in src/commands_eval.rs ✓ (16ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `run_eval` and `run_eval_for_patch_in` to understand the full evaluation flow.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_eval.rs:658..718 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the landscape:
+
+1. `commands_eval.rs` runs gate-based evaluation (cargo build/test/fmt/clippy) and produces `EvalResult` with `Passed`/`Failed`/`Error` status.
+2. The analysis-only task detection currently lives ONLY in `scripts/evolve.sh`.
+
+The task says to modify `commands_eval.rs` to add a new `EvalStatus::NoEvidence` variant and add logic to detect analysis-only tasks.
+
+The problem is: `commands_eval.rs` doesn't currently have any task-artifact inspection logic. It runs cargo commands as gates. To add "analysis-only" detection, I'd need to either:
+1. Add a new evaluation function that inspects task artifacts
+2. Add the `NoEvidence` variant to `EvalStatus` and update all match sites
+
+Given the task scope, the most honest approach is:
+1. Add `NoEvidence` to `EvalStatus` in `state.rs`
+2. Update all match sites in `commands_eval.rs` to handle the new variant
+3. Add a new function in `commands_eval.rs` that checks if a task produced evidence (terminal markers + file changes)
+4. Wire it up somewhere useful
+
+But wait - the task also says tasks that produce no evidence should be counted as `blocked` or `obsolete`, not as a failed attempt. And the eval result should show distinct status.
+
+Let me think about the minimally-scoped change that satisfies the task:
+
+1. Add `NoEvidence` to `EvalStatus`
+2. Update all match arms in `commands_eval.rs`
+3. Add a function `check_task_has_evidence` that checks task artifacts
+4. In `run_eval`, optionally run this check and produce `NoEvidence` result
+
+Actually, let me re-read the task more carefully:
+
+"The fix should:
+1. After evaluating a task's artifacts, check whether any source file was actually modified (look for FileEdited events in the task's transcript, or check git diff for the task's implementation window).
+2. If no source files were modified AND no terminal evidence marker exists in the transcript, classify the task as "analysis_only" or "no_evidence" — not as a success or failure.
+3. Emit a distinct EvalResult with status indicating "insufficient evidence" rather than "failed."
+4. This should cause the harness to not count the task as a real attempt in the task_success_rate metric."
+
+The minimal change would be:
+1. Add `NoEvidence` to `EvalStatus` in `state.rs`
+2. Update all match sites in `commands_eval.rs` 
+3. Update `build_eval_result` to accept an optional NoEvidence override
+4. Add a function that checks task artifacts for evidence
+
+But wait, looking at the code flow: `run_eval` is called from the harness pipeline (scripts/evolve.sh). It runs gates and produces an EvalResult. Currently the "analysis_only" detection happens in the shell script, not in the Rust code.
+
+The most focused change that satisfies the task and stays in `src/commands_eval.rs`:
+1. Add `NoEvidence` to `EvalStatus`
+2. Add a function to check if a task has evidence (terminal markers in log + file changes)
+3. Update `run_eval` to accept a task evidence check
+4. Update match sites
+
+Let me go with this approach. Let me start by:
+
+1. Adding `NoEvidence` to `EvalStatus` in `state.rs`
+2. Finding all match sites on `EvalStatus` in `commands_eval.rs`
+3. Updating them
+4. Adding the evidence-check function
+5. Writing a test
+
+Let me first find all match sites on `EvalStatus` across the codebase.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'EvalStatus::' in src ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for all match arms on EvalStatus specifically (match statements).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'match.*status' in src (*.rs)  ▶ $ grep -n 'EvalStatus::' src/commands_eval.rs src/commands_evolve.rs src/state.rs … ✓ (25ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me get the exact line numbers and context for all EvalStatus references in commands_eval.rs to understand which ones need updating.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'EvalStatus' src/commands_eval.rs ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output is truncated. Let me get the full list without truncation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'EvalStatus' src/commands_eval.rs | head -20 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. I need to:
+
+1. Add `NoEvidence` to `EvalStatus` in `state.rs` (line 217-221)
+2. Update all match/constructor sites in `commands_eval.rs`:
+   - Lines 835/837: `build_eval_result` - constructor
+   - Lines 879/881: `build_fixture_eval_result` - constructor
+   - Lines 914/916: another constructor
+   - Line 2367: comparison `eval.status == EvalStatus::Passed`
+   - Line 2420: comparison `eval.status == EvalStatus::Passed`
+   - Line 2853: comparison `eval.status != EvalStatus::Passed`
+   - Lines 3866-3870: `status_label` function
+   - Tests at 3997, 6512
+3. Also update in `commands_evolve.rs` and `state.rs`
+
+But wait - the real question is: do I need to actually wire up the evidence check? The task says: "The key function to modify is the task verification logic that checks task artifacts (transcript, file changes) and determines pass/fail."
+
+But `commands_eval.rs` doesn't currently have task artifact checking. Adding the `NoEvidence` variant alone without wiring it up is just adding dead code.
+
+Let me think about what actually needs to happen:
+
+1. `run_eval` (called from `scripts/evolve.sh`) runs cargo gates and produces `EvalResult`
+2. The analysis_only detection in `scripts/evolve.sh` classifies the task attempt status
+3. The evo dashboard / trajectory scripts read these statuses
+
+The task wants me to add the `NoEvidence` status to the Rust eval path. But to be useful, someone needs to invoke the eval with a flag like `--check-evidence` or an evidence check needs to be added to the eval flow.
+
+Actually, re-reading the task more carefully:
+
+"The evaluator lives in src/commands_eval.rs (6,517 lines). The key function to modify is the task verification logic that checks task artifacts (transcript, file changes) and determines pass/fail."
+
+Maybe I'm missing something. Let me search for any existing task-artifact analysis in `commands_eval.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'task_artifact' in src/commands_eval.rs  ▶ search 'transcript' in src/commands_eval.rs  ▶ search 'terminal_evidence' in src/commands_eval.rs ✓ (24ms)
+ ✓ (23ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's no task artifact analysis in `commands_eval.rs`. The task's description of "task verification logic that checks task artifacts" doesn't currently exist in `commands_eval.rs`.
+
+However, the task says "Files: src/commands_eval.rs" - meaning I need to add this logic there.
+
+The approach is:
+1. Add `NoEvidence` to `EvalStatus` 
+2. Add a function to `commands_eval.rs` that checks a task log for terminal evidence markers and file changes
+3. Add a new eval path or option to `run_eval` that incorporates the evidence check
+4. Update all match sites
+
+But actually, let me think about this more surgically. The key question: where does the evaluator get called from in the harness pipeline with task context?
+
+Looking at `scripts/evolve.sh`, the eval is triggered by `write_task_eval_evidence` which calls the evaluator. Let me check how.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.2s (3 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'write_task_eval_evidence' in scripts/evolve.sh ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `write_task_eval_evidence` to understand how the evaluator is called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:353..403 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, `write_task_eval_evidence` writes JSON evidence. This is separate from the Rust `EvalResult` path. The Rust evaluator (`commands_eval.rs`) runs gate-based evaluation (cargo build/test/fmt/clippy).
+
+Now let me think about the right approach. The task says the evaluator lives in `commands_eval.rs`. The task wants me to add a `NoEvidence` variant and detection logic there.
+
+Given the constraints, here's my plan:
+1. Add `NoEvidence` to `EvalStatus` in `state.rs`
+2. Update all match sites in `commands_eval.rs`, `commands_evolve.rs`, and `state.rs`
+3. Add a function `check_task_evidence` in `commands_eval.rs` that checks a task's log for terminal evidence markers and file changes
+4. Add a `--check-task-evidence` flag to `handle_run` that calls the new function
+5. Wire it up with a test
+
+But wait, this is getting complex. Let me look at how the evaluator is actually invoked from the shell script to see if there's a natural hook point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'cargo run.*eval' in scripts/evolve.sh ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'eval' in scripts/evolve.sh ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that the evaluator agent is run as a separate agent invocation in the shell script, not as a Rust binary command. The eval task in the shell script runs an evaluator agent that writes a verdict to `session_plan/eval_task_${TASK_NUM}.md`.
+
+The Rust `commands_eval.rs` handles gate-based evaluation (cargo build/test/fmt/clippy) which is a different thing from task-verdict evaluation.
+
+OK, so the path forward is clear. The task's mention of "the evaluator lives in src/commands_eval.rs" is referring to gate-based evaluation. The task wants me to add a `NoEvidence` variant to `EvalStatus` and add evidence-checking logic there.
+
+The practical change is:
+1. Add `NoEvidence` to `EvalStatus` 
+2. Update all match/constructor sites
+3. Add a function to `commands_eval.rs` that checks task evidence
+4. Add a `--task-evidence-check` option to `handle_run` that runs the evidence check and produces a `NoEvidence` result if the task lacks evidence
+5. Write a test
+
+Let me now start implementing. By my third tool turn (this will be turn 4), I need to have done one of: write a test, edit a source file, or write an obsolete/blocked note. Let me start with the state.rs change and a test.
+
+Actually, let me re-read the checkpoint: "By your third tool turn in this retry..." - I think "this retry" means the current attempt. Let me count: I've used bash, read_file, read_file, search, search, search, search, search, read_file, search, search, bash, bash, search, search, search - that's a lot. Let me just start editing.
+
+Let me start with the simplest change: add `NoEvidence` to `EvalStatus`, update all match sites, and write a test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the change. I'll add `NoEvidence` to `EvalStatus`, update all match sites, add an evidence-check function, and write tests.
+
+**Step 1: Add `NoEvidence` to `EvalStatus` in `state.rs`**
+        Passed,
+        Failed,
+        Error,
+  +     /// Task produced no verifiable evidence (no source changes, no terminal markers).
+  +     /// Counts separately from true failures.
+  +     NoEvidence,
+    }
+  ✓ Auto-approved: edit: src/state.rs (5 → 8 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (5 → 8 lines)
+        Passed,
+        Failed,
+        Error,
+  +     /// Task produced no verifiable evidence (no source changes, no terminal markers).
+  +     /// Counts separately from true failures.
+  +     NoEvidence,
+    }
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update all match sites. Let me start with `status_label` in `commands_eval.rs` (lines 3866-3870).
+────────────────────────────────────────────────────────────────────────────────
+
+Now update all match sites. Let me do them in batches.
+            EvalStatus::Passed => "passed",
+            EvalStatus::Failed => "failed",
+            EvalStatus::Error => "error",
+  +         EvalStatus::NoEvidence => "no_evidence",
+        }
+    }
+  ✓ Auto-approved: edit: src/commands_eval.rs (7 → 8 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_eval.rs (7 → 8 lines)
+            EvalStatus::Passed => "passed",
+            EvalStatus::Failed => "failed",
+            EvalStatus::Error => "error",
+  +         EvalStatus::NoEvidence => "no_evidence",
+        }
+    }
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me update the comparison sites. I need to also check `commands_evolve.rs` for match sites.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'EvalStatus' src/commands_evolve.rs src/state.rs ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's also a `status: EvalStatus::Passed,` in `state.rs` at line 3432. Let me check all the references more carefully.
+
+The comparison sites in `commands_eval.rs` don't need to change for the new variant - they're checking for `== EvalStatus::Passed` or `!= EvalStatus::Passed`, which already do the right thing (NoEvidence is not Passed). Those sites are filters that exclude non-passed results, so `NoEvidence` will naturally be excluded.
+
+Similarly in `commands_evolve.rs`, `candidate.status == EvalStatus::Passed` filters for only passed results, so `NoEvidence` will be correctly excluded.
+
+Now, the key question is: where do I actually produce an `EvalResult` with `NoEvidence` status? The `build_eval_result` function produces `Passed` or `Failed` based on gates. I need to add a new path.
+
+Let me now add:
+1. A function `check_task_has_evidence` that checks a transcript for terminal evidence markers or file changes
+2. An evidence-check path in `run_eval` or a separate function
+3. Wire it up
+
+Let me think about the simplest approach. I can add a `--task-log` option to `handle_run` that takes a transcript path. If provided, the evaluator checks for evidence and emits `NoEvidence` if none is found.
+
+Actually wait - let me re-read the task's "Implementation Notes":
+
+"The fix should:
+1. After evaluating a task's artifacts, check whether any source file was actually modified (look for FileEdited events in the task's transcript, or check git diff for the task's implementation window).
+2. If no source files were modified AND no terminal evidence marker exists in the transcript, classify the task as "analysis_only" or "no_evidence" — not as a success or failure.
+3. Emit a distinct EvalResult with status indicating "insufficient evidence" rather than "failed."
+4. This should cause the harness to not count the task as a real attempt in the task_success_rate metric."
+
+The approach:
+1. Add a function `check_task_evidence(transcript_path: &str, task_git_base: &str) -> bool` that checks for terminal evidence markers and file changes
+2. Add a `--task-log` flag to `handle_run` 
+3. In `run_eval`, after running gates, if `--task-log` is provided, check evidence; if no evidence and gates pass, downgrade to `NoEvidence`
+4. Emit a separate `EvalResult` with `NoEvidence` status
+
+Actually, an even simpler approach: add a `--check-task-evidence` flag that takes a task log path and a git base commit. The evaluator checks evidence, then:
+- If gates pass AND evidence exists → `Passed` (as before)
+- If gates pass AND no evidence → `NoEvidence`  
+- If gates fail → `Failed` (as before)
+
+Let me implement this.
+
+First, let me read the `handle_run` function again and the `run_eval` function to understand how to add the flag.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me read the full `handle_run` and `run_eval` to understand the wiring.
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_eval.rs:436..491  ▶ read src/commands_eval.rs:673..753 ✓ (21ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add:
+1. A `task_log` field to `EvalRunOptions` (optional)
+2. A `task_git_base` field to `EvalRunOptions` (optional) 
+3. Update `handle_run` to parse these new flags
+4. Update `run_eval` to check task evidence after gate results
+5. Add a function `check_task_evidence` that checks a transcript log for terminal evidence markers and git diff for file changes
+6. Write a test
+
+Let me also look at how `run_eval` already handles the eval result construction to see where to insert the evidence check.
+
+Looking at lines 714-720:
+```rust
+let mut eval = build_eval_result(
+    options.suite,
+    options.harness_version,
+    options.patch_id.clone(),
+    &gate_results,
+    started.elapsed().as_millis() as u64,
+);
+```
+
+I need to insert a check after this: if the gate results pass and `task_log` is set, check for evidence. If no evidence, override the status to `NoEvidence`.
+
+Let me implement this step by step.
+
+First, let me add the fields to `EvalRunOptions`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.4s (2 ✓)
+
+Now let me implement the changes. I'll add the task evidence check to `EvalRunOptions` and `run_eval`.
+        pub patch_id: Option<String>,
+        pub dry_run: bool,
+        pub workdir: Option<PathBuf>,
+  +     /// Optional path to the task's implementation transcript log.
+  +     /// When set, the evaluator checks for terminal evidence markers
+  +     /// and file-modification evidence; if gates pass but no evidence
+  +     /// exists, the result is downgraded to `NoEvidence` instead of
+  +     /// `Passed`.
+  +     pub task_log: Option<PathBuf>,
+  +     /// Optional git base commit for the task (used with --task-log to
+  +     /// check whether any source files changed during the task window).
+  +     pub task_git_base: Option<String>,
+    }
+  ✓ Auto-approved: edit: src/commands_eval.rs (8 → 17 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_eval.rs (8 → 17 lines)
+        pub patch_id: Option<String>,
+        pub dry_run: bool,
+        pub workdir: Option<PathBuf>,
+  +     /// Optional path to the task's implementation transcript log.
+  +     /// When set, the evaluator checks for terminal evidence markers
+  +     /// and file-modification evidence; if gates pass but no evidence
+  +     /// exists, the result is downgraded to `NoEvidence` instead of
+  +     /// `Passed`.
+  +     pub task_log: Option<PathBuf>,
+  +     /// Optional git base commit for the task (used with --task-log to
+  +     /// check whether any source files changed during the task window).
+  +     pub task_git_base: Option<String>,
+    }
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `handle_run` to parse the new flags.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `handle_run` to parse the new flags:
+        let workdir = flag_value(args, "--worktree")
+            .or_else(|| flag_value(args, "--workdir"))
+            .map(PathBuf::from);
+  +     let task_log = flag_value(args, "--task-log").map(PathBuf::from);
+  +     let task_git_base = flag_value(args, "--task-git-base").map(|s| s.to_string());
+        let _ = run_eval(EvalRunOptions {
+            suite,
+            harness_version,
+            patch_id,
+            dry_run,
+            workdir,
+  +         task_log,
+  +         task_git_base,
+        });
+    }
+  ✓ Auto-approved: edit: src/commands_eval.rs (17 → 21 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_eval.rs (17 → 21 lines)
+        let workdir = flag_value(args, "--worktree")
+            .or_else(|| flag_value(args, "--workdir"))
+            .map(PathBuf::from);
+  +     let task_log = flag_value(args, "--task-log").map(PathBuf::from);
+  +     let task_git_base = flag_value(args, "--task-git-base").map(|s| s.to_string());
+        let _ = run_eval(EvalRunOptions {
+            suite,
+            harness_version,
+            patch_id,
+            dry_run,
+            workdir,
+  +         task_log,
+  +         task_git_base,
+        });
+    }
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the evidence-check logic to `run_eval`. After line 720 (where `build_eval_result` is called), I need to insert the check. Let me also update `run_eval_for_patch_in` to pass `None` for the new fields.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `run_eval_for_patch_in` to pass the new fields:
+            patch_id: Some(patch_id.to_string()),
+            dry_run,
+            workdir,
+  +         task_log: None,
+  +         task_git_base: None,
+        })
+    }
+  ✓ Auto-approved: edit: src/commands_eval.rs (14 → 16 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_eval.rs (14 → 16 lines)
+            patch_id: Some(patch_id.to_string()),
+            dry_run,
+            workdir,
+  +         task_log: None,
+  +         task_git_base: None,
+        })
+    }
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the evidence-check logic in `run_eval`. After building the eval result, if the task log is provided, check for evidence and downgrade if needed. Let me also add the helper function `check_task_evidence`.
+
+Let me look at the current run_eval code again and add the check after `build_eval_result`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the evidence-check logic in `run_eval`, right after `build_eval_result`:
+            &gate_results,
+            started.elapsed().as_millis() as u64,
+        );
+  + 
+  +     // If task evidence check is requested and all gates passed, verify that
+  +     // the task actually produced verifiable evidence (source changes or
+  +     // terminal markers).  Analysis-only tasks that pass gates but produced
+  +     // no code are downgraded to NoEvidence so they don't inflate the
+  +     // task_success_rate metric.
+  +     if eval.status == EvalStatus::Passed {
+  +         if let Some(ref task_log) = options.task_log {
+  +             if !check_task_has_evidence(task_log, options.task_git_base.as_deref()) {
+  +                 println!("  evidence:        no source changes or terminal markers → NoEvidence");
+  +                 eval.status = EvalStatus::NoEvidence;
+  +                 // NoEvidence counts neither as passed nor failed in the
+  +                 // success-rate metric.
+  +                 eval.passed = 0;
+  +                 eval.failed = 0;
+  +             }
+  +         }
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_eval.rs (8 → 27 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_eval.rs (8 → 27 lines)
+            &gate_results,
+            started.elapsed().as_millis() as u64,
+        );
+  + 
+  +     // If task evidence check is requested and all gates passed, verify that
+  +     // the task actually produced verifiable evidence (source changes or
+  +     // terminal markers).  Analysis-only tasks that pass gates but produced
+  +     // no code are downgraded to NoEvidence so they don't inflate the
+  +     // task_success_rate metric.
+  +     if eval.status == EvalStatus::Passed {
+  +         if let Some(ref task_log) = options.task_log {
+  +             if !check_task_has_evidence(task_log, options.task_git_base.as_deref()) {
+  +                 println!("  evidence:        no source changes or terminal markers → NoEvidence");
+  +                 eval.status = EvalStatus::NoEvidence;
+  +                 // NoEvidence counts neither as passed nor failed in the
+  +                 // success-rate metric.
+  +                 eval.passed = 0;
+  +                 eval.failed = 0;
+  +             }
+  +         }
+  ... (3 more lines)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the `check_task_has_evidence` function. Let me find a good place to add it - near `run_eval` or after `build_eval_result`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the `check_task_has_evidence` function. Let me find the right location:
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_eval.rs:825..845 ✓ (7ms)
+
+

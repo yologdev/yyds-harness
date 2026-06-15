@@ -1,0 +1,974 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and following the evolve skill contract. The task is about validating seeded tasks against fresh assessment evidence in `scripts/preseed_session_plan.py`.
+
+Let me:
+1. First read the evolve skill
+2. Read the current preseed_session_plan.py
+3. Read the assessment format
+4. Implement the fix
+5. Test and commit
+
+Let me start by reading the relevant files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py  ▶ ls session_plan ✓ (15ms)
+ ✓ (15ms)
+ ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand what I have:
+
+1. `scripts/preseed_session_plan.py` — reads an assessment and picks a seed task from a hardcoded list
+2. The `choose_task` function picks the best matching task based on keyword matching in the assessment
+3. The task is about adding validation: before writing a seed task, check if the assessment says the problem is already fixed
+
+Let me read the assessment and the rest of the preseed script to understand the full flow, then implement the fix.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.3s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/assessment.md (50 lines)  ▶ read scripts/preseed_session_plan.py:100.. ✓ (25ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full `choose_task` function and `render_task` function, and the rest of the assessment to understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:200..  ▶ read session_plan/assessment.md:50.. ✓ (7ms)
+ ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the middle portion of preseed_session_plan.py — specifically the `choose_task`, `render_task`, and validation functions:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:298.. ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me analyze what's needed:
+
+1. The `choose_task` function picks a task based on keyword matching in the assessment.
+2. The problem: it doesn't validate whether the assessment says the problem is already fixed. For example, if the assessment says "state why last-failure now properly explains cold-start state" (which is a rejection key for the cold-start task), the function correctly rejects that task via `reject_keys`. But the reject_keys are hardcoded per-task — they don't cross-reference with the assessment's "Recent Changes" section dynamically.
+
+3. The task objective says:
+   - In `preseed_session_plan.py`: Before writing a seed task, scan the assessment for evidence the proposed problem is already resolved
+   - Look for: "Recent Changes" mentioning a fix for the same area, self-test results showing the feature already works, explicit statements like "already addressed" or "correctly reports"
+   - If contradicted: skip the seed task or annotate it
+   - Add `validated_against_assessment: true/false` field
+
+Let me think about what the actual contradiction scenario looks like. Looking at the trajectory's graph pressure:
+- `task_seed_contradiction_count=1`: "Seeded tasks contradicted by assessment evidence"
+
+The assessment says at line 84: "Validate seeded tasks against fresh assessment — `task_seed_contradiction_count=1`: Seeded tasks contradicted by assessment evidence"
+
+But also at line 110: "Seed task contradiction — `task_seed_contradiction_count=1`: assessment evidence disagrees with a seeded task."
+
+So the assessment itself is asking for this fix. This is a meta fix — making the seed pipeline validate itself.
+
+Now, let me think about the mechanism. The current `choose_task` function already has `reject_keys` per task. But the issue is that these are static. The fix should:
+
+1. After selecting a candidate task (before returning it), check if the assessment's "Recent Changes" section or self-test results indicate the problem is already fixed.
+2. Add a general contradiction detection mechanism that works across all tasks.
+
+Let me design the approach:
+
+1. Add a function `is_task_contradicted_by_assessment(task, assessment)` that checks:
+   - The assessment's "Recent Changes" section mentions a fix for the task's area
+   - Self-test results show the feature works
+   - Any explicit statement about the problem being resolved
+
+2. In `choose_task`: after a task matches, check for contradiction before returning it. If contradicted, skip it and continue to the next task, or if it's the only match, annotate it.
+
+3. In `render_task`: add a `validated_against_assessment` field.
+
+Let me think about what keywords to look for. The contradiction detection should be generic enough to catch patterns like:
+- "now properly explains", "now fixed", "already addressed", "correctly reports"
+- Self-test entries with ✅ marks for the relevant feature
+- Recent changes mentioning the same feature area
+
+Let me look at what patterns the assessment uses. From the assessment:
+- "`yyds state why last-failure` now properly explains cold-start state" → this would contradict the cold-start task
+- Self-test results: ✅ means working, ⚠️ means partially working
+
+For the seed pipeline specifically, the contradiction happens when:
+- A task like "Improve cold-start state failure diagnostics" is selected
+- But the assessment's Recent Changes says "state why last-failure: replaced 'no state log found' with 'no state event found'" or similar
+- The reject_keys already handle some of this ("now properly explains cold-start", etc.)
+
+But the problem is: reject_keys are per-task and need constant updating. A more general approach would be better.
+
+Let me implement:
+
+1. `contradiction_patterns(task)` — returns patterns that indicate the task's problem is already solved
+2. `check_contradiction(task, assessment)` — checks the assessment for those patterns
+3. Modify `choose_task` to use this
+4. Modify `render_task` to include validation status
+5. Add tests
+
+Let me think about what patterns per task. Actually, a simpler approach: 
+
+The assessment's "Recent Changes" section and "Self-Test Results" section are the key areas. If either shows evidence the problem is already fixed, the task should be contradicted.
+
+Common contradiction signals:
+- "now properly", "now correctly", "already fixed", "already addressed", "resolved", "no longer", "fixed the"
+- Self-test entries with ✅ that match the task's domain
+
+Let me also think about the evolve.sh part. The task says: "In scripts/evolve.sh: After the planning phase, verify that no task file contains a contradiction marker without the planner having explicitly resolved it."
+
+But actually, let me check if evolve.sh already references preseed_session_plan.py:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'preseed_session_plan' in scripts/evolve.sh  ▶ search 'task_seed_contradiction' in scripts ✓ (16ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the evolve.sh reference to understand how it calls preseed_session_plan.py:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1320..1335 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also check the evolve.sh around where task files are validated post-planning:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'contradict' in scripts/evolve.sh  ▶ search 'task_01.md' in scripts/evolve.sh ✓ (15ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! The evolve.sh already has some contradiction handling at line 1778. Let me look at that:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1420..1440  ▶ read scripts/evolve.sh:1760..1820 ✓ (22ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a very clear picture. The evolve.sh already has contradiction handling at the implementation phase (line 1778-1815). It reads `decision.json` for `contradicted_by_assessment` flags.
+
+But the issue is at the seed task level. The seed pipeline (`preseed_session_plan.py`) doesn't validate against the assessment before writing a seed task. The contradiction detection in `evolve.sh` happens later when tasks are about to be implemented, and it reads from `decision.json` (which the planner writes).
+
+The task says: validate at the seed level — before writing `task_01.md`. If the assessment already shows the problem is fixed, don't write a seed task for it, or write it with a contradiction annotation.
+
+Let me now plan the implementation:
+
+1. **In `preseed_session_plan.py`**: 
+   - Add a `check_task_contradiction(task, assessment)` function that scans the assessment for evidence the task's problem is already resolved
+   - Modify `choose_task` to check for contradiction after a task matches but before returning
+   - If contradicted, skip to the next matching task
+   - If all matching tasks are contradicted, return a fallback or the first task with a contradiction marker
+   - Modify `render_task` to include `validated_against_assessment: false` when contradicted
+   - Add tests for the contradiction detection
+
+2. **Contradiction detection logic**:
+   - Scan "Recent Changes" section for mentions of the task's domain/keywords being fixed
+   - Scan "Self-Test Results" for ✅ marks on relevant tests
+   - Look for explicit resolution language: "now properly", "already fixed", "correctly reports", "resolved", etc.
+   - Match task-specific keywords against resolved patterns
+
+Let me think about the specific patterns. For each task type:
+- Cold-start diagnostics: if recent changes mention "now properly explains cold-start" or self-tests show ✅ for `state why last-failure`
+- Sub-agent API key: if recent changes mention API key propagation fixed
+- Cache metrics: if self-tests show `deepseek cache-report` has data
+
+But I want a general approach that doesn't require per-task patterns. Let me think...
+
+The assessment's "Recent Changes" section logs what was done in recent sessions. If a recent session already fixed the problem a task would address, the task is contradicted. The signal is: the assessment describes recent changes that overlap with the task's domain.
+
+General contradiction signals:
+1. "Recent Changes" contains language about fixing/resolving something in the task's domain
+2. Self-test results show ✅ for features the task would fix
+3. Explicit statements like "X is already addressed", "X has been fixed"
+
+For the task-specific keywords, I can use the task's `keys` field — if the assessment says those keys are now resolved/fixed, the task is contradicted.
+
+Let me implement this:
+
+```python
+def is_task_contradicted(task, assessment):
+    """Check if the assessment shows the task's problem is already resolved."""
+    lower = assessment.lower()
+    task_keys = task.get("keys", ())
+    recent_changes, self_tests = extract_recent_changes_and_self_tests(assessment)
+    
+    # Check Recent Changes for resolution of task domain
+    resolved_patterns = [
+        r"(now|already|no longer)\s+(properly |correctly )?(explains |reports |shows |handles |works )",
+        r"(fixed|resolved|addressed|landed|closed|shipped)\s+(the )?",
+        r"(improved|patched|repaired|polished)\s+(the )?",
+    ]
+    
+    for line in recent_changes.splitlines():
+        for key in task_keys:
+            if key.lower() in line.lower():
+                for pat in resolved_patterns:
+                    if re.search(pat, line.lower()):
+                        return True, f"assessment says '{key}' is resolved: {line.strip()}"
+    
+    # Check Self-Test Results for passing tests in task domain
+    for line in self_tests.splitlines():
+        if "✅" not in line and "pass" not in line.lower():
+            continue
+        for key in task_keys:
+            if key.lower() in line.lower():
+                return True, f"self-test shows '{key}' already works: {line.strip()}"
+    
+    return False, ""
+```
+
+Wait, this is getting complex. Let me simplify. The key insight from the current code is that `reject_keys` already handles some of this, but it's static. A better approach is:
+
+1. Extract the assessment sections that describe what's already working/been fixed
+2. Check if the task's keys overlap with those resolved descriptions
+3. If so, the task is contradicted
+
+Let me look more carefully at what `reject_keys` already catches and what it misses.
+
+For example, the cold-start diagnostic task has `reject_keys` including:
+- `"now properly explains cold-start"` 
+- `"fixed cold-start"`
+- `"replaced \"no state log found\""`
+- `"no sessions completed yet"`
+- `"no failure found"`
+- `"healthy state"`
+- etc.
+
+These are already pretty comprehensive for that specific task. But the issue is that they're static — new resolution patterns won't be caught.
+
+The real problem is: the assessment's own "Graph-derived next-task pressure" section suggests "Validate seeded tasks against fresh assessment" with `task_seed_contradiction_count=1`. This means in some past session, a seed task was written that the assessment later showed was already addressed.
+
+Looking at the assessment again:
+- Line 78: "reverted_seed_contradicted=1" — there was a seed-contradicted revert
+- Line 84: "Validate seeded tasks against fresh assessment — `task_seed_contradiction_count=1`"
+
+So the mechanism already works at the implementation level (evolve.sh catches contradictions via decision.json), but the issue is that the seed task gets written and then later contradicted. The goal is to prevent the seed task from being written at all if the assessment already shows it's done.
+
+Let me now implement the fix:
+
+1. Add `check_task_contradiction(task, assessment)` function
+2. Modify `choose_task` to use it
+3. Modify `render_task` to add `validated_against_assessment` field
+4. Add tests
+
+The core insight: scan "Recent Changes" and "Self-Test Results" sections for evidence that the task's problem domain has been recently addressed. Look for:
+- Resolution language near task keywords
+- ✅ marks near task keywords in self-tests
+
+Let me write the code now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 27.5s (2 ✓)
+
+Now I have a complete understanding of the pipeline. Let me implement the fix:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the changes. First, I need to add the contradiction detection function and modify `choose_task` and `render_task`.
+
+My approach:
+1. Add an `extract_section` helper to get specific markdown sections
+2. Add `check_task_contradiction(task, assessment)` that scans "Recent Changes" and "Self-Test Results" for resolution evidence
+3. Modify `choose_task` to skip contradicted tasks
+4. Modify `render_task` to add `validated_against_assessment` field
+5. Add tests
+
+Let me carefully construct the edits. The key sections to add:
+
+1. After `current_evidence_text` (line 283), add the contradiction detection functions
+2. Modify `choose_task` to call contradiction check
+3. Modify `render_task` to accept and use `validated_against_assessment`
+4. Add tests
+
+Let me write the code now.
+────────────────────────────────────────────────────────────────────────────────
+  7 tools completed in 4.6s (7 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the contradiction detection function and the section extraction helpers. I'll add them after `current_evidence_text`.
+────────────────────────────────────────────────────────────────────────────────
+
+First, let me add the section extraction helper and contradiction detection function after `current_evidence_text`:
+        if include and current:
+            sections.append("\n".join(current))
+        return "\n\n".join(sections)
+  + 
+  + 
+  + def extract_section(assessment: str, heading: str) -> str:
+  +     """Extract a markdown section by its heading (case-insensitive)."""
+  +     target = heading.strip().lower()
+  +     lines: list[str] = []
+  +     in_section = False
+  +     for line in assessment.splitlines():
+  +         stripped = line.strip()
+  +         if stripped.startswith("## "):
+  +             if in_section:
+  +                 break
+  +             h = stripped[3:].strip().lower()
+  +             if h == target:
+  +                 in_section = True
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (6 → 84 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (6 → 84 lines)
+        if include and current:
+            sections.append("\n".join(current))
+        return "\n\n".join(sections)
+  + 
+  + 
+  + def extract_section(assessment: str, heading: str) -> str:
+  +     """Extract a markdown section by its heading (case-insensitive)."""
+  +     target = heading.strip().lower()
+  +     lines: list[str] = []
+  +     in_section = False
+  +     for line in assessment.splitlines():
+  +         stripped = line.strip()
+  +         if stripped.startswith("## "):
+  +             if in_section:
+  +                 break
+  +             h = stripped[3:].strip().lower()
+  +             if h == target:
+  +                 in_section = True
+  +             continue
+  +         if in_section:
+  ... (64 more lines)
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to modify `choose_task` to use the contradiction check. The current logic iterates through TASKS and returns the first match. I need to:
+
+1. Collect all matching tasks
+2. Check each for contradiction
+3. Return the first non-contradicted match
+4. If all are contradicted, return the first match (with contradiction info for render_task to use)
+
+Let me also modify `render_task` to accept and use `validated_against_assessment`.
+
+Let me re-read the current `choose_task` to make the edit precise:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:370.. ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to:
+1. Modify `choose_task` to check for contradiction before returning a task
+2. Modify `render_task` to add `validated_against_assessment` field
+3. Modify `main` to pass the validation info to `render_task`
+
+The approach for `choose_task`:
+- Collect matches, check contradiction on each
+- Return the first non-contradicted match
+- If all matches are contradicted, return the first match (with contradiction info for the render_task to annotate)
+
+The approach for `render_task`:
+- Accept optional `validated_against_assessment` and `contradiction_reason` params
+- Add the validation field in the output
+
+Let me write the edits:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `choose_task` to perform contradiction checking:
+        lower = (current if current.strip() else assessment).lower()
+        metrics = numeric_metrics(lower)
+        lifecycle_metrics_present = has_lifecycle_metrics(metrics)
+  +     candidates: list[dict[str, object]] = []
+        for task in TASKS:
+            if not any(key in lower for key in task["keys"]):
+                continue
+  ···
+            if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+                if not has_actionable_lifecycle_gap(metrics):
+                    continue
+  -             return task
+  +             candidates.append(task)
+  +             continue
+            if task["title"] == SEARCH_FRICTION_TASK_TITLE:
+                if not has_actionable_search_friction(lower):
+                    continue
+  -             return task
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (44 → 61 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (44 → 61 lines)
+        lower = (current if current.strip() else assessment).lower()
+        metrics = numeric_metrics(lower)
+        lifecycle_metrics_present = has_lifecycle_metrics(metrics)
+  +     candidates: list[dict[str, object]] = []
+        for task in TASKS:
+            if not any(key in lower for key in task["keys"]):
+                continue
+  ···
+            if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+                if not has_actionable_lifecycle_gap(metrics):
+                    continue
+  -             return task
+  +             candidates.append(task)
+  +             continue
+            if task["title"] == SEARCH_FRICTION_TASK_TITLE:
+                if not has_actionable_search_friction(lower):
+                    continue
+  -             return task
+  -         return task
+  +             candidates.append(task)
+  ... (19 more lines)
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `render_task` to include the `validated_against_assessment` and `contradiction_reason` fields:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `render_task` to include validation field:
+        success = "\n".join(f"- {item}" for item in task["success"])
+        verification = "\n".join(f"- {item}" for item in task["verification"])
+        evidence = "\n".join(f"- {item}" for item in task["evidence"])
+  +     validated = task.get("validated_against_assessment", True)
+  +     contradiction = task.get("contradiction_reason", "")
+  +     validation_line = f"validated_against_assessment: {str(validated).lower()}"
+  +     if not validated and contradiction:
+  +         validation_line += f" (contradiction: {contradiction})"
+        return f"""Title: {task["title"]}
+    Files: {task["files"]}
+    Issue: none
+    Origin: harness-seed
+  + {validation_line}
+    
+    Objective:
+    {task["objective"]}
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (29 → 35 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (29 → 35 lines)
+        success = "\n".join(f"- {item}" for item in task["success"])
+        verification = "\n".join(f"- {item}" for item in task["verification"])
+        evidence = "\n".join(f"- {item}" for item in task["evidence"])
+  +     validated = task.get("validated_against_assessment", True)
+  +     contradiction = task.get("contradiction_reason", "")
+  +     validation_line = f"validated_against_assessment: {str(validated).lower()}"
+  +     if not validated and contradiction:
+  +         validation_line += f" (contradiction: {contradiction})"
+        return f"""Title: {task["title"]}
+    Files: {task["files"]}
+    Issue: none
+    Origin: harness-seed
+  + {validation_line}
+    
+    Objective:
+    {task["objective"]}
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to update the tests. There are two things to check:
+1. The existing tests should still pass (the `validated_against_assessment` field shouldn't break anything)
+2. I need new tests for contradiction detection
+
+Let me first run the existing self-tests to see if they pass, then add new tests.
+
+Actually, let me look at the existing test assertions — the `render_task` output is now different because it includes `validated_against_assessment: true` line. The test at line 614 checks for `"Title:" in text and "Success Criteria:" in text and "Origin: harness-seed" in text` — this should still pass since "Title:", "Success Criteria:", and "Origin: harness-seed" are all still in the output. But wait — the test that was checking for `"Origin: harness-seed"` in the full text... let me check line 537:
+
+```python
+assert "Title:" in text and "Success Criteria:" in text and "Origin: harness-seed" in text
+```
+
+The output now has `Origin: harness-seed` followed by `validated_against_assessment: true`. Since the assert uses `in`, this should still pass fine.
+
+But there's another issue — the `render_task` test uses the fallback task (the "Repair evidence-backed planning" dict literal), which doesn't have `validated_against_assessment`. So `task.get("validated_against_assessment", True)` returns `True`, which is fine.
+
+Let me run the existing tests first, then add new ones.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run the existing self-tests first.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.3s (4 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All existing tests pass. Now let me add new tests for contradiction detection. I need to add test cases that verify:
+
+1. A task is NOT selected when the assessment's Recent Changes show it was already fixed
+2. A task is NOT selected when the assessment's Self-Test Results show relevant ✅ tests
+3. A task IS selected when the assessment doesn't contradict it (normal case)
+4. When all matching tasks are contradicted, the first is still returned with `validated_against_assessment: false`
+
+Let me add the tests. I'll add them after the existing `render_task` test and before the "preseed_session_plan self-tests passed" line.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add tests for contradiction detection. I'll add them right before the "self-tests passed" line:
+            task = choose_task(assessment)
+            assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
+  +         # --- contradiction detection tests ---
+  +         # Test 1: Task NOT selected when Recent Changes show it was already fixed
+  +         assessment = """# Assessment
+  + 
+  + ## Recent Changes
+  + Day 106 improved cold-start diagnostics: `state why last-failure` now properly
+  + explains cold-start state and returns useful diagnostic paths.
+  + 
+  + ## Source Architecture
+  + | `commands_state.rs` | 23,548 | State CLI |
+  + """
+  +         task = choose_task(assessment)
+  +         assert task["title"] == "Extract another focused state CLI module", (
+  +             f"Expected fallback to non-contradicted commands_state task, got {task['title']}"
+  +         )
+  +         # Test 2: Contradiction annotation when all matches are contradicted
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (3 → 99 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (3 → 99 lines)
+            task = choose_task(assessment)
+            assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
+  +         # --- contradiction detection tests ---
+  +         # Test 1: Task NOT selected when Recent Changes show it was already fixed
+  +         assessment = """# Assessment
+  + 
+  + ## Recent Changes
+  + Day 106 improved cold-start diagnostics: `state why last-failure` now properly
+  + explains cold-start state and returns useful diagnostic paths.
+  + 
+  + ## Source Architecture
+  + | `commands_state.rs` | 23,548 | State CLI |
+  + """
+  +         task = choose_task(assessment)
+  +         assert task["title"] == "Extract another focused state CLI module", (
+  +             f"Expected fallback to non-contradicted commands_state task, got {task['title']}"
+  +         )
+  +         # Test 2: Contradiction annotation when all matches are contradicted
+  +         assessment = """# Assessment
+  + 
+  ... (79 more lines)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, there's a problem with Test 1. The assessment has `commands_state.rs` in it, which would match the "Extract another focused state CLI module" task. But it also has the cold-start keys ("why last-failure", "cold-start"). Let me check the task keys:
+
+The "Improve cold-start state failure diagnostics" task has keys: `("why last-failure", "cold-start", "cold start", "no state event found")`
+
+The assessment has: "`state why last-failure` now properly" which matches "why last-failure".
+
+And the "Extract another focused state CLI module" task has keys: `("commands_state.rs still represents", "structural bottleneck", "state cli subsystem", "extract another focused state cli")`
+
+The assessment has "`commands_state.rs` | 23,548 | State CLI" — does this match "commands_state.rs still represents"? No, "commands_state.rs still represents" is a substring check. "commands_state.rs" exists in the full string but the key is the full string "commands_state.rs still represents". So "commands_state.rs still represents" would need to be a substring of the assessment lower case text. Let me check...
+
+The assessment has "`commands_state.rs` | 23,548 | State CLI". In lowercase: "`commands_state.rs` | 23,548 | state cli". The key "commands_state.rs still represents" is NOT a substring of that text. So the only matching tasks would be the cold-start one (which should be contradicted).
+
+But wait — after contradiction, there might be no matching task. Let me trace through the logic:
+
+1. Cold-start task matches "why last-failure" key
+2. Cold-start task has reject_keys like "now properly explains cold-start" — the assessment says "now properly explains cold-start state" — so it would be rejected by reject_keys!
+3. So it wouldn't even be a candidate.
+
+Wait, let me re-read the cold-start reject_keys:
+```
+"now properly explains cold-start",
+"fixed cold-start",
+"replaced \"no state log found\"",
+...
+```
+
+The assessment says "`state why last-failure` now properly explains cold-start state". The lower case of this is: "`state why last-failure` now properly explains cold-start state". The reject_key is "now properly explains cold-start". This IS a substring match! So the cold-start task would be rejected by reject_keys before even reaching contradiction detection.
+
+So Test 1's scenario — the cold-start task would be rejected by reject_keys, not by contradiction detection. Then no task matches via TASKS, so the fallback "Repair evidence-backed planning" is returned.
+
+That's actually correct behavior. But it means Test 1 is testing reject_keys, not contradiction detection per se. Let me make the test more specific — I should test a scenario where a task MATCHES the keys but is contradicted by the assessment without being caught by reject_keys.
+
+Let me think of a better test case...
+
+The lifecycle task has keys like `state_run_incomplete`, `deepseek_model_call_incomplete`, etc. If the assessment says "state lifecycle gaps now properly resolved" without saying "fixed the lifecycle", the reject_keys might miss it but the contradiction detection should catch it because "now properly" near "state_run" or "lifecycle" would trigger.
+
+Actually wait... the contradiction detection uses task keys (`task["keys"]`), not keywords. Let me reconsider the design. The task's `keys` field is what's matched in the assessment to select the task. If the assessment says the problem is "now properly resolved" AND contains those same keys, then it's contradicted.
+
+But that's an unusual situation — typically if the assessment says something is resolved, you don't want it to match the task at all. The reject_keys handle this for specific known phrases, but the contradiction detection catches the case where the assessment uses resolution language near the task's keys.
+
+Let me fix Test 1 to test the contradiction detection properly — use a scenario where the assessment contains the task keys AND resolution language that the reject_keys don't cover.
+
+For the lifecycle task, keys include "state lifecycle unhealthy". If the assessment says "State lifecycle unhealthy: now properly addressed", that would match the key AND show resolution, but "now properly addressed" isn't in the reject_keys.
+
+For the cold-start task, keys include "cold start" and "no state event found". If the assessment says "`state why last-failure` no longer returns 'no state event found'" — "no longer" is a resolution signal, and "no state event found" is a key.
+
+Let me revise the test:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me fix Test 1 — it would be caught by reject_keys before reaching contradiction detection. I need a case where the key matches but reject_keys don't cover the resolution language:
+            # --- contradiction detection tests ---
+  -         # Test 1: Task NOT selected when Recent Changes show it was already fixed
+  +         # Test 1: Task contradicted when Recent Changes show it was already fixed
+  +         # (uses resolution language NOT covered by reject_keys)
+            assessment = """# Assessment
+    
+    ## Recent Changes
+  - Day 106 improved cold-start diagnostics: `state why last-failure` now properly
+  - explains cold-start state and returns useful diagnostic paths.
+  + Day 106 now properly resolved state lifecycle unhealthy problems: all
+  + terminal events now pair correctly in every codepath we tested.
+    
+  - ## Source Architecture
+  - | `commands_state.rs` | 23,548 | State CLI |
+  + ## Bugs / Friction Found
+  + State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1.
+    """
+            task = choose_task(assessment)
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (38 → 36 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (38 → 36 lines)
+            # --- contradiction detection tests ---
+  -         # Test 1: Task NOT selected when Recent Changes show it was already fixed
+  +         # Test 1: Task contradicted when Recent Changes show it was already fixed
+  +         # (uses resolution language NOT covered by reject_keys)
+            assessment = """# Assessment
+    
+    ## Recent Changes
+  - Day 106 improved cold-start diagnostics: `state why last-failure` now properly
+  - explains cold-start state and returns useful diagnostic paths.
+  + Day 106 now properly resolved state lifecycle unhealthy problems: all
+  + terminal events now pair correctly in every codepath we tested.
+    
+  - ## Source Architecture
+  - | `commands_state.rs` | 23,548 | State CLI |
+  + ## Bugs / Friction Found
+  + State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1.
+    """
+            task = choose_task(assessment)
+  -         assert task["title"] == "Extract another focused state CLI module", (
+  -             f"Expected fallback to non-contradicted commands_state task, got {task['title']}"
+  ... (29 more lines)
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, Test 1 has a problem. The lifecycle task has keys like "state lifecycle unhealthy". The assessment says "State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1" which contains "state lifecycle unhealthy". But the Recent Changes section says "now properly resolved state lifecycle unhealthy problems" which also contains "state lifecycle unhealthy" AND "now properly resolved".
+
+The contradiction detection function checks: does the line in Recent Changes contain any task key AND any resolution signal? Yes — "state lifecycle unhealthy" is a key and "now properly" is a resolution signal. So it's contradicted.
+
+But wait — the lifecycle task also has `reject_keys`. Let me check what those are:
+```python
+"reject_keys": (
+    "input-validation exits without runstarted only",
+    "input-validation-only unmatched",
+    "pre-agent input-validation exit",
+),
+```
+
+None of these match "now properly resolved". So the reject_keys don't catch it, which means the lifecycle task would be a candidate. But then the contradiction check catches it.
+
+However, the lifecycle task also has the numeric metrics gate: `has_actionable_lifecycle_gap(metrics)`. Let me trace through:
+- `numeric_metrics` extracts metrics from "runs incomplete 2" → `{"runs": 2, "incomplete": 2}` — wait, `"runs incomplete 2"` has `runs` and `incomplete`. But the metric regex is: ``r"`?([a-z][a-z0-9_]+)`?\s*[=:]\s*(-?\d+)"`` — this looks for `key = value` or `key: value`. `"runs incomplete 2"` doesn't match this pattern. The metric pattern expects `key=value` or `key: value`. So no metrics would be extracted from this assessment.
+
+Without lifecycle metrics, `has_lifecycle_metrics` returns false, and `lifecycle_metrics_present` is false. But the lifecycle task check is:
+```python
+if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+    if not has_actionable_lifecycle_gap(metrics):
+        continue
+    candidates.append(task)
+    continue
+```
+
+Since `lifecycle_metrics_present` is false, the condition `task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present` is false, so we fall through to `candidates.append(task)`.
+
+So the lifecycle task would be a candidate. Then the contradiction check catches it and it's skipped.
+
+For the second candidate — what else matches? Let me think about what other tasks match the assessment:
+- "cold start" and "state lifecycle unhealthy" are in the assessment
+- The cold-start task has keys: `("why last-failure", "cold-start", "cold start", "no state event found")` — "cold start" is a key? Actually looking at the keys: `"cold-start"` and `"cold start"` are both there. The assessment doesn't seem to have "cold start" or "cold-start" explicitly.
+
+Actually wait, the assessment in Test 1 is:
+```
+Day 106 now properly resolved state lifecycle unhealthy problems: all
+terminal events now pair correctly in every codepath we tested.
+
+## Bugs / Friction Found
+State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1.
+```
+
+"state lifecycle unhealthy" is the key for the lifecycle task. Does this also match the cold-start task? Cold-start keys are: `"why last-failure", "cold-start", "cold start", "no state event found"`. None of these are in the assessment. So only the lifecycle task matches.
+
+The lifecycle task match → candidate → contradiction check catches it → skip. No more candidates → fallback "Repair evidence-backed planning".
+
+So `task["title"] != LIFECYCLE_TASK_TITLE` would be True. OK, the test should work.
+
+Let me run it to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (118ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The lifecycle task is still being selected. Let me trace why:
+
+The assessment:
+```
+Day 106 now properly resolved state lifecycle unhealthy problems: all
+terminal events now pair correctly in every codepath we tested.
+
+## Bugs / Friction Found
+State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1.
+```
+
+The lifecycle task keys include: `"state lifecycle unhealthy"`, `"state_run_incomplete"`, etc.
+
+The `current_evidence_text` function extracts sections: "bugs / friction found" is wanted — yes! So `current` would be the Bugs section: `"State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1."`
+
+Then `choose_task` uses `current_evidence_text`:
+```python
+current = current_evidence_text(assessment)
+lower = (current if current.strip() else assessment).lower()
+```
+
+So `lower` is from the Bugs section, not from Recent Changes. The Bugs section says "State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1" — this doesn't have any resolution language.
+
+Then `check_task_contradiction` scans the full `assessment` text. But wait — let me look at the `extract_section` function:
+
+```python
+def extract_section(assessment: str, heading: str) -> str:
+```
+
+This extracts a markdown section by heading. But the test's assessment has:
+```
+## Recent Changes
+Day 106 now properly resolved state lifecycle unhealthy problems: all
+...
+
+## Bugs / Friction Found
+State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1.
+```
+
+The `extract_section("recent changes")` should extract lines of "Recent Changes". Let me verify this works. The heading is `## Recent Changes` (with capital R and C), and the target is `"recent changes"`. After `strip().lower()` both should match.
+
+Wait — the heading string "recent changes" with leading hash marks and space: `## Recent Changes`. After `stripped.startswith("## ")`, we get `stripped[3:].strip().lower()` → `"recent changes"`. And the target is `"recent changes"`. So it should match!
+
+Then `_line_shows_resolution` checks if the line has any task key AND any resolution signal:
+- Task key: `"state lifecycle unhealthy"` — is this in the line "Day 106 now properly resolved state lifecycle unhealthy problems"? Yes!
+- Resolution signal: `"now properly"` — is this in the line? `"day 106 now properly resolved state lifecycle unhealthy problems"` — yes!
+
+So `_line_shows_resolution` should return True.
+
+Then `check_task_contradiction` should return `(True, "assessment Recent Changes shows...")`.
+
+Then in `choose_task`, the candidate would be checked:
+```python
+for candidate in candidates:
+    contradicted, reason = check_task_contradiction(candidate, assessment)
+    if not contradicted:
+        candidate["validated_against_assessment"] = True
+        return candidate
+```
+
+Since it IS contradicted, we skip. Since there's only one candidate, we reach:
+```python
+if candidates:
+    contradicted, reason = check_task_contradiction(candidates[0], assessment)
+    candidates[0]["validated_against_assessment"] = False
+    candidates[0]["contradiction_reason"] = reason
+    return candidates[0]
+```
+
+So the lifecycle task IS returned, with `validated_against_assessment=false`. The test check `task["title"] != LIFECYCLE_TASK_TITLE` FAILS because the task IS the lifecycle task!
+
+Ah, I see the issue. When all candidates are contradicted, we still return the first candidate (with the contradiction annotation). The test is checking that the lifecycle task is NOT selected, but the design intentionally returns it with `validated_against_assessment=false`.
+
+So my test is wrong. The correct assertion should be: the task is the lifecycle task (since it's the only match) with `validated_against_assessment` being `False`.
+
+Let me fix the test:
+────────────────────────────────────────────────────────────────────────────────
+
+The lifecycle task IS selected (as the only match) but with contradiction annotation. Let me fix the test to check for the annotation instead:
+  -         # --- contradiction detection tests ---
+  -         # Test 1: Task contradicted when Recent Changes show it was already fixed
+  -         # (uses resolution language NOT covered by reject_keys)
+  +         # Test 1: Task marked contradicted when Recent Changes show it was already fixed
+            assessment = """# Assessment
+    
+    ## Recent Changes
+  ···
+    State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1.
+    """
+            task = choose_task(assessment)
+  -         assert task["title"] != LIFECYCLE_TASK_TITLE, (
+  -             f"Lifecycle task should be contradicted when Recent Changes say resolved, got {task['title']}"
+  +         assert task["title"] == LIFECYCLE_TASK_TITLE, (
+  +             f"Expected lifecycle task (only match), got {task['title']}"
+  +         )
+  +         assert task.get("validated_against_assessment") is False, (
+  +             "Lifecycle task should be contradicted when Recent Changes say resolved"
+            )
+  +         assert task.get("contradiction_reason"), "Expected contradiction_reason"
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (16 → 18 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (16 → 18 lines)
+  -         # --- contradiction detection tests ---
+  -         # Test 1: Task contradicted when Recent Changes show it was already fixed
+  -         # (uses resolution language NOT covered by reject_keys)
+  +         # Test 1: Task marked contradicted when Recent Changes show it was already fixed
+            assessment = """# Assessment
+    
+    ## Recent Changes
+  ···
+    State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1.
+    """
+            task = choose_task(assessment)
+  -         assert task["title"] != LIFECYCLE_TASK_TITLE, (
+  -             f"Lifecycle task should be contradicted when Recent Changes say resolved, got {task['title']}"
+  +         assert task["title"] == LIFECYCLE_TASK_TITLE, (
+  +             f"Expected lifecycle task (only match), got {task['title']}"
+  +         )
+  +         assert task.get("validated_against_assessment") is False, (
+  +             "Lifecycle task should be contradicted when Recent Changes say resolved"
+            )
+  +         assert task.get("contradiction_reason"), "Expected contradiction_reason"
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, but this is wrong for the intended goal. The task objective says: "If the assessment explicitly states that the seed task's problem is already addressed, the seed task is NOT written (or is written with an obsolete marker)."
+
+My current design returns the contradicted task with `validated_against_assessment: false`. The task says it should either:
+1. NOT be written, OR  
+2. Written with an obsolete marker
+
+Currently it writes the task with the annotation. That's option 2 (annotated), which is reasonable. The planner can then decide.
+
+But wait — in the `main` function, if there's only one candidate and it's contradicted, the task is still written to disk. The planner sees `validated_against_assessment: false` and can handle it.
+
+The evolve.sh already has logic (lines 1778-1815) that reads `decision.json` for `contradicted_by_assessment` and skips the task. The planner writes `decision.json` after planning. So the seed task with `validated_against_assessment: false` gives the planner a signal.
+
+Let me now also think about the `main` function — should it suppress writing the task when contradicted? The task says "the seed task is NOT written (or is written with an obsolete marker)". Let me make it suppress when contradicted AND there's no other candidate. Actually, let me re-read the task instructions:
+
+"If contradicted: either skip the seed task entirely, or write it with a header annotation like Validity: CONTRAVERTED — assessment says [reason] so the planner can see and handle it."
+
+So my current implementation does option B (annotation). But the more useful behavior might be to skip entirely when contradicted — that way the seed task won't pollute the planner with stale work.
+
+Actually, the status quo is already that the planner gets the assessment and can override the seed task. So sending a contradicted seed task is a signal the planner can use. But suppressing it entirely means the planner might end up with zero tasks, which is worse.
+
+Let me keep the current design: write the task with `validated_against_assessment: false` and contradiction reason. The planner and evolve.sh can use this signal.
+
+Now let me also update the `main` function to handle this better. Currently it just writes the task. But when it's contradicted, we might want to log a warning. Let me add that.
+
+Actually, let me focus on getting the tests to pass first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (110ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Test 6 fails. The sub-agent task has keys: `("sub-agent", "sub agent", "api_key_present", "api key", "worker agents")`.
+
+The assessment says: "Day 105 fixed sub-agent API key propagation: the agent now correctly passes resolved API keys to spawned workers. `api_key_present` now reports true."
+
+The contradiction check scans Recent Changes. It looks for resolution signals near task keys. The task key "api key" exists in "API key" (lowercase: "api key"). And "fixed the" exists in "fixed sub-agent API key" — wait, "fixed the" is the resolution signal. Let me check: "fixed sub-agent API key propagation". Does "fixed the" match? No — "fixed the" requires "the" after "fixed". The text says "fixed sub-agent" not "fixed the".
+
+Let me look at my `_RESOLUTION_SIGNALS`:
+```python
+_RESOLUTION_SIGNALS = (
+    "now properly",
+    "now correctly",
+    "already fixed",
+    "already addressed",
+    "already resolved",
+    "no longer",
+    "has been fixed",
+    "has been resolved",
+    "fixed the",
+    "resolved the",
+    "patched the",
+    "shipped the",
+)
+```
+
+"fixed the" doesn't match "fixed sub-agent". I need a broader pattern. Let me add patterns that match "fixed X", "resolved X", etc. The key insight is: a line like "Day 105 fixed sub-agent API key propagation" should be detected as a resolution. But "fixed" alone is too broad ("fixed a typo" shouldn't contradict a lifecycle task).
+
+A better approach: detect resolution signals as patterns, not exact strings. Let me use regex instead:
+
+```python
+_RESOLUTION_PATTERNS = (
+    r"\bnow\s+properly\b",
+    r"\bnow\s+correctly\b",
+    r"\balready\s+(fixed|addressed|resolved|works|handled)\b",
+    r"\bno\s+longer\b",
+    r"\bhas\s+been\s+(fixed|resolved|addressed)\b",
+    r"\b(fixed|resolved|patched|shipped|landed)\s+(the\s+)?[a-z]",
+)
+```
+
+Wait, but I also need "fixed sub-agent" to match. Let me use this pattern: `r"\b(fixed|resolved|patched|shipped|landed)\s"` — just match the word followed by a space. But this could be too broad.
+
+Actually, the key constraint is already there: the line must ALSO contain a task key. So "fixed" near "api_key_present" or "sub-agent" would only trigger for the sub-agent task. That's safe.
+
+Let me change to a simpler pattern: resolution words followed by any word:
+────────────────────────────────────────────────────────────────────────────────
+
+The issue is that "fixed the" doesn't match "fixed sub-agent". I need broader resolution patterns. Let me fix:
+        "no longer",
+        "has been fixed",
+        "has been resolved",
+  -     "fixed the",
+  -     "resolved the",
+  -     "patched the",
+  -     "shipped the",
+  +     "fixed ",
+  +     "resolved ",
+  +     "patched ",
+  +     "shipped ",
+  +     "landed ",
+  +     "closed ",
+  +     "addressed ",
+    )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (14 → 17 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (14 → 17 lines)
+        "no longer",
+        "has been fixed",
+        "has been resolved",
+  -     "fixed the",
+  -     "resolved the",
+  -     "patched the",
+  -     "shipped the",
+  +     "fixed ",
+  +     "resolved ",
+  +     "patched ",
+  +     "shipped ",
+  +     "landed ",
+  +     "closed ",
+  +     "addressed ",
+    )
+ ✓ (9ms)
+
+
