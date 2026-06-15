@@ -1,0 +1,674 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the current state of the file and then implement the required changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/commands_state_crashes.rs  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5 -- src/co… ✓ (90ms)
+ ✓ (96ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The current file is indeed back to its original state - no `--all` flag, no preflight filtering, no `preflight_crashes_hidden` in JSON. I need to re-implement the entire feature.
+
+Let me also look at how `handle_crashes` is called to understand the args parsing:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_crashes' (*.rs) ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the test command format - does cargo test `commands_state crashes` work? Let me also think through the implementation:
+
+1. In `handle_crashes`: detect `--all` flag, pass `show_all: bool` to `build_crashes_report`
+2. In `build_crashes_report`: 
+   - Add `show_all: bool` parameter
+   - After collecting crashes, split into real vs preflight based on `error_detail` containing "empty_input" or "slash_command_in_piped_mode"
+   - In default mode (show_all=false), use only real crashes for display
+   - In `--all` mode, show all crashes but label preflight entries with "(preflight)"
+   - In JSON output, include `preflight_crashes_hidden` count
+   - Add summary line when preflight crashes are hidden
+
+Let me implement this. I also need to add a test module.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. The current file is reverted to the pre-feature state. I need to:
+
+1. Add `--all` flag detection in `handle_crashes`
+2. Add preflight filtering logic in `build_crashes_report`
+3. Add `preflight_crashes_hidden` to JSON output
+4. Add human-readable summary line for hidden preflight crashes
+5. Add tests
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (29ms)
+  ▶ todo ✓ (29ms)
+  ▶ todo ✓ (26ms)
+  ▶ todo ✓ (29ms)
+  ▶ todo ✓ (55ms)
+  ▶ todo ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the full change. I'll rewrite the entire file with the feature implemented, including tests. This is the cleanest approach since the file is small (209 lines) and the changes are pervasive.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 2.4s (6 ✓)
+
+Let me read the test patterns used in the sibling file first, to match conventions:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '#\[cfg(test)\]' src/c…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '#\[test\]' src/comman… ✓ (57ms)
+ ✓ (173ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No existing tests in commands_state_crashes.rs. Let me look at some test patterns from commands_state.rs for style reference.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13853..13933 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I have the test pattern. Now let me implement the full solution. I'll rewrite `commands_state_crashes.rs` with:
+
+1. `handle_crashes` - detects `--all` flag, passes `show_all` to `build_crashes_report`
+2. `build_crashes_report` - `show_all` parameter, preflight detection, filtering, labeling
+3. `is_preflight_crash` helper function
+4. Tests at the bottom
+
+Let me write this out:
+
+```rust
+//! /state crashes subcommand — detect and report crashed sessions.
+//! Extracted from commands_state.rs.
+
+use crate::commands_state::{
+    default_events_path, event_string, event_timestamp_ms, flag_value, format_timestamp_ms,
+    read_events,
+};
+use crate::format::*;
+use serde_json::Value;
+
+pub(crate) fn handle_crashes(args: &[String]) {
+    let limit = flag_value(args, "--limit")
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(10);
+    let json_output = args.iter().any(|a| a == "--json");
+    let show_all = args.iter().any(|a| a == "--all");
+    let path = default_events_path();
+    let Ok(events) = read_events(&path) else {
+        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+        return;
+    };
+    match build_crashes_report(&events, limit, json_output, show_all) {
+        Ok(report) => println!("{report}"),
+        Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CrashEntry {
+    run_id: String,
+    ts_ms: i64,
+    api_key_present: bool,
+    error_detail: String,
+    duration_ms: i64,
+    is_preflight: bool,
+}
+
+fn is_preflight_error(error_detail: &str) -> bool {
+    error_detail.contains("empty_input") || error_detail.contains("slash_command_in_piped_mode")
+}
+
+fn build_crashes_report(
+    events: &[Value],
+    limit: usize,
+    json_output: bool,
+    show_all: bool,
+) -> Result<String, String> {
+    // Find all RunCompleted events with status=error, collect crashes
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    // Build a map run_id -> SessionStarted (timestamp_ms, api_key_present)
+    let mut sessions: std::collections::HashMap<String, (i64, bool)> =
+        std::collections::HashMap::new();
+    // Track tool calls per run_id: set of run_ids that have at least one ToolCallStarted
+    let mut tool_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for event in events {
+        let event_type = event_string(event, "event_type").unwrap_or("");
+        let run_id = event_string(event, "run_id").unwrap_or("").to_string();
+        if run_id.is_empty() {
+            continue;
+        }
+        match event_type {
+            "SessionStarted" => {
+                let ts = event_timestamp_ms(event).unwrap_or(0);
+                let api_key = event
+                    .get("payload")
+                    .and_then(|p| p.get("api_key_present"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                sessions.insert(run_id, (ts, api_key));
+            }
+            "ToolCallStarted" => {
+                tool_calls.insert(run_id);
+            }
+            _ => {}
+        }
+    }
+
+    // Now scan RunCompleted events (most recent first), find crashes
+    let mut crashes: Vec<CrashEntry> = Vec::new();
+    for event in events.iter().rev() {
+        if crashes.len() >= limit {
+            break;
+        }
+        let event_type = event_string(event, "event_type").unwrap_or("");
+        if event_type != "RunCompleted" {
+            continue;
+        }
+        let run_id = event_string(event, "run_id").unwrap_or("").to_string();
+        if run_id.is_empty() {
+            continue;
+        }
+        let status = event
+            .get("payload")
+            .and_then(|p| p.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if status != "error" {
+            continue;
+        }
+
+        // Must have a matching SessionStarted
+        let Some(&(session_ts, api_key_present)) = sessions.get(&run_id) else {
+            continue; // incomplete data
+        };
+
+        // Crash condition: api_key_present == false OR no tool calls
+        let has_tool_calls = tool_calls.contains(&run_id);
+        if api_key_present && has_tool_calls {
+            continue; // not a crash session
+        }
+
+        let ts_ms = event_timestamp_ms(event).unwrap_or(0);
+        let error_detail = event
+            .get("payload")
+            .and_then(|p| p.get("error_detail"))
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                event
+                    .get("payload")
+                    .and_then(|p| p.get("error"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("")
+            .to_string();
+        let duration_ms = ts_ms.saturating_sub(session_ts);
+        let is_preflight = is_preflight_error(&error_detail);
+
+        crashes.push(CrashEntry {
+            run_id,
+            ts_ms,
+            api_key_present,
+            error_detail,
+            duration_ms,
+            is_preflight,
+        });
+    }
+
+    let total_crashes = crashes.len();
+    let preflight_crashes: Vec<_> = crashes.iter().filter(|c| c.is_preflight).collect();
+    let real_crashes: Vec<_> = crashes.iter().filter(|c| !c.is_preflight).collect();
+    let preflight_crashes_hidden = if show_all { 0 } else { preflight_crashes.len() };
+    let window_sessions = sessions.len();
+
+    // Determine which crashes to display
+    let display_crashes: Vec<&CrashEntry> = if show_all {
+        crashes.iter().collect()
+    } else {
+        real_crashes.iter().copied().collect()
+    };
+
+    if json_output {
+        let entries: Vec<Value> = display_crashes
+            .iter()
+            .map(|c| {
+                let mut entry = serde_json::json!({
+                    "run_id": c.run_id,
+                    "ts_ms": c.ts_ms,
+                    "api_key_present": c.api_key_present,
+                    "error_detail": c.error_detail,
+                    "duration_ms": c.duration_ms,
+                });
+                if c.is_preflight {
+                    entry["preflight"] = serde_json::Value::Bool(true);
+                }
+                entry
+            })
+            .collect();
+        let output = serde_json::json!({
+            "crashes": entries,
+            "total_crashes": total_crashes,
+            "preflight_crashes_hidden": preflight_crashes_hidden,
+            "window_sessions": window_sessions,
+        });
+        return serde_json::to_string_pretty(&output).map_err(|e| format!("serialize JSON: {e}"));
+    }
+
+    // Human-readable table
+    if display_crashes.is_empty() {
+        let mut msg = "No crash sessions found in recent history.".to_string();
+        if preflight_crashes_hidden > 0 {
+            msg.push_str(&format!(
+                " ({} harness preflight crash{} hidden; use --all to show)",
+                preflight_crashes_hidden,
+                if preflight_crashes_hidden == 1 { "" } else { "es" }
+            ));
+        }
+        return Ok(msg);
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    let header = format!("Crashed sessions (last {}):", display_crashes.len());
+    lines.push(header);
+    lines.push(format!(
+        "  {:<40} {:<18} {:<5}  {}",
+        "RUN", "WHEN", "KEY?", "ERROR"
+    ));
+
+    for crash in &display_crashes {
+        let when = if now > crash.ts_ms {
+            format_relative_ms(now - crash.ts_ms)
+        } else {
+            format_timestamp_ms(crash.ts_ms)
+        };
+        let key_str = if crash.api_key_present { "yes" } else { "no" };
+        let err = if crash.error_detail.is_empty() {
+            "(none)".to_string()
+        } else if crash.is_preflight {
+            format!("{} (preflight)", crash.error_detail)
+        } else {
+            crash.error_detail.clone()
+        };
+        // Truncate run_id for display
+        let short_run = if crash.run_id.len() > 38 {
+            format!("{}…", &crash.run_id[..37])
+        } else {
+            crash.run_id.clone()
+        };
+        lines.push(format!(
+            "  {:<40} {:<18} {:<5}  {}",
+            short_run, when, key_str, err
+        ));
+    }
+
+    if preflight_crashes_hidden > 0 {
+        lines.push(format!(
+            "({} harness preflight crash{} hidden; use --all to show)",
+            preflight_crashes_hidden,
+            if preflight_crashes_hidden == 1 { "" } else { "es" }
+        ));
+    }
+
+    Ok(lines.join("\n"))
+}
+```
+
+Wait, I need to think about a subtlety: the `limit` is applied before splitting into real vs preflight. The task says "limit" is for collecting crashes, and then we filter preflight out of that. Let me re-read...
+
+The task says:
+- After collecting crashes (line 132), split into real vs preflight based on error_detail string matching
+
+So the flow is: collect up to `limit` crash entries → split into real vs preflight → display real ones by default, or all with `--all`.
+
+But there's a problem: if we collect `limit` crashes and most are preflight, we might show fewer than `limit` real crashes. The task doesn't explicitly address this, so I'll keep it simple: collect `limit` crashes, then filter. This matches the spec description.
+
+Actually wait, let me reconsider. The current code collects up to `limit` entries, but with preflight filtering, we might end up showing fewer entries. The task doesn't mention this explicitly. I'll go with the simple approach as specified: collect `limit`, then split.
+
+Now let me also add tests. Let me write the full file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement the full rewrite. I'll apply the edits incrementally to be surgical.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll implement the full feature. Let me make the changes step by step:
+
+**Step 1: Update `handle_crashes` to detect `--all` and pass `show_all`.**
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(10);
+        let json_output = args.iter().any(|a| a == "--json");
+  +     let show_all = args.iter().any(|a| a == "--all");
+        let path = default_events_path();
+        let Ok(events) = read_events(&path) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        };
+  -     match build_crashes_report(&events, limit, json_output) {
+  +     match build_crashes_report(&events, limit, json_output, show_all) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+        }
+  ✓ Auto-approved: edit: src/commands_state_crashes.rs (15 → 16 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_crashes.rs (15 → 16 lines)
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(10);
+        let json_output = args.iter().any(|a| a == "--json");
+  +     let show_all = args.iter().any(|a| a == "--all");
+        let path = default_events_path();
+        let Ok(events) = read_events(&path) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        };
+  -     match build_crashes_report(&events, limit, json_output) {
+  +     match build_crashes_report(&events, limit, json_output, show_all) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+        }
+ ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now add `is_preflight` field to `CrashEntry` and add the `is_preflight_error` helper function.
+────────────────────────────────────────────────────────────────────────────────
+
+**Step 2: Add `is_preflight` field to `CrashEntry` and add `is_preflight_error` helper.**
+        api_key_present: bool,
+        error_detail: String,
+        duration_ms: i64,
+  +     is_preflight: bool,
+  + }
+  + 
+  + fn is_preflight_error(error_detail: &str) -> bool {
+  +     error_detail.contains("empty_input") || error_detail.contains("slash_command_in_piped_mode")
+    }
+    
+    fn build_crashes_report(
+        events: &[Value],
+        limit: usize,
+        json_output: bool,
+  +     show_all: bool,
+    ) -> Result<String, String> {
+  ✓ Auto-approved: edit: src/commands_state_crashes.rs (14 → 20 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_crashes.rs (14 → 20 lines)
+        api_key_present: bool,
+        error_detail: String,
+        duration_ms: i64,
+  +     is_preflight: bool,
+  + }
+  + 
+  + fn is_preflight_error(error_detail: &str) -> bool {
+  +     error_detail.contains("empty_input") || error_detail.contains("slash_command_in_piped_mode")
+    }
+    
+    fn build_crashes_report(
+        events: &[Value],
+        limit: usize,
+        json_output: bool,
+  +     show_all: bool,
+    ) -> Result<String, String> {
+ ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to:
+1. Add `is_preflight` to the `CrashEntry` construction in the crash collection loop
+2. Add preflight filtering/splitting logic after collection
+3. Update JSON output with `preflight_crashes_hidden` and `preflight` field
+4. Update human-readable output with "(preflight)" labels and summary line
+────────────────────────────────────────────────────────────────────────────────
+
+**Step 3: Add `is_preflight` to the `CrashEntry` construction.**
+            let duration_ms = ts_ms.saturating_sub(session_ts);
+  +         let is_preflight = is_preflight_error(&error_detail);
+    
+            crashes.push(CrashEntry {
+                run_id,
+  ···
+                api_key_present,
+                error_detail,
+                duration_ms,
+  +             is_preflight,
+            });
+  ✓ Auto-approved: edit: src/commands_state_crashes.rs (9 → 11 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_crashes.rs (9 → 11 lines)
+            let duration_ms = ts_ms.saturating_sub(session_ts);
+  +         let is_preflight = is_preflight_error(&error_detail);
+    
+            crashes.push(CrashEntry {
+                run_id,
+  ···
+                api_key_present,
+                error_detail,
+                duration_ms,
+  +             is_preflight,
+            });
+ ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to add the preflight splitting logic after crash collection and before the JSON/human output branches. Let me read the current state around lines 134-160 to make precise edits.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:135..185 ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me replace the section from `let total_crashes` to the end of the file with the new implementation that includes preflight filtering.
+────────────────────────────────────────────────────────────────────────────────
+
+**Step 4: Replace the output section with preflight-aware logic.**
+        let total_crashes = crashes.len();
+  +     let preflight_count = crashes.iter().filter(|c| c.is_preflight).count();
+  +     let preflight_crashes_hidden = if show_all { 0 } else { preflight_count };
+        let window_sessions = sessions.len();
+  + 
+  +     // Determine which crashes to display
+  +     let display_crashes: Vec<&CrashEntry> = if show_all {
+  +         crashes.iter().collect()
+  +     } else {
+  +         crashes.iter().filter(|c| !c.is_preflight).collect()
+  +     };
+    
+        if json_output {
+  -         let entries: Vec<Value> = crashes
+  +         let entries: Vec<Value> = display_crashes
+                .iter()
+                .map(|c| {
+  -                 serde_json::json!({
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state_crashes.rs (63 → 96 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_crashes.rs (63 → 96 lines)
+        let total_crashes = crashes.len();
+  +     let preflight_count = crashes.iter().filter(|c| c.is_preflight).count();
+  +     let preflight_crashes_hidden = if show_all { 0 } else { preflight_count };
+        let window_sessions = sessions.len();
+  + 
+  +     // Determine which crashes to display
+  +     let display_crashes: Vec<&CrashEntry> = if show_all {
+  +         crashes.iter().collect()
+  +     } else {
+  +         crashes.iter().filter(|c| !c.is_preflight).collect()
+  +     };
+    
+        if json_output {
+  -         let entries: Vec<Value> = crashes
+  +         let entries: Vec<Value> = display_crashes
+                .iter()
+                .map(|c| {
+  -                 serde_json::json!({
+  +                 let mut entry = serde_json::json!({
+                        "run_id": c.run_id,
+  ... (80 more lines)
+ ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add the test module at the end of the file.
+────────────────────────────────────────────────────────────────────────────────
+
+**Step 5: Add test module.**
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:225.. ✓ (120ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me append the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            format!("{}h ago", secs / 3600)
+        } else {
+            format!("{}d ago", secs / 86400)
+  +     }
+  + }
+  + 
+  + #[cfg(test)]
+  + mod tests {
+  +     use super::*;
+  +     use serde_json::json;
+  + 
+  +     fn make_event(id: &str, kind: &str, run_id: &str, payload: Value) -> Value {
+  +         json!({
+  +             "event_id": id,
+  +             "event_type": kind,
+  +             "schema_version": 1,
+  +             "timestamp_ms": 1000,
+  +             "actor": "harness",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state_crashes.rs (12 → 176 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_crashes.rs (12 → 176 lines)
+            format!("{}h ago", secs / 3600)
+        } else {
+            format!("{}d ago", secs / 86400)
+  +     }
+  + }
+  + 
+  + #[cfg(test)]
+  + mod tests {
+  +     use super::*;
+  +     use serde_json::json;
+  + 
+  +     fn make_event(id: &str, kind: &str, run_id: &str, payload: Value) -> Value {
+  +         json!({
+  +             "event_id": id,
+  +             "event_type": kind,
+  +             "schema_version": 1,
+  +             "timestamp_ms": 1000,
+  +             "actor": "harness",
+  +             "run_id": run_id,
+  +             "session_id": null,
+  ... (149 more lines)
+ ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the full file looks correct before building.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the full file:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs ✓ (114ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file looks good. Now let me build and test.
+────────────────────────────────────────────────────────────────────────────────
+
+File looks complete. Now let me build and test:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (26ms)
+  ▶ todo ✓ (29ms)
+  ▶ todo ✓ (29ms)
+  ▶ todo ✓ (26ms)
+  ▶ todo ✓ (34ms)
+  ▶ todo ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now run fmt, clippy, build, and test.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 2.5s (6 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt && cargo clippy --al… ✓ (21.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's a clippy warning in a different file (`src/commands_state.rs:930`) that's being treated as an error. This is a pre-existing issue, not from my changes. Let me verify:
+
+The clippy error is in `src/commands_state.rs:930` - not in my file. This is a pre-existing issue. But since clippy is run with `-D warnings`, it blocks the build. Let me check if this was also failing before my changes.
+
+Actually, wait - the evaluator said "Build/tests pass trivially because the code is back to its original state." So before my changes, build was passing. But now clippy is failing on `commands_state.rs`, which I didn't touch. Let me check git status to see if this is a pre-existing issue that was somehow masked.
+
+Actually, this is likely a pre-existing clippy warning that was introduced after the revert. The original file I edited doesn't touch `commands_state.rs`. Let me fix this clippy issue first since it blocks the build.
+
+Wait, but the instruction says "Keep edits narrow" - but this clippy error is blocking my verification. Let me fix it since it's a trivial one-line fix.
+────────────────────────────────────────────────────────────────────────────────
+
+Pre-existing clippy issue in `commands_state.rs` — let me fix it so the build passes:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:928..933 ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me change `sort_by` to `sort_by_key` with `Reverse`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -     incomplete.sort_by(|a, b| b.1.cmp(&a.1));
+  +     incomplete.sort_by_key(|item| std::cmp::Reverse(item.1));
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 1 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (1 → 1 lines)
+  -     incomplete.sort_by(|a, b| b.1.cmp(&a.1));
+  +     incomplete.sort_by_key(|item| std::cmp::Reverse(item.1));
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now re-run clippy and build.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt && cargo clippy --al… ✓ (20.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clippy and fmt pass. Now build and test.
+────────────────────────────────────────────────────────────────────────────────
+
+Clippy and fmt pass. Now build and run tests:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (12.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- commands_state_c… ✓ (23.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 8 tests passed. Let me also run the full test suite to make sure I didn't break anything:
+────────────────────────────────────────────────────────────────────────────────
+
+All 8 tests pass. Let me also run the full test suite to ensure nothing else breaks:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✗ (3m 0s)
+    │ Command timed out after 180s
+
+── Thinking ────────────────────────────────────────────────────────────────
+The full test suite timed out. Let me just run the lib tests without the integration tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- --test-thr…

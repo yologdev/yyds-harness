@@ -1,0 +1,459 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. I need to implement `yyds state why last-failure` diagnostics for cold-start scenarios
+2. The key change is: when no completed failed sessions exist, scan for incomplete runs (RunStarted without RunCompleted) and report them
+3. The previous agent's uncommitted diff shows the approach: add a `find_incomplete_runs` helper and call it as a fallback in `handle_why`
+
+Let me first read the evolve skill, then look at the current code in `src/commands_state.rs` to understand what's there, and then implement the change.
+
+Let me also check the existing tests for `state why` to know what test patterns to follow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs:830..950  ▶ search 'handle_why' (*.rs) ✓ (127ms)
+ ✓ (314ms)
+ ✓ (190ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good picture. Let me look at:
+
+1. The imports at the top of `src/commands_state.rs` to see what's already imported
+2. The `build_why_report` function to understand its return type
+3. Existing tests for `state why`
+4. The helper functions like `event_string`, `event_timestamp`, `current_time_ms`, `format_duration`
+
+Let me find these.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.6s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs (40 lines)  ▶ search 'fn build_why_report' (*.rs)  ▶ search 'fn event_timestamp' (*.rs)  ▶ search 'fn format_duration' (*.rs)  ▶ search 'fn current_time_ms' (*.rs) ✓ (310ms)
+ ✓ (311ms)
+ ✓ (316ms)
+ ✓ (255ms)
+ ✓ (378ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the relevant helper functions and the `build_why_report` function, and also check for existing tests. The previous agent's diff used:
+
+1. `find_incomplete_runs` helper that scans events for RunStarted without RunCompleted
+2. `event_string` and `event_timestamp` (which are at line 13708)
+3. `current_time_ms` and `format_duration`
+
+Let me check what's available:
+- `format_duration` is in `crate::format::cost` — so it's `crate::format::cost::format_duration`
+- `current_time_ms` is in `src/commands_state.rs` at line 1265
+- `event_timestamp` is at line 13708
+- `event_string` — let me find that
+
+Wait, the previous agent's diff uses `event_string` and `event_timestamp` — let me find those.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 6.0s (5 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_string' (*.rs)  ▶ read src/commands_state.rs:1255..1305  ▶ read src/commands_state.rs:13700..13730 ✓ (60ms)
+ ✓ (247ms)
+ ✓ (455ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me check:
+
+1. `format_duration` — it's at `src/format/cost.rs:228`. I need to see how it's used in `commands_state.rs` already, or if I need to import it from `crate::format::cost`.
+
+2. Let me check `build_why_report` to understand what it returns.
+
+3. Also check for existing tests.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.8s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2579..2659  ▶ read src/format/cost.rs:220..240  ▶ search 'test.*state.why|test.*handle_why|why.*test' (*.rs) ✓ (127ms)
+ ✓ (309ms)
+ ✓ (184ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also search for existing tests in commands_state.rs to understand the test patterns used:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn test_\|#\[test\]' src/commands_state.rs | head -40  ▶ search 'find_incomplete' (*.rs) ✓ (208ms)
+ ✓ (210ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — `find_incomplete_runs` doesn't exist yet, so the previous agent's work was not committed. Let me look at some test examples to understand the test pattern, particularly tests that create event-like values:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13837..13897 ✓ (266ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `event` and `event_at` helper functions used in tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn event(' src/commands_state.rs | head -10 ✓ (466ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the event helper and the `is_failure_event_type` function to understand the existing patterns:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13806..13846  ▶ search 'fn is_failure_event_type' (*.rs) ✓ (665ms)
+ ✓ (664ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a solid understanding of the codebase and the patterns. Let me plan the implementation:
+
+1. Add a `find_incomplete_runs` function that scans events for `RunStarted` without matching `RunCompleted`
+2. Modify `handle_why` to call `find_incomplete_runs` as a fallback when `build_why_report` returns an error for `last-failure`
+3. Add a test
+
+Key considerations from the previous agent's diff:
+- The `find_incomplete_runs` helper needs `event_string` and `event_timestamp` — both available
+- `current_time_ms()` returns `i64`, while `event_timestamp` returns `u64` — need to handle the type conversion
+- `format_duration` is in `crate::format::cost` — need to check how it's imported. Actually, since `use crate::format::*` is already at the top, it might already be available. Let me check `src/format/mod.rs`.
+
+Actually, looking at the previous agent's diff:
+```rust
+fn find_incomplete_runs(events: &[Value]) -> Vec<(String, u64)> {
+```
+
+The `event_timestamp` returns `u64`, and `current_time_ms()` returns `i64`. The previous agent's code does:
+```rust
+let now_ms = current_time_ms() as u64;
+```
+
+And:
+```rust
+format_duration(std::time::Duration::from_secs(
+    (now_ms - *ts_ms) / 1000,
+))
+```
+
+Let me check `format/mod.rs` to see what's exported via `crate::format::*`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.3s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/format/mod.rs (40 lines) ✓ (67ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see if `format_duration` is exported from the `format` module:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'pub use\|pub mod\|format_duration' src/format/mod.rs | head -40 ✓ (439ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`pub use cost::*` means `format_duration` from `src/format/cost.rs` is available as `crate::format::format_duration`. And since `use crate::format::*` is at the top of `commands_state.rs`, it should be available directly.
+
+Now let me look at how `build_state_summary` works to understand what the `--summary` flag already reports:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_state_summary' (*.rs) ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2311..2391 ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good picture. The `build_state_summary` already reports `run_started_count` and `run_completed_count`. So the `--summary` flag already shows that there are incomplete runs. Good.
+
+Now let me plan the implementation:
+
+1. Add a `find_incomplete_runs` function that scans events for `RunStarted` without matching `RunCompleted`
+2. Modify `handle_why` after `build_why_report` returns error for `last-failure` to scan for incomplete runs
+
+Let me also check if the `format_duration` function is already used somewhere in `commands_state.rs`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'format_duration' src/commands_state.rs | head -10 ✓ (126ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`format_duration` is not used in `commands_state.rs` yet, but it's available through `use crate::format::*`. Let me check what's in `crate::format::cost` to confirm:
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'pub.*fn format_duration' src/format/cost.rs ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`format_duration` is `pub` and `pub use cost::*` is in `format/mod.rs`, so it's available as `format_duration` directly.
+
+Now let me implement. I'll:
+
+1. Add the `find_incomplete_runs` helper function after `handle_why` 
+2. Modify `handle_why` to call `find_incomplete_runs` when `build_why_report` errors for `last-failure`
+3. Add a test
+
+Let me look at the exact area where I need to add code. The `handle_why` function ends at line 876, and `handle_state_summary` begins at line 878. I'll add the incomplete runs scan in the error branch of `handle_why` and add `find_incomplete_runs` between them.
+
+Let me carefully look at the code again to make the edit:
+
+```rust
+fn handle_why(id: &str, show_summary: bool, limit: usize) {
+    let path = default_events_path();
+    let Ok(events) = read_tail_events(&path, limit) else {
+        // ... cold start handling ...
+        return;
+    };
+    if show_summary {
+        println!("{}", build_state_summary(&events));
+        println!();
+    }
+    match build_why_report(&events, id) {
+        Ok(report) => println!("{report}"),
+        Err(e) => {
+            let mut msg = format!("{YELLOW}  {e}{RESET}");
+            if limit > 0 && events.len() >= limit {
+                msg.push_str(&format!(
+                    "\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}"
+                ));
+            }
+            eprintln!("{msg}");
+        }
+    }
+    // ... limit note ...
+}
+```
+
+Now, here's the thing: `build_why_report` already handles some "no failure" cases with helpful messages. For example, when `failure_count == 0` and `run_completed_count > 0`, it says "N successful sessions recorded. No failure data to diagnose." and suggests `yoyo state crashes`. 
+
+But the task wants additional information: when there are incomplete runs (RunStarted without RunCompleted), surface those with run IDs and timestamps. The `build_why_report` doesn't do this — it gives generic counts but not specific run IDs.
+
+My approach: In the `Err` branch of `handle_why`, when `id == "last-failure"`, scan for incomplete runs and report them with diagnostic next-steps.
+
+Let me now make the edit. I'll use `edit_file` to modify the `Err` branch and add the helper function.
+
+Actually, let me re-read the current code for the Err branch more carefully:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:854..904 ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the exact code. Let me implement this step by step.
+
+My plan:
+1. Edit `handle_why` to add the incomplete runs fallback after `eprintln!("{msg}");`
+2. Add the `find_incomplete_runs` helper function after `handle_why`
+3. Add tests
+
+Let me make the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the changes:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (87ms)
+  ▶ todo ✓ (61ms)
+  ▶ todo ✓ (63ms)
+  ▶ todo ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the two edits. First, the `find_incomplete_runs` helper function added after `handle_why` (between line 876 and 878). Then, the modification to `handle_why` to add the fallback scan.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.9s (4 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me make both edits. First, add the `find_incomplete_runs` helper after `handle_why`, then add the incomplete runs fallback in `handle_why`'s error branch.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                println!("{DIM}(searched {all_count} events){RESET}");
+            }
+        }
+  + }
+  + 
+  + /// Find runs that started (RunStarted) but never completed (no RunCompleted event).
+  + /// Returns a list of (run_id, timestamp_ms) sorted by most recent first.
+  + fn find_incomplete_runs(events: &[Value]) -> Vec<(String, u64)> {
+  +     let completed: BTreeSet<&str> = events
+  +         .iter()
+  +         .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+  +         .filter_map(|e| event_string(e, "run_id"))
+  +         .collect();
+  +     let mut incomplete: Vec<(String, u64)> = events
+  +         .iter()
+  +         .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
+  +         .filter_map(|e| {
+  +             let run_id = event_string(e, "run_id")?;
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (13 → 37 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (13 → 37 lines)
+                println!("{DIM}(searched {all_count} events){RESET}");
+            }
+        }
+  + }
+  + 
+  + /// Find runs that started (RunStarted) but never completed (no RunCompleted event).
+  + /// Returns a list of (run_id, timestamp_ms) sorted by most recent first.
+  + fn find_incomplete_runs(events: &[Value]) -> Vec<(String, u64)> {
+  +     let completed: BTreeSet<&str> = events
+  +         .iter()
+  +         .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+  +         .filter_map(|e| event_string(e, "run_id"))
+  +         .collect();
+  +     let mut incomplete: Vec<(String, u64)> = events
+  +         .iter()
+  +         .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
+  +         .filter_map(|e| {
+  +             let run_id = event_string(e, "run_id")?;
+  +             if completed.contains(run_id) {
+  +                 return None;
+  ... (10 more lines)
+ ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the incomplete runs fallback in `handle_why`'s error branch:
+────────────────────────────────────────────────────────────────────────────────
+
+
+                eprintln!("{msg}");
+  + 
+  +             // Fallback: when no failure found for last-failure, scan for
+  +             // incomplete runs (RunStarted without RunCompleted) and offer
+  +             // diagnostic next-steps so cold-start users get a breadcrumb trail.
+  +             if id == "last-failure" {
+  +                 let incomplete = find_incomplete_runs(&events);
+  +                 if !incomplete.is_empty() {
+  +                     let s = if incomplete.len() == 1 { "" } else { "s" };
+  +                     eprintln!(
+  +                         "\n{YELLOW}  However, {} incomplete run{} detected (started but not completed):{RESET}",
+  +                         incomplete.len(),
+  +                         s,
+  +                     );
+  +                     let now_ms = current_time_ms() as u64;
+  +                     for (run_id, ts_ms) in &incomplete {
+  +                         let ago = if *ts_ms > 0 && now_ms > *ts_ms {
+  +                             format_duration(std::time::Duration::from_secs(
+  +                                 (now_ms - *ts_ms) / 1000,
+  +                             ))
+  ... (13 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 33 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (1 → 33 lines)
+                eprintln!("{msg}");
+  + 
+  +             // Fallback: when no failure found for last-failure, scan for
+  +             // incomplete runs (RunStarted without RunCompleted) and offer
+  +             // diagnostic next-steps so cold-start users get a breadcrumb trail.
+  +             if id == "last-failure" {
+  +                 let incomplete = find_incomplete_runs(&events);
+  +                 if !incomplete.is_empty() {
+  +                     let s = if incomplete.len() == 1 { "" } else { "s" };
+  +                     eprintln!(
+  +                         "\n{YELLOW}  However, {} incomplete run{} detected (started but not completed):{RESET}",
+  +                         incomplete.len(),
+  +                         s,
+  +                     );
+  +                     let now_ms = current_time_ms() as u64;
+  +                     for (run_id, ts_ms) in &incomplete {
+  +                         let ago = if *ts_ms > 0 && now_ms > *ts_ms {
+  +                             format_duration(std::time::Duration::from_secs(
+  +                                 (now_ms - *ts_ms) / 1000,
+  +                             ))
+  ... (13 more lines)
+ ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, both edits applied. Let me now build to see if it compiles:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (67ms)
+  ▶ todo ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -20 ✓ (13.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now let me add tests. I'll add them in the `#[cfg(test)]` module. Let me look at the test module structure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the end of the test module to see where to add tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '#\[cfg(test)\]' src/commands_state.rs ✓ (122ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the end of the test module:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l src/commands_state.rs ✓ (123ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the end of the test module near line 23740:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:23700..23740 ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:23733..23743 ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test module ends at line 23740 with `}`. Let me add tests before the closing `}`. I need to add tests for:
+
+1. `find_incomplete_runs` — test with various scenarios
+2. End-to-end test that `state why last-failure` surfaces incomplete runs
+
+Let me find a good location, near the summary test maybe. Let me look at the test around line 23700 more carefully:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:23670..23720 ✓ (64ms)
+
+

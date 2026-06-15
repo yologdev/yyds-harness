@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The `compute_freshness()` function correctly computes staleness by comparing snapshot time against audit-log session timestamps, formats it as a single markdown line injected into the YOUR TRAJECTORY header (fresh=✓, 1-behind=✓, >1-behind=⚠), handles edge cases (no sessions, unparseable timestamps), and fits within the 1-2 line budget. Script exits 0 and produces valid markdown output.

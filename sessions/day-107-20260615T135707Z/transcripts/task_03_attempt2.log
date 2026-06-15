@@ -1,0 +1,671 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. I need to add a freshness indicator to `scripts/extract_trajectory.py`
+2. The indicator should show how old the trajectory snapshot is relative to the most recent session in the audit-log
+3. If the snapshot is fresh (≤1 session behind), it's reassuring; if stale (>1 session behind), it warns
+4. The change should be minimal - add a helper function and 1-2 lines in the trajectory header
+
+The previous attempt failed with edit_file matching issues due to Unicode characters in the file.
+
+Let me first read the skill file and then the target file.
+
+Let me start by reading the evolve skill and the target file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ read skills/evolve/SKILL.md  ▶ $ wc -l scripts/extract_trajectory.py ✓ (14ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file is 1929 lines. Let me first read the relevant sections - the header area where the trajectory block is built and the main function. I also need to understand how the script computes timestamps and reads session directories.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+Let me read the key sections of `extract_trajectory.py`. I need to see the trajectory header construction and the session directory reading logic.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def \|YOUR TRAJECTORY\|Last computed\|session_dir\|day-' scripts/extrac… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see more of the key functions - particularly the ones that build the trajectory header and the session directory handling.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'YOUR TRAJECTORY\|trajectory\|Last computed\|snapshot\|computed\|session… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the section around the YOUR TRAJECTORY header construction and the `main()` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1750..1930  ▶ read scripts/extract_trajectory.py:1..56 ✓ (15ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand:
+
+1. How the header is built (line 1771-1775)
+2. How `ordered_sessions` and `session_dirs` work to get the most recent session timestamp
+3. How to compute freshness
+
+Let me look at `state_graph_tools.py` to understand `ordered_sessions` and `session_dirs`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:1..101  ▶ $ grep -n 'def ordered_sessions\|def session_dirs\|def session_sort_key' scripts/s… ✓ (15ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read those functions in state_graph_tools.py.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:164..204 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. I need to:
+
+1. Add a `compute_freshness` helper function
+2. Call it in `main()` right after the header is built
+3. Insert the freshness line into the header
+
+The approach:
+- The header is built at line 1771-1775
+- After the header, we need to add freshness info
+- To determine freshness: compare current time with the most recent session's timestamp
+
+The most recent session can be found using `ordered_sessions(audit_dir)` which returns sorted session dirs. The last one is the most recent.
+
+Session dir names are like `day-107-20260615T130431Z`. The timestamp is embedded in the directory name.
+
+Let me think about the staleness heuristic:
+- If the snapshot was computed AFTER the most recent session, it's "fresh" (≤1 session behind)
+- If the most recent session is newer than the snapshot, it's stale
+
+Actually, the task says: "compare the snapshot computation time against the most recent session's timestamp. If the most recent session in the audit-log is newer than the snapshot computation time, the snapshot is stale."
+
+But wait - the snapshot is computed at the START of the current session, and the most recent session in the audit-log would be the previous one (since the current session hasn't finished yet). So there will always be at least one session that happened after the snapshot was computed - the current one.
+
+Actually, let me re-read: "Snapshot age: 32m (1 session behind)". So 1 session behind is "fresh"? And >1 session behind is stale?
+
+Looking at the success criteria:
+- "When the snapshot is fresh (≤1 session behind), the indicator is reassuring (green/check style)"
+- "When the snapshot is stale (>1 session behind), the indicator warns explicitly"
+
+So "1 session behind" is fresh. ">1 session behind" is stale.
+
+But how can it be more than 1 session behind? If the extractor runs every session, the snapshot is always exactly 1 session behind (computed at start of current session, based on data from all completed sessions).
+
+Actually, it could be more if the extractor fails to run for some sessions, or if there's a gap between cron runs.
+
+Let me think about how to compute "number of sessions behind":
+1. Get the most recent session dir in the audit-log
+2. Compare its timestamp with the snapshot computation time
+3. If snapshot time > most recent session time: 0 sessions behind (snapshot is newer than any completed session - this would be unusual)
+4. If snapshot time <= most recent session time: count how many sessions have timestamps newer than the snapshot
+
+Actually, the simpler approach: look at the most recent session in audit-log. If its timestamp is significantly newer than the snapshot, we know we're behind by at least one session.
+
+Let me take an even simpler approach:
+1. Find the most recent session in audit-log
+2. Parse its timestamp
+3. Compute the time difference between snapshot and most recent session
+4. If the difference is small (< some threshold like 3 hours), it's "fresh" (1 session behind)
+5. If the difference is larger, it's potentially stale
+
+Actually, the task description says to count sessions, not time. Let me count:
+- How many session directories have timestamps newer than the snapshot computation time
+- If 0 or 1: fresh
+- If >1: stale
+
+Let me design the helper function:
+
+```python
+def compute_freshness(audit_dir: Path, snapshot_time: datetime) -> str:
+    """Return a freshness indicator line for the trajectory header."""
+    sessions = ordered_sessions(audit_dir)
+    if not sessions:
+        return "Snapshot age: unknown (no audit-log sessions) — treat with caution"
+    
+    # Count sessions whose timestamp is newer than the snapshot
+    sessions_behind = 0
+    most_recent_ts = None
+    for session_dir in sessions:
+        # Parse timestamp from directory name like day-107-20260615T130431Z
+        name = session_dir.name
+        # Extract the timestamp part after the day number
+        parts = name.split('-')
+        if len(parts) >= 3:
+            ts_str = parts[-1]  # e.g., 20260615T130431Z
+            try:
+                ts = datetime.strptime(ts_str, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+                if ts > snapshot_time:
+                    sessions_behind += 1
+                most_recent_ts = ts
+            except ValueError:
+                continue
+    
+    if most_recent_ts is None:
+        return "Snapshot age: unknown (cannot parse session timestamps) — treat with caution"
+    
+    age_minutes = int((snapshot_time - most_recent_ts).total_seconds() / 60)
+    
+    if sessions_behind <= 1:
+        return f"Snapshot age: {age_minutes}m ({sessions_behind} session(s) behind) — reliable ✓"
+    else:
+        return f"Snapshot age: {age_minutes}m ({sessions_behind} sessions behind) — treat with caution ⚠"
+```
+
+Wait, but the snapshot is always computed at the start of the CURRENT session, and the most recent session in audit-log is the PREVIOUS session. So `sessions_behind` should always be at least 1.
+
+Let me simplify: count how many completed sessions have timestamps after the snapshot was computed. If 0 or 1: fresh. If >1: stale.
+
+Actually, let me re-think. The snapshot computation time is now. The most recent session in audit-log is the previous session. So:
+- snapshot_time = "now" (start of current session)
+- most_recent_session_time = time of last completed session
+
+If snapshot_time > most_recent_session_time, that's normal - the snapshot is fresh relative to the data. The age in minutes tells us how long ago the last session completed.
+
+The "sessions behind" count should be: how many sessions have completed since the snapshot's data was captured. Since the snapshot captures all completed sessions up to "now", and only 1 session (the current one) is in progress, we're always 0 sessions behind the data. But we're 1 session behind in terms of "we haven't processed the current session's outcomes yet."
+
+Actually wait, I think I'm overcomplicating this. Let me re-read the task:
+
+"To determine staleness: compare the snapshot computation time (already recorded as 'Last computed: ...') against the most recent session's timestamp. If the most recent session in the audit-log is newer than the snapshot computation time, the snapshot is stale."
+
+So the logic is:
+- If most_recent_session.timestamp > snapshot_time → stale (the session completed after we took the snapshot)
+- If most_recent_session.timestamp <= snapshot_time → fresh
+
+But this can only happen if there's a session that completed AFTER we ran the extractor, which shouldn't normally happen since we run the extractor at the start of the current session and the previous session is already in the audit-log.
+
+Unless... multiple sessions run between two extract_trajectory.py runs. Like if the cron runs the extractor, and then two sessions complete before the next extractor run. That could happen if the extractor fails to run for a cycle.
+
+Let me keep it simple and just implement what the task asks:
+
+```python
+def compute_freshness(audit_dir: Path, snapshot_time: datetime) -> str:
+    """Return a freshness indicator line for the trajectory header."""
+    sessions = ordered_sessions(audit_dir)
+    if not sessions:
+        return "_Snapshot age: no audit-log sessions found — treat with caution_"
+    
+    # Get the most recent session timestamp
+    newest_session = sessions[-1]
+    newest_outcome = load_json(newest_session / "outcome.json")
+    newest_ts_str = newest_outcome.get("ts", "")
+    
+    if not newest_ts_str:
+        # Fall back to parsing directory name
+        name = newest_session.name
+        parts = name.split('-')
+        if len(parts) >= 3:
+            newest_ts_str = parts[-1]
+    
+    try:
+        # Try ISO format first
+        newest_ts = datetime.fromisoformat(newest_ts_str.replace('Z', '+00:00'))
+    except (ValueError, TypeError):
+        try:
+            # Try day-107-20260615T130431Z format
+            newest_ts = datetime.strptime(newest_ts_str, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return "_Snapshot age: cannot parse session timestamps — treat with caution_"
+    
+    age_minutes = int((snapshot_time - newest_ts).total_seconds() / 60)
+    
+    # Count how many sessions have timestamps newer than snapshot
+    sessions_newer = 0
+    for session_dir in sessions:
+        outcome = load_json(session_dir / "outcome.json")
+        ts_str = outcome.get("ts", "")
+        if not ts_str:
+            name = session_dir.name
+            parts = name.split('-')
+            if len(parts) >= 3:
+                ts_str = parts[-1]
+        try:
+            ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+        except (ValueError, TypeError):
+            try:
+                ts = datetime.strptime(ts_str, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
+        if ts > snapshot_time:
+            sessions_newer += 1
+    
+    if sessions_newer == 0:
+        return f"_Snapshot age: {age_minutes}m (fresh) — reliable ✓_"
+    elif sessions_newer == 1:
+        return f"_Snapshot age: {age_minutes}m (1 session behind) — reliable ✓_"
+    else:
+        return f"_Snapshot age: {age_minutes}m ({sessions_newer} sessions behind) — treat with caution ⚠_"
+```
+
+Actually, I'm overcomplicating this. The task says to keep it minimal. Let me simplify a lot:
+
+1. Get the most recent session from audit-log
+2. Get its timestamp
+3. Compare with snapshot time
+4. If snapshot is newer: fresh
+5. If snapshot is older and difference > 1 session: stale
+
+For counting "sessions behind": count how many session dirs have outcome.ts > snapshot_time. If 0 or 1: fresh. If >1: stale.
+
+Now let me implement this. I need to:
+
+1. Add `compute_freshness` function
+2. Call it in `main()` and add the result to the header
+
+Let me find where to insert the function. I'll put it near the main function, before `run_self_tests`. Actually, I'll put it right before `main()`.
+
+Let me first look at the exact text around where I need to insert the function. Let me read lines 1740-1755 to find the right place.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1740..1760 ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 1746 is the Unicode section divider that caused problems before. Let me verify what it is:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (8 lines) ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So lines 1745-1747 (0-indexed) are just blank lines. Line 1746 in the 1-indexed output was blank because it was actually blank, not Unicode. Let me see what's on line 1745 (1-indexed) vs 0-indexed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (5 lines) ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! Line 1746 (1-indexed) is actually completely missing - the 0-indexed lines jump from 1744 to 1747. This might be a readline quirk. Wait no, the output shows L1745, then L1747 with no L1746. But that's 1-indexed numbers in the output. Let me look again:
+
+L1741 (0-indexed 1740): `'            )\n'`
+L1742 (0-indexed 1741): `'        )\n'`
+L1743 (0-indexed 1742): `'    return "\\n".join(lines)\n'`
+L1744 (0-indexed 1743): `'\n'`
+L1745 (0-indexed 1744): `'\n'`
+L1747 (0-indexed 1746): `'\n'` -- wait, that would be 0-indexed 1746, not 1745
+
+Actually wait, let me recount. The output shows:
+- L1741 = index 1740
+- L1742 = index 1741
+- L1743 = index 1742
+- L1744 = index 1743
+- L1745 = index 1744
+- (no L1746 = index 1745)
+- L1747 = index 1746
+- L1748 = index 1747
+- L1749 = index 1748
+- L1750 = index 1749
+
+So index 1745 is missing from the output. That means line 1746 (1-indexed) is empty or the Python script didn't print it. Let me check: the range is `range(1740, 1750)` which is indices 1740-1749, and it prints L{i+1}. So:
+- i=1740 → L1741
+- i=1741 → L1742
+- i=1742 → L1743
+- i=1743 → L1744
+- i=1744 → L1745
+- i=1745 → L1746 (this is missing!)
+- i=1746 → L1747
+- i=1747 → L1748
+- i=1748 → L1749
+- i=1749 → L1750
+
+So index 1745 has something unusual. Let me check directly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (7 lines) ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see: there are Unicode box-drawing characters (`──`) repeated many times, followed by newlines, then `def main()`. But the section header comment like `# ── Final assembly ──` may not be there. Let me look further back:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (6 lines) ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full structure:
+```
+    return "\n".join(lines)
+
+
+# ── Final assembly ────────────────────────────────────────────────────────
+
+
+def main() -> int:
+```
+
+So:
+1. `return "\n".join(lines)` 
+2. blank line
+3. `# ── Final assembly ──` (with Unicode box-drawing chars)
+4. blank line
+5. blank line  
+6. `def main() -> int:`
+
+The Unicode "──" characters are U+2500 (BOX DRAWINGS LIGHT HORIZONTAL), each encoded as 3 bytes: `\xe2\x94\x80`.
+
+Now I need to insert the `compute_freshness` function and then modify `main()` to use it. Let me think about where exactly to insert.
+
+I'll insert the `compute_freshness` function between the `return "\n".join(lines)` and the `# ── Final assembly ──` comment. And I'll modify `main()` to call it and add the freshness line to the header.
+
+Let me use the edit_file tool. I need to match on exact text. Let me try matching the line before `def main()`.
+
+Actually, I'll use a two-step approach:
+1. First insert the function
+2. Then modify the header construction
+
+Let me use Python to do the insertion safely.
+
+Actually, let me use edit_file. The previous attempt failed because of Unicode matching issues. Let me try matching on ASCII-only text and avoid the Unicode line.
+
+Step 1: Insert the `compute_freshness` function before `def main() -> int:`.
+
+I'll match on:
+```
+    return "\n".join(lines)
+
+
+# ── Final assembly
+```
+
+Wait, that still has Unicode. Let me match on just:
+```
+
+def main() -> int:
+```
+
+And replace with:
+```
+
+def compute_freshness(...):
+    ...
+
+
+def main() -> int:
+```
+
+But I need to be careful about the exact text. Let me use a Python script to insert the function and modify the header, avoiding edit_file's Unicode issues.
+
+Actually, let me just use `write_file` approach via Python. I can use a Python script to make the surgical edit.
+
+Wait, let me try edit_file with ASCII-only matching. I'll match on:
+```
+def main() -> int:
+    audit_dir_str = os.environ.get("YOYO_AUDIT_DIR", "")
+```
+
+And insert before it. That should work since `def main() -> int:` is pure ASCII.
+
+Actually wait - I need to also modify `main()` to call `compute_freshness`. So I need two edits:
+1. Insert the function definition
+2. Modify the header construction in main()
+
+Let me do it with a Python script approach to be safe.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the file structure. The previous attempt got stuck on Unicode matching. Let me use a Python-based approach to make the edits safely.
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 << 'PYEOF' (12 lines) ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the ASCII text `def main() -> int:` exists exactly once. Let me now write a Python script that:
+
+1. Inserts the `compute_freshness` function before `def main()`
+2. Modifies the header construction in `main()` to include freshness
+
+Let me design the function:
+
+```python
+def compute_freshness(audit_dir: Path, snapshot_time: datetime) -> str:
+    """Return a freshness indicator line for the trajectory header.
+    
+    Compares the snapshot computation time against the most recent
+    session timestamp in the audit-log. Returns a markdown line
+    indicating whether trajectory evidence is fresh or stale.
+    """
+    sessions = ordered_sessions(audit_dir)
+    if not sessions:
+        return "_Snapshot age: no audit-log sessions — treat with caution_"
+    
+    # Parse timestamps from session outcomes
+    session_times: list[datetime] = []
+    for session_dir in sessions:
+        outcome = load_json(session_dir / "outcome.json")
+        ts_str = outcome.get("ts", "")
+        if not ts_str:
+            # Fall back to directory name parsing (day-N-YYYYMMDDTHHMMSSZ)
+            name = session_dir.name
+            parts = name.split('-')
+            if len(parts) >= 3:
+                ts_str = parts[-1]
+        try:
+            ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+        except (ValueError, TypeError):
+            try:
+                ts = datetime.strptime(ts_str, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
+        session_times.append(ts)
+    
+    if not session_times:
+        return "_Snapshot age: cannot parse session timestamps — treat with caution_"
+    
+    most_recent = max(session_times)
+    age_minutes = int((snapshot_time - most_recent).total_seconds() / 60)
+    
+    # Count sessions newer than the snapshot
+    sessions_newer = sum(1 for t in session_times if t > snapshot_time)
+    
+    if sessions_newer == 0:
+        return f"_Snapshot age: {age_minutes}m (fresh) — reliable ✓_"
+    elif sessions_newer == 1:
+        return f"_Snapshot age: {age_minutes}m (1 session behind) — reliable ✓_"
+    else:
+        return f"_Snapshot age: {age_minutes}m ({sessions_newer} sessions behind) — treat with caution ⚠_"
+```
+
+And the header modification:
+```python
+# Before:
+header = (
+    f"# YOUR TRAJECTORY\n\n"
+    f"Last computed: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%MZ')}. "
+    f"Day {day}. Window: last {WINDOW_SESSIONS} sessions / {WINDOW_DAYS} days.\n"
+)
+
+# After:
+snapshot_time = datetime.now(timezone.utc)
+freshness = compute_freshness(audit_dir, snapshot_time)
+header = (
+    f"# YOUR TRAJECTORY\n\n"
+    f"Last computed: {snapshot_time.strftime('%Y-%m-%dT%H:%MZ')}. "
+    f"Day {day}. Window: last {WINDOW_SESSIONS} sessions / {WINDOW_DAYS} days.\n"
+    f"{freshness}\n"
+)
+```
+
+Wait, but the header already calls `datetime.now(timezone.utc)` inline. I need to capture that and pass it to `compute_freshness`. Let me write the Python script to do both edits.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 << 'PYEOF' (117 lines) ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the changes and run the script.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the changes look correct:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (10 lines) ✓ (84ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me check the header modification:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n -A 8 'snapshot_time = datetime' scripts/extract_trajectory.py ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run the script to see if it works. The script needs `YOYO_AUDIT_DIR` to be set to find sessions. Let me check if there's an audit-log available.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the script to verify it works:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/extract_trajec… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The script exited with 0 (no error exit code shown), and it produced a warning about missing YOYO_REPO. Let me check if it actually wrote output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cat /home/runner/work/yyds-harness/yyds-harness/.yoyo/session_staging/trajectory… ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The script works. Since there's no audit-log directory, it shows "no audit-log sessions — treat with caution". Let me test with a path that exists. But first, let me run the `--test` flag to verify the self-tests still pass.
+
+Actually, let me also verify the output works with an audit directory. Let me check if there's one available in the repo or if I need to mock one.
+
+Let me also run the self-tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/extract_trajec… ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Self-tests pass. Now let me test with a mock audit directory to verify the freshness indicator works correctly with actual session data.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, self-tests pass. Let me test the freshness computation with mocked session data:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 <<… (51 lines) ✓ (73ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The freshness indicator works correctly:
+
+- All 3 sessions have timestamps BEFORE the snapshot (fresh), so `sessions_newer == 0` → "Snapshot age: 5m (fresh) — reliable ✓"
+
+Let me also test the case where sessions are newer than the snapshot (stale):
+
+Actually, let me first check if the file has proper Unicode characters (the ✓ and ⚠ symbols). The output shows `✓` correctly. 
+
+Now let me test the stale case. I'll create sessions with timestamps in the future relative to a fixed snapshot time:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 <<… (47 lines) ✓ (181ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The stale case works correctly:
+- 2 sessions have timestamps newer than the snapshot → "2 sessions behind — treat with caution ⚠"
+- The age shows -14m (negative because the snapshot is older than the most recent session)
+
+Now let me also test the 1-session-behind (fresh) case. That would be when exactly 1 session has a timestamp newer than the snapshot. Let me test that too.
+
+But first, I notice the negative age could be confusing. Let me fix that - when sessions are newer than the snapshot, the age should show as a positive number with a different message. Actually, looking at the task description: "Snapshot age: 32m (1 session behind)". If the most recent session was 32 minutes after the snapshot, that's fine. The negative is just math - `snapshot_time - most_recent` when most_recent > snapshot_time gives negative.
+
+Let me make the age always positive by using absolute value, or better yet, describe it differently when stale. Actually, looking at the output: "-14m" - that's correct because the snapshot is 14 minutes older than the most recent session. But it might be confusing. Let me think about this...
+
+The task says "Snapshot age: 32m (1 session behind)". If the most recent session is 32 min newer than the snapshot, then age would be -32m. Let me just use abs() to make it always positive. That makes more sense for the user - "how old is this snapshot relative to the most recent data."
+
+Let me fix this:
+────────────────────────────────────────────────────────────────────────────────
+
+The negative age is confusing. Let me fix it to use absolute value for age display:
+  -     age_minutes = int(
+  +     age_minutes = abs(int(
+            (snapshot_time - most_recent).total_seconds() / 60
+  -     )
+  +     ))
+  ✓ Auto-approved: edit: scripts/extract_trajectory.py (3 → 3 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/extract_trajectory.py (3 → 3 lines)
+  -     age_minutes = int(
+  +     age_minutes = abs(int(
+            (snapshot_time - most_recent).total_seconds() / 60
+  -     )
+  +     ))
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me re-run the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 sc… (71 lines) ✓ (247ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, Test 3 shows `(fresh)` not `(1 session behind)`. Let me check why. In Test 3, the sessions have timestamps at -5, -30, -60 minutes from now (all in the past). So none are newer than the snapshot → 0 sessions newer → "fresh". 
+
+For the "1 session behind" case, I need exactly 1 session timestamp that's newer than the snapshot. Let me adjust the test. But actually the `sessions_newer == 1` branch would trigger when exactly 1 session has a timestamp newer than the snapshot. Let me test that properly.
+
+Actually wait, in Test 3 I used `now + timedelta(minutes=mins)` where mins are negative (-5, -30, -60). So:
+- -5 min: ts = now - 5min (in the past)
+- -30 min: ts = now - 30min (in the past)
+- -60 min: ts = now - 60min (in the past)
+
+All are before `snapshot_time = now`, so sessions_newer = 0. That's correct.
+
+For the "1 session behind" case, I need exactly 1 session with ts > snapshot_time. Let me make a 4th test with exactly 1 session in the future.
+
+But actually, looking at the code path, the `sessions_newer == 1` case works just like `sessions_newer == 0` (both show "reliable ✓") so it's not a correctness issue, just a display difference. Let me verify the `sessions_newer == 1` branch actually works:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 <<… (31 lines) ✓ (499ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All three cases work correctly:
+- 0 sessions behind: "fresh — reliable ✓"
+- 1 session behind: "1 session behind — reliable ✓"
+- 2+ sessions behind: "N sessions behind — treat with caution ⚠"
+
+Now let me verify the output still fits within the size caps. Let me check:
+
+1. The output line count
+2. The output byte size
+
+Also, let me verify the existing test suite still passes. The `test_extract_trajectory.py` test file should still work.
+
+Let me now run the existing test suite for extract_trajectory:
+────────────────────────────────────────────────────────────────────────────────
+
+All freshness cases work correctly. Now let me verify size caps and existing tests:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 <<… (35 lines) ✓ (87ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Lines: 35 (well under 100 cap), Bytes: 2410 (under 3072 cap). The freshness line adds very little overhead.
+
+Now let me run the existing test suite:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m pytest scripts/test… ✓ (8ms)
+
+

@@ -1,0 +1,252 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. The task is about improving `yyds state why last-failure` to handle cold-start scenarios where there are incomplete runs (RunStarted without RunCompleted) but no completed failed sessions.
+2. The implementation should be in `handle_why` in `src/commands_state.rs`.
+3. The diff provided is empty (`=== CHANGES MADE (git diff) ===`), which means no changes have been made yet.
+
+Wait, let me re-read... The task says "Build: PASS, Tests: PASS" and the diff is empty. This could mean the code changes are already committed and not part of the working tree diff, or it could mean no changes have been made.
+
+Let me check the actual state of the code and git status to understand what's happening.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 --stat ✓ (159ms)
+ ✓ (99ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff shows changes to `src/commands_state.rs` with 56 insertions. Let me see the actual diff and the relevant code.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- src/command…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff -- src/commands_state… ✓ (48ms)
+ ✓ (147ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is truncated. I need to see the full unchanged file around those areas. Let me read the relevant sections of the file directly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:830..950 ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify a few things:
+
+1. The task asks for changes scoped to `handle_why` and a small helper function. ✅ The change added `find_incomplete_runs` helper and a fallback block in `handle_why`.
+
+2. The task says: When no completed failed runs exist but incomplete runs are present, report them with run IDs and hints. ✅ The code checks `id == "last-failure"` and if `incomplete` is not empty, it prints the incomplete runs with run IDs, timestamps, and hints to run `yyds state trace <run-id>` or `yyds state crashes`.
+
+3. The task says: When no state events exist at all, the existing cold-start message is preserved. ✅ The code doesn't touch the early return when `read_tail_events` fails (line 838-848).
+
+4. The task says: The `--summary` flag still works and includes incomplete-run counts. Let me check if `build_state_summary` includes incomplete run counts. Actually, the task says "includes incomplete-run counts" — I should check `build_state_summary`. But the task implementation notes say to add the incomplete-run scan as a fallback in `handle_why` after `build_why_report` returns an error, and not to change `build_why_report` internals. The `--summary` flag calls `build_state_summary` (different function), and the task says it should "still work and include incomplete-run counts". Let me check `build_state_summary` to see if it already includes incomplete run counts or if this was meant to be added.
+
+Actually wait, looking more carefully at the task: "The `--summary` flag still works and includes incomplete-run counts." This might mean the summary should display incomplete run counts. But the implementation notes say "Do NOT change the return type of `build_why_report` — add the incomplete-run scan as a fallback in `handle_why` after `build_why_report` returns an error." And "Keep the change scoped to `handle_why` and possibly a small helper function. Do not touch `build_why_report` internals."
+
+I think the `--summary` flag requirement might be about `build_state_summary` including incomplete runs in its summary display. Let me check what `build_state_summary` does currently.
+
+Let me also check if `find_incomplete_runs` compilation works with the imports. It uses `BTreeSet`, `event_string`, `event_timestamp`, and `current_time_ms`. Let me verify these are in scope.
+
+Let me also verify: are there compilation issues? The task says Build: PASS and Tests: PASS. But let me check if `BTreeSet` is imported — it should be since it's a common import in this file for other functions.
+
+Let me also look at `format_duration` — is that imported/available?
+
+Let me search for these.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'use std::collections::BTreeSet' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs  ▶ search 'fn format_duration' in /home/runner/work/yyds-harness/yyds-harness/src  ▶ search 'fn event_timestamp' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs ✓ (79ms)
+ ✓ (50ms)
+ ✓ (99ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`BTreeSet` is not directly imported. The file likely uses it via `std::collections::BTreeSet` inline, or it might be imported via a wildcard or another import. Let me check the imports at the top of the file.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.5s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'BTreeSet\|collections…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 | tail -5 ✓ (250ms)
+ ✓ (5.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `BTreeSet` is imported (line 8), `cargo check` passes. Now let me verify the `format_duration` function — the search found `format_duration` in `format/cost.rs`. Does the file import it?
+
+Let me also check the actual output format and the summary behavior. Let me check `build_state_summary` to see if it includes incomplete-run counts.
+
+And let me also think about a potential issue: `find_incomplete_runs` uses `event_timestamp(event)` which returns `u64`, and `event_timestamp_ms` returns `Option<i64>`. Let me verify `event_timestamp` is the right function.
+
+Let me also check the--summary path. When `show_summary` is true, `build_state_summary` is called. The task says it should "still work and include incomplete-run counts". Currently, looking at line 850-853, `build_state_summary` is called but the incomplete runs are only printed in the error path of `build_why_report`. This means when `--summary` is passed, the summary is shown AND then `build_why_report` runs (and if it fails, incomplete runs are shown). So the summary output would include whatever `build_state_summary` shows plus the incomplete runs after it. This seems to satisfy the task's requirement.
+
+Let me now check if `format_duration` is available in `commands_state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 14.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'format_duration' src/…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'use.*format_duration\… ✓ (98ms)
+ ✓ (98ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`format_duration` is used but not imported in `commands_state.rs`. But `cargo check` passes, so it must be available via some path. Let me check the imports at the top of the file more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs (40 lines) ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 3: `use crate::format::*;` — this imports everything from `crate::format`, which includes `format_duration` from `crate::format::cost` (re-exported via `format/mod.rs`). Let me verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'format_duration' in /home/runner/work/yyds-harness/yyds-harness/src/format ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if `format_duration` is re-exported from `format/mod.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'format_duration' in /home/runner/work/yyds-harness/yyds-harness/src/format/mod.rs ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It uses `format_duration` in `mod.rs` but let me check if it's re-exported.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'pub use\|pub mod' src… ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`pub use cost::*;` — and `format_duration` is in `cost.rs`. So `crate::format::*` brings in `format_duration`. That's confirmed.
+
+Now let me verify the implementation against all the task criteria:
+
+1. ✅ When no completed failed runs exist but incomplete runs are present, `state why last-failure` reports them with run IDs and hints.
+2. ✅ When no state events exist at all, existing cold-start message is preserved (lines 838-848 untouched).
+3. ✅ `--summary` flag still works — `build_state_summary` is called before `build_why_report`. Incomplete run counts are shown after.
+4. ✅ Existing behavior for completed failed sessions is unchanged — the code only adds a fallback in the `Err(e)` branch.
+5. ✅ Scoped to `handle_why` and a small helper `find_incomplete_runs`.
+6. ✅ Does not change `build_why_report` return type or internals.
+7. ✅ Output format uses `{YELLOW}`/`{DIM}`/`{RESET}`, consistent with existing styling.
+
+Let me also check if `event_string` function exists — it's used in the PR.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn event_string' src/… ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also verify the `current_time_ms` function is available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn current_time_ms' s… ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`current_time_ms` returns `i64`, but on line 877 it's cast to `u64` with `as u64`. That's fine — timestamps should be positive.
+
+Now let me check if there are any tests for `handle_why` or the `why` command to verify they pass.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'why' src/commands_sta…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn 'test.*why\|why.*test… ✓ (268ms)
+ ✓ (116ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check if `build_state_summary` already has incomplete run counts. The task says "The `--summary` flag still works and includes incomplete-run counts." Let me verify this.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn build_state_summar… ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if `build_state_summary` already includes incomplete run counts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:2367..2447 ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `build_state_summary` already shows "runs: X started, Y completed" which implies incomplete runs from the difference. The task says the `--summary` flag should "include incomplete-run counts" — and it already does (the difference between started and completed is implicitly the incomplete count). So this is already satisfied.
+
+Now let me verify that the test `cargo test commands_state why -- --test-threads=1` passes. Actually the task says build and tests PASS. But let me run a targeted test to be sure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state -- -… ✓ (2.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 155 tests pass. The implementation looks good. Let me now verify that the task also mentions the `crashes` subcommand hint — the output says "Run: yyds state trace <run-id> for details, or yyds state crashes for crash analysis." This matches the task's example output.
+
+Let me also check one edge case: what happens with `find_incomplete_runs` when `events` is empty? The function iterates over empty slices, collecting into an empty Vec and empty BTreeSet. The result is an empty Vec, which means the fallback block checks `!incomplete.is_empty()` which is false, so no incomplete runs are reported. This is correct.
+
+Actually, let me re-check something. In the `handle_why` function, after `build_why_report` returns `Err`, we check for incomplete runs. But what if `build_why_report` succeeds? Then the incomplete runs aren't shown. That's correct per the task — incomplete runs are only shown when there are no failures.
+
+But there's a subtle edge case: what if there's a completed failed session AND incomplete runs? Then `build_why_report` returns `Ok` with the report, and the incomplete runs are not shown. That seems correct per the task description which says the fallback only fires when "no failures recorded."
+
+Let me now think about potential issues:
+
+1. `BTreeSet` — imported ✅
+2. `event_string` — exists ✅
+3. `event_timestamp` — exists ✅
+4. `current_time_ms` — exists ✅
+5. `format_duration` — available via `crate::format::*` ✅
+6. `read_tail_events` — already used in the function ✅
+7. The function `find_incomplete_runs` uses `event_timestamp` which returns `u64` — consistent with the return type `Vec<(String, u64)>` ✅
+8. The `--limit` flag is respected because `read_tail_events` is called with `limit` ✅
+
+One thing I notice: on line 877, `current_time_ms() as u64` — if `current_time_ms` returns a negative value (which shouldn't happen in practice), casting to `u64` would be incorrect. But `current_time_ms` returns the current system time in milliseconds, which should always be positive. This is fine.
+
+Another consideration: the `find_incomplete_runs` function only looks at events in the provided slice (which is the tail of events). Some RunStarted events might have their RunCompleted outside the scan window. However, the implementation notes say to use `read_tail_events` for the scan and respect the `--limit` flag. The existing `handle_why` already handles this with a note about `--limit 0`. The implementation follows the same pattern — incomplete runs are detected within the same window. This is consistent behavior.
+
+Now let me also verify that the output format matches the example. The code:
+```
+eprintln!("\n{YELLOW}  However, {} incomplete run{} detected (started but not completed):{RESET}", incomplete.len(), s);
+eprintln!("{DIM}    {run_id} — started {} ago, no RunCompleted event{RESET}", ago);
+eprintln!("{DIM}  Run: yyds state trace <run-id> for details, or yyds state crashes for crash analysis.{RESET}");
+```
+
+This matches the task's example output format, using {YELLOW}, {DIM}, {RESET}.
+
+I'm satisfied this is a correct implementation. Let me write the verdict.
+────────────────────────────────────────────────────────────────────────────────
+
+All 155 tests pass. The implementation is correct and matches the task requirements:
+
+1. **Scope**: Changes are limited to `handle_why` (adding a fallback block in the `Err` branch of `build_why_report`) and one small helper `find_incomplete_runs`. `build_why_report` internals are untouched.
+
+2. **Three-case handling**:
+   • Failed session found → `build_why_report` returns `Ok` and prints normally (unchanged path).
+   • No failures but incomplete runs → the new fallback detects them and reports with run IDs, relative timestamps, and diagnostic hints (`state trace`, `state crashes`).
+   • No state at all → early return at line 838-848 preserved (cold-start message unchanged).
+
+3. **`--summary` flag**: `build_state_summary` already shows started/completed counts. When `--summary` is used, the summary prints first, then the incomplete-run fallback fires (if applicable).
+
+4. **Output format**: Uses `{YELLOW}`/`{DIM}`/`{RESET}` consistent with existing styling; matches the example format in the task spec.
+
+5. **`--limit` respected**: `read_tail_events(&path, limit)` is used consistently; the existing limit-exceeded note still fires.
+
+6. **Build + tests**: Both pass cleanly.
+  + Verdict: PASS
+  + Reason: Implementation adds the incomplete-run fallback in handle_why via a focused helper find_incomplete_runs, preserving all three paths (failed session, incomplete runs, cold start). Build and 155 tests pass. No changes to build_why_report internals, output format matches existing style.
+  ✓ Auto-approved: write: /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md (2 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ write /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md (2 lines) ✓ (27ms)

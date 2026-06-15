@@ -1,0 +1,623 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the target file to understand what I'm working with.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/extract_trajectory.py (80 lines) ✓ (14ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the file to understand its structure better, particularly the part that generates the header.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:80..160  ▶ search 'Last computed' in scripts/extract_trajectory.py ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read around line 1773 to see the header building code.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1750..1830 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. The header is built at line 1771-1774. I need to:
+
+1. Look at how session directories are named (e.g., `day-107-20260615T130431Z`)
+2. Compare the most recent session timestamp with the current compute time
+3. Add a freshness indicator line
+
+Let me look at how sessions are ordered to find the most recent one. I saw `ordered_sessions` imported from `state_graph_tools.py`. Let me check how that works and how to parse session directory names.
+
+Let me also look at the `session_dirs` function that's imported.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def ordered_sessions' in scripts/state_graph_tools.py  ▶ search 'def session_dirs' in scripts/state_graph_tools.py ✓ (19ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read those functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:164..204 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how session directories are named and how to parse timestamps from them. Let me also see the `looks_like_session_dir` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def looks_like_session_dir' in scripts/state_graph_tools.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:152..167 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Session directories are named like `day-107-20260615T130431Z`. I need to:
+
+1. Get the most recent session directory timestamp from `ordered_sessions`
+2. Compare that with the current computation time (`datetime.now(timezone.utc)`)
+3. Add a freshness line to the header
+
+Session directories are named like: `day-107-20260615T130431Z`
+
+Let me look at how `outcome.json` is structured to understand the timestamp format better. Let me also check the existing tests for this script.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ ls scripts (test_extract_trajectory*)  ▶ search 'def main' in scripts/extract_trajectory.py ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test file and the rest of the main function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_extract_trajectory.py (60 lines) ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the rest of the test file to understand patterns, and also read the remainder of the main function to see how output is written.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1815..1865 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me think about the implementation:
+
+1. I need to find the most recent session from the audit-log directory
+2. Parse its timestamp from the directory name (e.g., `day-107-20260615T130431Z`)
+3. Compare that timestamp with the current `datetime.now(timezone.utc)`
+4. Compute how many sessions behind and the time gap
+5. Add a freshness line to the header
+
+The session directory names follow the pattern: `day-{N}-{YYYYMMDD}T{HHMMSS}Z`
+
+Let me also check `ordered_sessions` more carefully - it sorts by outcome.json day field, then ts, then name. So the last one is the most recent.
+
+Now, to compute "how many sessions behind", I need to think: if there's only 1 session in the log, and I'm computing after it, I'm 0 sessions behind (the snapshot represents the state after the latest session). If there are N sessions and the snapshot time is after the most recent session's outcome timestamp, we're current.
+
+Wait, let me think about this more carefully. The task says: "When the snapshot is fresh (≤1 session behind), the indicator is reassuring. When the snapshot is stale (>1 session behind), the indicator warns explicitly."
+
+The snapshot is computed at session start from audit-log. So at session N+1, the snapshot reflects data up through session N. That's 1 session behind. If the snapshot computation time is older than the most recent session in the audit log, then it's more than 1 session behind.
+
+Actually, let me reconsider. The task says:
+- The task says "compare the snapshot computation time against the most recent session's timestamp"
+- "If the most recent session in the audit-log is newer than the snapshot computation time, the snapshot is stale"
+
+So:
+- Snapshot computed at time T
+- Most recent session in audit log has timestamp S (from outcome.json's ts field or the directory name)
+- If S > T (most recent session is newer than snapshot computation), then the snapshot is stale
+- If S <= T, the snapshot is fresh/reliable
+
+But there's a nuance: the snapshot is computed at the start of a new session. At that point, the audit-log has sessions up through the previous session. So "1 session behind" is the normal case. ">1 session behind" means stale.
+
+Let me think about how to determine "number of sessions behind":
+- Get the most recent session in the audit log
+- Compute the time gap between snapshot computation and most recent session
+- If gap is small (say, < 2 hours for a typical session + gap), it's 0-1 sessions behind
+- Actually, the task says to compute by comparing timestamps
+
+Let me implement it simply:
+1. Get the most recent session timestamp from `ordered_sessions(audit_dir)` (last element)
+2. Extract its timestamp (from outcome.json ts field)
+3. Compare with now (snapshot computation time)
+4. Format the age and staleness
+
+For the "sessions behind" count: I can count how many sessions have timestamps newer than the snapshot computation time.
+
+Let me now implement this. I'll add a helper function and modify the header in `main()`.
+
+Let me first look at how the existing tests use `main()` and if there are any tests for the header.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'test.*header' in scripts/test_extract_trajectory.py  ▶ search 'YOUR TRAJECTORY' in scripts/test_extract_trajectory.py ✓ (16ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That match is just in the test for `drop_dangling_trailing_section_header`. No existing tests for the header content.
+
+Let me now plan the implementation:
+
+1. Add a helper function `compute_freshness(audit_dir, now_utc)` that:
+   - Gets ordered sessions
+   - Finds the most recent session and its timestamp
+   - Computes the time gap
+   - Counts sessions behind
+   - Returns a string like "Snapshot age: 32m (1 session behind) — treat with caution" or "Snapshot age: 8m (fresh) — reliable"
+
+2. Modify the header in `main()` to include the freshness line
+
+3. Add a test in `test_extract_trajectory.py`
+
+Let me think about the exact algorithm:
+
+```python
+def compute_freshness(audit_dir: Path, now_utc: datetime) -> str:
+    sessions = ordered_sessions(audit_dir)
+    if not sessions:
+        return "Snapshot age: N/A (no audit data) — treat with caution"
+    
+    # Get the most recent session timestamp
+    newest_session = sessions[-1]
+    try:
+        outcome = json.loads((newest_session / "outcome.json").read_text(errors="replace"))
+    except ...:
+        return "Snapshot age: N/A — treat with caution"
+    
+    newest_ts = outcome.get("ts", "")
+    # Parse the timestamp
+    newest_dt = parse_iso_ts(newest_ts)
+    
+    # Time gap between snapshot computation and newest session
+    gap = now_utc - newest_dt
+    gap_minutes = int(gap.total_seconds() / 60)
+    
+    # Count how many sessions are newer than the snapshot
+    sessions_behind = 0
+    for session in sessions:
+        try:
+            outcome = json.loads(...)
+            session_ts = outcome.get("ts", "")
+            session_dt = parse_iso_ts(session_ts)
+            if session_dt > now_utc:
+                sessions_behind += 1
+        except:
+            pass
+    
+    if sessions_behind <= 1:
+        return f"Snapshot age: {format_duration(gap_minutes)} (fresh) — reliable"
+    else:
+        return f"Snapshot age: {format_duration(gap_minutes)} ({sessions_behind} sessions behind) — treat with caution"
+```
+
+Wait, but there's a subtlety. When the snapshot is computed at session start, the newest session in the audit log could have a timestamp that's either before or after `now_utc`. Actually, the session timestamp in `outcome.json` reflects when the session happened, and it should always be before the current snapshot time... unless the snapshot computation is somehow lagging (i.e., the session happened but snapshot was computed before it).
+
+Actually, the task says:
+- "If the most recent session in the audit-log is newer than the snapshot computation time, the snapshot is stale."
+
+Hmm, this doesn't quite make sense in the normal flow. A session's timestamp would normally be before the next session starts. So the newest session in the audit log should always be before the snapshot computation time, unless... ah, I think the issue is about reusing an old snapshot file.
+
+Actually wait. Let me re-read: "the snapshot is computed at session start from audit-log, so it's always one session behind." This means:
+- Session N runs and finishes
+- Session N+1 starts, computes snapshot from audit log (which has data up through session N)
+- So snapshot computation time is at start of N+1, but data is from N
+- The snapshot is "1 session behind"
+
+If the snapshot file on disk is from an older computation (e.g., session N computing a snapshot from session N-1 data), and the audit log now contains session N data, then we have a staleness problem.
+
+So the algorithm should be:
+1. Read the snapshot's computation time (currently in the header as "Last computed: ...")
+2. Wait, but the task says to add freshness to the header being generated. So we're generating a new snapshot, and we know the computation time is `now`. 
+
+I think the right interpretation is:
+- The snapshot computes now at time T
+- The newest session in the audit log has timestamp S
+- If S <= T (the session completed before we're computing), the snapshot is current/fresh
+- But we should still show how far behind we are
+
+Let me re-read the task more carefully:
+
+"To determine staleness: compare the snapshot computation time (already recorded as "Last computed: ...") against the most recent session's timestamp. If the most recent session in the audit-log is newer than the snapshot computation time, the snapshot is stale."
+
+OK so the algorithm is simpler than I thought:
+- Snapshot computation time = `now` (when the script runs)
+- Most recent session time = timestamp from newest outcome.json
+- If most recent session > snapshot computation time → stale (shouldn't normally happen but could if clock skew or stale snapshot being read)
+- If most recent session <= snapshot computation time → fresh
+
+And then for "sessions behind":
+- Count how many sessions in the audit log have timestamps newer than the current snapshot computation
+- This should normally be 0 (no session completed after we started computing)
+
+Wait, that doesn't match. Let me think again...
+
+If Session N ran from 10:00 to 10:30, and Session N+1 starts at 12:00 and computes the snapshot at 12:01:
+- Most recent session (N) timestamp is ~10:30
+- Snapshot computation time is 12:01
+- 10:30 < 12:01, so snapshot is "fresh" by this definition
+- But the data is from 1.5 hours ago and 1 session behind
+
+The task says: "a 30-minute-old snapshot is reliable; a 6-hour-old snapshot covering multiple sessions may have stale claims."
+
+So I think the freshness is really about: how old is the snapshot itself? The snapshot was computed at time T. If we're looking at a snapshot that was computed 6 hours ago (and multiple sessions have happened since), it's stale. But if the snapshot was just computed 8 minutes ago, it's fresh.
+
+But wait — we're adding this to the header generation code, so we know the snapshot is being computed NOW. So the snapshot is always "just computed". Unless the snapshot file is being read from disk (an old snapshot).
+
+Hmm, I think the scenario the task is addressing is:
+- The trajectory block might be read from a file that was generated in a previous session
+- The freshness indicator tells you when that file was generated relative to the latest session data
+
+But in the current code, the snapshot is always freshly generated at session start. The "Last computed: ..." line always shows `now`.
+
+Let me re-read: "the snapshot was computed more than one session ago." So the scenario is when the trajectory.md file was generated in a past session and hasn't been regenerated.
+
+OK I think I'm overcomplicating this. The task says to add freshness metadata to the header. The simplest approach:
+
+1. Compute the time gap between now (snapshot computation) and the most recent session in the audit log
+2. Show that gap
+3. Count how many sessions are in the audit log since the "last computed" time — but since we're computing now, this is always 0
+
+Actually, I think the practical approach is:
+- Parse the most recent session's outcome.json `ts` field
+- Compare with current time
+- Format the age of the most recent data
+- If the audit log has sessions with timestamps newer than current time (shouldn't happen), flag as stale
+
+Let me just implement it directly and simply. The key insight is: the freshness line tells agents how old the trajectory evidence is by comparing the most recent audit-log data timestamp with the snapshot computation time.
+
+Here's my plan:
+- Add a `compute_freshness()` function
+- It takes the audit_dir and current time
+- Gets the most recent session from `ordered_sessions()`
+- Extracts its timestamp
+- Computes the gap
+- Returns a formatted string
+
+Let me code it now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 32.7s (2 ✓)
+
+Now let me look at the existing code patterns for timestamp parsing and the full structure of the `main()` function:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fromisoformat' in scripts/extract_trajectory.py  ▶ read scripts/extract_trajectory.py:123..138 ✓ (5ms)
+ ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me implement the change:
+
+1. Add a helper function `compute_freshness` that returns a freshness string
+2. Modify the header in `main()` to include it
+
+Let me write the code now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.6s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the change. First, I'll add the `compute_freshness` function right before `main()`. Then modify the header in `main()`.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.7s (5 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the `compute_freshness` function. I'll insert it right before `main()` at line 1749. Let me also add any needed import for `timedelta`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me read the area right before `main()` to find the right insertion point:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1740..1750 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the `compute_freshness` function after line 1743 and before the `def main()`. Let me also check what's on line 1746.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1743..1751 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's a blank line 1745, then line 1746 is empty. Let me add my function before `def main()`. I'll insert at line 1746.
+
+Let me craft the function. I need to:
+1. Get ordered sessions
+2. Get the most recent session's timestamp
+3. Parse it
+4. Compute time gap and display it
+5. Count sessions behind
+6. Format the result
+
+For counting sessions behind: I'll count how many sessions have a timestamp newer than now. In normal circumstances this is 0. But if the snapshot is from a stale computation...
+
+Actually, wait. Let me think about this differently. The "sessions behind" tells you how many sessions have completed since the data was captured. If the snapshot was computed now but the newest session data is from session N-3 (because sessions N-2, N-1, N haven't written to audit-log yet), that's different from the snapshot being stale.
+
+OK, I think the simplest correct interpretation is:
+- Find the most recent session in the audit log
+- Compute time gap from that session's end time to now
+- If the gap is large, the data is old
+- "Sessions behind" = number of sessions newer than the snapshot computation time
+
+Actually, let me just keep it simple and implement what the task asks for. The freshness indicator should show:
+1. How old the snapshot is (minutes since computed)
+2. Whether it's fresh or stale based on sessions behind
+
+The "sessions behind" count: I'll count sessions whose outcome timestamp is newer than the snapshot computation time. In normal operation this is 0.
+
+Let me write the function:
+
+```python
+def compute_freshness(audit_dir: Path) -> str:
+    """Return a one-line freshness indicator for the YOUR TRAJECTORY header.
+    Compares the most recent session timestamp against now to show how stale
+    the trajectory evidence may be."""
+    sessions = ordered_sessions(audit_dir)
+    if not sessions:
+        return "Snapshot age: N/A (no audit data)"
+    
+    now_utc = datetime.now(timezone.utc)
+    
+    # Get the most recent session timestamp
+    newest_session = sessions[-1]
+    try:
+        outcome = json.loads((newest_session / "outcome.json").read_text(errors="replace"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        warn(f"could not read newest outcome for freshness: {e}")
+        return "Snapshot age: N/A (unreadable audit data)"
+    
+    newest_ts = str(outcome.get("ts") or "").strip()
+    if not newest_ts:
+        return "Snapshot age: N/A (missing session timestamp)"
+    
+    try:
+        newest_dt = datetime.fromisoformat(newest_ts.replace("Z", "+00:00"))
+    except ValueError:
+        return "Snapshot age: N/A (unparseable session timestamp)"
+    
+    # Count sessions whose timestamp is newer than now (should be 0 normally)
+    sessions_behind = 0
+    for session in sessions:
+        try:
+            outcome_data = json.loads((session / "outcome.json").read_text(errors="replace"))
+            session_ts = str(outcome_data.get("ts") or "").strip()
+            if session_ts:
+                session_dt = datetime.fromisoformat(session_ts.replace("Z", "+00:00"))
+                if session_dt > now_utc:
+                    sessions_behind += 1
+        except Exception:
+            pass
+    
+    gap = now_utc - newest_dt
+    gap_minutes = int(gap.total_seconds() / 60)
+    
+    if sessions_behind <= 1:
+        # Fresh
+        if gap_minutes < 60:
+            age_str = f"{gap_minutes}m"
+        elif gap_minutes < 1440:
+            age_str = f"{gap_minutes // 60}h{gap_minutes % 60}m"
+        else:
+            days = gap_minutes // 1440
+            hours = (gap_minutes % 1440) // 60
+            age_str = f"{days}d{hours}h"
+        return f"Snapshot age: {age_str} (fresh) — reliable"
+    else:
+        if gap_minutes < 60:
+            age_str = f"{gap_minutes}m"
+        elif gap_minutes < 1440:
+            age_str = f"{gap_minutes // 60}h{gap_minutes % 60}m"
+        else:
+            days = gap_minutes // 1440
+            hours = (gap_minutes % 1440) // 60
+            age_str = f"{days}d{hours}h"
+        return f"Snapshot age: {age_str} ({sessions_behind} sessions behind) — treat with caution"
+```
+
+Hmm, that's a lot of code. Let me simplify the duration formatting. I'll use a helper.
+
+Actually, let me simplify and just express age in minutes/hours. The task's examples use "32m" and "8m". Let me keep it minimal.
+
+Let me also look at how `ordered_sessions` is used elsewhere in the file for consistent patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ordered_sessions' in scripts/extract_trajectory.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `ordered_sessions` is already imported. Now let me implement. I'll add the `compute_freshness` function and modify the header.
+
+Let me also check the exact blank line pattern before main:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1743..1750 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see there are some blank lines (1745, 1746, 1747, 1748). Let me insert before line 1749. I'll use the edit_file tool.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the `compute_freshness` function:
+        return "\n".join(lines)
+  + 
+  + 
+  + def compute_freshness(audit_dir: Path) -> str:
+  +     """Return a one-line freshness indicator for the YOUR TRAJECTORY header.
+  +     Compares the most recent session timestamp against now to show how stale
+  +     the trajectory evidence may be.
+  + 
+  +     Returns a string like:
+  +       - "Snapshot age: 8m (fresh) — reliable"
+  +       - "Snapshot age: 2h14m (3 sessions behind) — treat with caution"
+  +     """
+  +     sessions = ordered_sessions(audit_dir)
+  +     if not sessions:
+  +         return "Snapshot age: N/A (no audit data)"
+  + 
+  +     now_utc = datetime.now(timezone.utc)
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/extract_trajectory.py (6 → 80 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/extract_trajectory.py (6 → 80 lines)
+        return "\n".join(lines)
+  + 
+  + 
+  + def compute_freshness(audit_dir: Path) -> str:
+  +     """Return a one-line freshness indicator for the YOUR TRAJECTORY header.
+  +     Compares the most recent session timestamp against now to show how stale
+  +     the trajectory evidence may be.
+  + 
+  +     Returns a string like:
+  +       - "Snapshot age: 8m (fresh) — reliable"
+  +       - "Snapshot age: 2h14m (3 sessions behind) — treat with caution"
+  +     """
+  +     sessions = ordered_sessions(audit_dir)
+  +     if not sessions:
+  +         return "Snapshot age: N/A (no audit data)"
+  + 
+  +     now_utc = datetime.now(timezone.utc)
+  + 
+  +     # Find the most recent session timestamp
+  +     newest_session = sessions[-1]
+  ... (59 more lines)
+ ✗ (12ms)
+    │ old_text not found in scripts/extract_trajectory.py.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue is that the whitespace between lines might differ. Let me read the exact bytes around lines 1743-1749 again to get the exact text.
+
+I see that the function at 1743 is `return "\n".join(lines)` but the error says there's another one at line 236. Let me check again - the issue is likely trailing whitespace or the number of blank lines between the return and def main.
+
+Let me read more carefully:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1738..1753 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see: line 1745 is blank, line 1746 is blank (empty), line 1747 is blank, line 1748 is blank, line 1749 is `def main()`. So there are 4 blank lines between the return and def main.
+
+Let me try the edit again with the exact text. The issue might be that line 1746 is truly empty (just a newline with no spaces) while the others have some invisible content. Let me try matching just:
+
+```
+    return "\n".join(lines)
+
+
+
+
+def main() -> int:
+```
+
+Let me be more careful. The text "    return \"\\n\".join(lines)\n\n\n\n\ndef main() -> int:" — there's a blank line at 1745, then I see line 1746 appears blank but may be a completely empty string, then 1747 is empty, 1748 is empty.
+
+Actually, looking at the output more carefully, line 1746 is just completely empty (not even a space). So the pattern is: blank line, empty line, blank line, blank line. That seems unusual. Let me just try matching fewer lines.
+
+Let me try matching just `def main() -> int:` and the surrounding context:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '1743,1749p' scripts/extract_trajectory.py | cat -A ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — lines 1746 is actually a comment with Chinese/Unicode characters (looks like "── Final assembly ──" or similar). The `read_file` tool may not be showing it properly. Let me look at this more carefully.
+
+Let me read raw bytes around that area:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '1743,1750p' scripts/extract_trajectory.py | cat -v ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 1746 is a section divider comment with Unicode characters (looks like box-drawing characters: `── Final assembly ──`). The `read_file` tool rendered it as a blank line.
+
+Let me read the exact lines to make the edit work:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (5 lines) ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so line 1746 is missing from the repr output. The blank line issue is a Unicode section divider that doesn't get output by the repr. Let me try a different approach to see it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (6 lines) ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see: line 1746 is `# ── Final assembly ─────────────────` (a section divider comment using Unicode box-drawing characters). The `read_file` tool didn't render it properly.
+
+Let me try a simpler approach — I'll insert the `compute_freshness` function right before `def main():` by matching on `def main() -> int:` and the blank line before it.
+
+Let me match exactly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (6 lines) ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, empty output. Maybe `find` found it. Let me try differently:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (9 lines) ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, it only found `def main() -> int:\n ` which is from the function signature. Let me look at what comes before it in bytes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (6 lines) ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Empty. The repr must have Unicode characters that the shell isn't handling. Let me write to a file instead:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 << 'PYEOF' (9 lines) ✓ (10ms)
+
+

@@ -1,0 +1,689 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test failure is in `state::tests::run_completion_guard_reports_error_on_panic` - it panics at `src/state.rs:6560` with "test lifecycle error 107". This is a test that's intentionally panicking to test the panic hook behavior, but the assertion at line 6575 is failing because the stored events don't contain "RunCompleted" as expected.
+
+Let me look at the test and surrounding code to understand what's happening.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/state.rs:6540..6600 ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test panics at line 6560 (intentional panic for testing), then at line 6575 the assertion fails because the events file doesn't contain "RunCompleted". This means the `RunCompletionGuard`'s drop handler isn't running or isn't writing the RunCompleted event.
+
+Let me look at the `RunCompletionGuard` implementation to understand how it works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct RunCompletionGuard' in src/state.rs ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the RunCompletionGuard implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:343..423 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand what `RUN_HAD_ERROR` is and how the panic hook interacts with it. The test panics at line 6560 with `panic!("test lifecycle error 107")`. The panic hook should set `RUN_HAD_ERROR` to `true`, then the `RunCompletionGuard` in its `Drop` handler should call `mark_run_completed("error")`.
+
+But the assertion at line 6575 says `raw.contains("RunCompleted")` is false. So the `RunCompleted` event is not being written.
+
+Let me look at the panic hook and `RUN_HAD_ERROR`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RUN_HAD_ERROR' in src/state.rs ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the panic hook (around line 52) and the `install_panic_hook` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1..81 ✓ (177ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now understand the flow:
+
+1. `install_panic_hook()` sets a panic hook that records `FailureObserved` and sets `RUN_HAD_ERROR` to true.
+2. When the panic happens at line 6560, the panic hook fires, sets `RUN_HAD_ERROR = true`, and records `FailureObserved`.
+3. Then `catch_unwind` catches the panic.
+4. The `RunCompletionGuard` should drop, checking `RUN_HAD_ERROR` and calling `mark_run_completed("error")`.
+
+But the assertion at line 6575 fails - "RunCompleted" is not in the raw events. 
+
+Looking at the test output:
+```
+{"id":"event_3f818c99eb0040c1a359338b485e76ac","schema_version":1,..."kind":"RunStarted"...}
+{"id":"event_ae604c57de194eb08ef174dec25ab5a3","schema_version":1,..."kind":"FailureObserved"...}
+```
+
+There's no RunCompleted event. This means the `RunCompletionGuard`'s `Drop` is not running, OR the `record` function is failing silently when called from the Drop handler during unwinding.
+
+Wait - the issue might be with `catch_unwind`. In Rust, when using `catch_unwind`, the `drop` of local variables within the closure is run during the unwind. But the `RunCompletionGuard` is created *inside* the `catch_unwind` closure, so its `Drop` should run during unwind.
+
+Let me re-read the test more carefully:
+
+```rust
+let result = std::panic::catch_unwind(|| {
+    let _guard = RunCompletionGuard::completed_on_drop();
+    panic!("test lifecycle error 107");
+});
+```
+
+The `_guard` is created inside the closure. When `panic!` is called, the stack unwinds, and `_guard`'s `Drop` should be called during unwinding. The `catch_unwind` catches the panic and returns `Err`.
+
+But wait - the `panic_hook` is called during unwinding, not `catch_unwind`. The hook is called before unwinding reaches `catch_unwind`. So:
+
+1. `install_panic_hook()` is called
+2. `catch_unwind(|| { ... panic ... })` starts
+3. `_guard` is created
+4. `panic!("...")` is called
+5. Panic hook fires: sets `RUN_HAD_ERROR = true`, records `FailureObserved`
+6. Unwinding continues, `_guard.drop()` is called: checks `RUN_HAD_ERROR` (true), calls `mark_run_completed("error")`
+7. `catch_unwind` catches the error
+
+So `RunCompleted` should be in the output. But it's not appearing.
+
+Hmm, let me check: could there be an issue with `record()` during unwinding? Let me look at the `record` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^pub fn record\(' in src/state.rs ✓ (94ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly for the `record` function definition.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record\(' in src/state.rs ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Maybe it's in a macro or something. Let me search for `fn record` without the parenthesis.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record' in src/state.rs ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `record` function at line 328:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:328..348 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue! Look at line 329:
+
+```rust
+let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+```
+
+If `GLOBAL_RECORDER` is a `Mutex` that was poisoned by the panic, then `lock()` would return `Err(PoisonError)`. The code uses `unwrap_or_else(|e| e.into_inner())` to recover from the poisoned mutex. That should work.
+
+But wait - the `FailureObserved` event was successfully recorded during the panic hook. The panic hook also calls `record()`. So the recorder IS initialized and working.
+
+The issue might be that during unwinding, something goes wrong with the `GLOBAL_RECORDER` mutex. But the `unwrap_or_else(|e| e.into_inner())` should handle that.
+
+Let me look more carefully at the test output:
+
+```
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (48452) panicked at src/state.rs:6560:13:
+test lifecycle error 107
+
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (48452) panicked at src/state.rs:6575:9:
+should contain RunCompleted: {"id":"event_3f818c99eb0040c1a359338b485e76ac"...}
+```
+
+So RunStarted and FailureObserved are present but RunCompleted is not. This means the `RunCompletionGuard::drop()` is NOT being called, OR `mark_run_completed` is failing silently.
+
+Hmm, but `mark_run_completed` calls `record()` which calls `recorder.append()` which might fail. If it fails and `fail_soft` is true, it just prints to stderr. Let me check if the test captures stderr.
+
+But wait - the test output shows:
+```
+should contain RunCompleted: {"id":"event_3f818c99eb0040c1a359338b485e76ac" ... "kind":"RunStarted"...}
+{"id":"event_ae604c57de194eb08ef174dec25ab5a3" ... "kind":"FailureObserved"...}
+```
+
+There are exactly 2 events. So `mark_run_completed` never appended a third event.
+
+Could the issue be that `catch_unwind` prevents the `Drop` from running? No, that shouldn't be the case. `catch_unwind` unwinds the stack and drops local variables in the closure.
+
+Actually, wait. Let me look at the test more carefully. It was working before, and now it's failing. What changed?
+
+The task was about modifying `src/commands_state_crashes.rs`. But the test failure is in `src/state.rs`. What could have changed?
+
+Let me check git status to see what files were modified.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (54ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No diff - no files were changed. So the test was already failing before the implementation. Let me check if the test was previously passing by looking at git log.
+
+Actually wait - the task says "The tests broke after your implementation." But there's no git diff. Maybe the implementation was already committed? Let me check git log.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5 ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the commit `20a262f` implemented the task to filter harness preflight crashes. Let me see what changed in that commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show 20a262f --stat ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The change modified `src/commands_state.rs` and `src/commands_state_crashes.rs`. It didn't touch `src/state.rs`. But the test in `src/state.rs` is failing. Let me check if this test was failing before the commit.
+
+Actually, the error message says "The tests broke after your implementation." But the changes don't touch `src/state.rs` at all. Let me check if the test was already failing before by looking at the previous commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash && cargo test state:… ✓ (268ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes in isolation! So the test itself is fine. It fails when run with all tests. This suggests it's a test ordering issue - some other test is corrupting global state that this test depends on.
+
+Let me check if the test fails when run together with the crashes tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::run_c… ✓ (56ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the correct test name.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- --test-thr… ✓ (159ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the test module name more precisely and run them together.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test "commands_state_cra… ✓ (138ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+You can only pass one test name filter to cargo test. Let me try just running all the crashes tests, then check if the state test fails.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test "commands_state_cra… ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The crashes tests pass fine. The issue is a test ordering problem - some other test is corrupting global state. The `state::tests::run_completion_guard_reports_error_on_panic` test uses `init_global` which sets up a global recorder. Some other test might be initializing it with a different config and not cleaning up, or leaving the global state in a bad state.
+
+Let me look at `init_global` and `GLOBAL_RECORDER`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'GLOBAL_RECORDER' in src/state.rs ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `init_global`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:290..330 ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - the `GLOBAL_RECORDER` is a `static Mutex<Option<StateRecorder>>` that is set by `init_global`. The tests use `init_global` with temp directories, so they should be isolated. But the issue could be:
+
+1. A previous test initializes the global recorder with a tempdir.
+2. The tempdir is cleaned up after that test (tempdir goes out of scope).
+3. The next test tries to record events, but the tempdir is gone, so `recorder.append()` fails.
+4. Since `fail_soft` is true, it just prints a warning to stderr, not panicking.
+
+But wait, each test that uses `init_global` should be setting up a NEW recorder. Let me check if the crashes tests use `init_global`.
+
+Actually, the issue is that `GLOBAL_RECORDER` is a static - once initialized, it stays set even after the tempdir is destroyed. The next test that calls `init_global` will replace it with a new recorder pointing to a new tempdir. But between those two tests, if anything tries to `record()`, it would fail because the old tempdir is gone.
+
+But the `run_completion_guard_reports_error_on_panic` test calls `init_global` itself with a new tempdir. So it should work...
+
+Wait, let me re-read the test failure. The test panics at line 6560 with "test lifecycle error 107". The panic message at 6575 says "should contain RunCompleted" and the raw string only shows RunStarted and FailureObserved. 
+
+So the `FailureObserved` event IS being recorded (from the panic hook), but `RunCompleted` is NOT being recorded (from RunCompletionGuard drop).
+
+This means either:
+1. The `RunCompletionGuard` drop is not running.
+2. `mark_run_completed` is failing silently.
+
+If the old recorder from a previous test is still pointing to a deleted tempdir, and the panic hook creates a new recorder (via init_global call at line 6554), then:
+- Panic hook's `record()` for FailureObserved uses the new recorder - WORKS
+- `RunCompletionGuard`'s `drop()` calls `mark_run_completed()` which calls `record()` which uses the new recorder - should work too
+
+Unless... there's a race condition with the `static Mutex`. But tests are single-threaded.
+
+Actually, wait. Let me look at this more carefully. The `Mutex` is `static`, not `thread_local`. All tests share the same `GLOBAL_RECORDER`. So the sequence could be:
+
+1. Test A initializes global with tempdir_a.
+2. Test A finishes, tempdir_a is deleted.
+3. Test B (run_completion_guard) calls init_global with tempdir_b. This replaces `GLOBAL_RECORDER` with a new recorder pointing to tempdir_b.
+4. Test B panics, panic hook records FailureObserved, then RunCompletionGuard drop records RunCompleted.
+5. Test B reads tempdir_b events.
+
+This should work. But what if step 4 has an issue where the drop is attempted during unwinding and the mutex is poisoned?
+
+Actually, I wonder if the issue is that the test that runs *before* this one leaves the `GLOBAL_RECORDER` in a poisoned state (mutex poisoned). The `unwrap_or_else(|e| e.into_inner())` should handle that, but let me check if there's a subtlety.
+
+Hmm, let me try a different approach - let me find which test runs right before this one and causes the failure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- --test-thr… ✗ (1m 59s)
+    │ Command timed out after 120s
+
+── Thinking ────────────────────────────────────────────────────────────────
+Too slow. Let me try a more efficient approach - find which tests run before the failing one and test them together.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- --test-thr… ✓ (137ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run these two tests together to see if the previous one causes the issue.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test "state::tests::run_… ✓ (127ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both pass together. So the issue is caused by a test that runs before these two. Let me find the test order in the full run, specifically the test right before `run_completion_guard_reports_completed_on_normal_exit`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- --test-thr… ✓ (244ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test ordering issue might be caused by a test further up. Let me run all state tests to narrow down.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test "state::tests::" --… ✓ (5.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All state tests pass when run together. The issue is some other test outside the state module that's polluting the global state. Let me think about this differently.
+
+The test `run_completion_guard_reports_error_on_panic` calls `init_global` and `install_panic_hook`. The `install_panic_hook` is called with `Once`, so once another test installs a panic hook, subsequent calls are no-ops. But the test's own `install_panic_hook()` should still set the hook.
+
+Wait, the `PANIC_HOOK_INSTALLED` is a `static Once`, so only the first test that calls `install_panic_hook()` actually installs it. Subsequent calls are no-ops. The hook records events via `record()` which needs the `GLOBAL_RECORDER` to be initialized.
+
+The panic hook captures the `prev_hook` as well. So:
+
+1. First test that calls `install_panic_hook()` installs the hook.
+2. Later tests call `install_panic_hook()` but it's a no-op (Once already triggered).
+3. When a later test panics, the hook fires. At this point, which `GLOBAL_RECORDER` is active?
+
+The hook accesses `GLOBAL_RECORDER` via `record()`. It doesn't capture any state from when it was installed. So if the panic happens during a test that has initialized its own recorder, it should use that recorder.
+
+That should be fine. The `Once` just ensures the hook is installed once; the hook itself dynamically reads the current `GLOBAL_RECORDER`.
+
+Wait, but what about the `prev_hook`? If another test installed a different panic hook before, `install_panic_hook` would replace it. But `Once` prevents that. So whichever test calls `install_panic_hook()` first wins.
+
+Hmm, but `run_completion_guard_reports_error_on_panic` calls `install_panic_hook()` itself. If another test already installed it, the Once is used up, and the hook is the original one from the first call. That should be fine since the hook is the same code regardless of who calls `install_panic_hook`.
+
+Let me try a different approach - find the test just before the failing one in alphabetical order and run them together.
+
+From the test listing, the test before `run_completion_guard_reports_completed_on_normal_exit` would be alphabetically after "run_completed..." tests. Let me search more broadly.
+
+Actually, let me just run a broader set of tests to find the culprit. Let me try running the crashes tests plus the state tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test "commands_state_cra… ✓ (175ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+cargo test only takes one filter. Let me figure out which test runs right before the failing one and run them together.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- --test-thr… ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test right before it is `run_completion_guard_reports_completed_on_normal_exit`. Let me check that test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6590..6630 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests use `init_global` which sets the `GLOBAL_RECORDER`. The first test (`run_completion_guard_reports_completed_on_normal_exit`) initializes with a tempdir, creates a guard, lets it drop normally (RunCompleted with "completed" status), then checks the file. The tempdir gets cleaned up when `dir` goes out of scope.
+
+The second test (`run_completion_guard_reports_error_on_panic`) initializes with a NEW tempdir, installs the panic hook (which is a no-op since `Once` already fired), panics, and checks events.
+
+The problem: after the first test's tempdir is cleaned up, the `GLOBAL_RECORDER` still points to the first test's `StateRecorder` which has the now-deleted `events_path`. When the second test calls `init_global`, it replaces `GLOBAL_RECORDER` with the new recorder. So that should be fine.
+
+Wait - but what about between tests? When the first test drops its guard, `mark_run_completed("completed")` is called, which calls `record()`. This appends to the first test's events_path. Then `dir` goes out of scope, deleting the tempdir. Then the second test runs, calls `init_global` with a new tempdir, and replaces the global recorder.
+
+The issue: during the `catch_unwind` in the second test, the panic hook fires, which calls `record()`. This should use the second test's recorder. Then during unwinding, the guard drops, calling `record()` again with the second test's recorder.
+
+But what if the issue is with the `PrevHook`? Let me check. The `install_panic_hook` stores `prev_hook`. If some other test installed a DIFFERENT panic hook before either of these tests, then:
+1. That other hook is captured as `prev_hook`.
+2. Our hook runs first, then calls `prev_hook`.
+3. The `prev_hook` might do something that interferes.
+
+But since `PANIC_HOOK_INSTALLED` is a `Once`, only the first `install_panic_hook()` call actually installs it. If another test called `std::panic::set_hook()` directly (without going through `install_panic_hook`), that could replace our hook.
+
+Let me search for other calls to `set_hook` or `take_hook`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ search 'set_hook|take_hook' in src ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No other set_hook calls. The `install_panic_hook` itself uses `take_hook` and `set_hook`. And `Once` ensures it only happens once.
+
+But wait - could the issue be something subtle about the Drop during unwinding? Let me look at the `RunCompletionGuard` Drop implementation more carefully.
+
+Actually, I think the real issue might be something else entirely. Let me check if the test was already failing before the task implementation by checking out the commit before the task implementation and running the full test suite.
+
+Actually wait, I already did this above - I ran the specific test in isolation and it passed. The problem only occurs when running the full test suite. This is a classic test isolation issue.
+
+Let me think about what could go wrong. The `GLOBAL_RECORDER` is a `static Mutex<Option<StateRecorder>>`. After the first test's tempdir is deleted, the `StateRecorder` inside the mutex still has a reference to the deleted path. When `init_global` is called by the second test, it creates a NEW `StateRecorder` and replaces the one in the mutex. So that should be fine.
+
+But wait - what happens in the `Drop` of `RunCompletionGuard`? It calls `mark_run_completed` which calls `record()`. But during unwinding (panic), the `Mutex` might be locked by the panic hook's `record()` call. Let's trace:
+
+1. Panic happens on thread.
+2. Panic hook fires on the SAME thread:
+   - `RUN_HAD_ERROR.with(|c| c.set(true))` - sets flag
+   - `record(EventType::FailureObserved, ...)` - locks mutex, records event, unlocks
+   - `prev_hook(info)` - calls previous hook
+3. Unwinding continues: local variables are dropped
+   - `_guard.drop()` is called on the SAME thread
+   - `RUN_HAD_ERROR.with(|c| c.get())` -> true
+   - `mark_run_completed("error")` -> `record(...)` -> locks mutex, records event, unlocks
+4. `catch_unwind` catches the error.
+
+This should work since it's all on the same thread and the mutex is not reentrant, but the lock is released after each `record()` call.
+
+Wait, but `prev_hook(info)` at step 2. What is `prev_hook`? It's whatever hook was installed before our hook. The default hook prints the panic message and backtrace. Could the default hook be doing something that interferes with our test?
+
+The default hook (before any custom hook) prints to stderr and potentially aborts. But `catch_unwind` should still catch the panic...
+
+Hmm, let me think about this differently. Let me check if perhaps the issue is that when `_guard` is dropped during unwinding, and the `mark_run_completed` call panics (because `record()` panics), then during unwinding another panic causes an abort. But `record()` with `fail_soft: true` only does `eprintln!` on error, not panic.
+
+Actually, wait. Let me look at the `record` function again:
+
+```rust
+pub fn record(event_type: EventType, actor: Actor, payload: Value) {
+    let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(recorder) = guard.as_ref() else {
+        return;
+    };
+    if let Err(e) = recorder.append(event_type, actor, payload) {
+        if recorder.fail_soft {
+            eprintln!("warning: failed to record state event: {e}");
+        } else {
+            panic!("failed to record state event: {e}");
+        }
+    }
+}
+```
+
+OK so if `GLOBAL_RECORDER` is `None` (not initialized), `record()` returns silently. If the append fails and `fail_soft` is true, it prints to stderr.
+
+Now, could the problem be that during the panic hook execution, the `GLOBAL_RECORDER` is still pointing to the first test's recorder (which was replaced by the second test's `init_global`)? No, the second test's `init_global` is called at line 6554 before the panic at line 6560.
+
+Let me check the test more carefully. At line 6554-6560:
+
+```rust
+init_global(config, json!({})).unwrap();  // sets GLOBAL_RECORDER to second test's recorder
+
+install_panic_hook();  // no-op since Once already fired
+
+let result = std::panic::catch_unwind(|| {
+    let _guard = RunCompletionGuard::completed_on_drop();
+    panic!("test lifecycle error 107");
+});
+```
+
+This looks correct. The global recorder is set to the second test's recorder. The panic hook fires (from the first test's installation), records FailureObserved to the current global recorder (second test's). The guard drops, records RunCompleted.
+
+But the FailureObserved IS being recorded (we see it in the output). The RunCompleted is NOT being recorded.
+
+So either:
+1. The `Drop` implementation for `RunCompletionGuard` is not running during unwinding.
+2. `mark_run_completed` fails silently.
+
+For #2: `mark_run_completed` calls `record()`. If the recorder's `append` fails, it prints to stderr silently. Maybe the tempdir was deleted?
+
+But we see FailureObserved was successfully appended. So the recorder IS working and the tempdir IS valid.
+
+For #1: In Rust, drops during unwinding should be called. But there's a subtlety: if the `Drop` implementation itself panics, and we're already unwinding, the process aborts (double panic). Could `mark_run_completed` be panicking?
+
+`mark_run_completed` calls `record()` which locks a mutex. If the mutex is poisoned (from a previous panic on another thread), `unwrap_or_else(|e| e.into_inner())` would recover the inner value. But wait - is this a test issue where another test poisoned the mutex?
+
+Let me check: in a `cargo test` run with `--test-threads=1`, all tests run on the same thread. The mutex can't be poisoned from another thread. But it CAN be poisoned from the same thread if a previous test panicked while holding the lock.
+
+But `std::panic::catch_unwind` catches the panic and the lock guard is dropped within the catch_unwind, so the mutex should not remain poisoned.
+
+Hmm... let me check if there's a panic happening while the mutex is locked. In `record()`:
+```rust
+let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+```
+If the lock succeeds, `guard` is a `MutexGuard`. Then:
+```rust
+let Some(recorder) = guard.as_ref() else { return; };
+```
+This borrows through the guard. Then:
+```rust
+recorder.append(event_type, actor, payload)
+```
+This uses `recorder`. If this panics, the `guard` is dropped during unwinding, which unlocks the mutex.
+
+Wait, I just realized something. `MutexGuard` from `std::sync::Mutex` - when a panic occurs while the guard is held, the mutex is NOT poisoned in Rust. The mutex is only poisoned if the panic propagates out of the scope that holds the lock. Since `record()` is called during the panic hook (during unwinding), the panic has already started. If `record()` panics, it would be a double panic -> abort.
+
+But `record()` with `fail_soft: true` doesn't panic - it just does `eprintln!`. So that shouldn't be the issue.
+
+Let me think about this from a different angle. Maybe I should check what tests run alphabetically just before the state tests. The failing test is in the `state` module, which alphabetically comes after `commands_state_crashes`. Let me check the test listing for what comes right before `state::tests::run_completion_guard...`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- --test-thr… ✓ (148ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me get the full list and find the test right before the state tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- --test-thr… ✓ (119ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see what test is at line 3762 (the one right before):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- --test-thr… ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test immediately before is `run_completion_guard_reports_completed_on_normal_exit`. But I already showed that these two pass together.
+
+The issue must be from a test much earlier that corrupts global state. Let me take a different approach: instead of finding the exact culprit, let me look at what the actual fix should be. 
+
+The test `run_completion_guard_reports_error_on_panic` panics and then the test framework captures that panic. But the issue is that `RunCompleted` is not recorded even though `FailureObserved` is.
+
+Wait - I just realized something. The panic hook calls `record()` for `FailureObserved`. Then during unwinding, the `RunCompletionGuard` drop calls `mark_run_completed` which calls `record()` again. Both use `GLOBAL_RECORDER`.
+
+But what if a previous test set the `GLOBAL_RECORDER` to something with a dead path, and the `record()` in the drop silently fails (because `fail_soft: true` just prints to stderr)? Let me check - the test calls `init_global` which sets `GLOBAL_RECORDER` to a new recorder. But what if `init_global` fails because the old recorder's tempdir is gone?
+
+No, `init_global` creates a NEW recorder and assigns it. The old recorder is dropped. So it should be fine.
+
+Actually, let me re-read `init_global`:
+```rust
+pub fn init_global(config: StateConfig, startup_payload: Value) -> Result<(), String> {
+    if !config.enabled {
+        return Ok(());
+    }
+    let fail_soft = config.fail_soft;
+    let recorder = StateRecorder::new(config);
+    let init_result = recorder.append(EventType::RunStarted, Actor::Harness, startup_payload);
+    match init_result {
+        Ok(_) => {
+            *GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = Some(recorder);
+            Ok(())
+        }
+        ...
+    }
+}
+```
+
+The `recorder.append(EventType::RunStarted, ...)` call at line 307 - this writes to the NEW recorder. But wait, does `StateRecorder::new(config)` open the events_path for writing? Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:240..290 ✓ (79ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the `StateRecorder::new` just stores paths - it doesn't open files. The file is opened during `append`. That means if the path is to a deleted tempdir, the `append` fails but the recorder is still considered "valid."
+
+Now here's a hypothesis: The test runs, calls `init_global`, which sets `GLOBAL_RECORDER` to the new recorder and writes `RunStarted`. Then the test panics. The panic hook fires, writes `FailureObserved`. During unwinding, the guard's `Drop` fires, which calls `record()`. But what if something goes wrong during the `record()` call in the Drop?
+
+Actually, let me look at the actual error more carefully. The test output says:
+```
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (48452) panicked at src/state.rs:6560:13:
+test lifecycle error 107
+```
+
+This is the INTENTIONAL panic. Then:
+```
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (48452) panicked at src/state.rs:6575:9:
+should contain RunCompleted: {"id":"event_3f818c99..." "kind":"RunStarted"...}
+```
+
+The assertion panics because RunCompleted is not in the raw file. But FailureObserved IS there.
+
+Let me look at whether something could be swallowing the RunCompleted. Could the `catch_unwind` prevent the Drop from running?
+
+Actually, let me re-read the Rust docs on `catch_unwind`. In Rust, when you panic inside a `catch_unwind` closure, the stack is unwound up to the `catch_unwind` boundary. Local variables inside the closure ARE dropped during unwinding. So `_guard.drop()` should be called.
+
+But wait - there's a subtlety with `catch_unwind` and the `AssertUnwindSafe` wrapper. Let me check if `_guard` implements `UnwindSafe`. If not, the code would need `AssertUnwindSafe`. But the test doesn't wrap it. However, Rust's `catch_unwind` requires the closure to be `UnwindSafe`. If `RunCompletionGuard` doesn't implement `UnwindSafe`, the code wouldn't compile. Since it compiles, this is fine.
+
+OK, I'm going to try a different approach. Let me check if a test that runs BEFORE the state tests is messing with the global panic hook or global recorder. Let me check which test initializes the global recorder first.
+
+Let me search for `init_global` calls in tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 33 ────────────────────────────────────────────────────────────╮
+  ▶ search 'init_global' in src ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the test at line 6475:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 34 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6460..6510 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so there are 3 tests using `init_global`: `panic_hook_records_to_state`, `run_completion_guard_reports_completed_on_normal_exit`, and `run_completion_guard_reports_error_on_panic`. They all use `tempfile::tempdir()` so the paths should be unique.
+
+Let me check the test listing for `panic_hook_records_to_state` position:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 35 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- --test-thr… ✓ (94ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `panic_hook_records_to_state` is at line 3755, well before `run_completion_guard_reports_completed_on_normal_exit` at 3763 and `run_completion_guard_reports_error_on_panic` at 3764.
+
+Let me run all three together:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 36 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test "state::tests::pani… ✓ (132ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Can only pass one test name pattern. Let me try running all state tests including the ones before:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 37 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test "state::tests::" --… ✓ (4.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All state tests pass! The issue is NOT within the state module. It's a test from ANOTHER module that corrupts global state before the state tests run. I need to find which module's tests, when run before state tests, cause the failure.
+
+Let me take a pragmatic approach. Instead of finding the exact culprit test, I'll look at the `commands_state_crashes` tests to see if they use any global state or the global recorder.
+
+Actually, let me first check if the crashtests use `init_global`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 38 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "init_global\|install_… ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The crashes tests don't touch global state. The issue must come from another module's tests.
+
+Let me take a different approach - just fix the test to be more robust. The test relies on global state (`GLOBAL_RECORDER`, `PANIC_HOOK_INSTALLED`) that other tests can pollute. 
+
+Looking at the test more carefully, I think the issue is that `PANIC_HOOK_INSTALLED` is a `Once` that's already been called by a previous test. When `install_panic_hook()` is called by this test, it's a no-op. The panic hook that's installed uses `prev_hook` which was `take_hook()` from a previous test. That previous test's hook might be doing something that interferes.
+
+But actually, I need to think about this more carefully. The `PANIC_HOOK_INSTALLED` is `static Once`, which is process-global. In `cargo test`, each test runs in the same process (lib tests are compiled into one binary). The `Once` persists across tests.
+
+When the first test calls `install_panic_hook()`:
+1. `take_hook()` gets the default hook (or whatever was set before).
+2. `set_hook(our_hook)` installs our hook.
+
+Our hook: records `FailureObserved`, sets `RUN_HAD_ERROR=true`, calls `prev_hook`.
+
+Now, if a subsequent test (NOT the failing one) calls `std::panic::set_hook()` directly, it would replace our hook. But I searched and there are no other `set_hook` calls.
+
+So the hook should be fine. The `Once` prevents re-installation, but the hook is already installed and works correctly (as evidenced by `FailureObserved` being recorded).
+
+The issue must be something else. Let me look at whether something between the state tests modifies the global state in a way that breaks the `RunCompletionGuard` drop.
+
+Actually, I just had another idea. What if the problem is that `catch_unwind` in a PREVIOUS test left the `GLOBAL_RECORDER` mutex in a bad state? Or what if some test panics while holding the `GLOBAL_RECORDER` lock?
+
+Let me check: in `record()`, the mutex is locked, then `recorder.append()` is called. If `append()` panics, the mutex guard is dropped during unwinding. But this only poisons the mutex if the panic propagates... Actually no, `Mutex::lock()` in Rust poisons the mutex when a panic occurs while the lock is held, regardless of whether `catch_unwind` catches it. The `lock()` call would then return `Err(PoisonError)`.
+
+But `record()` uses `unwrap_or_else(|e| e.into_inner())` which recovers from the poisoned mutex. So that should be fine.
+
+Hmm, let me try something: check if the issue is specific to the PR commit or pre-existing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 39 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git checkout 82c8a79 -- src/ &… ✓ (25.6s)
+
+

@@ -1,0 +1,135 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to verify that a task was implemented correctly in `scripts/extract_trajectory.py`. The task is to add a freshness indicator to the YOUR TRAJECTORY block.
+
+But the git diff is empty ("=== CHANGES MADE (git diff) ===") - there are no changes shown. Let me check if there are any uncommitted changes or if the changes were already committed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat HEAD 2>&1; ech…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash list 2>&1 ✓ (36ms)
+ ✓ (56ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the diff shows 71 lines changed in `scripts/extract_trajectory.py`. But the diff in the task description was empty. Let me look at the actual diff to see what was changed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD -- scripts/extra… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full diff to understand the complete `compute_freshness` function and the freshness line. The diff is truncated. Let me see the actual file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "compute_freshness\|fr…  ▶ read scripts/extract_trajectory.py:1746..1846 ✓ (7ms)
+ ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now run the script to see what output it produces. But first, I need to check if there's an audit-log directory available. Let me also check whether the `ordered_sessions` function is available (imported or defined in the file).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "ordered_sessions\|def…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "from\|import" scripts… ✓ (18ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `ordered_sessions` is imported from `state_graph_tools`. Let me run the script to verify it works. But I need to check if there's an audit-log directory available. Let me also check the `load_json` function usage.
+
+Let me verify the script can run. The key question is whether it produces valid markdown with the freshness line.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (7 lines)  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -d audit-log/sessions/*/ 2>… ✓ (9ms)
+ ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No audit-log directory in the workspace. Let me try running the script anyway - it should fail gracefully and produce the "no audit-log sessions" freshness indicator.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/extract_trajec… ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It exited with 0. Let me check if it produced output. It writes to `.yoyo/session_staging/trajectory.md` by default.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cat .yoyo/session_staging/traj… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The script runs and produces valid markdown output with the freshness line: `_Snapshot age: no audit-log sessions — treat with caution_`. This is exactly the expected behavior.
+
+Let me verify the implementation more carefully:
+
+1. ✅ The freshness line appears in the YOUR TRAJECTORY header, after the "Last computed" line
+2. ✅ When no audit-log sessions exist: `_Snapshot age: no audit-log sessions — treat with caution_`
+3. ✅ When sessions_newer == 0 (fresh): `_Snapshot age: {age_minutes}m (fresh) — reliable ✓_`
+4. ✅ When sessions_newer == 1: `_Snapshot age: {age_minutes}m (1 session behind) — reliable ✓_`
+5. ✅ When sessions_newer > 1 (stale): `_Snapshot age: {age_minutes}m ({sessions_newer} sessions behind) — treat with caution ⚠_`
+6. ✅ Script exits 0
+7. ✅ Output is valid markdown
+8. ✅ The change is minimal - a new helper function + 3 lines modified in main()
+
+Now let me check one thing: the task says "fresh (≤1 session behind)" should be reassuring, and "stale (>1 session behind)" should warn. Looking at the code:
+- 0 sessions behind → "fresh" + "reliable ✓"
+- 1 session behind → "1 session behind" + "reliable ✓" (still reassuring, which matches ≤1)
+- >1 session behind → "treat with caution ⚠" (warning)
+
+This matches the success criteria.
+
+Let me also check if the output size cap is respected - the freshness line adds only 1 additional line to the header, fitting within the 1-2 line budget.
+
+Let me also verify there are no obvious bugs by checking edge cases:
+- `compute_freshness` handles empty sessions (returns caution message)
+- Handles unparseable timestamps (returns caution)
+- Falls back to directory name parsing when outcome.json ts is empty
+- Uses `abs()` for the age calculation (though snapshot_time should always be >= most_recent session time)
+
+One thing I notice: the age is computed as `abs(int((snapshot_time - most_recent).total_seconds() / 60))`. In the normal case where snapshot_time > most_recent, this gives a positive age. But when `sessions_newer > 0` (meaning there are sessions with timestamps > snapshot_time), then `snapshot_time - most_recent` would be negative, and `abs()` makes it positive but this represents how far behind the snapshot is. That seems correct.
+
+The task spec says the snapshot is stale when "the most recent session in the audit-log is newer than the snapshot computation time." The implementation counts `sessions_newer = sum(1 for t in session_times if t > snapshot_time)` which is sessions with timestamps *after* the snapshot time. This matches the requirement.
+
+Wait, there's a subtle point: `most_recent = max(session_times)`. If there are sessions newer than snapshot_time, then `most_recent > snapshot_time`, so `snapshot_time - most_recent` is negative, and `abs()` gives the correct positive gap. The age displayed is the gap between snapshot time and the most recent session, which is correct.
+
+But here's another subtlety: the task says "compare the snapshot computation time against the most recent session's timestamp." The implementation compares against all session timestamps (for counting sessions_newer) and uses the max for age calculation. This is correct and even better than the minimum requirement.
+
+Now the task says "When the snapshot is fresh (≤1 session behind), the indicator is reassuring (green/check style)." The implementation uses `✓` for fresh and 1-behind, and `⚠` for stale. No "green" color but a checkmark is indeed reassuring. This is fine - markdown doesn't support colors natively.
+
+I'm satisfied the implementation meets all success criteria. Let me write the verdict.
+
+One more check: the diff also removes the unlink of the old output file... wait, let me re-read the diff. Actually the diff only shows additions. Let me look more carefully at the full diff from the git output.
+
+Actually looking at git diff --stat: "1 file changed, 70 insertions(+), 1 deletion(-)". The 1 deletion is probably the removal of the inline `datetime.now(timezone.utc)` call in the header string, replaced by the `snapshot_time` variable. Let me check.
+
+From the diff snippet:
+- Before: `f"Last computed: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%MZ')}. "`
+- After: `f"Last computed: {snapshot_time.strftime('%Y-%m-%dT%H:%MZ')}. "`
+
+This is a refactor to reuse the same snapshot_time for both the "Last computed" line and the compute_freshness call. Good.
+
+Everything looks solid. PASS.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (33 lines) ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All edge cases work correctly. The output size is still within the cap (I can see the output file is small - the freshness line adds only 1 line). Everything checks out.
+────────────────────────────────────────────────────────────────────────────────
+
+All verification checks pass. Writing the verdict.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && mkdir -p s… (4 lines) ✓ (10ms)
