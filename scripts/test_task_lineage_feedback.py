@@ -1955,6 +1955,55 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["deepseek_model_call_incomplete_count"], 0)
             self.assertEqual(metrics["deepseek_model_call_unmatched_completed_count"], 0)
 
+    def test_log_feedback_treats_status_zero_completed_detail_as_normal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            append_event(
+                session / "state/events.jsonl",
+                "ModelCallStarted",
+                {"model": "deepseek-v4-pro"},
+                run_id="run-status-zero",
+            )
+            append_event(
+                session / "state/events.jsonl",
+                "ModelCallCompleted",
+                {
+                    "model": "deepseek-v4-pro",
+                    "status": "completed",
+                    "terminal_reason": "agent_process_exited",
+                    "error_detail": "agent process exited with status 0",
+                },
+                run_id="run-status-zero",
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["deepseek_model_call_started_count"], 1)
+            self.assertEqual(metrics["deepseek_model_call_completed_count"], 1)
+            self.assertEqual(metrics["deepseek_model_call_abnormal_completed_count"], 0)
+            self.assertEqual(metrics["deepseek_model_call_incomplete_count"], 0)
+            self.assertEqual(metrics["deepseek_model_call_unmatched_completed_count"], 0)
+
     def test_log_feedback_pairs_wrapped_yoyo_model_call_run_ids(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
@@ -2230,6 +2279,40 @@ class TaskLineageFeedback(unittest.TestCase):
                     "error_detail": "agent stopped after completion evidence was written",
                 },
                 run_id="run-stopped-after-file",
+            )
+
+            summary = summarize_state_gnomes.summarize(
+                summarize_state_gnomes.load_jsonl(events),
+                events,
+            )
+
+            lifecycle = summary["state_lifecycle"]
+            self.assertEqual(lifecycle["model_calls"]["started"], 1)
+            self.assertEqual(lifecycle["model_calls"]["completed"], 1)
+            self.assertEqual(lifecycle["model_calls"]["abnormal_completed"], 0)
+            self.assertEqual(lifecycle["model_calls"]["incomplete"], 0)
+            self.assertEqual(lifecycle["model_calls"]["unmatched_completed"], 0)
+
+    def test_summarize_state_lifecycle_treats_status_zero_completed_detail_as_normal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            append_event(
+                events,
+                "ModelCallStarted",
+                {"model": "deepseek-chat", "provider": "deepseek"},
+                run_id="run-status-zero",
+            )
+            append_event(
+                events,
+                "ModelCallCompleted",
+                {
+                    "model": "deepseek-chat",
+                    "provider": "deepseek",
+                    "status": "completed",
+                    "terminal_reason": "agent_process_exited",
+                    "error_detail": "agent process exited with status 0",
+                },
+                run_id="run-status-zero",
             )
 
             summary = summarize_state_gnomes.summarize(

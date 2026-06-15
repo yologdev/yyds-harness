@@ -225,6 +225,11 @@ GNOME_KEYS = [
     "state_run_unstarted_input_validation_error_count",
 ]
 NORMAL_MODEL_COMPLETION_STATUSES = {"completed", "success", "ok", "stopped_after_completion_file"}
+BENIGN_MODEL_COMPLETION_DETAILS = {
+    "agent process exited with status 0",
+    "agent process exited with code 0",
+    "agent stopped after completion evidence was written",
+}
 SCORE_FAILURE_WEIGHTS = {
     "distinct_failure_count": 1.0,
     "provider_error_count": 1.0,
@@ -970,11 +975,19 @@ def abnormal_model_completion_status(payload: dict[str, Any]) -> str | None:
     status = str(payload.get("status") or "").strip()
     if status and status not in NORMAL_MODEL_COMPLETION_STATUSES:
         return status
-    if status == "stopped_after_completion_file":
+    if payload.get("error"):
+        return status or "error"
+    error_detail = payload.get("error_detail")
+    if error_detail and normal_model_completion_detail(error_detail):
         return None
-    if payload.get("error") or payload.get("error_detail"):
+    if error_detail:
         return status or "error"
     return None
+
+
+def normal_model_completion_detail(error_detail: Any) -> bool:
+    detail = " ".join(str(error_detail or "").split()).lower()
+    return detail in BENIGN_MODEL_COMPLETION_DETAILS
 
 
 def run_lifecycle_event_summary(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
