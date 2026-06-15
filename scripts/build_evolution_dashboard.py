@@ -3904,7 +3904,7 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, Any]:
             feedback_only_sessions += 1
         if isinstance(session.get("evo_readiness"), dict) and session.get("evo_readiness"):
             latest_evo_readiness = session["evo_readiness"]
-        latest_gnomes.update(session.get("latest_gnomes") or {})
+        latest_gnomes = dict(session.get("latest_gnomes") or {})
         for key in session.get("gnome_keys") or []:
             if isinstance(key, str) and key not in gnome_keys:
                 gnome_keys.append(key)
