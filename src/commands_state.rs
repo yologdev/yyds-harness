@@ -861,6 +861,38 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
                 ));
             }
             eprintln!("{msg}");
+
+            // Fallback: when no failure found for last-failure, scan for
+            // incomplete runs (RunStarted without RunCompleted) and offer
+            // diagnostic next-steps so cold-start users get a breadcrumb trail.
+            if id == "last-failure" {
+                let incomplete = find_incomplete_runs(&events);
+                if !incomplete.is_empty() {
+                    let s = if incomplete.len() == 1 { "" } else { "s" };
+                    eprintln!(
+                        "\n{YELLOW}  However, {} incomplete run{} detected (started but not completed):{RESET}",
+                        incomplete.len(),
+                        s,
+                    );
+                    let now_ms = current_time_ms() as u64;
+                    for (run_id, ts_ms) in &incomplete {
+                        let ago = if *ts_ms > 0 && now_ms > *ts_ms {
+                            format_duration(std::time::Duration::from_secs(
+                                (now_ms - *ts_ms) / 1000,
+                            ))
+                        } else {
+                            "?".to_string()
+                        };
+                        eprintln!(
+                            "{DIM}    {run_id} — started {} ago, no RunCompleted event{RESET}",
+                            ago
+                        );
+                    }
+                    eprintln!(
+                        "{DIM}  Run: yyds state trace <run-id> for details, or yyds state crashes for crash analysis.{RESET}"
+                    );
+                }
+            }
         }
     }
     if limit > 0 {
@@ -873,6 +905,30 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
             println!("{DIM}(searched {all_count} events){RESET}");
         }
     }
+}
+
+/// Find runs that started (RunStarted) but never completed (no RunCompleted event).
+/// Returns a list of (run_id, timestamp_ms) sorted by most recent first.
+fn find_incomplete_runs(events: &[Value]) -> Vec<(String, u64)> {
+    let completed: BTreeSet<&str> = events
+        .iter()
+        .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+        .filter_map(|e| event_string(e, "run_id"))
+        .collect();
+    let mut incomplete: Vec<(String, u64)> = events
+        .iter()
+        .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
+        .filter_map(|e| {
+            let run_id = event_string(e, "run_id")?;
+            if completed.contains(run_id) {
+                return None;
+            }
+            Some((run_id.to_string(), event_timestamp(e)))
+        })
+        .collect();
+    // Most recent first
+    incomplete.sort_by(|a, b| b.1.cmp(&a.1));
+    incomplete
 }
 
 fn handle_state_summary(args: &[String], limit: usize) {
