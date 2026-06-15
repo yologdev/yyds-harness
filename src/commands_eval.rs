@@ -442,12 +442,16 @@ fn handle_run(args: &[String]) {
     let workdir = flag_value(args, "--worktree")
         .or_else(|| flag_value(args, "--workdir"))
         .map(PathBuf::from);
+    let task_log = flag_value(args, "--task-log").map(PathBuf::from);
+    let task_git_base = flag_value(args, "--task-git-base").map(|s| s.to_string());
     let _ = run_eval(EvalRunOptions {
         suite,
         harness_version,
         patch_id,
         dry_run,
         workdir,
+        task_log,
+        task_git_base,
     });
 }
 
@@ -458,6 +462,15 @@ pub struct EvalRunOptions<'a> {
     pub patch_id: Option<String>,
     pub dry_run: bool,
     pub workdir: Option<PathBuf>,
+    /// Optional path to the task's implementation transcript log.
+    /// When set, the evaluator checks for terminal evidence markers
+    /// and file-modification evidence; if gates pass but no evidence
+    /// exists, the result is downgraded to `NoEvidence` instead of
+    /// `Passed`.
+    pub task_log: Option<PathBuf>,
+    /// Optional git base commit for the task (used with --task-log to
+    /// check whether any source files changed during the task window).
+    pub task_git_base: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -667,6 +680,8 @@ pub fn run_eval_for_patch_in(
         patch_id: Some(patch_id.to_string()),
         dry_run,
         workdir,
+        task_log: None,
+        task_git_base: None,
     })
 }
 
@@ -718,6 +733,25 @@ pub fn run_eval(options: EvalRunOptions<'_>) -> Option<EvalResult> {
         &gate_results,
         started.elapsed().as_millis() as u64,
     );
+
+    // If task evidence check is requested and all gates passed, verify that
+    // the task actually produced verifiable evidence (source changes or
+    // terminal markers).  Analysis-only tasks that pass gates but produced
+    // no code are downgraded to NoEvidence so they don't inflate the
+    // task_success_rate metric.
+    if eval.status == EvalStatus::Passed {
+        if let Some(ref task_log) = options.task_log {
+            if !check_task_has_evidence(task_log, options.task_git_base.as_deref()) {
+                println!("  evidence:        no source changes or terminal markers → NoEvidence");
+                eval.status = EvalStatus::NoEvidence;
+                // NoEvidence counts neither as passed nor failed in the
+                // success-rate metric.
+                eval.passed = 0;
+                eval.failed = 0;
+            }
+        }
+    }
+
     attach_eval_reproducibility_manifest(
         &mut eval,
         "gates",
@@ -744,6 +778,85 @@ pub fn run_eval(options: EvalRunOptions<'_>) -> Option<EvalResult> {
         }
     }
     Some(eval)
+}
+
+/// Check whether a task has verifiable evidence: terminal evidence markers in
+/// the task transcript (`TASK_TERMINAL_EVIDENCE: changed|obsolete|blocked`) or
+/// actual source file modifications (git diff since the task base commit).
+///
+/// Returns `true` if evidence exists, `false` if the task was analysis-only with
+/// no concrete output.
+fn check_task_has_evidence(task_log: &Path, task_git_base: Option<&str>) -> bool {
+    // 1. Check for terminal evidence markers in the transcript.
+    if let Ok(content) = std::fs::read_to_string(task_log) {
+        if let Ok(re) = regex::Regex::new(r"TASK_TERMINAL_EVIDENCE:\s*(changed|obsolete|blocked)") {
+            if re.is_match(&content) {
+                return true;
+            }
+        }
+    }
+
+    // 2. If task_git_base is provided, check whether any source file
+    //    actually changed during the task window.
+    if let Some(base) = task_git_base {
+        // Unstaged changes vs the task base.
+        if let Ok(output) = Command::new("git")
+            .args([
+                "diff",
+                "--name-only",
+                base,
+                "HEAD",
+                "--",
+                "src/",
+                "Cargo.toml",
+                "Cargo.lock",
+            ])
+            .output()
+        {
+            if output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+            {
+                return true;
+            }
+        }
+        // Staged changes — may include newly added files.
+        if let Ok(output) = Command::new("git")
+            .args([
+                "diff",
+                "--cached",
+                "--name-only",
+                "--",
+                "src/",
+                "Cargo.toml",
+                "Cargo.lock",
+            ])
+            .output()
+        {
+            if output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+            {
+                return true;
+            }
+        }
+        // Untracked source files.
+        if let Ok(output) = Command::new("git")
+            .args([
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "--",
+                "src/",
+                "Cargo.toml",
+                "Cargo.lock",
+            ])
+            .output()
+        {
+            if output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+            {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn eval_gates_for_suite(
@@ -3868,6 +3981,7 @@ fn status_label(status: &EvalStatus) -> &'static str {
         EvalStatus::Passed => "passed",
         EvalStatus::Failed => "failed",
         EvalStatus::Error => "error",
+        EvalStatus::NoEvidence => "no_evidence",
     }
 }
 
@@ -5773,6 +5887,8 @@ mod tests {
             patch_id: Some("patch-1".into()),
             dry_run: false,
             workdir: None,
+            task_log: None,
+            task_git_base: None,
         };
 
         attach_eval_reproducibility_manifest(
@@ -5860,6 +5976,8 @@ mod tests {
             patch_id: None,
             dry_run: false,
             workdir: None,
+            task_log: None,
+            task_git_base: None,
         };
         attach_eval_reproducibility_manifest(
             &mut eval,

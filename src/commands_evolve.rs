@@ -1916,6 +1916,7 @@ fn eval_status_label(status: &EvalStatus) -> &'static str {
         EvalStatus::Passed => "passed",
         EvalStatus::Failed => "failed",
         EvalStatus::Error => "error",
+        EvalStatus::NoEvidence => "no_evidence",
     }
 }
 

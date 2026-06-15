@@ -218,6 +218,9 @@ pub enum EvalStatus {
     Passed,
     Failed,
     Error,
+    /// Task produced no verifiable evidence (no source changes, no terminal markers).
+    /// Counts separately from true failures.
+    NoEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
