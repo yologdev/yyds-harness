@@ -283,6 +283,87 @@ def current_evidence_text(assessment: str) -> str:
     return "\n\n".join(sections)
 
 
+def extract_section(assessment: str, heading: str) -> str:
+    """Extract a markdown section by its heading (case-insensitive)."""
+    target = heading.strip().lower()
+    lines: list[str] = []
+    in_section = False
+    for line in assessment.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if in_section:
+                break
+            h = stripped[3:].strip().lower()
+            if h == target:
+                in_section = True
+            continue
+        if in_section:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+_RESOLUTION_SIGNALS = (
+    "now properly",
+    "now correctly",
+    "already fixed",
+    "already addressed",
+    "already resolved",
+    "no longer",
+    "has been fixed",
+    "has been resolved",
+    "fixed ",
+    "resolved ",
+    "patched ",
+    "shipped ",
+    "landed ",
+    "closed ",
+    "addressed ",
+)
+
+
+def _line_shows_resolution(line: str, task_keys: tuple[str, ...]) -> bool:
+    """Return True if line indicates a task-key problem is already resolved."""
+    lower = line.lower()
+    if not any(key in lower for key in task_keys):
+        return False
+    return any(signal in lower for signal in _RESOLUTION_SIGNALS)
+
+
+def _self_tests_show_resolution(self_tests: str, task_keys: tuple[str, ...]) -> bool:
+    """Check if self-test results show task-domain features already working."""
+    for line in self_tests.splitlines():
+        lower = line.strip().lower()
+        if "\u2705" not in line and "pass" not in lower and "green" not in lower:
+            continue
+        if any(key in lower for key in task_keys):
+            return True
+    return False
+
+
+def check_task_contradiction(
+    task: dict[str, object], assessment: str
+) -> tuple[bool, str]:
+    """Return (contradicted, reason) if the assessment shows the task's problem is resolved.
+
+    Scans the assessment's Recent Changes and Self-Test Results sections for
+    evidence that the task's problem domain has already been addressed.
+    """
+    task_keys = tuple(task.get("keys", ()))
+    if not task_keys:
+        return False, ""
+
+    recent_changes = extract_section(assessment, "recent changes")
+    for line in recent_changes.splitlines():
+        if _line_shows_resolution(line, task_keys):
+            return True, f"assessment Recent Changes shows '{task['title']}' problem already resolved: {line.strip()}"
+
+    self_tests = extract_section(assessment, "self-test results")
+    if _self_tests_show_resolution(self_tests, task_keys):
+        return True, f"assessment Self-Test Results show '{task['title']}' domain already working"
+
+    return False, ""
+
+
 def numeric_metrics(text: str) -> dict[str, int]:
     metrics: dict[str, int] = {}
     for match in re.finditer(r"`?([a-z][a-z0-9_]+)`?\s*[=:]\s*(-?\d+)", text):
@@ -323,6 +404,7 @@ def choose_task(assessment: str) -> dict[str, object]:
     lower = (current if current.strip() else assessment).lower()
     metrics = numeric_metrics(lower)
     lifecycle_metrics_present = has_lifecycle_metrics(metrics)
+    candidates: list[dict[str, object]] = []
     for task in TASKS:
         if not any(key in lower for key in task["keys"]):
             continue
@@ -331,12 +413,28 @@ def choose_task(assessment: str) -> dict[str, object]:
         if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
             if not has_actionable_lifecycle_gap(metrics):
                 continue
-            return task
+            candidates.append(task)
+            continue
         if task["title"] == SEARCH_FRICTION_TASK_TITLE:
             if not has_actionable_search_friction(lower):
                 continue
-            return task
-        return task
+            candidates.append(task)
+            continue
+        candidates.append(task)
+
+    for candidate in candidates:
+        contradicted, reason = check_task_contradiction(candidate, assessment)
+        if not contradicted:
+            candidate["validated_against_assessment"] = True
+            return candidate
+
+    # All candidates are contradicted — return the first with annotation
+    if candidates:
+        contradicted, reason = check_task_contradiction(candidates[0], assessment)
+        candidates[0]["validated_against_assessment"] = False
+        candidates[0]["contradiction_reason"] = reason
+        return candidates[0]
+
     return {
         "title": "Repair evidence-backed planning after no-task sessions",
         "files": "skills/evolve/SKILL.md, skills/self-assess/SKILL.md, scripts/task_manifest.py",
@@ -368,10 +466,16 @@ def render_task(task: dict[str, object], day: str, session_time: str) -> str:
     success = "\n".join(f"- {item}" for item in task["success"])
     verification = "\n".join(f"- {item}" for item in task["verification"])
     evidence = "\n".join(f"- {item}" for item in task["evidence"])
+    validated = task.get("validated_against_assessment", True)
+    contradiction = task.get("contradiction_reason", "")
+    validation_line = f"validated_against_assessment: {str(validated).lower()}"
+    if not validated and contradiction:
+        validation_line += f" (contradiction: {contradiction})"
     return f"""Title: {task["title"]}
 Files: {task["files"]}
 Issue: none
 Origin: harness-seed
+{validation_line}
 
 Objective:
 {task["objective"]}
@@ -538,6 +642,91 @@ No clunky friction found in quick tool checks.
         assessment = "Assessment phase produced a transcript but did not write session_plan/assessment.md."
         task = choose_task(assessment)
         assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
+        # --- Contradiction detection tests ---
+        # Test 1: Task marked contradicted when Recent Changes show it was already fixed
+        assessment = """# Assessment
+
+## Recent Changes
+Day 106 now properly resolved state lifecycle unhealthy problems: all
+terminal events now pair correctly in every codepath we tested.
+
+## Bugs / Friction Found
+State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == LIFECYCLE_TASK_TITLE, (
+            f"Expected lifecycle task, got {task['title']}"
+        )
+        assert task.get("validated_against_assessment") is False, (
+            "Lifecycle task should be contradicted when Recent Changes say resolved"
+        )
+        assert task.get("contradiction_reason"), "Expected contradiction_reason"
+        # Test 2: Validation metadata in rendered task
+        text = render_task(task, "106", "10:00")
+        assert "validated_against_assessment: false" in text
+        assert "contradiction:" in text
+        # Test 3: Self-test resolution — task NOT selected when checkmark shows it works
+        assessment = """# Assessment
+
+## Self-Test Results
+- `yyds state why last-failure`: \u2705 now properly explains cold-start status
+- `yyds deepseek cache-report`: \u26a0\ufe0f no DeepSeek cache metrics found
+
+## Bugs / Friction Found
+No clunky friction.
+"""
+        task = choose_task(assessment)
+        assert task["title"] != "Improve cold-start state failure diagnostics", (
+            f"Cold-start task should be contradicted by \u2705 self-test, got {task['title']}"
+        )
+        # Test 4: Cache task NOT selected when self-tests show cache working
+        assessment = """# Assessment
+
+## Self-Test Results
+- `yyds deepseek cache-report`: \u2705 94.10% cache hit ratio -- healthy
+
+## Bugs / Friction Found
+Cache metrics absent. deepseek cache-report shows nothing.
+"""
+        task = choose_task(assessment)
+        assert task["title"] != "Record DeepSeek prompt cache metrics during prompt runs", (
+            f"Cache task should be contradicted by \u2705 self-test, got {task['title']}"
+        )
+        # Test 5: Normal case — task selected when assessment doesn't contradict
+        assessment = """# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Reduce recurring search-tool friction before implementation", task
+        assert task.get("validated_against_assessment") is True, (
+            f"Expected validated_against_assessment=true, got {task.get('validated_against_assessment')}"
+        )
+        text = render_task(task, "105", "10:00")
+        assert "validated_against_assessment: true" in text
+        assert "contradiction:" not in text
+        # Test 6: Sub-agent task contradicted by Recent Changes
+        assessment = """# Assessment
+
+## Recent Changes
+Day 105 fixed sub-agent API key propagation: the agent now correctly passes
+resolved API keys to spawned workers. `api_key_present` now reports true.
+"""
+        task = choose_task(assessment)
+        assert task.get("validated_against_assessment") is False, (
+            f"Sub-agent task should be contradicted by Recent Changes, got validated_against_assessment={task.get('validated_against_assessment')}"
+        )
+        assert task.get("contradiction_reason"), "Expected contradiction_reason"
+        text = render_task(task, "105", "10:00")
+        assert "validated_against_assessment: false" in text
+        assert "contradiction:" in text
         print("preseed_session_plan self-tests passed")
         return 0
     if args.assessment is None:
