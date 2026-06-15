@@ -35,12 +35,12 @@ PROVIDER_STATUS_RE = (
     r"|(?:\b(?:429|5\d\d)\b\W{0,24}(?:http|status|response|api|rate limit))"
 )
 PROVIDER_ERROR_RE = re.compile(
-    rf"(reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded|{PROVIDER_STATUS_RE}|(?:\b(?:error|fatal|exception|traceback)\b\W{{0,12}}.*(?:provider_error|rate_limit|rate limit|api error|network error|dns error|provider|overloaded)))",
-    re.IGNORECASE,
+    rf"^(?:\d{{4}}-\d{{2}}-\d{{2}}T[\d:.]+Z?\s+)?\W{{0,12}}(?:(?:error|fatal|exception|traceback)(?:\W{{1,12}}|$).*(?:provider_error|rate_limit|rate limit|api error|network error|dns error|provider|deepseek|overloaded|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|{PROVIDER_STATUS_RE})|(?:api error|network error|dns error)(?:\W{{1,12}}|$).*(?:no fallback configured|provider|deepseek|rate limit|overloaded|exiting)|(?:no fallback configured|piped_api_failure)(?:\W{{1,12}}|$))",
+    re.IGNORECASE | re.MULTILINE,
 )
 EXPLICIT_PROVIDER_SIGNAL_RE = re.compile(
-    rf"(reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|overloaded|{PROVIDER_STATUS_RE}|(?:\b(?:error|fatal|exception|traceback)\b\W{{0,12}}.*(?:provider_error|rate_limit|rate limit|api error|network error|dns error|provider|overloaded)))",
-    re.IGNORECASE,
+    rf"^(?:\d{{4}}-\d{{2}}-\d{{2}}T[\d:.]+Z?\s+)?\W{{0,12}}(?:(?:error|fatal|exception|traceback)(?:\W{{1,12}}|$).*(?:provider_error|rate_limit|rate limit|api error|network error|dns error|provider|deepseek|overloaded|reqwest::error|failed to lookup address information|no fallback configured|piped_api_failure|{PROVIDER_STATUS_RE})|(?:api error|network error|dns error)(?:\W{{1,12}}|$).*(?:no fallback configured|provider|deepseek|rate limit|overloaded|exiting)|(?:no fallback configured|piped_api_failure)(?:\W{{1,12}}|$))",
+    re.IGNORECASE | re.MULTILINE,
 )
 JSON_ERROR_RE = re.compile(r"(json|schema|deserialize|parse).*(error|fail)", re.IGNORECASE)
 TOOL_ERROR_RE = re.compile(r"(tool call|tool schema|malformed tool|invalid tool)", re.IGNORECASE)
@@ -2041,6 +2041,7 @@ def run_self_tests() -> int:
                 "Recover API error tasks instead of generic reverts.",
                 "The assessment mentions provider/API task failures as prior evidence.",
                 "No API errors were observed in the last five sessions.",
+                '1. Better API error detection (removing "api error" and "network error" from direct provider error regex to reduce false positives)',
             ]
         )
     )

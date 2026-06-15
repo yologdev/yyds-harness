@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -143,8 +144,9 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('assessment_missing.md', evolve)
         self.assertIn('Assessment Missing - Day $DAY ($SESSION_TIME)', evolve)
         self.assertIn("agent_log_has_api_error()", evolve)
-        self.assertIn("reqwest::error|failed to lookup address information|no fallback configured", evolve)
+        self.assertIn("^[^[:alnum:]]{0,12}", evolve)
         self.assertIn("(error|fatal|exception|traceback)", evolve)
+        self.assertIn("(api error|network error|dns error)", evolve)
         self.assertNotIn("|api error|network error|dns error|reqwest::error", evolve)
         self.assertIn("status_code", evolve)
         self.assertNotIn("|\\b(429|5[0-9][0-9])\\b)", evolve)
@@ -223,6 +225,29 @@ class TaskLineageFeedback(unittest.TestCase):
             evolve.index("scripts/verify_evo_readiness.py"),
             evolve.index('cp -R "$SESSION_STAGING/." "$AUDIT_PUSH_WT/$SESSION_DIR/"'),
         )
+
+    def test_evolve_provider_guard_rejects_assessment_prose(self):
+        evolve = Path(__file__).with_name("evolve.sh").read_text(encoding="utf-8")
+        match = re.search(r"grep -Eiq '([^']+)' \"\$log_file\"", evolve)
+        self.assertIsNotNone(match)
+        pattern = match.group(1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prose = root / "prose.log"
+            prose.write_text(
+                '1. Better API error detection (removing "api error" and "network error" '
+                "from direct provider error regex to reduce false positives)\n",
+                encoding="utf-8",
+            )
+            real_provider = root / "provider.log"
+            real_provider.write_text(
+                'error: Network error: reqwest::Error { source: dns error, '
+                'error: "failed to lookup address information" }\n',
+                encoding="utf-8",
+            )
+            self.assertNotEqual(subprocess.run(["grep", "-Eiq", pattern, str(prose)]).returncode, 0)
+            self.assertEqual(subprocess.run(["grep", "-Eiq", pattern, str(real_provider)]).returncode, 0)
 
     def test_task_lineage_payload_captures_source_commits(self):
         with tempfile.TemporaryDirectory() as tmp:
