@@ -1865,6 +1865,7 @@ OBSOLETE
     # ── Checkpoint-restart retry loop (max 2 attempts) ──
     CHECKPOINT_SECTION=""
     API_ERROR_ABORT=false
+    TASK_ATTEMPT_TRANSCRIPT_TAIL=""
 
     for ATTEMPT in 1 2; do
         TASK_PROMPT=$(mktemp)
@@ -1897,7 +1898,7 @@ Follow the evolve skill rules:
 - Do not send escaped regex snippets like \`fn handle_run\\(\` or flag-like literals like \`--json\` to the search tool. Search for a simple identifier such as \`handle_run\`, or use \`grep -R -F -- 'fn handle_run(' src/\`.
 - Treat yoagent as upstream foundation code. If this task reveals that yoagent itself must change, do not patch around it in this repo. $YOAGENT_UPSTREAM_TARGET When you cannot safely make an upstream PR, create an agent-help-wanted issue in $REPO with the evidence and proposed upstream change, then stop this task or choose a harness-only mitigation that stays honest about the upstream dependency.
 - Do not finish with analysis only. If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion in the listed task surface. If no honest code/test/docs improvement exists, write session_plan/${TASK_ID}_obsolete.md explaining the exact evidence and stop without claiming the task landed.
-- Early action requirement: by your 8th tool turn, you must have written a test, edited one listed task-scope file, written session_plan/${TASK_ID}_obsolete.md, or written session_plan/${TASK_ID}_blocked.md. Do not spend the whole task budget reading and planning. If you still lack enough certainty by then, write the blocked note with the exact missing evidence instead of continuing archaeology.
+- Early action requirement: by your 5th tool turn, you must have written a test, edited one listed task-scope file, written session_plan/${TASK_ID}_obsolete.md, or written session_plan/${TASK_ID}_blocked.md. Do not spend the whole task budget reading and planning. If you still lack enough certainty by then, write the blocked note with the exact missing evidence instead of continuing archaeology.
 - Before your final answer, run \`git diff --name-only\` and inspect the result. Your final answer must name one of: the task-scope files you changed, the obsolete-task note you wrote, or the concrete blocker that prevented any honest scoped edit.
 - If \`git diff --name-only\` is empty and you did not write session_plan/${TASK_ID}_obsolete.md or session_plan/${TASK_ID}_blocked.md, the task is not complete. Keep working inside the task scope instead of ending with analysis only.
 - If you discover that the real owning file is outside the task's Files list,
@@ -1968,6 +1969,7 @@ TEOF
         append_task_attempt_evidence \
             "$TASK_ID" "implementation" "$ATTEMPT" "$TASK_STAGE_NAME" \
             "transcripts/${TASK_STAGE_NAME}.log" "$TASK_EXIT" "$TASK_ATTEMPT_STATUS" "$PRE_TASK_SHA" || true
+        TASK_ATTEMPT_TRANSCRIPT_TAIL=$(tail -80 "$TASK_LOG" 2>/dev/null || true)
 
         # Abort on API errors (after fallback attempt if configured) — revert partial work and stop
         if agent_log_has_api_error "$TASK_LOG"; then
@@ -2059,12 +2061,19 @@ marker."
 
 The previous implementation attempt ended without landed file progress and
 without TASK_TERMINAL_EVIDENCE. Do not continue broad source archaeology.
+This is the final implementation attempt for this task. Treat it as
+failure-recovery mode, not a fresh investigation.
 
 By your third tool turn in this retry, do exactly one of:
 - write or edit a focused regression test in the listed task surface,
 - edit one listed task-scope source file,
 - write session_plan/${TASK_ID}_obsolete.md with exact evidence that the task is already satisfied,
 - write session_plan/${TASK_ID}_blocked.md with the concrete blocker and missing evidence.
+
+Prefer the smallest honest scoped proof change over more diagnosis. If one
+path/symbol lookup is not enough to identify an edit, write the blocked note
+instead of continuing analysis. Do not give a final answer until \`git diff
+--name-only\` is non-empty or one of the two note files above exists.
 
 Previous transcript tail:
 \`\`\`
@@ -2079,6 +2088,27 @@ ${TASK_TRANSCRIPT_TAIL:-no transcript tail captured}
         rm -f "$TASK_LOG"
         break
     done
+
+    if [ "$TASK_ATTEMPT_STATUS" = "analysis_only_no_terminal_evidence" ] \
+        && [ "$TASK_BLOCKED_NOTE_PREEXISTED" != true ] \
+        && [ ! -s "$TASK_BLOCKED_NOTE" ] \
+        && [ ! -s "$TASK_OBSOLETE_NOTE" ]; then
+        echo "    Task $TASK_NUM exhausted implementation attempts without progress; writing blocked evidence."
+        cat > "$TASK_BLOCKED_NOTE" <<BLOCKEDEOF
+# Task blocked by no-progress implementation attempts
+
+The implementation agent used both allowed attempts without landing file
+progress or emitting TASK_TERMINAL_EVIDENCE.
+
+This task should be replanned with narrower scope, clearer owning files, or
+stronger pre-confirmed evidence before another implementation attempt.
+
+Recent transcript tail:
+\`\`\`
+${TASK_ATTEMPT_TRANSCRIPT_TAIL:-no transcript tail captured}
+\`\`\`
+BLOCKEDEOF
+    fi
 
     # Clean up checkpoint file if any
     rm -f "session_plan/checkpoint_task_${TASK_NUM}.md"
