@@ -666,6 +666,77 @@ class BuildEvolutionDashboard(unittest.TestCase):
             )
             self.assertNotIn("src/commands_state_diagnostics.rs (new)", task["files"])
 
+    def test_task_manifest_summary_infers_body_file_mentions_for_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {
+                        "planning_failed": False,
+                        "task_count": 1,
+                        "selected_task_count": 1,
+                    },
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Add lifecycle pair tests",
+                            "files": ["src/prompt.rs", "src/state.rs"],
+                            "artifact_path": "tasks/task_01/task.md",
+                            "quality": {"score": 1.0},
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+            task_md = session / "tasks/task_01/task.md"
+            task_md.parent.mkdir(parents=True, exist_ok=True)
+            task_md.write_text(
+                "\n".join(
+                    [
+                        "Title: Add lifecycle pair tests",
+                        "Files: src/prompt.rs, src/state.rs",
+                        "Issue: none",
+                        "Origin: planner",
+                        "",
+                        "Objective:",
+                        "Add tests around build_state_lifecycle_json in src/commands_state.rs.",
+                        "",
+                        "Expected Evidence:",
+                        "- Tests in src/commands_state.rs pass.",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            summary = task_manifest_summary(session)
+            self.assertEqual(
+                summary["tasks"][0]["files"],
+                ["src/prompt.rs", "src/state.rs", "src/commands_state.rs"],
+            )
+
+            verification = task_verification_summary(
+                summary,
+                [
+                    {
+                        "task_id": "task_01",
+                        "status": "completed",
+                        "source_files": ["src/commands_state.rs"],
+                        "touched_files": ["src/commands_state.rs"],
+                        "commit_shas": ["abc123"],
+                        "evals": [{"status": "pass", "verdict": "PASS"}],
+                    }
+                ],
+                [],
+            )
+
+            row = verification["rows"][0]
+            self.assertTrue(row["strict_success"])
+            self.assertNotIn("no_planned_file_overlap", row["problems"])
+
     def test_state_event_failures_join_started_tool_args(self):
         events = [
             {

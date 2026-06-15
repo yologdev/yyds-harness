@@ -2275,6 +2275,79 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["state_run_unmatched_non_validation_completed_count"], 0)
             self.assertEqual(metrics["state_run_unstarted_input_validation_error_count"], 1)
 
+    def test_log_feedback_counts_structured_unrecovered_tool_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 0,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            events = session / "state/events.jsonl"
+            append_event(
+                events,
+                "ToolCallStarted",
+                {"tool_name": "bash", "tool_call_id": "call-recovered", "args": {"command": "cargo check"}},
+            )
+            append_event(
+                events,
+                "ToolCallCompleted",
+                {
+                    "tool_name": "bash",
+                    "tool_call_id": "call-recovered",
+                    "is_error": True,
+                    "result_preview": "Exit code: 101",
+                },
+            )
+            append_event(
+                events,
+                "ToolCallStarted",
+                {
+                    "tool_name": "search",
+                    "tool_call_id": "call-unrecovered",
+                    "args": {"pattern": "--json", "path": "src/commands_state"},
+                },
+            )
+            append_event(
+                events,
+                "ToolCallCompleted",
+                {
+                    "tool_name": "search",
+                    "tool_call_id": "call-unrecovered",
+                    "is_error": True,
+                    "result_preview": "Search error: grep: unrecognized option '--json'",
+                },
+            )
+            audit = session / "audit.jsonl"
+            audit.write_text(
+                json.dumps({"tool": "bash", "args": {"command": "cargo check"}, "success": True}) + "\n",
+                encoding="utf-8",
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["text_tool_error_count"], 0)
+            self.assertEqual(metrics["structured_failed_tool_count"], 2)
+            self.assertEqual(metrics["structured_recovered_failed_tool_count"], 1)
+            self.assertEqual(metrics["structured_unrecovered_failed_tool_count"], 1)
+            self.assertEqual(metrics["tool_error_count"], 1)
+            self.assertIn("search '--json' in src/commands_state", metrics["structured_unrecovered_failed_tool_examples"][0])
+
     def test_log_feedback_lifecycle_gnomes_emit_actionable_lessons(self):
         lessons = log_feedback.top_lessons(
             {

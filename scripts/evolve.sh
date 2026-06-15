@@ -1633,7 +1633,11 @@ Do not tell the implementation agent to keep a fix in a file that your own
 ownership check did not verify. If the task asks the agent to investigate a
 specific symbol, command, or failure class, the Files line must include the
 probable owning module(s), not only the first file mentioned by assessment
-prose.
+prose. Every repo file path you name anywhere in the Objective, Why this
+matters, Verification, Expected Evidence, or detailed task body must also be
+present in the Files line unless the task explicitly says it is read-only
+context. This keeps strict task verification from rejecting correct work as a
+scope mismatch.
 
 PLANNER OUTPUT GUARD:
 - By the time your final third of turns begins, at least one valid session_plan/task_*.md file must already exist.

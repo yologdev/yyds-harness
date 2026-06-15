@@ -93,9 +93,24 @@ MISSING_TERMINAL_EVIDENCE_STATUSES = {
 TASK_TRANSCRIPT_RE = re.compile(r"(?:(task)|(fix)|(bfix))_(?:task)?(\d+)_attempt(\d+)\.log$")
 TURN_MARKER_RE = re.compile(r"\bTurn\s+(\d+)\b")
 ACTION_LINE_RE = re.compile(r"^\s*▶\s+", re.MULTILINE)
+TRANSCRIPT_STATUS_RE = re.compile(r"\s+[✓✗]\s*\([^)]*\)\s*$")
+WORKSPACE_PREFIX_RE = re.compile(r"/home/runner/work/yyds-harness/yyds-harness/?")
 AUTHORIZATION_RE = re.compile(r"(?i)\bauthorization\s*[:=]\s*bearer\s+[^'\"\s]+")
 BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}")
 SECRET_RE = re.compile(r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*['\"]?[^'\"\s]+")
+PSEUDO_ROOT_NAMES = {
+    "docs",
+    "eval",
+    "journals",
+    "memory",
+    "scripts",
+    "session_plan",
+    "site",
+    "skills",
+    "src",
+    "tasks",
+    "tests",
+}
 
 MAX_EVIDENCE_LINES = 8
 MAX_FINGERPRINTS = 10
@@ -483,6 +498,147 @@ def state_dir_for_feedback(session_dir: Path) -> Path:
     if session_dir.name == "session_staging" and (live / "events.jsonl").is_file():
         return live
     return bundled
+
+
+def evidence_text(value: Any, max_len: int = 220) -> str:
+    text = " ".join(str(value or "").split())
+    text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", text)
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]{4,}\b", "sk-[REDACTED]", text)
+    if len(text) > max_len:
+        return text[: max_len - 1].rstrip() + "..."
+    return text
+
+
+def clean_action(value: str) -> str:
+    text = TRANSCRIPT_STATUS_RE.sub("", evidence_text(value, 500)).strip()
+    text = WORKSPACE_PREFIX_RE.sub(".", text)
+    for root in PSEUDO_ROOT_NAMES:
+        text = text.replace(f".{root}/", f"{root}/")
+        text = re.sub(rf"(?<!\S)\.{re.escape(root)}(?=$|\s)", root, text)
+    return re.sub(r"\bcd\s+\.\s*&&\s*", "", text).strip()
+
+
+def normalize_tool_path(path: str) -> str:
+    text = str(path or "").strip()
+    if text.startswith("./"):
+        text = text[2:]
+    if text.startswith("..") and not text.startswith("../"):
+        text = text[1:]
+    if text.startswith(".") and any(text[1:].startswith(root) for root in PSEUDO_ROOT_NAMES):
+        text = text[1:]
+    if text.startswith(".") and text[1:] in PSEUDO_ROOT_NAMES:
+        text = text[1:]
+    return text
+
+
+def exit_code_failure(value: Any) -> bool:
+    text = str(value or "")
+    if re.search(r"\bCommand timed out after \d+s\b", text, re.IGNORECASE):
+        return True
+    match = re.search(r"\bExit code:\s*(-?\d+)\b", text)
+    if not match:
+        return False
+    try:
+        return int(match.group(1)) != 0
+    except ValueError:
+        return False
+
+
+def tool_context(tool: str, args: Any) -> str:
+    if not isinstance(args, dict):
+        return tool
+    if tool == "bash":
+        command = args.get("command")
+        if isinstance(command, str) and command.strip():
+            return f"bash {clean_action(command)}"
+        description = args.get("description")
+        if isinstance(description, str) and description.strip():
+            return f"bash description: {clean_action(description)}"
+        return "bash"
+    if tool == "search":
+        pattern = args.get("pattern")
+        path = args.get("path")
+        if isinstance(pattern, str) and isinstance(path, str):
+            return f"search {pattern!r} in {normalize_tool_path(path)}"
+    for key in ("path", "file", "target_path"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return f"{tool} {normalize_tool_path(value)}"
+    return tool
+
+
+def tool_failure_label(tool: str, args: Any, data: dict[str, Any]) -> str:
+    context = tool_context(tool, args)
+    message = data.get("error") or data.get("message") or data.get("result_preview")
+    message_text = evidence_text(message)
+    if message_text:
+        return f"{context}: {message_text}"
+    return context
+
+
+def normalized_set(values: list[str]) -> set[str]:
+    return {" ".join(str(value).split()) for value in values if str(value).strip()}
+
+
+def failed_bash_command(label: str) -> str:
+    text = str(label or "").strip()
+    if not text.startswith("bash "):
+        return ""
+    command = text.removeprefix("bash ").split(":", 1)[0].strip()
+    return clean_action(command)
+
+
+def structured_tool_action_metrics(session_dir: Path) -> dict[str, Any]:
+    state_dir = state_dir_for_feedback(session_dir)
+    tool_starts: dict[str, dict[str, Any]] = {}
+    failed_tools: list[str] = []
+    for event in load_events(state_dir / "events.jsonl"):
+        kind = event_kind(event)
+        if kind not in {"ToolCallStarted", "ToolCallCompleted"}:
+            continue
+        payload = event_payload(event)
+        tool = payload.get("tool_name")
+        call_id = payload.get("tool_call_id")
+        if not isinstance(tool, str):
+            continue
+        if kind == "ToolCallStarted" and isinstance(call_id, str):
+            tool_starts[call_id] = payload
+            continue
+        if kind != "ToolCallCompleted":
+            continue
+        if payload.get("is_error") is not True and not exit_code_failure(payload.get("result_preview")):
+            continue
+        started = tool_starts.get(call_id) if isinstance(call_id, str) else None
+        args = started.get("args") if isinstance(started, dict) else None
+        failed_tools.append(tool_failure_label(tool, args, payload))
+
+    if not failed_tools:
+        return {}
+
+    successful_commands: list[str] = []
+    for row in load_jsonl(session_dir / "audit.jsonl"):
+        if not isinstance(row, dict) or row.get("tool") != "bash" or row.get("success") is not True:
+            continue
+        args = row.get("args") if isinstance(row.get("args"), dict) else {}
+        command = args.get("command")
+        if isinstance(command, str) and command.strip():
+            successful_commands.append(clean_action(command))
+
+    successful = normalized_set(successful_commands)
+    recovered_failed_tools = [
+        label for label in failed_tools if failed_bash_command(label) in successful
+    ]
+    recovered = normalized_set(recovered_failed_tools)
+    unrecovered_failed_tools = [
+        label for label in failed_tools if " ".join(str(label).split()) not in recovered
+    ]
+    return {
+        "structured_failed_tool_count": len(failed_tools),
+        "structured_recovered_failed_tool_count": len(recovered_failed_tools),
+        "structured_unrecovered_failed_tool_count": len(unrecovered_failed_tools),
+        "structured_failed_tool_examples": failed_tools[:8],
+        "structured_unrecovered_failed_tool_examples": unrecovered_failed_tools[:8],
+    }
 
 
 def state_trace_metrics(session_dir: Path) -> dict[str, Any]:
@@ -1551,6 +1707,7 @@ def build_assessment(
     transcript_text, transcript_log_file_count = transcript_feedback_text(session_dir)
     parsed_text = log_text if log_available else transcript_text
     parsed = parse_log(parsed_text)
+    structured_tools = structured_tool_action_metrics(session_dir)
     turn_metrics = task_turn_metrics(session_dir)
     cache_metrics = state_cache_metrics(session_dir)
     previous = previous_feedback(session_dir)
@@ -1643,11 +1800,18 @@ def build_assessment(
         **state_metrics,
         **pipeline_metrics,
         **parsed,
+        **structured_tools,
         **artifact_metrics,
         **turn_metrics,
         **cache_metrics,
         **recurrences,
     }
+    if structured_tools:
+        metrics["text_tool_error_count"] = int(parsed.get("tool_error_count") or 0)
+        metrics["tool_error_count"] = max(
+            int(parsed.get("tool_error_count") or 0),
+            int(structured_tools.get("structured_unrecovered_failed_tool_count") or 0),
+        )
     promote_manifest_seed_contradictions(metrics)
     seed_contradictions = suppress_resolved_seed_replacement(metrics)
     no_edit_reverts = int(metrics.get("task_no_edit_revert_count") or 0)

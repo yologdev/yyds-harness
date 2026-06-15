@@ -19,6 +19,11 @@ FILE_ANNOTATION_RE = re.compile(
     re.IGNORECASE,
 )
 FILE_TRAILING_NOTE_RE = re.compile(r"\s+(?:-|--|—)\s+.*$")
+FILE_MENTION_RE = re.compile(
+    r"(?<![\w./-])((?:src|scripts|tests|docs|eval|memory|skills|tasks|site|journals)/"
+    r"[A-Za-z0-9_./+-]*[A-Za-z0-9_+-]\.[A-Za-z0-9_+-]+|"
+    r"Cargo\.(?:toml|lock)|README\.md)(?![\w./-])"
+)
 SECTION_STOP_RE = re.compile(
     r"^(?:#+\s*)?(?:title|files|issue|origin|objective|goal|why this matters|"
     r"success criteria|acceptance criteria|verification|test plan|expected evidence)\s*:?\s*",
@@ -75,6 +80,10 @@ def normalize_file_list(values: list[object]) -> list[str]:
 
 def split_list(value: str) -> list[str]:
     return normalize_file_list(value.replace(";", ",").split(","))
+
+
+def extract_file_mentions(text: str) -> list[str]:
+    return normalize_file_list(match.group(1) for match in FILE_MENTION_RE.finditer(text or ""))
 
 
 def read_text(path: Path | None) -> str:
@@ -141,7 +150,7 @@ def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[
     if alignment["contradicted_by_assessment"]:
         quality_score = min(quality_score, 0.5)
     title = fields.get("title") or f"Task {task_number}"
-    files = split_list(fields.get("files", ""))
+    files = normalize_file_list(split_list(fields.get("files", "")) + extract_file_mentions(text))
     return {
         "task_id": f"task_{task_number:02d}",
         "task_number": task_number,

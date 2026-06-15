@@ -1952,12 +1952,15 @@ def task_manifest_summary(session_dir: Path) -> dict[str, Any]:
         quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
         parsed_quality = parsed_task.get("quality") if isinstance(parsed_task.get("quality"), dict) else {}
         expected_evidence = task.get("expected_evidence") or parsed_task.get("expected_evidence")
+        files = normalize_file_list(
+            list(task.get("files") or []) + list(parsed_task.get("files") or [])
+        )
         tasks.append(
             {
                 "task_id": task.get("task_id"),
                 "task_number": task.get("task_number"),
                 "title": task.get("title") or parsed_task.get("title"),
-                "files": normalize_file_list(task.get("files") or parsed_task.get("files") or []),
+                "files": files,
                 "issue": task.get("issue") or parsed_task.get("issue"),
                 "origin": task.get("origin") or parsed_task.get("origin"),
                 "artifact_path": artifact_path,
