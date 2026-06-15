@@ -6,7 +6,8 @@
 #   - cargo build && cargo test pass on current main
 #
 # Exits 0 silently when gates fail (this is normal — most cron fires are no-ops).
-# Auto-commits and pushes any change the meta-skill produced; reverts on build break.
+# Auto-commits and pushes any allowed skill-journal/skill diff the meta-skill
+# produced; rejects anything outside the skill-evolve allow-list.
 #
 # Usage (CI or local):
 #   DEEPSEEK_API_KEY=sk-... ./scripts/skill_evolve.sh
@@ -410,24 +411,12 @@ if [ -n "$CHANGED_FILES" ]; then
     fi
     echo "skill-evolve: diff scope OK ($(echo "$CHANGED_FILES" | wc -l | tr -d ' ') files changed, all in allow-list)"
 
-    # ── Build/test verify. PIPESTATUS makes this independent of `set -o pipefail`. ──
-    cargo build --quiet 2>&1 | tail -10
-    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-        echo "skill-evolve: build broken after agent commit — reverting"
-        revert_agent_work
-        append_harness_journal_event "refused" "agent changes broke cargo build; harness reverted the changes"
-        commit_uncommitted_cycle_changes "$(changed_files_since_cycle_start)"
-        exit 1
-    fi
-    cargo test --quiet 2>&1 | tail -10
-    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-        echo "skill-evolve: tests broken after agent commit — reverting"
-        revert_agent_work
-        append_harness_journal_event "refused" "agent changes broke cargo test; harness reverted the changes"
-        commit_uncommitted_cycle_changes "$(changed_files_since_cycle_start)"
-        exit 1
-    fi
-    echo "skill-evolve: build/test still green"
+    # The allow-list above admits only skill docs, the skill-evolve journal,
+    # learnings, and retired skill dirs. These files are not compiled by Rust.
+    # Gate 3 already proved the code baseline was green before the agent ran;
+    # rerunning full cargo checks here can only fail from unrelated/flaky code
+    # tests and turn a valid NO-OP/refine cycle into a false failure.
+    echo "skill-evolve: allowed diff is non-code; preflight build/test baseline remains authoritative"
 
     commit_uncommitted_cycle_changes "$CHANGED_FILES"
 fi

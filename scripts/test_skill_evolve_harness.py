@@ -39,10 +39,16 @@ class SkillEvolveHarnessTests(unittest.TestCase):
     def test_revert_paths_leave_refused_journal_evidence(self):
         self.assertIn("DIFF SCOPE VIOLATION", self.script)
         self.assertIn("outside the skill-evolve allow-list", self.script)
-        self.assertIn("build broken after agent commit", self.script)
-        self.assertIn("broke cargo build", self.script)
-        self.assertIn("tests broken after agent commit", self.script)
-        self.assertIn("broke cargo test", self.script)
+        self.assertIn('append_harness_journal_event "refused"', self.script)
+
+    def test_allowed_skill_only_diff_uses_preflight_build_test_baseline(self):
+        self.assertIn("Gate 3 already proved the code baseline was green", self.script)
+        self.assertIn(
+            "allowed diff is non-code; preflight build/test baseline remains authoritative",
+            self.script,
+        )
+        self.assertNotIn("build broken after agent commit", self.script)
+        self.assertNotIn("tests broken after agent commit", self.script)
 
 
 if __name__ == "__main__":
