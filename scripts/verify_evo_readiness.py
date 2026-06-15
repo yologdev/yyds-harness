@@ -72,30 +72,92 @@ def artifact_readiness_metrics(session_dir: Path) -> dict[str, Any]:
     selected = len(task_ids)
     artifact_hits = sum(1 for task_id in task_ids if task_id in artifacts)
     lineage_hits = sum(1 for task_id in task_ids if task_id in lineage)
-    attempt_rows = sum(
+    raw_attempt_rows = sum(
         len(row.get("attempts") or [])
         for row in artifacts.values()
         if isinstance(row, dict)
     )
+    final_artifact_pairs = [
+        (task, artifacts[str(task.get("task_id") or "")])
+        for task in tasks
+        if isinstance(artifacts.get(str(task.get("task_id") or "")), dict)
+    ]
     attempted = max(
         int_metric(outcome, "tasks_attempted"),
-        attempt_rows,
+        len(final_artifact_pairs),
     )
-    succeeded = int_metric(outcome, "tasks_succeeded")
+
+    artifact_succeeded = 0
+    artifact_mechanical_verified = 0
+    for task, row in final_artifact_pairs:
+        task_outcome = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
+        evals = row.get("evals") if isinstance(row.get("evals"), list) else []
+        passed = state_graph_tools.eval_passed(evals)
+        if passed:
+            artifact_mechanical_verified += 1
+        outcome_status = str(task_outcome.get("status") or "").strip().lower()
+        revert_reason = str(task_outcome.get("revert_reason") or "").lower()
+        planned = [
+            str(path)
+            for path in (task_outcome.get("planned_files") or task.get("files") or [])
+            if path
+        ]
+        touched = [
+            str(path)
+            for path in (
+                task_outcome.get("touched_files")
+                or task_outcome.get("source_files")
+                or []
+            )
+            if path
+        ]
+        source_touched = [
+            str(path)
+            for path in (
+                (task_outcome.get("source_files") or [])
+                + (task_outcome.get("touched_files") or [])
+            )
+            if state_graph_tools.source_file(str(path))
+        ]
+        overlap_ok = (
+            not planned
+            or not touched
+            or state_graph_tools.file_overlap(planned, touched)
+        )
+        landed_ok = not source_touched or bool(
+            task_outcome.get("commit_shas") or task_outcome.get("commits")
+        )
+        blocked = any(
+            marker in revert_reason
+            for marker in (
+                "api error",
+                "modified protected files",
+                "do not overlap planned",
+                "marked obsolete",
+            )
+        )
+        if outcome_status == "completed" and passed and overlap_ok and landed_ok and not blocked:
+            artifact_succeeded += 1
+
+    succeeded = max(int_metric(outcome, "tasks_succeeded"), artifact_succeeded)
 
     result: dict[str, Any] = {
         "task_manifest_available": bool(manifest),
         "selected_task_count": selected,
         "tasks_attempted": attempted,
+        "raw_task_attempt_count": raw_attempt_rows,
     }
     if selected > 0:
         result["task_artifact_coverage"] = artifact_hits / selected
         result["task_lineage_capture_coverage"] = lineage_hits / selected
     if attempted > 0:
         result["task_success_rate"] = max(min(succeeded / attempted, 1.0), 0.0)
+        result["task_verification_rate"] = max(min(artifact_succeeded / attempted, 1.0), 0.0)
+        result["task_mechanical_verification_rate"] = max(
+            min(artifact_mechanical_verified / attempted, 1.0),
+            0.0,
+        )
     for key in (
-        "task_verification_rate",
-        "task_mechanical_verification_rate",
         "task_stale_seed_obsolete_note_count",
         "task_incomplete_terminal_count",
         "task_no_edit_revert_count",
@@ -113,8 +175,19 @@ def merge_artifact_metrics(gnomes: dict[str, Any], artifact_metrics: dict[str, A
     merged = dict(gnomes)
     if artifact_metrics.get("task_manifest_available"):
         merged["task_manifest_available"] = True
-    for key in ("selected_task_count", "tasks_attempted"):
-        merged[key] = max(int_metric(merged, key), int_metric(artifact_metrics, key))
+    merged["selected_task_count"] = max(
+        int_metric(merged, "selected_task_count"),
+        int_metric(artifact_metrics, "selected_task_count"),
+    )
+    if artifact_metrics.get("task_manifest_available"):
+        merged["tasks_attempted"] = int_metric(artifact_metrics, "tasks_attempted")
+    else:
+        merged["tasks_attempted"] = max(
+            int_metric(merged, "tasks_attempted"),
+            int_metric(artifact_metrics, "tasks_attempted"),
+        )
+    if int_metric(artifact_metrics, "raw_task_attempt_count") > 0:
+        merged["raw_task_attempt_count"] = int_metric(artifact_metrics, "raw_task_attempt_count")
     for key in (
         "task_success_rate",
         "task_verification_rate",
@@ -122,7 +195,9 @@ def merge_artifact_metrics(gnomes: dict[str, Any], artifact_metrics: dict[str, A
         "task_artifact_coverage",
         "task_lineage_capture_coverage",
     ):
-        if float_metric(merged, key) is None and float_metric(artifact_metrics, key) is not None:
+        if float_metric(artifact_metrics, key) is not None and (
+            float_metric(merged, key) is None or artifact_metrics.get("task_manifest_available")
+        ):
             merged[key] = artifact_metrics[key]
     for key in (
         "task_stale_seed_obsolete_note_count",
@@ -170,6 +245,7 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
     artifact_coverage = float_metric(gnomes, "task_artifact_coverage")
     lineage_coverage = float_metric(gnomes, "task_lineage_capture_coverage")
     stale_seed_obsolete = int_metric(gnomes, "task_stale_seed_obsolete_note_count")
+    incomplete_terminal = int_metric(gnomes, "task_incomplete_terminal_count")
 
     issues: list[str] = []
     warnings: list[str] = []
@@ -188,6 +264,10 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
         if stale_seed_obsolete:
             issues.append(
                 f"stale seed-obsolete note contamination present: {stale_seed_obsolete}"
+            )
+        if incomplete_terminal:
+            warnings.append(
+                f"task implementation terminal evidence incomplete for {incomplete_terminal} task artifact(s)"
             )
         if task_success is None:
             issues.append("task success rate missing despite selected or attempted task evidence")
@@ -230,6 +310,8 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
             "task_artifact_coverage": artifact_coverage,
             "task_lineage_capture_coverage": lineage_coverage,
             "task_stale_seed_obsolete_note_count": stale_seed_obsolete,
+            "task_incomplete_terminal_count": incomplete_terminal,
+            "raw_task_attempt_count": int_metric(gnomes, "raw_task_attempt_count"),
             "graph_pressure_present": bool(graph_pressure),
             "dominant_task_failure_visible": task_success_pressure_visible(graph_pressure),
         },
@@ -359,6 +441,59 @@ def run_self_tests() -> int:
         check("artifact overlay gives task success", evidence["task_success_rate"] == 0.0, report)
         check("artifact overlay gives artifact coverage", evidence["task_artifact_coverage"] == 1.0, report)
         check("artifact overlay gives lineage coverage", evidence["task_lineage_capture_coverage"] == 1.0, report)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        session = root / "day-1"
+        write_json(
+            session / "outcome.json",
+            {"day": 1, "tasks_attempted": 1, "tasks_succeeded": 1},
+        )
+        write_json(
+            session / "tasks/manifest.json",
+            {
+                "planner": {"planning_failed": False, "selected_task_count": 1},
+                "tasks": [{"task_id": "task_01", "title": "T", "files": ["src/lib.rs"]}],
+            },
+        )
+        write_json(
+            session / "tasks/task_01/outcome.json",
+            {
+                "status": "completed",
+                "planned_files": ["src/lib.rs"],
+                "touched_files": ["src/lib.rs"],
+                "source_files": ["src/lib.rs"],
+                "commit_shas": ["abc1234"],
+            },
+        )
+        write_json(session / "tasks/task_01/decision.json", {"task_id": "task_01"})
+        write_json(
+            session / "tasks/task_01/eval_attempt_1.json",
+            {"status": "pass", "verdict": "Verdict: PASS"},
+        )
+        (session / "tasks/task_01/attempts.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps({"phase": "implementation", "status": "incomplete_no_terminal_evidence"}),
+                    json.dumps({"phase": "build_fix", "status": "completed"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        write_json(
+            session / "state/summary.json",
+            {"latest_gnomes": {}, "task_lineage": [{"task_id": "task_01"}]},
+        )
+        report = readiness_report(root)
+        evidence = report["evidence"]
+        check("repaired artifact classified verified", report["classification"] == "verified_success", report)
+        check("repaired artifact ready", report["can_drive_evolution"] is True, report)
+        check("repaired artifact counts final task attempts", evidence["tasks_attempted"] == 1, report)
+        check("repaired artifact preserves raw attempts", evidence["raw_task_attempt_count"] == 2, report)
+        check("repaired artifact gives final task success", evidence["task_success_rate"] == 1.0, report)
+        check("repaired artifact gives final verification", evidence["task_verification_rate"] == 1.0, report)
+        check("terminal gap remains warning", bool(report["warnings"]), report)
 
     check(
         "readiness accepts generic task success pressure",
