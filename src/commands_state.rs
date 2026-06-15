@@ -2589,9 +2589,9 @@ fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
                     .unwrap_or(false)
             })
             .count();
-        let run_started = events.iter().any(|e| {
-            event_string(e, "event_type") == Some("RunStarted")
-        });
+        let run_started = events
+            .iter()
+            .any(|e| event_string(e, "event_type") == Some("RunStarted"));
 
         if events.is_empty() || (run_completed_count == 0 && !run_started) {
             err.push_str("State recording is active but no sessions have completed yet.\n");
@@ -2599,9 +2599,7 @@ fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
                 "Diagnostics become available after 2\u{2013}3 completed evolution sessions.",
             );
             if id == "last-failure" {
-                err.push_str(
-                    "\n\nTry 'yoyo state tail --limit 5' to inspect recent events.",
-                );
+                err.push_str("\n\nTry 'yoyo state tail --limit 5' to inspect recent events.");
             }
         } else if run_completed_count == 0 && run_started {
             err.push_str("A session is currently in progress.\n");
@@ -2609,9 +2607,7 @@ fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
                 "Diagnostics and failure data become available after the session completes.",
             );
             if id == "last-failure" {
-                err.push_str(
-                    "\n\nTry 'yoyo state tail --limit 5' to follow live events.",
-                );
+                err.push_str("\n\nTry 'yoyo state tail --limit 5' to follow live events.");
             }
         } else if failure_count == 0 {
             err.push_str(&format!(
