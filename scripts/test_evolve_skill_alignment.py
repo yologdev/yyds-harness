@@ -72,6 +72,15 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn('"recent action evidence"', script)
         self.assertIn('"historical unrecovered tool failures" as context only', script)
 
+    def test_planning_phase_rejects_overlarge_refactor_tasks(self):
+        script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("Refactor/extraction tasks must be micro-extractions", script)
+        self.assertIn("move at most 3 tightly related helpers", script)
+        self.assertIn('Do not create tasks whose success depends on moving\n  "~400 lines", "~600 lines"', script)
+        self.assertIn("must name the new module file, the module declaration owner", script)
+        self.assertIn("Creating a copied module while leaving the original implementation\n  in place is not success", script)
+
     def test_self_assess_skill_is_yyds_deepseek_native(self):
         text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")
 

@@ -226,17 +226,19 @@ TASKS = [
             "extract another focused state cli",
         ),
         "title": "Extract another focused state CLI module",
-        "files": "src/commands_state.rs, src/lib.rs",
+        "files": "src/commands_state.rs, src/commands_state_graph.rs",
         "objective": (
-            "Reduce `commands_state.rs` by extracting one cohesive state CLI subsystem into a dedicated module "
-            "without changing command behavior."
+            "Reduce `commands_state.rs` by moving one to three tightly related graph report/payload helpers "
+            "into the existing `commands_state_graph.rs` module without changing command behavior."
         ),
         "why": (
             "The assessment found `commands_state.rs` still represents roughly 16% of the Rust codebase. "
-            "Continued small extractions lower maintenance risk for state/eval/evolution work."
+            "A micro-extraction into an existing module is small enough for a single DeepSeek task and avoids "
+            "the broad extraction/revert pattern seen in previous runs."
         ),
         "success": [
-            "One cohesive state CLI subsystem moves out of `commands_state.rs`.",
+            "One to three related graph helpers move from `commands_state.rs` into `commands_state_graph.rs`.",
+            "The original helper definitions are removed from `commands_state.rs`, with call sites/imports updated.",
             "The public state command behavior and tests remain unchanged.",
             "The extraction touches no unrelated modules.",
         ],
@@ -245,8 +247,8 @@ TASKS = [
             "cargo check",
         ],
         "evidence": [
-            "Task lineage shows the new module and `commands_state.rs` shrink.",
-            "Dashboard work evidence lists the extracted module as a source file.",
+            "Task lineage shows `commands_state_graph.rs` and `commands_state.rs` as the changed source files.",
+            "Dashboard work evidence lists the existing graph module as a source file.",
         ],
     },
 ]
@@ -578,6 +580,10 @@ Tool failures: search_regex_error=57; search_binary_match=19
         )
         task = choose_task(assessment)
         assert task["title"] == "Extract another focused state CLI module", task
+        text = render_task(task, "107", "21:30")
+        assert "src/commands_state_graph.rs" in text, text
+        assert "one to three tightly related graph" in text, text
+        assert "original helper definitions are removed" in text, text
         assessment = (
             "State why last-failure: No failure found. The state system's "
             "`last-failure` target returned nothing — meaning no pipe-failures, "

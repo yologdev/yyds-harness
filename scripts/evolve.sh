@@ -1649,6 +1649,15 @@ TASK SIZING RULES — follow these strictly:
 - Large refactors (module splits, multi-file renames) MUST be broken into one-module-at-a-time tasks.
   Example: "Split format.rs into 5 modules" → Task 1: "Extract highlight module from format.rs",
   Task 2: "Extract cost module from format.rs", etc. Each task is independently verifiable.
+- Refactor/extraction tasks must be micro-extractions: move at most 3 tightly related helpers or
+  roughly 200 lines, whichever is smaller. Do not create tasks whose success depends on moving
+  "~400 lines", "~600 lines", "an entire subsystem", or otherwise broad chunks of a large file.
+- If the evidence points at a large-file/module-split problem, select a characterization-test task
+  or one helper-cluster extraction into an existing module first. A task that creates a new module
+  must name the new module file, the module declaration owner, and the call-site owner in Files:.
+- Extraction success criteria must say the original helpers are removed from the source file and
+  call sites/imports are updated. Creating a copied module while leaving the original implementation
+  in place is not success.
 - Each task must be completable in 20 minutes by a focused agent. If you're unsure, make it smaller.
 - If a task has been reverted before (check agent-self issues above), make it SMALLER than last time.
   The previous approach was too ambitious — simplify, don't retry the same scope.
