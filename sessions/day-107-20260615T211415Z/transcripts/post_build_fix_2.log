@@ -1,0 +1,146 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the test failure. The test `state::tests::run_completion_guard_reports_error_on_panic` is panicking at `src/state.rs:6560` and `src/state.rs:6575`. Let me look at those lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/state.rs:6545..6595 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test is panicking at line 6560 (`panic!("test lifecycle error 107")`), which is expected. But the assertions at lines 6575-6577 are failing - the `RunCompleted` event is not being written. Let me look at the `RunCompletionGuard` implementation and the panic hook to understand why.
+
+The output shows:
+- `RunStarted` is present ✓
+- `FailureObserved` is present ✓  
+- `RunCompleted` is missing ✗
+
+The test panicked at line 6575, which is `raw.contains("RunCompleted")` assertion. The `RunCompleted` event is never written.
+
+Let me look at the `RunCompletionGuard` implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RunCompletionGuard' in src/state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the implementation of RunCompletionGuard.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:340..400 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `RunCompletionGuard::drop` checks `RUN_HAD_ERROR.with(|c| c.get())` to determine if the run had an error. If yes, it sets status to "error". But the issue is: does the panic hook set `RUN_HAD_ERROR`?
+
+Let me look at the `install_panic_hook` function and `RUN_HAD_ERROR`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'install_panic_hook' in src/state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:31..61 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the panic hook at line 52 does set `RUN_HAD_ERROR.with(|c| c.set(true))`. But then at line 53 it calls `record(EventType::FailureObserved, ...)`. 
+
+The problem is in the test: it panics at line 6560, the panic hook runs, sets RUN_HAD_ERROR=true, records FailureObserved. Then `catch_unwind` catches it. Then the `RunCompletionGuard` should be dropped. But wait...
+
+The guard is created at line 6559: `let _guard = RunCompletionGuard::completed_on_drop();` inside the `catch_unwind` closure. When the panic happens at line 6560, the closure unwind will drop local variables in reverse order. The `_guard` should be dropped and its `Drop` implementation should call `mark_run_completed`.
+
+But the output shows `RunCompleted` is missing. Let me look more carefully...
+
+Actually wait, the test output says:
+```
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (27567) panicked at src/state.rs:6560:13:
+test lifecycle error 107
+
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (27567) panicked at src/state.rs:6575:9:
+should contain RunCompleted: ...
+```
+
+So the first panic is at line 6560 (the intentional `panic!`), then the second is at line 6575 which is the assertion that fails. So the test itself panics during the assertion because `RunCompleted` is not in the output. 
+
+But then `catch_unwind` should catch the first panic and the guard should drop... Let me look more carefully at the events log from the test:
+
+```
+RunStarted → present
+FailureObserved → present
+RunCompleted → MISSING
+```
+
+So the guard's `Drop` is either not running or `record()` is failing during drop. Let me check if `record` during Drop might silently fail.
+
+Actually wait, I see `record` at line 53 in the panic hook. The panic hook calls `record(EventType::FailureObserved, ...)`. Let me look at `record` to see if it has any guards against re-entrancy or recursive calls.
+
+Actually, a common issue is that if `record` acquires a lock that might be poisoned by the panic, the drop during unwind might deadlock or silently fail. Let me look at the `record` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^pub fn record\b|^fn record\b|fn record\("' in src/state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly for the `record` function definition.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record\b' in src/state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It's probably in the state module but in a different file. Let me check what module structure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record\b' ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Maybe `record` is a method or it's imported from elsewhere. Let me look around the guard code more to see what `record` and `mark_run_completed` do.
+
+Actually, I read line 366-372:
+```rust
+pub fn mark_run_completed(status: &str) {
+    record(
+        EventType::RunCompleted,
+        Actor::Harness,
+        run_completed_payload(status, None, None),
+    );
+}
+```
+
+`record` is called there. Let me find where `record` is defined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record\(' in src/state.rs ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `record` without the parenthesis.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ rg -n "record" src/state.rs | head -30 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me use the search tool.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search '"record"' in src/state.rs ✓ (7ms)
+
+
