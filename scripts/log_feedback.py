@@ -83,14 +83,7 @@ YOYO_USAGE_CACHE_RE = re.compile(
 PROMPT_CACHE_HIT_RE = re.compile(r"\bprompt_cache_hit_tokens\b['\"]?\s*[:=]\s*([\d,]+)", re.IGNORECASE)
 PROMPT_CACHE_MISS_RE = re.compile(r"\bprompt_cache_miss_tokens\b['\"]?\s*[:=]\s*([\d,]+)", re.IGNORECASE)
 TASK_TERMINAL_EVIDENCE_RE = re.compile(
-    r"TASK_TERMINAL_EVIDENCE:\s*(?:changed|obsolete|blocked)"
-    r"|^## Summary\b"
-    r"|^Done\."
-    r"|Task completed"
-    r"|All gates passed"
-    r"|obsolete-task note"
-    r"|concrete blocker"
-    r"|committed",
+    r"^\s*TASK_TERMINAL_EVIDENCE:\s*(?:changed|obsolete|blocked)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
 TASK_TRANSCRIPT_RE = re.compile(r"(?:(task)|(fix)|(bfix))_(?:task)?(\d+)_attempt(\d+)\.log$")
@@ -207,6 +200,7 @@ GNOME_KEYS = [
     "task_scope_mismatch_count",
     "task_unlanded_source_count",
     "task_incomplete_terminal_count",
+    "task_terminal_marker_missing_attempt_count",
     "task_analysis_only_attempt_count",
     "max_task_turn_count",
     "avg_task_turn_count",
@@ -250,6 +244,7 @@ SCORE_FAILURE_WEIGHTS = {
     "evaluator_timeout_with_verdict_count": 2.0,
     "task_unlanded_source_count": 2.0,
     "task_incomplete_terminal_count": 2.0,
+    "task_terminal_marker_missing_attempt_count": 0.5,
     "task_unverified_raw_success_count": 1.0,
     "state_live_baseline_shrink_count": 2.0,
     "deepseek_model_call_abnormal_completed_count": 2.0,
@@ -1166,6 +1161,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     explained_unverified_ids: set[str] = set()
     unlanded_source = 0
     incomplete_terminal = 0
+    terminal_marker_missing_attempts = 0
     analysis_only_attempts = 0
     tasks_by_id = {str(task.get("task_id") or ""): task for task in tasks if isinstance(task, dict)}
     stale_seed_obsolete_note_count = 0
@@ -1173,11 +1169,12 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         task_key = task_dir.name
         outcome = load_json(task_dir / "outcome.json")
         attempts = load_jsonl(task_dir / "attempts.jsonl")
-        incomplete_terminal += sum(
+        missing_terminal_attempt_count = sum(
             1
             for row in attempts
             if implementation_attempt_missing_terminal_evidence(session_dir, row)
         )
+        terminal_marker_missing_attempts += missing_terminal_attempt_count
         analysis_only_attempts += sum(
             1
             for row in attempts
@@ -1236,9 +1233,12 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             explained_unverified_ids.add(task_key)
         landed = bool(outcome.get("commit_shas") or outcome.get("commits"))
         has_landed_source = not touched or landed
+        mechanically_proven = outcome.get("status") == "completed" and has_pass and has_landed_source
+        if missing_terminal_attempt_count and not mechanically_proven:
+            incomplete_terminal += 1
         if has_pass:
             mechanical_verified += 1
-        if outcome.get("status") == "completed" and has_pass and has_landed_source:
+        if mechanically_proven:
             strict_verified += 1
         elif not obsolete and not api_error and not protected_revert and not scope_mismatch and (
             outcome.get("status") == "completed" or evals
@@ -1277,6 +1277,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "protected_file_revert_count": protected_file_revert_count,
         "task_unlanded_source_count": unlanded_source,
         "task_incomplete_terminal_count": incomplete_terminal,
+        "task_terminal_marker_missing_attempt_count": terminal_marker_missing_attempts,
         "task_analysis_only_attempt_count": analysis_only_attempts,
         "task_spec_quality_score": round(sum(quality_scores) / len(quality_scores), 4)
         if quality_scores
@@ -1721,7 +1722,15 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
             {
                 "kind": "task_incomplete_terminal",
                 "fingerprint": "implementation attempt exited cleanly without final terminal evidence",
-                "action": "retry partial progress from a checkpoint and require TASK_TERMINAL_EVIDENCE before treating exit 0 as completed",
+                "action": "require terminal task evidence or mechanical proof before treating exit 0 as completed",
+            }
+        )
+    if int(metrics.get("task_terminal_marker_missing_attempt_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "task_terminal_marker_missing",
+                "fingerprint": "implementation attempts landed proof but omitted the exact terminal marker",
+                "action": "make implementation agents emit the exact TASK_TERMINAL_EVIDENCE marker after committing verified work",
             }
         )
     if int(metrics.get("task_analysis_only_attempt_count") or 0) > 0:

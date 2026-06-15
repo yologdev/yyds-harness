@@ -1437,6 +1437,82 @@ class TaskLineageFeedback(unittest.TestCase):
                 {lesson["kind"] for lesson in assessment["top_lessons"]},
             )
 
+    def test_terminal_evidence_requires_exact_marker(self):
+        self.assertTrue(log_feedback.transcript_has_terminal_evidence("TASK_TERMINAL_EVIDENCE: changed\n"))
+        self.assertFalse(log_feedback.transcript_has_terminal_evidence("Done. committed and all gates passed\n"))
+
+    def test_terminal_marker_missing_attempt_does_not_make_mechanically_proven_task_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [{"task_id": "task_01"}],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "source_files": ["src/prompt.rs"],
+                    "touched_files": ["src/prompt.rs"],
+                    "commit_shas": ["abc123"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "Verdict: PASS"},
+            )
+            attempts_path = session / "tasks/task_01/attempts.jsonl"
+            attempts_path.parent.mkdir(parents=True, exist_ok=True)
+            attempts_path.write_text(
+                json.dumps(
+                    {
+                        "task_id": "task_01",
+                        "phase": "implementation",
+                        "attempt": 1,
+                        "exit_code": 0,
+                        "status": "incomplete_no_terminal_evidence",
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["task_success_rate"], 1.0)
+            self.assertEqual(metrics["task_verification_rate"], 1.0)
+            self.assertEqual(metrics["task_incomplete_terminal_count"], 0)
+            self.assertEqual(metrics["task_terminal_marker_missing_attempt_count"], 1)
+            self.assertIn(
+                "task_terminal_marker_missing",
+                {lesson["kind"] for lesson in assessment["top_lessons"]},
+            )
+
     def test_log_feedback_counts_reverted_source_task_as_unlanded(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

@@ -1341,6 +1341,55 @@ class StateGraphTools(unittest.TestCase):
 
             self.assertEqual(metrics["task_incomplete_terminal_count"], 1)
 
+    def test_mechanically_proven_task_with_missing_marker_is_not_terminal_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "title": "Guard task terminality",
+                            "files": ["src/prompt.rs"],
+                        }
+                    ]
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "planned_files": ["src/prompt.rs"],
+                    "touched_files": ["src/prompt.rs"],
+                    "source_files": ["src/prompt.rs"],
+                    "commit_shas": ["abc123"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "PASS"},
+            )
+            write_jsonl(
+                session / "tasks/task_01/attempts.jsonl",
+                [
+                    {
+                        "task_id": "task_01",
+                        "phase": "implementation",
+                        "attempt": 1,
+                        "exit_code": 0,
+                        "status": "incomplete_no_terminal_evidence",
+                    }
+                ],
+            )
+
+            metrics = state_graph_tools.task_artifact_verification_metrics(session)
+
+            self.assertEqual(metrics["task_verification_rate"], 1.0)
+            self.assertEqual(metrics["task_incomplete_terminal_count"], 0)
+            self.assertEqual(metrics["task_terminal_marker_missing_attempt_count"], 1)
+
     def test_task_artifacts_clear_stale_raw_and_evaluator_gnomes(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

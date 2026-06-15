@@ -3284,6 +3284,7 @@ SCORE_FAILURE_WEIGHTS = {
     "evaluator_timeout_with_verdict_count": 2.0,
     "task_unlanded_source_count": 2.0,
     "task_incomplete_terminal_count": 2.0,
+    "task_terminal_marker_missing_attempt_count": 0.5,
     "task_unverified_raw_success_count": 1.0,
     "state_live_baseline_shrink_count": 2.0,
     "deepseek_model_call_abnormal_completed_count": 2.0,

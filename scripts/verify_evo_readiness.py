@@ -160,6 +160,7 @@ def artifact_readiness_metrics(session_dir: Path) -> dict[str, Any]:
     for key in (
         "task_stale_seed_obsolete_note_count",
         "task_incomplete_terminal_count",
+        "task_terminal_marker_missing_attempt_count",
         "task_no_edit_revert_count",
         "task_obsolete_count",
         "task_api_error_count",
@@ -202,13 +203,17 @@ def merge_artifact_metrics(gnomes: dict[str, Any], artifact_metrics: dict[str, A
     for key in (
         "task_stale_seed_obsolete_note_count",
         "task_incomplete_terminal_count",
+        "task_terminal_marker_missing_attempt_count",
         "task_no_edit_revert_count",
         "task_obsolete_count",
         "task_api_error_count",
         "protected_file_revert_count",
         "task_scope_mismatch_count",
     ):
-        merged[key] = max(int_metric(merged, key), int_metric(artifact_metrics, key))
+        if artifact_metrics.get("task_manifest_available"):
+            merged[key] = int_metric(artifact_metrics, key)
+        else:
+            merged[key] = max(int_metric(merged, key), int_metric(artifact_metrics, key))
     return merged
 
 
@@ -246,6 +251,7 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
     lineage_coverage = float_metric(gnomes, "task_lineage_capture_coverage")
     stale_seed_obsolete = int_metric(gnomes, "task_stale_seed_obsolete_note_count")
     incomplete_terminal = int_metric(gnomes, "task_incomplete_terminal_count")
+    terminal_marker_missing = int_metric(gnomes, "task_terminal_marker_missing_attempt_count")
 
     issues: list[str] = []
     warnings: list[str] = []
@@ -268,6 +274,10 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
         if incomplete_terminal:
             warnings.append(
                 f"task implementation terminal evidence incomplete for {incomplete_terminal} task artifact(s)"
+            )
+        if terminal_marker_missing and not incomplete_terminal:
+            warnings.append(
+                f"implementation terminal marker missing on {terminal_marker_missing} attempt(s); mechanical task proof exists"
             )
         if task_success is None:
             issues.append("task success rate missing despite selected or attempted task evidence")
@@ -311,6 +321,7 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
             "task_lineage_capture_coverage": lineage_coverage,
             "task_stale_seed_obsolete_note_count": stale_seed_obsolete,
             "task_incomplete_terminal_count": incomplete_terminal,
+            "task_terminal_marker_missing_attempt_count": terminal_marker_missing,
             "raw_task_attempt_count": int_metric(gnomes, "raw_task_attempt_count"),
             "graph_pressure_present": bool(graph_pressure),
             "dominant_task_failure_visible": task_success_pressure_visible(graph_pressure),

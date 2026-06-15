@@ -18,14 +18,7 @@ from pathlib import Path
 from typing import Any
 
 TASK_TERMINAL_EVIDENCE_RE = re.compile(
-    r"TASK_TERMINAL_EVIDENCE:\s*(?:changed|obsolete|blocked)"
-    r"|^## Summary\b"
-    r"|^Done\."
-    r"|Task completed"
-    r"|All gates passed"
-    r"|obsolete-task note"
-    r"|concrete blocker"
-    r"|committed",
+    r"^\s*TASK_TERMINAL_EVIDENCE:\s*(?:changed|obsolete|blocked)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -59,6 +52,7 @@ GNOME_COMPARE_KEYS = [
     "task_stale_seed_obsolete_note_count",
     "task_unlanded_source_count",
     "task_incomplete_terminal_count",
+    "task_terminal_marker_missing_attempt_count",
     "task_analysis_only_attempt_count",
     "search_error_count",
     "max_task_turn_count",
@@ -412,9 +406,10 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
         outcome_status = str(outcome.get("status") or "").strip().lower()
         revert_reason = str(outcome.get("revert_reason") or "")
         attempts = artifact.get("attempts") if isinstance(artifact.get("attempts"), list) else []
-        incomplete_terminal = any(
-            isinstance(row, dict) and implementation_attempt_missing_terminal_evidence(session_dir, row)
+        terminal_marker_missing_attempt_count = sum(
+            1
             for row in attempts
+            if isinstance(row, dict) and implementation_attempt_missing_terminal_evidence(session_dir, row)
         )
         analysis_only_attempt = any(
             isinstance(row, dict)
@@ -446,14 +441,18 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             problems.append("no_edit_revert")
         if source_touched and not commits:
             problems.append("source_edits_not_landed")
+        passed = eval_passed(artifact.get("evals") if isinstance(artifact.get("evals"), list) else [])
+        mechanically_proven = outcome_status == "completed" and overlap and passed and not (
+            source_touched and not commits
+        )
+        incomplete_terminal = bool(terminal_marker_missing_attempt_count and not mechanically_proven)
         if incomplete_terminal:
             problems.append("incomplete_terminal_evidence")
-        if analysis_only_attempt:
+        if analysis_only_attempt and not mechanically_proven:
             problems.append("analysis_only_attempt")
-        passed = eval_passed(artifact.get("evals") if isinstance(artifact.get("evals"), list) else [])
         if not passed and not obsolete:
             problems.append("no_passing_verifier")
-        strict_success = outcome_status == "completed" and overlap and passed and not problems
+        strict_success = mechanically_proven and not problems
         rows.append(
             {
                 "strict_success": strict_success,
@@ -464,6 +463,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
                 "api_error": api_error,
                 "protected_revert": protected_revert,
                 "incomplete_terminal": incomplete_terminal,
+                "terminal_marker_missing_attempt_count": terminal_marker_missing_attempt_count,
                 "analysis_only_attempt": analysis_only_attempt,
             }
         )
@@ -494,6 +494,9 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             and "no_planned_file_overlap" not in row["problems"]
         ),
         "task_incomplete_terminal_count": sum(1 for row in rows if row["incomplete_terminal"]),
+        "task_terminal_marker_missing_attempt_count": sum(
+            int(row["terminal_marker_missing_attempt_count"]) for row in rows
+        ),
         "task_analysis_only_attempt_count": sum(1 for row in rows if row["analysis_only_attempt"]),
         "evaluator_unverified_raw_count": unverified,
     }
@@ -897,6 +900,18 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
             )
             gnomes["task_verified_count"] = max(int_metric(gnomes, "task_verified_count"), verified)
             gnomes["tasks_succeeded"] = max(int_metric(gnomes, "tasks_succeeded"), verified)
+        artifact_count_keys = (
+            "task_obsolete_count",
+            "task_api_error_count",
+            "protected_file_revert_count",
+            "task_scope_mismatch_count",
+            "task_unlanded_source_count",
+            "task_incomplete_terminal_count",
+            "task_terminal_marker_missing_attempt_count",
+            "task_analysis_only_attempt_count",
+        )
+        for key in artifact_count_keys:
+            gnomes[key] = int_metric(artifact_metrics, key)
         if task_count > 0 and verified == task_count:
             gnomes["task_success_rate"] = 1.0
             gnomes["task_verification_rate"] = 1.0
@@ -934,16 +949,6 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
                 int_metric(gnomes, "task_no_edit_revert_count"),
                 no_edit,
             )
-            for key in (
-                "task_obsolete_count",
-                "task_api_error_count",
-                "protected_file_revert_count",
-                "task_scope_mismatch_count",
-                "task_unlanded_source_count",
-                "task_incomplete_terminal_count",
-                "task_analysis_only_attempt_count",
-            ):
-                gnomes[key] = max(int_metric(gnomes, key), int_metric(artifact_metrics, key))
             stale_seed_obsolete = int_metric(artifact_metrics, "task_stale_seed_obsolete_note_count")
             if stale_seed_obsolete > 0:
                 gnomes["task_stale_seed_obsolete_note_count"] = stale_seed_obsolete
@@ -1434,10 +1439,19 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
         add(
             "implementation",
             "Require terminal task evidence before completion",
-            "Implementation exited cleanly without a final TASK_TERMINAL_EVIDENCE marker; retry checkpointed partial progress before scoring the task.",
+            "Implementation exited cleanly without TASK_TERMINAL_EVIDENCE or mechanical proof; retry checkpointed partial progress before scoring the task.",
             "task_incomplete_terminal_count",
             gnomes.get("task_incomplete_terminal_count"),
             87,
+        )
+    if int(gnomes.get("task_terminal_marker_missing_attempt_count") or 0) > 0:
+        add(
+            "implementation",
+            "Emit terminal markers after verified commits",
+            "Implementation landed mechanical proof but omitted the exact TASK_TERMINAL_EVIDENCE marker; tighten final-answer behavior without downgrading proven tasks.",
+            "task_terminal_marker_missing_attempt_count",
+            gnomes.get("task_terminal_marker_missing_attempt_count"),
+            72,
         )
     if int(gnomes.get("evaluator_timeout_count") or 0) > 0:
         add("eval", "Make evaluator timeouts resumable or cheaper", "Evaluator timeout friction still appears in action logs.", "evaluator_timeout_count", gnomes.get("evaluator_timeout_count"), 85)
