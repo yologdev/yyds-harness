@@ -6976,7 +6976,10 @@ HTML = r"""<!doctype html>
         const attempts = (task.attempts || []).slice(0, 4).map(attempt => {
           const name = attempt.transcript_path ? auditLink(session, attempt.transcript_path, attempt.stage_name || attempt.phase) : text(attempt.stage_name || attempt.phase || "attempt");
           const turns = attempt.turn_count === undefined || attempt.turn_count === null ? "-" : attempt.turn_count;
-          return `${name} <span class="muted">${text(attempt.status || "-")} / ${text(turns)} turns / ${text(attempt.line_count || 0)} lines</span>`;
+          const files = (attempt.changed_files || []).slice(0, 2).join(", ");
+          const progress = attempt.progress_since_base === true ? " / progress" : "";
+          const fileText = files ? ` / ${files}` : "";
+          return `${name} <span class="muted">${text(attempt.status || "-")} / ${text(turns)} turns / ${text(attempt.line_count || 0)} lines${progress}${text(fileText)}</span>`;
         }).join("</li><li>");
         const evalRows = (task.evals || []).slice(0, 3).map(evalRow => {
           const label = evalRow.transcript_path ? auditLink(session, evalRow.transcript_path, `eval ${evalRow.attempt || ""}`.trim()) : `eval ${text(evalRow.attempt || "")}`;

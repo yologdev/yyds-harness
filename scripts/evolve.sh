@@ -280,6 +280,7 @@ append_task_attempt_evidence() {
     local transcript_path="$5"
     local exit_code="$6"
     local status="$7"
+    local base_sha="${8:-}"
     local output_path="$SESSION_STAGING/tasks/$task_id/attempts.jsonl"
     mkdir -p "$(dirname "$output_path")"
     TASK_ID="$task_id" \
@@ -289,12 +290,30 @@ append_task_attempt_evidence() {
     TASK_TRANSCRIPT_PATH="$transcript_path" \
     TASK_EXIT_CODE="$exit_code" \
     TASK_STATUS="$status" \
+    TASK_BASE_SHA="$base_sha" \
     SESSION_STAGING="$SESSION_STAGING" \
     TASK_ATTEMPTS_OUT="$output_path" \
         python3 - <<'PY'
 import json
 import os
+import subprocess
 from pathlib import Path
+
+def git_lines(*args):
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 transcript = os.environ.get("TASK_TRANSCRIPT_PATH", "")
 line_count = None
@@ -308,6 +327,14 @@ if transcript:
     except OSError:
         pass
 
+base_sha = os.environ.get("TASK_BASE_SHA", "").strip()
+head_commit = (git_lines("rev-parse", "HEAD") or [None])[0]
+committed_files = git_lines("diff", "--name-only", f"{base_sha}..HEAD") if base_sha and head_commit else []
+staged_files = git_lines("diff", "--cached", "--name-only")
+unstaged_files = git_lines("diff", "--name-only")
+untracked_files = git_lines("ls-files", "--others", "--exclude-standard")
+changed_files = list(dict.fromkeys(committed_files + staged_files + unstaged_files + untracked_files))
+
 row = {
     "task_id": os.environ.get("TASK_ID"),
     "phase": os.environ.get("TASK_PHASE"),
@@ -316,6 +343,14 @@ row = {
     "transcript_path": transcript or None,
     "exit_code": int(os.environ.get("TASK_EXIT_CODE") or 0),
     "status": os.environ.get("TASK_STATUS"),
+    "base_commit": base_sha or None,
+    "head_commit": head_commit,
+    "changed_files": changed_files,
+    "committed_files": committed_files,
+    "staged_files": staged_files,
+    "unstaged_files": unstaged_files,
+    "untracked_files": untracked_files,
+    "progress_since_base": bool(changed_files or (base_sha and head_commit and base_sha != head_commit)),
     "line_count": line_count,
     "byte_count": byte_count,
 }
@@ -1928,7 +1963,7 @@ TEOF
         fi
         append_task_attempt_evidence \
             "$TASK_ID" "implementation" "$ATTEMPT" "$TASK_STAGE_NAME" \
-            "transcripts/${TASK_STAGE_NAME}.log" "$TASK_EXIT" "$TASK_ATTEMPT_STATUS" || true
+            "transcripts/${TASK_STAGE_NAME}.log" "$TASK_EXIT" "$TASK_ATTEMPT_STATUS" "$PRE_TASK_SHA" || true
 
         # Abort on API errors (after fallback attempt if configured) — revert partial work and stop
         if agent_log_has_api_error "$TASK_LOG"; then
@@ -2241,7 +2276,7 @@ BFIXEOF
             echo "    WARNING: Build-fix agent hit API error — aborting fix loop."
             append_task_attempt_evidence \
                 "$TASK_ID" "build_fix" "$BUILD_FIX_ATTEMPT" "$BFIX_STAGE_NAME" \
-                "transcripts/${BFIX_STAGE_NAME}.log" "$BFIX_EXIT" "api_error" || true
+                "transcripts/${BFIX_STAGE_NAME}.log" "$BFIX_EXIT" "api_error" "$PRE_TASK_SHA" || true
             rm -f "$BFIX_PROMPT" "$BFIX_LOG"
             TASK_OK=false
             REVERT_REASON="Build-fix agent API error; $BUILD_FAILED still failing"
@@ -2252,7 +2287,7 @@ BFIXEOF
         fi
         append_task_attempt_evidence \
             "$TASK_ID" "build_fix" "$BUILD_FIX_ATTEMPT" "$BFIX_STAGE_NAME" \
-            "transcripts/${BFIX_STAGE_NAME}.log" "$BFIX_EXIT" "$BFIX_STATUS" || true
+            "transcripts/${BFIX_STAGE_NAME}.log" "$BFIX_EXIT" "$BFIX_STATUS" "$PRE_TASK_SHA" || true
         rm -f "$BFIX_PROMPT" "$BFIX_LOG"
 
         # Re-check protected files after fix agent (committed + staged)
@@ -2406,7 +2441,7 @@ FIXEOF
                 fi
                 append_task_attempt_evidence \
                     "$TASK_ID" "eval_fix" "$EVAL_ATTEMPT" "$FIX_STAGE_NAME" \
-                    "transcripts/${FIX_STAGE_NAME}.log" "$FIX_EXIT" "$FIX_STATUS" || true
+                    "transcripts/${FIX_STAGE_NAME}.log" "$FIX_EXIT" "$FIX_STATUS" "$PRE_TASK_SHA" || true
                 rm -f "$FIX_PROMPT" "$FIX_LOG"
 
                 # Re-check protected files after fix agent
