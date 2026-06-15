@@ -1,0 +1,402 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and then diving into the code. The task is about fixing state event type classification in `src/state.rs`. Let me first read the evolve skill and then investigate the issue.
+
+Let me:
+1. Read the evolve skill
+2. Investigate the state.rs file to understand the event classification pipeline
+3. Run diagnostic commands to see the current behavior
+4. Fix the issue
+5. Verify and commit
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ todo ✓ (12ms)
+ ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now dive into the state.rs file to understand the event classification pipeline. I need to investigate the `normalize_event_json_line`, `compatibility_event_json_line`, and `rebuild_sqlite_projection` functions. Let me also run `yyds state doctor` and `yyds state lifecycle` to see the current behavior.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run the diagnostic commands and read the relevant parts of state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.9s (3 ✓)
+
+Let me run diagnostics and start reading the key functions:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -5  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state doct…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state life…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (28ms)
+ ✓ (204ms)
+ ✓ (2.2s)
+ ✓ (2.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! So `state lifecycle` actually shows real data (829 started, 840 completed, 49 incomplete). But `state doctor` shows all 9429 events as "unknown" type. This means the SQLite projection has the run/lifecycle data but the event type classification is broken in the doctor report.
+
+Let me understand what's happening:
+1. `state tail` properly shows typed events (ToolCallStarted, ToolCallCompleted, etc.)
+2. `state lifecycle` shows proper run counts (829 started, 840 completed)
+3. `state doctor` shows "unknown=9429" for all types
+
+So the bug is specifically in how `state doctor` classifies event types, not in the lifecycle computation. Let me look at the code.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 6.7s (4 ✓)
+
+Good — `state doctor` shows "unknown=9429" and "0 runs, 0 failures" but `state lifecycle` shows real run data. The issue is in the doctor's type classification, not the lifecycle. Let me find the relevant code:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state doctor' (*.rs)  ▶ search 'fn handle_state_doctor' (*.rs) ✓ (27ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the commands_state.rs to find where the doctor output is generated, specifically the type counting.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'unknown=' (*.rs)  ▶ search 'Events:.*total.*runs' (*.rs) ✓ (27ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the State Doctor output more broadly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'total.*runs.*failures' (*.rs)  ▶ search 'fn state_doctor' (*.rs) ✓ (28ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where the state doctor report is built. It seems to be in commands_state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "state.doctor\|doctor\… ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `handle_doctor` function starting at line 128.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:128..208 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see. The `handle_doctor()` function reads events from the events file directly (not from SQLite), and looks for `"type"` field in the JSON. The issue is that events are stored in the events file, but they might not have a `"type"` field - they might use a different field name like `"kind"` or `"event"` or something else.
+
+Let me check the actual event format. Let me look at what `state tail` shows vs what's in the raw events file, and also understand the event format used in `state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && head -5 .yoyo/state/events.jso…  ▶ search 'fn read_events' (*.rs) ✓ (36ms)
+ ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check where the events file is and what it looks like. First, let me find the events path.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la .yoyo/state/ 2>/dev/nul… ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && head -3 .yoyo/state/events.jso… ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The events don't have a `"type"` field. They only have `run_id`. Let me see the full JSON structure of events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && head -5 .yoyo/state/events.jso… ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output was empty. Let me try differently - maybe the lines are very long or the file is empty initially?
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && wc -l .yoyo/state/events.jsonl… ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the event format. The events use `"event_type"` not `"type"` as the field for the event type! The `handle_doctor()` function is looking for `"type"` but the events use `"event_type"`.
+
+Look at the format:
+```json
+{"actor": "harness", "event_id": "evt-log-feedback-a7bfceba67a71907", "event_type": "PatchEvaluated", ...}
+```
+
+But `handle_doctor` at line 145 does:
+```rust
+let typ = ev.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+```
+
+This should be `ev.get("event_type")` instead!
+
+Wait, but let me double check. The `state tail` output shows typed events (ToolCallStarted, ToolCallCompleted, etc). Let me see how `state tail` reads events.
+────────────────────────────────────────────────────────────────────────────────
+
+Found it! The events use `"event_type"` but `handle_doctor()` at line 145 looks for `"type"`. Let me verify by checking how `state tail` reads events:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_tail' (*.rs)  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && head -1 .yoyo/state/events.jso… ✓ (41ms)
+ ✓ (109ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The events file has 0 lines (wc -l showed 0), but the `head -1` showed content. That means there's no newline at the end. Let me check differently.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && wc -c .yoy… (9 lines) ✓ (105ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file is 0 bytes but `head -1` showed content? That's confusing. Let me check the actual file size and state more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la .yoyo/state/events.json… ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file has 9496 lines and ~13.8MB, but `ls -la` says 0 bytes? That's weird. Let me check again. Actually wait, `wc -c` says 13858246 and `wc -l` says 9496. The `ls -la` might have been from a different moment or something. Anyway the file has events. Let me check the `read_events` function and the event format more carefully.
+
+Actually wait, the doctor output showed 9429 events, and here we have 9496 lines. That's close.
+
+The key insight from earlier is: `head -1` output showed `"event_type": "PatchEvaluated"` as the type field. But the `handle_doctor` function at line 145 uses `ev.get("type")`. This is the bug!
+
+Let me read the `handle_tail` function to see how it reads events and shows type names.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:412..472 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `print_event_line` to see how it displays event type, and `read_events` to see how it parses them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn print_event_line' (*.rs)  ▶ read src/commands_state.rs:931..961 ✓ (13ms)
+ ✓ (54ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `read_events` calls `crate::state::read_compatibility_events`. Let me look at that function to understand how events are normalized.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1325..1355  ▶ search 'fn read_compatibility_events' (*.rs) ✓ (28ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see confirmation of the bug:
+
+- `state tail` uses `format_event_value` which at line 1345-1348 uses `ev.get("event_type").or_else(|| ev.get("kind"))` - correct
+- `state doctor` uses `handle_doctor` which at line 145 uses `ev.get("type")` - WRONG
+
+The fix is simple: change line 145 in `src/commands_state.rs` from:
+```rust
+let typ = ev.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+```
+to:
+```rust
+let typ = ev.get("event_type").or_else(|| ev.get("kind")).and_then(|v| v.as_str()).unwrap_or("unknown");
+```
+
+Similarly, the doctor also looks for "RunStarted" and "RunCompleted" - but the events might use different event_type names. Let me check what event types are used.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+Found the root cause! `print_event_line` at line 1345 uses `ev.get("event_type")` but `handle_doctor` at line 145 uses `ev.get("type")`. Let me check actual event_type values:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -o '"event_type":"[^"]*"'… ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, that only shows 28 events total (10+10+4+4=28). But the doctor reports 9429 events. Let me check what other fields the events have, and also see if there are multiple event formats.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -o '"event_type":"[^"]*"'…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -c '"event_type"' .yoyo/s… ✓ (51ms)
+ ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So 9517 events have `event_type`, 9116 have `kind`, and only 69 have `type`. And the grep for unique event_types returned only a few - that's strange. Let me check more carefully.
+
+Actually wait, the count of `event_type` is 9517 but `wc -l` showed 9496 lines. Some lines might have multiple `event_type` occurrences. Let me look at the actual event format more carefully.
+
+The `"type"` field with 69 occurrences is likely unrelated to event type - probably something nested like `"type":"lesson"` or similar.
+
+The `handle_doctor` code reads 9429 events and all have type "unknown", which means `ev.get("type")` returns None for all of them. This confirms the bug: events use `"event_type"` field, but doctor reads `"type"`.
+
+Let me now also check what event_type values exist:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.1s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (18 lines) ✓ (139ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Excellent! Now I can see:
+
+1. Events use `event_type` field (we see 9526 events with real types)
+2. `handle_doctor` at line 145 uses `ev.get("type")` which returns None → all "unknown"
+3. `handle_doctor` also uses "RunStarted" and "RunCompleted" which match the actual event_type values
+
+The fix is simple:
+- Line 145: change `ev.get("type")` to `ev.get("event_type").or_else(|| ev.get("kind"))`
+
+Let me also check if the `handle_doctor` uses the right event type names for RunStarted (the data shows 852 RunStarted vs the 829 reported by lifecycle). But for now, the primary fix is just the field name.
+
+Let me now look at lines 140-165 more carefully in context to make the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Confirmed: 9526 events with real `event_type` values, but `handle_doctor` reads `"type"` which no event has. Let me fix it:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:140..160 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the fix. I need to also check whether `RunCompleted` has a status field in the events. Let me check what fields a RunCompleted event has.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -m1 '"event_type":"RunCom…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -m1 '"event_type":"RunSta… ✓ (51ms)
+ ✓ (89ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - the RunCompleted event has `"status": "completed"` in the payload, not at the top level. But `handle_doctor` at line 151 does:
+```rust
+let status = ev.get("status").and_then(|v| v.as_str()).unwrap_or("");
+```
+
+This looks in the top level of the event for "status", but the actual status is nested inside `payload.status`. So the doctor will always show `status=""` → not "failed". Let me also check the `RunStarted` event format. Let me try a different approach to find it.
+
+Actually wait, the RunStarted event didn't parse because the line might be very long or something. Let me try again.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.5s (2 ✓)
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (9 lines) ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the events have the structure:
+- `event_type` at top level - this is what we need for type classification
+- `RunCompleted` has `status` inside `payload.status`, not at top level
+
+Now let me also check what `handle_doctor` does with the `status` field for `RunCompleted`. At line 151:
+```rust
+let status = ev.get("status").and_then(|v| v.as_str()).unwrap_or("");
+```
+
+This looks at top-level `status`, but the actual data has it at `payload.status`. So even after fixing the `event_type` field, the failure count will still be 0 because it won't find the status.
+
+However, the task says the issue is about type classification (all "unknown"). Let me focus on that primary fix first. The `status` field nesting is a secondary issue.
+
+Now let me look at the test at line 18085 that mentions "unknown=6":
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:18070..18090 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand what test context this is in. The test at line 18085 expects `!report.contains("unknown=6")`. Let me look at the surrounding test function context.
+
+But more importantly, let me make the fix now. The primary issue is clear:
+
+In `handle_doctor()` at line 145:
+- `ev.get("type")` → should be `ev.get("event_type").or_else(|| ev.get("kind"))`
+
+Let me also check whether the `status` field for RunCompleted needs fixing. Looking at the RunCompleted event:
+```json
+"payload": {
+    "status": "completed",
+    ...
+}
+```
+
+vs the code at line 151:
+```rust
+let status = ev.get("status").and_then(|v| v.as_str()).unwrap_or("");
+```
+
+This looks at top-level, but `status` is in `payload.status`. However, the task says the primary issue is type classification ("unknown"). Let me fix both issues since they're in the same function and both affect the doctor output.
+
+Actually, let me also look at the test that directly tests the doctor to see if there's a test I should update.
+
+Let me look at the test that generates the report and checks for "unknown=6":
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:18030..18100 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That test at 18085 is about `build_graph_summary_report`, not directly about `handle_doctor`. The `!report.contains("unknown=6")` assertion is checking that graph summary doesn't have unknown node kinds, not about the doctor.
+
+Let me now look for tests specifically about `handle_doctor` or the doctor output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "handle_doctor\|state.… ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's no test specifically for the doctor function. Let me now make the fix. The change is clear:
+
+Line 145 in `src/commands_state.rs`:
+```rust
+let typ = ev.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+```
+→
+```rust
+let typ = ev.get("event_type").or_else(|| ev.get("kind")).and_then(|v| v.as_str()).unwrap_or("unknown");
+```
+
+I also want to fix the `status` field lookup in `RunCompleted` handling. Let me check if the `status` is at the top level or in `payload`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have clear evidence. Let me fix the bug:
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (12ms)
+  ▶ todo ✓ (12ms)
+  ▶ todo ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check what the `status` field value looks like. It's "completed" inside the payload. The doctor code checks `status == "failed"` to count failures. Let me check if there are events with status "failed".
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.6s (4 ✓)
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (13 lines) ✓ (135ms)
+
+

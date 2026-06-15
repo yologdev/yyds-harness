@@ -1,0 +1,479 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the test failures. The common pattern is:
+
+- Left: 10, Right: 9 — meaning tests expect 10 tools but are getting 9 (or vice versa)
+- The tests that expect 9 are getting 10, and tests that expect 10 are getting 9
+
+Let me look at the relevant code to understand what's happening. The tests are about `build_tools` and tool counts. The issue is likely that a tool was added or removed without updating the expected counts in all tests.
+
+Let me start by examining `src/tools.rs` around the test failures.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/tools.rs:2320..2350  ▶ read src/tools.rs:2750..2790 ✓ (41ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see 3 tests expecting 9 tools but getting 10. Let me also check the other failing tests, particularly the one about "eight tools" and the hooks test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ grep  ▶ grep  ▶ grep  ▶ grep  ▶ grep  ▶ grep ✓ (83ms)
+ ✓ (83ms)
+ ✓ (83ms)
+ ✓ (83ms)
+ ✓ (69ms)
+ ✓ (97ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read each of these failing tests to understand the expected counts.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 3.1s (6 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1530..1630 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the other failing tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1653..1703  ▶ read src/tools.rs:3096..3156 ✓ (43ms)
+ ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the current state: all these tests expect 9 tools, but they're getting 10. This means a 10th tool was added to `build_tools`. Let me find the `build_tools` function to see what tools it now includes:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+Now let me look at `build_tools` to understand what tools are currently being built:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ grep ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `fn build_tools` more broadly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ grep ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the build_tools function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1181..1301 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see how the tools are collected into the final vec:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1300..1420 ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue. The `tools` vec now contains 10 tools (in interactive mode) or 9 (in non-interactive):
+
+1. bash
+2. read_file
+3. write_file
+4. edit_file
+5. list_files
+6. search (ProjectSearchTool)
+7. grep (GrepTool) <-- NEW!
+8. rename_symbol
+9. ask_user (only if terminal)
+10. todo
+11. web_search
+
+Wait, let me count again. Let me see the rest:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1419..1459 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see clearly. The `build_tools` function now includes **10 tools** in non-interactive mode (test environment):
+
+1. bash
+2. read_file
+3. write_file
+4. edit_file
+5. list_files
+6. search (ProjectSearchTool)
+7. grep (GrepTool) ← NEW: this is the `grep` tool that was added as a separate tool alongside `search`
+8. rename_symbol
+9. todo
+10. web_search
+
+And in interactive mode, it would be 11 (with ask_user).
+
+But the tests all expect 9 tools (the old count before `GrepTool` was added).
+
+So the fix is to update the expected counts from 9 to 10 in all the failing tests. Let me check what the tests say:
+
+- `test_build_tools_returns_eight_tools` (line 1536): expects 9, gets 10
+- `test_build_tools_count_unchanged_with_sub_agent` (line 1605): expects 9, gets 10  
+- `test_build_tools_auto_approve_skips_confirmation` (line 1663): expects 9, gets 10
+- `test_build_tools_no_approve_includes_confirmation` (line 1677): expects 9, gets 10
+- `test_build_tools_with_audit_wrapping` (line 2771): expects 9, gets 10
+- `test_build_tools_with_dir_restrictions` (line 2756): expects 9, gets 10
+- `test_build_tools_with_piped_limit` (line 2320): expects 9, gets 10
+- `test_build_tools_canonical_names` (line 3096): expects 9, needs "grep" added to the expected list
+- `test_maybe_hook_skips_wrap_when_empty` (hooks.rs): need to see what this expects
+
+Let me also check the hooks test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/hooks.rs:929..959 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `GrepTool` was added as a separate tool in `build_tools`, making the count go from 9 to 10 (in non-terminal mode). All these tests need to be updated from expecting 9 to expecting 10, and the canonical names test needs "grep" added to the expected list.
+
+Let me also check if the `test_build_tools_with_audit_preserves_tool_count` test (line 939) needs updating — it doesn't check a specific count, just that audit doesn't change it, so it should be fine.
+
+Let me now fix all 9 failing tests. I need to:
+
+1. `test_build_tools_returns_eight_tools` (line 1542-1543): change 9 → 10
+2. `test_build_tools_count_unchanged_with_sub_agent` (line 1612): change 9 → 10
+3. `test_build_tools_auto_approve_skips_confirmation` (line 1669): change 9 → 10
+4. `test_build_tools_no_approve_includes_confirmation` (line 1683): change 9 → 10
+5. `test_build_tools_with_audit_wrapping` (line 2777): change 9 → 10
+6. `test_build_tools_with_dir_restrictions` (line 2765): change 9 → 10
+7. `test_build_tools_with_piped_limit` (line 2330): change 9 → 10
+8. `test_build_tools_canonical_names` (line 3102): add "grep" to expected list
+9. `test_maybe_hook_skips_wrap_when_empty` (line 935): change 9 → 10
+
+Also need to update comment strings that mention "9 tools" or "8 tools" etc.
+
+Let me make these edits.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the issue. The `GrepTool` was added (alongside the existing `ProjectSearchTool`) in `build_tools`, making the tool count 10 instead of 9 in non-interactive mode. All tests still expect 9. Let me fix each one.
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (14ms)
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (14ms)
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (44ms)
+  ▶ todo ✓ (14ms)
+  ▶ todo ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now apply the edits. I'll do them all at once.
+────────────────────────────────────────────────────────────────────────────────
+  9 tools completed in 1.7s (9 ✓)
+
+Now applying all fixes:
+        fn test_build_tools_returns_eight_tools() {
+  -         // build_tools should return 8 tools regardless of auto_approve (in non-terminal: no ask_user)
+  +         // build_tools should return 10 tools regardless of auto_approve (in non-terminal: no ask_user)
+            let perms = cli::PermissionConfig::default();
+            let dirs = cli::DirectoryRestrictions::default();
+            let tools_approved = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+            let tools_confirm = build_tools(false, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+  -         assert_eq!(tools_approved.len(), 9);
+  -         assert_eq!(tools_confirm.len(), 9);
+  +         assert_eq!(tools_approved.len(), 10);
+  +         assert_eq!(tools_confirm.len(), 10);
+        }
+  ✓ Auto-approved: edit: src/tools.rs (9 → 9 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (9 → 9 lines)
+        fn test_build_tools_returns_eight_tools() {
+  -         // build_tools should return 8 tools regardless of auto_approve (in non-terminal: no ask_user)
+  +         // build_tools should return 10 tools regardless of auto_approve (in non-terminal: no ask_user)
+            let perms = cli::PermissionConfig::default();
+            let dirs = cli::DirectoryRestrictions::default();
+            let tools_approved = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+            let tools_confirm = build_tools(false, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+  -         assert_eq!(tools_approved.len(), 9);
+  -         assert_eq!(tools_confirm.len(), 9);
+  +         assert_eq!(tools_approved.len(), 10);
+  +         assert_eq!(tools_confirm.len(), 10);
+        }
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Continue with the other fixes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert_eq!(
+                tools.len(),
+  -             9,
+  -             "build_tools must stay at 9 — SubAgentTool is added via with_sub_agent"
+  +             10,
+  +             "build_tools must stay at 10 — SubAgentTool is added via with_sub_agent"
+            );
+  ✓ Auto-approved: edit: src/tools.rs (5 → 5 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (5 → 5 lines)
+            assert_eq!(
+                tools.len(),
+  -             9,
+  -             "build_tools must stay at 9 — SubAgentTool is added via with_sub_agent"
+  +             10,
+  +             "build_tools must stay at 10 — SubAgentTool is added via with_sub_agent"
+            );
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         assert_eq!(tools.len(), 9);
+  +         assert_eq!(tools.len(), 10);
+  ✓ Auto-approved: edit: src/tools.rs (1 → 1 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (1 → 1 lines)
+  -         assert_eq!(tools.len(), 9);
+  +         assert_eq!(tools.len(), 10);
+ ✗ (27ms)
+    │ old_text matches 2 locations in src/tools.rs. Include more surrounding context to make the match unique.
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are multiple locations with `assert_eq!(tools.len(), 9);`. I need to provide more context. Let me fix them one at a time with more surrounding context.
+
+Let me find the exact locations:
+- Line 1669: `test_build_tools_auto_approve_skips_confirmation`
+- Line 1683: `test_build_tools_no_approve_includes_confirmation`
+- Line 2765: `test_build_tools_with_dir_restrictions`
+- Line 2777: `test_build_tools_with_audit_wrapping`
+- Line 2330: `test_build_tools_with_piped_limit`
+- Line 935: `test_maybe_hook_skips_wrap_when_empty` (hooks.rs)
+
+Let me use more surrounding context for each.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+  -         assert_eq!(tools.len(), 9);
+  +         assert_eq!(tools.len(), 10);
+            let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+            assert!(names.contains(&"write_file"));
+            assert!(names.contains(&"edit_file"));
+  ···
+            let perms = cli::PermissionConfig::default();
+            let dirs = cli::DirectoryRestrictions::default();
+            let tools = build_tools(false, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+  -         assert_eq!(tools.len(), 9);
+  +         assert_eq!(tools.len(), 10);
+  ✓ Auto-approved: edit: src/tools.rs (16 → 16 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (16 → 16 lines)
+            let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+  -         assert_eq!(tools.len(), 9);
+  +         assert_eq!(tools.len(), 10);
+            let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+            assert!(names.contains(&"write_file"));
+            assert!(names.contains(&"edit_file"));
+  ···
+            let perms = cli::PermissionConfig::default();
+            let dirs = cli::DirectoryRestrictions::default();
+            let tools = build_tools(false, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, false, vec![]);
+  -         assert_eq!(tools.len(), 9);
+  +         assert_eq!(tools.len(), 10);
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the piped limit test (line 2330):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:2320..2340 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         assert_eq!(tools.len(), 9, "Should still have 9 tools with piped limit");
+  +         assert_eq!(tools.len(), 10, "Should still have 10 tools with piped limit");
+  ✓ Auto-approved: edit: src/tools.rs (1 → 1 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (1 → 1 lines)
+  -         assert_eq!(tools.len(), 9, "Should still have 9 tools with piped limit");
+  +         assert_eq!(tools.len(), 10, "Should still have 10 tools with piped limit");
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the directory restrictions test and audit wrapping test (around line 2760-2780):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:2755..2795 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me fix both at once by replacing the entire block.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert_eq!(
+                tools.len(),
+  -             9,
+  +             10,
+                "Directory restrictions should not change tool count"
+            );
+        }
+  ···
+            let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, true, vec![]);
+            assert_eq!(
+                tools.len(),
+  -             9,
+  +             10,
+                "Audit wrapping should not change tool count"
+            );
+  ✓ Auto-approved: edit: src/tools.rs (17 → 17 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (17 → 17 lines)
+            assert_eq!(
+                tools.len(),
+  -             9,
+  +             10,
+                "Directory restrictions should not change tool count"
+            );
+        }
+  ···
+            let tools = build_tools(true, &perms, &dirs, TOOL_OUTPUT_MAX_CHARS, true, vec![]);
+            assert_eq!(
+                tools.len(),
+  -             9,
+  +             10,
+                "Audit wrapping should not change tool count"
+            );
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the canonical names test. I need to add "grep" to the expected list:
+────────────────────────────────────────────────────────────────────────────────
+
+Now fix the canonical names test — add "grep" to expected:
+  -         // In non-terminal mode (test env), there should be exactly these 9 tools
+  +         // In non-terminal mode (test env), there should be exactly these 10 tools
+            let expected = [
+                "bash",
+                "read_file",
+  ···
+                "edit_file",
+                "list_files",
+                "search",
+  +             "grep",
+                "rename_symbol",
+                "todo",
+                "web_search",
+  ✓ Auto-approved: edit: src/tools.rs (12 → 13 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (12 → 13 lines)
+  -         // In non-terminal mode (test env), there should be exactly these 9 tools
+  +         // In non-terminal mode (test env), there should be exactly these 10 tools
+            let expected = [
+                "bash",
+                "read_file",
+  ···
+                "edit_file",
+                "list_files",
+                "search",
+  +             "grep",
+                "rename_symbol",
+                "todo",
+                "web_search",
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the hooks.rs test. Let me fix it:
+────────────────────────────────────────────────────────────────────────────────
+
+Now fix the hooks.rs test:
+  -         assert_eq!(tools.len(), 9, "Tool count should be 9 without audit hooks");
+  +         assert_eq!(tools.len(), 10, "Tool count should be 10 without audit hooks");
+  ✓ Auto-approved: edit: src/hooks.rs (1 → 1 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/hooks.rs (1 → 1 lines)
+  -         assert_eq!(tools.len(), 9, "Tool count should be 9 without audit hooks");
+  +         assert_eq!(tools.len(), 10, "Tool count should be 10 without audit hooks");
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check if there are other tests that might reference 8 or 9 tool counts — like the comment in `test_build_tools_returns_eight_tools` mentions "8 tools" in its name and there might be other assertions. Let me also check the comment about `fn test_build_tools_returns_eight_tools` and whether the function name should be updated.
+
+Actually, the function name doesn't matter for tests — it just needs to pass. Let me now run the tests to verify. But first, let me also check if there are other references to "9 tools" or "8 tools" in comments that might cause confusion.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also check if there are any other references to the old tool count (9) in comments:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ grep ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also check the comment in build_tools about the BUILTIN_TOOL_NAMES in agent_builder.rs — there was a mention of keeping things in sync. Let me also check if there's a constant list in agent_builder.rs that needs updating.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ grep ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if the BUILTIN_TOOL_NAMES includes "grep":
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:41..71 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — `grep` is already in `BUILTIN_TOOL_NAMES`. Now let me run the tests to verify all fixes:
+────────────────────────────────────────────────────────────────────────────────
+
+Good — `grep` is already in `BUILTIN_TOOL_NAMES`. Now let me run the specific failing tests to verify fixes:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- hooks::tes… ✓ (28.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 9 previously failing tests now pass. Let me also run the full cargo fmt and build check.
+────────────────────────────────────────────────────────────────────────────────
+
+All 9 tests pass. Let me run `cargo fmt` and a broader verification:
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check && cargo … ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code needs formatting. Let me run `cargo fmt` to fix the formatting.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify fmt and check pass:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check && cargo … ✓ (8.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the full test suite to make sure nothing else is broken:
+────────────────────────────────────────────────────────────────────────────────
+
+Format and check pass. Now let me run the full test suite:
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1…

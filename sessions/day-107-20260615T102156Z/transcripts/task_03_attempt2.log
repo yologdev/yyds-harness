@@ -1,0 +1,375 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task: I need to investigate and fix "Tool grep not found" errors. The previous agent started working on this by adding a `GrepTool` that aliases `ProjectSearchTool` and adding "grep" to `BUILTIN_TOOL_NAMES`, but that work was uncommitted and discarded.
+
+Let me first read the evolve skill, then investigate the issue.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now investigate the "Tool grep not found" error. I need to look at:
+
+1. The state failure records to see what the actual error looks like
+2. The `commands_search.rs` file to see how grep is invoked
+3. The `tools.rs` file to see the tool registration
+4. The `agent_builder.rs` file to see `BUILTIN_TOOL_NAMES`
+
+Let me start by checking the state failures and understanding the error pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state failures --…  ▶ search 'Tool grep not found'  ▶ search 'grep' in src/commands_search.rs ✓ (14ms)
+ ✓ (44ms)
+ ✓ (2.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the actual errors. The state failures show:
+
+1. `Tool grep not found` - 3 instances: event_b0d39aca, event_9f13db8, event_390493a
+2. `Search error: grep: Unmatched ( or \(` - 1 instance: event_c914200b
+
+The "Tool grep not found" is a yoagent-level error meaning the model tried to call a tool named "grep" but no such tool is registered. This is NOT a bash command-not-found issue. The model is literally calling `grep` as a tool name, but only `search` is registered as a tool.
+
+So the root cause is: the model tries to call a tool named "grep" but the tool list only has "search". The DeepSeek model must be generating tool calls with the name "grep" because the system prompt or tool descriptions mention using `grep` for searching.
+
+The previous agent's approach was correct: create a `GrepTool` that aliases `ProjectSearchTool` and add "grep" to `BUILTIN_TOOL_NAMES`.
+
+But wait - I need to check if the GrepTool was already registered in the tool list. Let me look at how tools are built.
+
+Let me look at `tools.rs` to see the `build_tools` function and how tools are registered.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 9.1s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_tools' in src/tools.rs  ▶ search 'ProjectSearchTool' in src/tools.rs ✓ (28ms)
+ ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `build_tools` function to see how tools are registered, and also look at where `ProjectSearchTool` is added to the tool list.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1143..1223  ▶ read src/tools.rs:119..299 ✓ (46ms)
+ ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see where in `build_tools` the search tool is added, to understand how to add the grep tool alias.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ProjectSearchTool::default' in src/tools.rs ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the context around line 1349 and 1414 to see the two build_tools paths for adding the search tool.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1340..1360  ▶ read src/tools.rs:1405..1425 ✓ (95ms)
+ ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the two places where `ProjectSearchTool` is added:
+
+1. Line 1349: `maybe_guard(Box::new(ProjectSearchTool::default()), dir_restrictions)` - in `build_tools`
+2. Line 1414: `maybe_guard_arc(Arc::new(ProjectSearchTool::default()), restrictions)` - in `build_side_agent` or similar child tool list
+
+The solution is clear: create a `GrepTool` that wraps `ProjectSearchTool` and register it in both places alongside the search tool. Also add "grep" to `BUILTIN_TOOL_NAMES` in `agent_builder.rs`.
+
+Let me look at what the previous agent had started. The diff shows:
+1. Added `"grep"` to `BUILTIN_TOOL_NAMES` in `agent_builder.rs`
+2. Created a `GrepTool` struct in `tools.rs` that wraps `ProjectSearchTool`
+
+This is the right approach. Let me implement it.
+
+First, let me look at the full context in `agent_builder.rs` around `BUILTIN_TOOL_NAMES`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:36..66 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also look at the existing tests for the MCP collision detection to see if I need to add "grep" there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'detect_mcp_collisions' in src/agent_builder.rs ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test to understand the collision test structure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:2030..2100 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me implement the fix:
+
+1. Add `GrepTool` struct in `tools.rs` after `ProjectSearchTool` (around line 291, after the closing `}` of `impl AgentTool for ProjectSearchTool`)
+2. Register `GrepTool` in both `build_tools` and the side-agent child tools list
+3. Add `"grep"` to `BUILTIN_TOOL_NAMES` in `agent_builder.rs`
+4. Add a test for the GrepTool
+
+Let me also check if there are existing tests I need to update.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding. The "Tool grep not found" error is a **tool routing issue**: the DeepSeek model calls a tool named `grep` but only `search` is registered. The fix is to create a `GrepTool` alias that wraps `ProjectSearchTool`.
+
+Let me implement this:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (14ms)
+  ▶ todo ✓ (12ms)
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start implementing. First, add the `GrepTool` struct after the `ProjectSearchTool` impl block in `tools.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.5s (5 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check exactly what's at line 290-295 to find the right insertion point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:290..305 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll insert the `GrepTool` struct after line 291 (after the closing `}` of `impl AgentTool for ProjectSearchTool`) and before `fn command_exists`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +     }
+  + }
+  + 
+  + /// Alias tool so that model calls to "grep" resolve instead of failing with
+  + /// "Tool grep not found". Delegates entirely to [`ProjectSearchTool`] with a
+  + /// description that mentions grep equivalence so the model can discover it.
+  + pub(crate) struct GrepTool(ProjectSearchTool);
+  + 
+  + impl Default for GrepTool {
+  +     fn default() -> Self {
+  +         Self(ProjectSearchTool::default())
+  +     }
+  + }
+  + 
+  + #[async_trait::async_trait]
+  + impl AgentTool for GrepTool {
+  +     fn name(&self) -> &str {
+  +         "grep"
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/tools.rs (4 → 42 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (4 → 42 lines)
+  +     }
+  + }
+  + 
+  + /// Alias tool so that model calls to "grep" resolve instead of failing with
+  + /// "Tool grep not found". Delegates entirely to [`ProjectSearchTool`] with a
+  + /// description that mentions grep equivalence so the model can discover it.
+  + pub(crate) struct GrepTool(ProjectSearchTool);
+  + 
+  + impl Default for GrepTool {
+  +     fn default() -> Self {
+  +         Self(ProjectSearchTool::default())
+  +     }
+  + }
+  + 
+  + #[async_trait::async_trait]
+  + impl AgentTool for GrepTool {
+  +     fn name(&self) -> &str {
+  +         "grep"
+  +     }
+  + 
+  ... (21 more lines)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add the GrepTool to both tool-building paths. First, the main `build_tools` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the exact context around line 1349 (now shifted by ~38 lines due to the insertion) to find the right spot.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'maybe_guard(Box::new(ProjectSearchTool::default())' in src/tools.rs ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1380..1395 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add the GrepTool after the `ProjectSearchTool` block. Let me add it right after line 1393 (the closing `),` of the search tool block).
+────────────────────────────────────────────────────────────────────────────────
+
+
+                with_recovery_hints(
+                    with_truncation(
+                        maybe_guard(Box::new(ProjectSearchTool::default()), dir_restrictions),
+  +                     max_tool_output,
+  +                 ),
+  +                 &failure_tracker,
+  +             ),
+  +             &hooks,
+  +         ),
+  +         maybe_hook(
+  +             with_recovery_hints(
+  +                 with_truncation(
+  +                     maybe_guard(Box::new(GrepTool::default()), dir_restrictions),
+                        max_tool_output,
+                    ),
+                    &failure_tracker,
+  ✓ Auto-approved: edit: src/tools.rs (11 → 21 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (11 → 21 lines)
+                with_recovery_hints(
+                    with_truncation(
+                        maybe_guard(Box::new(ProjectSearchTool::default()), dir_restrictions),
+  +                     max_tool_output,
+  +                 ),
+  +                 &failure_tracker,
+  +             ),
+  +             &hooks,
+  +         ),
+  +         maybe_hook(
+  +             with_recovery_hints(
+  +                 with_truncation(
+  +                     maybe_guard(Box::new(GrepTool::default()), dir_restrictions),
+                        max_tool_output,
+                    ),
+                    &failure_tracker,
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the GrepTool to the side agent / sub-agent tools list. Let me find that.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'maybe_guard_arc(Arc::new(ProjectSearchTool::default())' in src/tools.rs ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1455..1470 ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add `GrepTool` to the child tools list as well.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            maybe_guard_arc(Arc::new(ProjectSearchTool::default()), restrictions),
+  +         maybe_guard_arc(Arc::new(GrepTool::default()), restrictions),
+            Arc::new(WebSearchTool),
+  ✓ Auto-approved: edit: src/tools.rs (2 → 3 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (2 → 3 lines)
+            maybe_guard_arc(Arc::new(ProjectSearchTool::default()), restrictions),
+  +         maybe_guard_arc(Arc::new(GrepTool::default()), restrictions),
+            Arc::new(WebSearchTool),
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to check if there's a `build_sub_agent_tool` or similar function that also lists tools I need to update. Let me also check for other places where tools are listed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_sub_agent' in src/tools.rs ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `build_sub_agent_tool` function to see where the child_tools are used. The child tools list I already updated at line 1456. Let me verify the function structure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1448..1498 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the child_tools list now includes GrepTool. Now let me handle the BUILTIN_TOOL_NAMES update.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+        "search",
+  +     "grep",
+        "rename_symbol",
+  ✓ Auto-approved: edit: src/agent_builder.rs (2 → 3 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/agent_builder.rs (2 → 3 lines)
+        "search",
+  +     "grep",
+        "rename_symbol",
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add a test for the GrepTool. Let me look at the existing tests for ProjectSearchTool to find a good place to add a GrepTool test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where the existing ProjectSearchTool tests are in tools.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test.*project_search' in src/tools.rs ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for tests that use `ProjectSearchTool`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ProjectSearchTool' in src/tools.rs ✓ (13ms)
+
+

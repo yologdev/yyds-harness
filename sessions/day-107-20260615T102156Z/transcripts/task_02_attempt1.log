@@ -1,0 +1,400 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task: I need to close a model lifecycle gap where `ModelCallCompleted` events are recorded without a corresponding `ModelCallStarted` event. Let me first read the evolve skill, then examine the relevant code.
+
+Let me plan:
+1. Read skills/evolve/SKILL.md for the implementation contract
+2. Find and read the `deepseek.rs` file to understand where events are emitted
+3. Find where `ModelCallStarted` and `ModelCallCompleted` are emitted
+4. Identify the gap
+5. Fix it with a test first
+6. Verify and commit
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ ls src/deepseek.rs ✓ (15ms)
+ ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `src/deepseek.rs` exists. Let me read it and also search for where `ModelCallStarted` and `ModelCallCompleted` are emitted.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs  ▶ search 'ModelCallStarted' (*.rs)  ▶ search 'ModelCallCompleted' (*.rs) ✓ (50ms)
+ ✓ (53ms)
+ ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is very interesting. The events `ModelCallStarted` and `ModelCallCompleted` are NOT emitted in `deepseek.rs` at all! The search results show:
+
+- `ModelCallStarted` is defined in `state.rs` and emitted in `prompt.rs` at line 768
+- `ModelCallCompleted` is defined in `state.rs` and emitted in `prompt.rs` at lines 923, 994, 1035
+
+So the gap is in `prompt.rs`, not in `deepseek.rs`. Let me look at the prompt.rs code to understand the lifecycle. The task says: "If the gap is in the prompt execution layer (e.g., prompt.rs or prompt_retry.rs) rather than deepseek.rs, note the actual file and create a narrow follow-up rather than expanding scope."
+
+But wait - I should actually fix this. Let me look at the code paths in prompt.rs to understand where started/completed are emitted and where they might be missing.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.9s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:750..810  ▶ read src/prompt.rs:900..1050 ✓ (49ms)
+ ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the pattern clearly. In `handle_prompt_events`:
+
+1. Line 767-771: `ModelCallStarted` is emitted at the beginning of the function
+2. Line 922-935: `ModelCallCompleted` is emitted for `AgentEnd` (normal completion)
+3. Line 993-1005: `ModelCallCompleted` is emitted for ctrl+c interrupt (with `model_call_terminal_recorded` guard)
+4. Line 1033-1047: `ModelCallCompleted` is emitted for channel close (with `model_call_terminal_recorded` guard)
+
+This looks correct - every path through `handle_prompt_events` should emit both start and completed. Let me look at the broader context - are there other entry points for model calls that might emit completions without starts? Let me search for where `handle_prompt_events` is called, and check `prompt_retry.rs` for retry paths.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.8s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_prompt_events' (*.rs)  ▶ search 'ModelCallCompleted' in src/prompt_retry.rs (*.rs) ✓ (15ms)
+ ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the two callers of `handle_prompt_events` at lines 315 and 327 to understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:280..340 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the retry logic in `prompt_retry.rs` and the broader retry loop in `prompt.rs` - the issue is likely that in the retry loop, `handle_prompt_events` is called again with `ModelCallStarted` but the previous call's completion was recorded. But wait - `handle_prompt_events` ALWAYS calls `ModelCallStarted` at the start and `ModelCallCompleted` at the end. So the gap must be somewhere else.
+
+Let me think about this differently. The issue is "model_completion_without_start" - which means a `ModelCallCompleted` event exists without a matching `ModelCallStarted`. Let me search for ALL places where `ModelCallCompleted` is emitted but there might not be a preceding `ModelCallStarted`.
+
+Actually, wait. Let me look at the retry logic more carefully. Let me search for `run_prompt_auto_retry` or similar functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'run_prompt_auto_retry' (*.rs) ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `run_prompt_auto_retry` function to understand the full retry logic.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1333..1453 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the retry loop calls `run_prompt_with_changes` (or `run_prompt_with_content_and_changes`) which in turn calls `run_prompt_once` → `handle_prompt_events`. Each `handle_prompt_events` call starts with `ModelCallStarted` and ends with `ModelCallCompleted`. So the retry loop should be fine.
+
+Let me look at `run_prompt_with_changes` more carefully - it might be the case that some code path in the inner loop bypasses `handle_prompt_events`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn run_prompt_with_changes' in src/prompt.rs (*.rs) ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `run_prompt_with_changes` to understand the full call chain.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1182..1342 ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `run_prompt_with_changes` calls `run_prompt_once` which calls `handle_prompt_events`. Each call to `handle_prompt_events` emits both `ModelCallStarted` and `ModelCallCompleted`. 
+
+Now let me think about where the gap could be. The issue says "model call completions have a matching start event in the state lifecycle" but the current code shows ModelCallCompleted being emitted without ModelCallCompleted in some cases.
+
+Wait — let me re-read the error. The issue is "model_completion_without_start". This means a `ModelCallCompleted` event exists in the state/event log, but there's no corresponding `ModelCallStarted` before it.
+
+Let me look at all paths where `ModelCallCompleted` is emitted:
+1. `prompt.rs:923` - in `handle_prompt_events`, `AgentEnd` case - has matching start at line 768
+2. `prompt.rs:994` - in `handle_prompt_events`, ctrl+c case - has matching start at line 768
+3. `prompt.rs:1035` - in `handle_prompt_events`, channel closed case - has matching start at line 768
+
+All three have matching start events. So the issue must be somewhere else... Let me search for `ModelCallCompleted` in other files to see if there's another emission point.
+
+From the search results:
+- `src/commands_eval.rs:3340,6410` - let me check these
+
+Actually, wait. Let me reconsider. The task description says the gap is in `deepseek.rs`. Let me look at the deepseek.rs more carefully. Maybe there are model-related events being emitted there that I didn't find because `deepseek.rs` isn't showing up in the search results.
+
+Actually, looking at the search results again - there are 25 matches for ModelCallCompleted but none in deepseek.rs. Let me look at `commands_eval.rs` for those emission points - those might be evaluation-side event emissions that lack matching starts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_eval.rs:3325..3375  ▶ read src/commands_eval.rs:6395..6445 ✓ (14ms)
+ ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `commands_eval.rs` only *reads* `ModelCallCompleted` events, not emits them. And line 6410 is a test fixture, not a runtime emission.
+
+Let me think about this differently. The `run_prompt_with_changes` function has the retry loop that calls `run_prompt_once` multiple times. Each `run_prompt_once` call goes through `handle_prompt_events` which:
+1. Emits `ModelCallStarted` at line 768
+2. Emits `ModelCallCompleted` at line 923 (normal), 994 (ctrl+c), or 1035 (channel close)
+
+But wait - what if `handle_prompt_events` panics between the `ModelCallStarted` emission and `ModelCallCompleted`? Then we'd have a started without completed. But the task is about "completion_without_start", not "start_without_completion".
+
+Hmm, let me think about this from the dashboard/stats perspective. Maybe the dashboard scripts are looking at events within a session and finding completions without starts. Let me check:
+
+Actually, maybe the issue is subtler. Let me look at the `state.rs` code to understand what `model_completion_without_start` means.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.4s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'completion_without_start' (*.rs)  ▶ search 'completion_without_start' (*.py) ✓ (35ms)
+ ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `lifecycle_cause` function in `state_graph_tools.py` and `build_evolution_dashboard.py` to understand what triggers "model_completion_without_start".
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:775..815  ▶ read scripts/build_evolution_dashboard.py:2335..2375 ✓ (46ms)
+ ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand. Let me look at where `lifecycle_cause` is called and how the open completions/statuses are determined. The function says: if there's a `ModelCallCompleted` event but no matching lifecycle entry (start), it returns `"model_completion_without_start"`.
+
+Let me look at the `state_lifecycle` computation more closely. Let me search for how the state lifecycle summary is built.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'state_lifecycle' in src/state.rs (*.rs) ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'state_lifecycle' (*.rs)  ▶ search 'state_lifecycle' in scripts (*.py) ✓ (16ms)
+ ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `build_state_lifecycle_json` in `commands_state.rs` to understand how the lifecycle tracking works.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_state_lifecycle_json' in src/commands_state.rs (*.rs) ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2388..2588 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the matching mechanism. The `model_lifecycle_key` function (line 2525-2531) uses `run_id` (or `event_id` as fallback) as the key to match started and completed events. Let me look at this more carefully:
+
+```rust
+fn model_lifecycle_key(event: &Value) -> String {
+    event_string(event, "run_id")
+        .filter(|run_id| !run_id.is_empty())
+        .or_else(|| event_string(event, "event_id"))
+        .unwrap_or("-")
+        .to_string()
+}
+```
+
+So the matching is done by `run_id`. Both `ModelCallStarted` and `ModelCallCompleted` events within the same `run_id` should match. But if `run_id` changes between the start and completion, or if the start event is emitted with a different `run_id`, there will be a mismatch.
+
+Let me look at how `record()` works and how `run_id` is set in state events.
+
+Actually, wait. Let me look at where `RunStarted` and `RunCompleted` events are emitted. If a `ModelCallCompleted` is emitted in a different run_id than the `ModelCallStarted`, that could cause the mismatch. But actually, `handle_prompt_events` emits both `ModelCallStarted` and `ModelCallCompleted` in the same scope, so they should have the same run_id.
+
+Let me think about this differently. The `model_lifecycle_key` uses `run_id` to match. If `run_id` is empty, it falls back to `event_id`. Let me check what happens when `run_id` is set in events.
+
+Actually, let me look at the `record` function to understand how run_id is attached to events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn record\b' in src/state.rs (*.rs) ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the `record` function definition more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record' in src/state.rs (*.rs) ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `record` function to understand how run_id is added to events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:325..415 ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `append` function of `StateRecorder` to see how `run_id` is attached.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn append' in src/state.rs (*.rs) ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `append` method of the StateRecorder.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:273..323 ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see! Line 287: `run_id: Some(self.run_id.clone()),` - every event gets the `run_id` from the recorder. The `run_id` is set once when the recorder is initialized, so all events within a session/process run should have the same `run_id`.
+
+So the matching should work correctly as long as both `ModelCallStarted` and `ModelCallCompleted` are emitted within the same process run. The `model_lifecycle_key` uses `run_id` - so if both events have the same run_id, they should match.
+
+Wait, but the key in `model_lifecycle_key` is just `run_id` - all model calls from the same run would share the same key! That means only the last `ModelCallStarted` gets matched with the next `ModelCallCompleted` in terms of the `open_model_calls` map.
+
+That IS the bug! If you have multiple model calls in a single run:
+1. ModelCallStarted (run_id=A) → inserts key "A"
+2. ModelCallStarted (run_id=A) → inserts key "A" again, overwriting the first one
+3. ModelCallCompleted (run_id=A) → removes key "A"
+4. ModelCallCompleted (run_id=A) → key "A" not found → unmatched completion!
+
+So a run with 2 model calls that each have start+complete would have 1 unmatched completion because the `BTreeMap` only stores one entry per key, and the second start overwrites the first.
+
+This is the bug! The key is just `run_id`, which means you can only have one open model call per run_id at a time. In a session with multiple prompt calls (which is typical in an evolution session), the second `ModelCallStarted` overwrites the first open call, and then when the second `ModelCallCompleted` comes in, there's no matching start.
+
+Wait, let me re-read the code:
+
+```rust
+fn model_lifecycle_key(event: &Value) -> String {
+    event_string(event, "run_id")
+        .filter(|run_id| !run_id.is_empty())
+        .or_else(|| event_string(event, "event_id"))
+        .unwrap_or("-")
+        .to_string()
+}
+```
+
+And in `build_state_lifecycle_json`:
+```rust
+"ModelCallStarted" => {
+    model_started += 1;
+    let event_id = event_string(event, "event_id").unwrap_or("").to_string();
+    let key = model_lifecycle_key(event);
+    let payload = event.get("payload").unwrap_or(&Value::Null);
+    open_model_calls.insert(
+        key,
+        OpenModelCall {
+            run_id: run_id.clone(),
+            started_event_id: event_id,
+            model: payload_str(payload, "model").unwrap_or("-").to_string(),
+        },
+    );
+}
+"ModelCallCompleted" => {
+    model_completed += 1;
+    let key = model_lifecycle_key(event);
+    if open_model_calls.remove(&key).is_none() {
+        unmatched_model_completions.push(model_completion_summary(event));
+    }
+}
+```
+
+The key is `run_id` (same for all events in a run), so yes, multiple model starts within the same run will overwrite each other, and then only one completion can match - the subsequent completions will appear unmatched.
+
+The fix should be to make the key unique per model call, not per run. This could use `event_id` as the key, or a combination of `run_id` + some sequence number.
+
+But wait - let me also check: the `model_lifecycle_key` for the start and completion events - they both need to produce the same key. Both events have a `run_id`, so they'd both produce the same key (the run_id). But that's not enough to distinguish different model calls within the same run.
+
+The fix is: use `event_id` as the primary key for matching model calls. But then start and completion events have different event_ids...
+
+Actually, a better approach: since a `ModelCallStarted` and its corresponding `ModelCallCompleted` should have different event_ids, we can't use event_id directly. We need a way to match them. One option is to use a shared identifier in the payload (like a "call_id" or use the trace_id). Another is to match them sequentially (FIFO).
+
+Actually, looking at this more carefully, the simplest approach is: make the lifecycle key for model calls be `run_id` + a counter. But that doesn't work because we need the same key for both started and completed.
+
+An even simpler approach: use the `run_id` as the base key, but when there's an existing entry, don't overwrite it - instead, match completions sequentially by using a different strategy.
+
+But wait, there's a much simpler observation: the current code tries to match by run_id, but the real intent is to match each started model call with its completion. The simplest fix is to change the matching from a map-based approach to a count-based approach. If `model_started == model_completed`, everything is balanced. The unmatched completion detection is trying to find completions without starts, but the BTreeMap approach is broken because it uses run_id as key.
+
+Actually, let me re-think. The real fix should make the lifecycle properly match started/completed pairs. Options:
+
+1. **Use a different key**: Include `event_id` for started events and then match based on the specific call. But completions don't have a reference to the started event_id.
+
+2. **FIFO queue instead of map**: Use a Vec as a queue - push starts, pop completions. If a completion arrives and the queue is empty, it's unmatched.
+
+3. **Simple count-based**: Just compare `model_started == model_completed` and drop the unmatched detection. But this loses the detail about which run_ids have mismatches.
+
+Let me go with option 2 (FIFO queue). This is the simplest correct fix:
+- On `ModelCallStarted`: push to a Vec
+- On `ModelCallCompleted`: pop from the Vec; if empty, record as unmatched
+
+But let me also think about this from the original task perspective. The task says "Close model lifecycle gap — model_completion_without_start" and points to `deepseek.rs`. But the actual code appears to be in `commands_state.rs` where the lifecycle tracking is done, not in the event emission code in `prompt.rs`.
+
+Wait, hmm. Let me re-read the task. It says:
+- "Emit a ModelCallStarted event before every model API call"
+- "Find code paths that emit completion but skip the start event"
+
+But from my analysis, the issue isn't in event emission (prompt.rs) — every path through handle_prompt_events emits both start and completion. The issue is in the lifecycle tracking (commands_state.rs) where the matching uses run_id as a key and overwrites previous entries.
+
+Actually wait, I need to look at this from a different angle. Let me re-read the dashboard's lifecycle analysis. In `summarize_events_for_work` and the `lifecycle_cause` function, the analysis is working on a different level - it's not looking at sequential matching, but at open/closed states. Let me read how the dashboard processes events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2180..2280 ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me back up to understand the broader context of how events are tabulated in the dashboard. I need to find how `deepseek_model_call_started` and `deepseek_model_call_completed` are computed, and also `unkeyed_model_call_starts`/`completions`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'deepseek_model_call_started' in scripts/build_evolution_dashboard.py ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the code where these counts are computed, around line 2055.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2050..2170 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the complete picture. The dashboard script's `summarize_events_for_work` function computes model call lifecycle explicitly by counting started vs completed events. The important thing is:
+
+- `unkeyed_model_call_starts` = ModelCallStarted events without a run_id
+- `unkeyed_model_call_completions` = ModelCallCompleted events without a run_id
+
+And then:
+- `incomplete_count = len(incomplete_run_ids) + max(unkeyed_model_call_starts - unkeyed_model_call_completions, 0)`
+- `unmatched_completed_count = len(unmatched_completed_run_ids) + max(unkeyed_model_call_completions - unkeyed_model_call_starts, 0)`
+
+So unmatched completions can come from:
+1. ModelCallCompleted events with a run_id that had no ModelCallStarted in that run_id
+2. Unkeyed (no run_id) completions that outnumber unkeyed starts
+
+But wait, the code at line 2089: `if kind == "ModelCallStarted" and deepseek_model_payload(data)` — this only counts DeepSeek model calls. Let me check what `deepseek_model_payload` does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def deepseek_model_payload' in scripts/build_evolution_dashboard.py ✓ (29ms)
+
+

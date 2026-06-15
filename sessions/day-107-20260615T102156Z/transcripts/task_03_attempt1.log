@@ -1,0 +1,542 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to investigate and fix "Tool grep not found" errors. Let me begin by reading the evolve skill, then investigating the relevant source files.
+
+Let me plan:
+1. Read `skills/evolve/SKILL.md` first
+2. Search for "grep" references in the relevant files
+3. Check state failure records for the actual error pattern
+4. Diagnose root cause
+5. Fix and verify
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me investigate. I need to:
+1. Check how "grep" is referenced in commands_search.rs and tools.rs
+2. Check the state failure records for the actual error pattern
+3. Understand if this is a tool routing issue or CI environment issue
+
+Let me search for grep references in the relevant files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'grep' in src/commands_search.rs  ▶ search 'grep' in src/tools.rs  ▶ search 'grep.not.found' in src ✓ (40ms)
+ ✓ (40ms)
+ ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Right, so the search in commands_search.rs shows it's about grep operations. Let me look at the specific areas more carefully. The "Tool grep not found" error — the task says there are 3 recent instances. Let me check what this error actually looks like. It could be:
+
+1. A tool named "grep" being invoked that doesn't exist (tool routing)
+2. The system `grep` binary not being found (bash command not found)
+3. An MCP collision
+
+Let me read the relevant sections of the code. First, let me understand how the grep tool is built and registered.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.9s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:100..150  ▶ read src/tools.rs:195..255  ▶ read src/tools.rs:330..390 ✓ (37ms)
+ ✓ (76ms)
+ ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the code. The `build_project_grep_args` function returns `("grep".to_string(), args)` as the command name, and then `tokio::process::Command::new(&cmd_name)` is used to spawn it.
+
+The `command_exists` function is used to check if `rg` is available - let me check what `command_exists` does and where it's defined. Also, when `grep` is not installed, `Command::new("grep")` would fail with a "not found" error.
+
+But wait, this is the `ProjectSearchTool` which is the "search" tool. The error message is "Tool grep not found" - this could be:
+1. A yoagent error about a tool named "grep" being invoked but not found
+2. A bash error from trying to run `grep` command
+
+Let me look at the actual state failure records to see the exact error format.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.9s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:1..31  ▶ search 'command_exists' in src/tools.rs ✓ (26ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `command_exists` function and understand how grep is invoked. Then let me also check the state failure records to see what the actual error looks like.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:290..320  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls state/events/*.jsonl 2>/dev… ✓ (39ms)
+ ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No state events files found in that path. Let me check where state data is stored.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la state/ 2>/dev/null && e… ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No state/ or .yoyo/ directory. Let me check for any session planning files and the recent error patterns differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la session_plan/ 2>/dev/nu… ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, there's a session_plan/task_03.md and an assessment.md. Let me read the task file and the assessment first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_03.md  ▶ read session_plan/assessment.md (100 lines) ✓ (41ms)
+ ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. The "Tool grep not found" error appears 3 times recently. Let me understand the possible causes:
+
+1. **Tool routing bug**: The `search` tool (ProjectSearchTool) falls back to `grep` when `rg` is not found. If the `grep` command is spawned but fails, that could produce "Search error: grep: command not found" or similar. But the error format is `Tool grep not found` - this sounds like yoagent reporting that a tool named "grep" wasn't found.
+
+2. **MCP collision**: If an MCP server registers a "grep" tool, the collision guard should catch it.
+
+3. **CI environment issue**: If `grep` binary is missing, the `Command::new("grep")` spawn would fail.
+
+Wait, let me check what happens when `Command::new("grep")` fails on Linux. On Linux, `tokio::process::Command::new("grep")` would try to spawn `/usr/bin/grep` via the PATH. If grep is not found, it returns an "No such file or directory" error from the OS, which would be wrapped as `ToolError::Failed("Search failed: No such file or directory (os error 2)")`. But the exact message format "Tool grep not found" doesn't match this.
+
+Let me look more carefully. The error "Tool grep not found" - could this come from yoagent's tool resolution? In yoagent, when the agent tries to call a tool that's not in the tool list, it would say something like "Tool X not found." But our search tool is named "search", not "grep".
+
+Actually, let me also check the `/grep` command in `commands_search.rs`. There might be a command named `/grep` that's being dispatched as a tool.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'handle_grep\|fn.*grep…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'cmd_name\|Command::ne… ✓ (53ms)
+ ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture more clearly. There are TWO separate places where `grep` is invoked as a system command:
+
+1. **`ProjectSearchTool` in `tools.rs`**: The `search` tool uses `build_project_grep_args()` which returns `("grep".to_string(), args)`. This is the built-in tool path - it's named `"search"` not `"grep"`, but it spawns the `grep` binary.
+
+2. **`/grep` slash command in `commands_search.rs`**: The `/grep` command spawns `std::process::Command::new("grep")` directly.
+
+Now, the error "Tool grep not found" — this format sounds like yoagent's tool resolution error: when the model tries to call a tool named "grep", but there's no such tool in the built-in tool list. Let me check: does yoagent have a built-in tool called "grep"? Or does the search tool somehow expose "grep" as the tool name?
+
+Wait, let me re-read the `ProjectSearchTool`:
+
+```rust
+fn name(&self) -> &str {
+    "search"
+}
+```
+
+So the tool is named "search", not "grep". The model shouldn't be calling a tool named "grep" unless:
+1. The model is hallucinating tool names
+2. There's some alias
+3. An MCP server is providing a "grep" tool that conflicts
+
+Actually, let me check the error format more carefully. The assessment says `Tool grep not found`. This could be:
+- yoagent reporting that the tool "grep" isn't found in the available tools
+- The `search` tool returning an error about grep not being found
+
+Let me look at the `search` tool's error handling more carefully. When `Command::new("grep")` fails, it goes through:
+
+```rust
+let result = cmd.output()... 
+    .map_err(|e| ToolError::Failed(format!("Search failed: {e}")))?;
+```
+
+So if `grep` is not found, the error would be "Search failed: No such file or directory (os error 2)". This doesn't match "Tool grep not found".
+
+But wait, let me also check if there's a tool-routing issue where a tool named "grep" is being incorrectly registered. Let me look at the builtin tool list.
+
+Let me search for BUILTIN_TOOL_NAMES in the codebase.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.3s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'BUILTIN_TOOL_NAMES' in src  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn 'Tool.*not found\|not… ✓ (39ms)
+ ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the BUILTIN_TOOL_NAMES in agent_builder.rs:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/agent_builder.rs:38..68 ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there's no "grep" tool in the builtin list. The tool names are: bash, read_file, write_file, edit_file, list_files, search, rename_symbol, ask_user, todo, web_search, sub_agent, shared_state.
+
+Now the question is: where does the "Tool grep not found" error come from?
+
+Let me think about this more carefully. The error "Tool grep not found" could come from:
+1. The model trying to call a tool called "grep" - but that's not a registered tool
+2. yoagent reporting that a tool called "grep" wasn't found - this would happen if the model requested "grep" but it's not in the tool list
+3. A bash command `grep` failing with "grep: not found"
+
+Actually wait - let me re-read the assessment. It says "from state failures --recent". Let me check what the state failures command shows and look at the actual error messages.
+
+Let me also look at what `state failures --recent` actually queries.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state fail… ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the exact error. Three instances of "Tool grep not found" from `tool_execution` class, `tool` owner:
+
+1. `event_b0d39aca332a4132bd36e383c263f84d` — run=run-1781516327051-56015
+2. `event_9f13db45d8794a1bbe30d4eed3559dcb` — run=run-1781516327051-56015
+3. `event_390493a1205c46718477279cfdbf15ad` — run=run-1781491854774-22870
+
+This is clearly a **tool_name** error — yoagent is reporting that a tool named "grep" was requested by the model but is not found. This means the **model is calling a tool called "grep"** that doesn't exist in the tool list.
+
+The model is likely hallucinating a "grep" tool name because DeepSeek models have seen tool-use patterns where "grep" is a tool name (e.g., in Claude Code or other agent frameworks).
+
+Now, the question is: how do we fix this?
+
+Options:
+1. Add a "grep" alias tool that redirects to search - but this adds complexity
+2. Make the system prompt clearer that the search tool does grep-like operations
+3. Add "grep" to the BUILTIN_TOOL_NAMES and create a grep tool
+
+Actually, looking at this from the model's perspective: the `search` tool description says "Search project text files for a pattern." The model might think "grep" is the right tool name because it's more familiar. The fix should be to either:
+1. Improve the search tool's description to mention grep equivalence
+2. Add error recovery that maps "grep" tool calls to the search tool
+3. Accept that the model calls "grep" and provide a compatibility shim
+
+Actually, let me look at what yoagent does when the model calls a tool that doesn't exist. The error "Tool grep not found" must come from yoagent's tool dispatch. Let me search for where this error is generated.
+
+Actually wait - let me think about this differently. The error says "Tool grep not found" which is generated by yoagent when the model requests a tool that's not available. This is NOT a crash or a code bug - it's a runtime behavior where the model tries to use a non-existent tool.
+
+But the task says to fix it. How can we fix the model calling "grep"?
+
+Possible fixes:
+1. **Alias the grep tool**: Create a "grep" tool that delegates to search. This is the most direct fix.
+2. **Improve system prompt**: Tell the model more explicitly that "search" is the grep tool.
+3. **Add retry logic**: When "Tool grep not found" error occurs, retry with search.
+4. **Register a grep alias in the tool list**: Have a tool named "grep" that does the same thing as search.
+
+Let me check if there's already retry logic for tool-not-found errors.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'Tool.*not found' in src  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn 'grep' src/prompt_ret… ✓ (24ms)
+ ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the prompt retry logic more carefully to understand if there's already handling for "Tool not found" errors.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:100..140  ▶ read src/prompt_retry.rs:820..870 ✓ (40ms)
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The "Tool grep not found" error comes from:
+- The model requests a tool named "grep" 
+- yoagent doesn't have a tool named "grep"
+- yoagent returns the error "Tool grep not found"
+- This gets recorded as a tool_execution failure
+
+The root cause is: the model is calling a tool named "grep" which doesn't exist in our tool list. The model should be using "search" instead of "grep".
+
+Now, how to fix this? Several options:
+
+1. **Add "grep" as a tool name that aliases to search** - this would be the most direct fix but creates duplication
+2. **Improve the search tool description** to make it clearer it handles grep-like operations
+3. **Add a grep tool that redirects to bash grep** - this is the `/grep` slash command
+4. **Add retry logic** that converts "Tool grep not found" into a search tool invocation
+
+Actually, wait. Let me re-read the tool_recovery_hint function. The `tool_recovery_hint` function is used for *retry hints when a tool call fails*. But the model calling "grep" tool would result in yoagent returning an error like "Tool grep not found" BEFORE the tool is even dispatched. So the retry hints wouldn't fire here because this is a tool resolution error, not a tool execution error.
+
+Let me think about the most practical fix:
+
+**Option A: Add a "grep" alias tool**
+Create a tool named "grep" that delegates to the "search" tool. This would:
+- Prevent the "Tool grep not found" error since "grep" now exists
+- Need to be added to BUILTIN_TOOL_NAMES
+- Need to be registered in the build_tools function
+
+**Option B: Make the search tool description mention grep equivalence more explicitly**
+The current description is: "Search project text files for a pattern. Literal search is the default so symbols and parentheses do not need escaping. Set regex=true only when regex semantics are required. Build artifacts and dependency caches are skipped."
+
+We could add something like: "This is the grep/search tool — use this for all text search operations."
+
+But the model might still call "grep" based on its training.
+
+**Option C: Add error recovery**
+When yoagent reports "Tool X not found", map known aliases. But this happens at the yoagent level, not our level.
+
+Let me go with **Option A**: Add a "grep" tool that's an alias for search. This is the most practical fix since:
+- It prevents the error entirely
+- It's a small, focused change
+- It matches what the model expects
+
+Actually, let me look more carefully at what happens. Let me check if there's a `build_tools` function that registers tools.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.7s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn build_tools\|fn bu… ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the build_tools function and see how tools are registered:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1340..1390 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. I need to:
+
+1. **Create a `GrepAliasTool`** that has the name "grep" but delegates to `ProjectSearchTool`
+2. **Add "grep" to BUILTIN_TOOL_NAMES**
+3. **Register it in build_tools**
+
+But wait, let me think of a simpler approach first. Instead of creating a whole new tool struct, I could simply modify `ProjectSearchTool` to also accept the name "grep" - but yoagent tools have a single name.
+
+Actually the simplest approach: create a `GrepTool` struct that wraps `ProjectSearchTool` but returns "grep" as its name. This way:
+- The model calling "grep" tool works
+- It delegates to the same search implementation
+- The tool is properly registered
+
+Or even simpler: just add "grep" as an allowed tool name. Let me look at how tool names are used in the tool call processing.
+
+Actually, the simplest approach: I'll add a new `GrepTool` that wraps the same search logic. Let me look at how ProjectSearchTool is structured more carefully.
+
+Wait, I realize there's another even simpler approach. Since `ProjectSearchTool` already has all the logic, I can just create a second instance of it but with the name "grep". But the `AgentTool::name()` method returns a fixed string "search".
+
+Option: Create a wrapper struct `GrepTool(ProjectSearchTool)` that implements `AgentTool` and delegates everything but returns "grep" for `name()`.
+
+Let me do this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (12ms)
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I've diagnosed the root cause. Let me mark task 1 as done.
+
+Root cause: The DeepSeek model occasionally calls a tool named "grep" (likely due to training data where "grep" is a tool name), but no "grep" tool exists in our tool list. The only search tool is named "search". This causes yoagent to report "Tool grep not found."
+
+Fix: Create a "grep" tool that's an alias for the "search" tool. This prevents the error by providing the tool the model expects.
+
+Now let me implement this.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 4.1s (6 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Root cause confirmed: The model calls a tool named "grep" but no such tool exists. The fix is to add a "grep" tool alias. Let me now implement it.
+
+I'll:
+1. Add a `GrepTool` wrapper struct in `tools.rs` that delegates to `ProjectSearchTool`
+2. Register it in `build_tools`
+3. Add "grep" to `BUILTIN_TOOL_NAMES` in `agent_builder.rs`
+4. Write tests
+5. Run checks
+
+Let me start with the implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll implement the fix. The root cause is clear: the model calls a tool named "grep" (from its training data) but our tool list only has "search". I'll add a "grep" tool alias that delegates to the search tool.
+
+First, let me read the `ProjectSearchTool` implementation more carefully to understand what I need to wrap:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:119..289 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to create a `GrepTool` that wraps `ProjectSearchTool` but returns "grep" as its name. I'll place it right after `ProjectSearchTool`.
+
+Let me also look at where build_tools registers the search tool and see how it's added there.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the `GrepTool` wrapper struct right after `ProjectSearchTool`. I'll place it before the `command_exists` function:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:288..293 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add the GrepTool after line 291. It's a simple wrapper that delegates to ProjectSearchTool but uses "grep" as the name.
+────────────────────────────────────────────────────────────────────────────────
+
+            })
+  +     }
+  + }
+  + 
+  + /// Alias tool so that model calls to "grep" resolve instead of failing with
+  + /// "Tool grep not found". Delegates entirely to [`ProjectSearchTool`] with a
+  + /// description that mentions grep equivalence so the model can discover it.
+  + pub(crate) struct GrepTool(ProjectSearchTool);
+  + 
+  + impl Default for GrepTool {
+  +     fn default() -> Self {
+  +         Self(ProjectSearchTool::default())
+  +     }
+  + }
+  + 
+  + #[async_trait::async_trait]
+  + impl AgentTool for GrepTool {
+  +     fn name(&self) -> &str {
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/tools.rs (3 → 41 lines)
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (3 → 41 lines)
+            })
+  +     }
+  + }
+  + 
+  + /// Alias tool so that model calls to "grep" resolve instead of failing with
+  + /// "Tool grep not found". Delegates entirely to [`ProjectSearchTool`] with a
+  + /// description that mentions grep equivalence so the model can discover it.
+  + pub(crate) struct GrepTool(ProjectSearchTool);
+  + 
+  + impl Default for GrepTool {
+  +     fn default() -> Self {
+  +         Self(ProjectSearchTool::default())
+  +     }
+  + }
+  + 
+  + #[async_trait::async_trait]
+  + impl AgentTool for GrepTool {
+  +     fn name(&self) -> &str {
+  +         "grep"
+  +     }
+  ... (21 more lines)
+ ✗ (26ms)
+    │ old_text matches 5 locations in src/tools.rs. Include more surrounding context to make the match unique.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The match is ambiguous. Let me use more context to make it unique.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:284..294 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to match exactly the lines surrounding the end of ProjectSearchTool's impl. The close of the impl block is at lines 290-291 with `}` on line 291, then `fn command_exists` on line 293.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                }),
+            })
+  +     }
+  + }
+  + 
+  + /// Alias tool so that model calls to "grep" resolve instead of failing with
+  + /// "Tool grep not found". Delegates entirely to [`ProjectSearchTool`] with a
+  + /// description that mentions grep equivalence so the model can discover it.
+  + pub(crate) struct GrepTool(ProjectSearchTool);
+  + 
+  + impl Default for GrepTool {
+  +     fn default() -> Self {
+  +         Self(ProjectSearchTool::default())
+  +     }
+  + }
+  + 
+  + #[async_trait::async_trait]
+  + impl AgentTool for GrepTool {
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/tools.rs (6 → 44 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (6 → 44 lines)
+                }),
+            })
+  +     }
+  + }
+  + 
+  + /// Alias tool so that model calls to "grep" resolve instead of failing with
+  + /// "Tool grep not found". Delegates entirely to [`ProjectSearchTool`] with a
+  + /// description that mentions grep equivalence so the model can discover it.
+  + pub(crate) struct GrepTool(ProjectSearchTool);
+  + 
+  + impl Default for GrepTool {
+  +     fn default() -> Self {
+  +         Self(ProjectSearchTool::default())
+  +     }
+  + }
+  + 
+  + #[async_trait::async_trait]
+  + impl AgentTool for GrepTool {
+  +     fn name(&self) -> &str {
+  +         "grep"
+  ... (23 more lines)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit was applied. Now I need to:
+1. Add "grep" to BUILTIN_TOOL_NAMES in agent_builder.rs
+2. Register the grep tool in build_tools
+3. Write a test
+
+Let me first add it to BUILTIN_TOOL_NAMES.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add "grep" to BUILTIN_TOOL_NAMES:
+        "edit_file",
+        "list_files",
+        "search",
+  +     "grep",
+        "rename_symbol",
+        "ask_user",
+        "todo",
+  ✓ Auto-approved: edit: src/agent_builder.rs (14 → 15 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/agent_builder.rs (14 → 15 lines)
+        "edit_file",
+        "list_files",
+        "search",
+  +     "grep",
+        "rename_symbol",
+        "ask_user",
+        "todo",
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now register the grep tool in build_tools. Let me look at how the search tool is registered and add the grep tool right next to it.
+────────────────────────────────────────────────────────────────────────────────
+
+Now register the grep tool in `build_tools`. Let me see how search is registered:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1345..1375 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read a bit further to see how search is registered:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1374..1404 ✓ (12ms)
+
+
