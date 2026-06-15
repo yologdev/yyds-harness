@@ -24,6 +24,13 @@ SEARCH_FRICTION_KEYS = (
     "broken regex",
     "binary file matches",
 )
+PROTECTED_IMPLEMENTATION_FILES = (
+    "scripts/evolve.sh",
+    "scripts/format_issues.py",
+    "scripts/build_site.py",
+    "skills/self-assess/SKILL.md",
+    "skills/evolve/SKILL.md",
+)
 
 
 TASKS = [
@@ -178,6 +185,42 @@ TASKS = [
     },
     {
         "keys": (
+            "force analysis-only attempts into action",
+            "task_analysis_only_attempt_count",
+            "analysis-only task attempts",
+            "analysis only task attempts",
+            "task_no_edit_revert_count",
+            "no-edit revert",
+            "implementation ended without file progress",
+            "implementation task reverted without touching files",
+        ),
+        "title": "Make analysis-only task pressure landable",
+        "files": "scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py",
+        "objective": (
+            "Ensure task-success pressure from analysis-only/no-edit attempts produces a small, "
+            "landable follow-up task instead of selecting broad or protected-file harness work."
+        ),
+        "why": (
+            "Recent evo evidence showed implementation attempts ending with no file progress and no "
+            "terminal evidence. The next seed must target landable task-selection logic so DeepSeek "
+            "can improve the loop without touching protected evolution files."
+        ),
+        "success": [
+            "Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup.",
+            "The selected seed Files list contains no protected implementation files.",
+            "Preseed self-tests cover the analysis-only/no-edit pressure path.",
+        ],
+        "verification": [
+            "python3 scripts/preseed_session_plan.py --test",
+            "python3 -m unittest scripts.test_state_graph_tools",
+        ],
+        "evidence": [
+            "Future task manifests show landable Files entries for task-success repair pressure.",
+            "Future trajectory pressure leads with implementation failure repair when `task_analysis_only_attempt_count` is above 0 and task_success_rate is 0.0.",
+        ],
+    },
+    {
+        "keys": (
             "state_run_incomplete",
             "state_run_unmatched_non_validation_completed",
             "deepseek_model_call_incomplete",
@@ -197,7 +240,7 @@ TASKS = [
         ),
         "title": LIFECYCLE_TASK_TITLE,
         "files": (
-            "scripts/evolve.sh, scripts/log_feedback.py, scripts/summarize_state_gnomes.py"
+            "scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py"
         ),
         "objective": (
             "Close one concrete yyds lifecycle feedback gap by keeping terminal event recording and "
@@ -226,7 +269,7 @@ TASKS = [
             *SEARCH_FRICTION_KEYS,
         ),
         "title": SEARCH_FRICTION_TASK_TITLE,
-        "files": "src/tools.rs, scripts/log_feedback.py, scripts/evolve.sh",
+        "files": "src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py",
         "objective": (
             "Turn recurring search failure evidence into safer search behavior or sharper planning "
             "guidance, after first verifying which search safeguards already exist in the current code."
@@ -575,6 +618,19 @@ lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; stat
 
         assessment = """# Assessment
 
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2): Implementation ended without file progress or terminal evidence.
+- Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1): Implementation task reverted without touching files.
+- Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): Lifecycle gnomes show unpaired terminal events.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Make analysis-only task pressure landable", task
+        assert "scripts/evolve.sh" not in str(task["files"]), task
+        text = render_task(task, "107", "21:55")
+        assert "task_analysis_only_attempt_count" in text, text
+
+        assessment = """# Assessment
+
 ## Structured State Snapshot
 lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; state_run_incomplete_count=2; state_run_unmatched_completed_count=2; state_run_unmatched_non_validation_completed_count=0; state_run_unstarted_input_validation_error_count=2; deepseek_model_call_started_count=1; deepseek_model_call_completed_count=0; deepseek_model_call_incomplete_count=1
 
@@ -782,6 +838,13 @@ resolved API keys to spawned workers. `api_key_present` now reports true.
         text = render_task(task, "105", "10:00")
         assert "validated_against_assessment: false" in text
         assert "contradiction:" in text
+        for candidate in TASKS:
+            protected = [
+                path.strip()
+                for path in str(candidate.get("files") or "").split(",")
+                if path.strip() in PROTECTED_IMPLEMENTATION_FILES
+            ]
+            assert not protected, f"{candidate['title']} includes protected implementation files: {protected}"
         print("preseed_session_plan self-tests passed")
         return 0
     if args.assessment is None:
