@@ -583,6 +583,25 @@ def event_run_id(event: dict[str, Any], payload: dict[str, Any]) -> str | None:
     return None
 
 
+def event_session_id(event: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    top_level = event.get("session_id")
+    if isinstance(top_level, str) and top_level:
+        return top_level
+    raw_payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    raw_meta = raw_payload.get("_yoyo") if isinstance(raw_payload.get("_yoyo"), dict) else {}
+    raw_meta_session = raw_meta.get("session_id")
+    if isinstance(raw_meta_session, str) and raw_meta_session:
+        return raw_meta_session
+    direct = payload.get("session_id")
+    if isinstance(direct, str) and direct:
+        return direct
+    meta = payload.get("_yoyo") if isinstance(payload.get("_yoyo"), dict) else {}
+    meta_session = meta.get("session_id")
+    if isinstance(meta_session, str) and meta_session:
+        return meta_session
+    return None
+
+
 def parse_log(log_text: str) -> dict[str, Any]:
     fingerprints: dict[str, dict[str, Any]] = {}
     provider_errors = 0
@@ -1374,9 +1393,13 @@ def gnome_deltas(metrics: dict[str, Any], previous: list[dict[str, Any]]) -> dic
 
 def task_lineage(session_dir: Path, metrics: dict[str, Any], deltas: dict[str, Any]) -> list[dict[str, Any]]:
     tasks: dict[str, dict[str, Any]] = {}
+    current_session_id = session_dir.name
     for event in load_events(session_dir / "state" / "events.jsonl"):
         kind = event_kind(event)
         data = event_payload(event)
+        session_id = event_session_id(event, data)
+        if session_id and current_session_id and session_id != current_session_id:
+            continue
         if data.get("phase") == "task_commit_linkage" and kind in {"DecisionRecorded", "TaskLineageLinked"}:
             for linked_task in data.get("tasks", []) or []:
                 if not isinstance(linked_task, dict):
@@ -1445,7 +1468,9 @@ def task_lineage(session_dir: Path, metrics: dict[str, Any], deltas: dict[str, A
                 value = data.get(key)
                 if key in {"touched_files", "source_files", "commit_shas", "commits"} and not value:
                     continue
-                if value is not None:
+                if key == "revert_reason" and key in data:
+                    row[key] = value
+                elif value is not None:
                     row[key] = value
             row["gnome_metrics"] = gnome_values(metrics)
             row["gnome_deltas"] = deltas

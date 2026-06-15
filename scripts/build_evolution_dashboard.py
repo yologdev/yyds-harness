@@ -1177,6 +1177,7 @@ def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
                 "task_title": outcome.get("task_title") if isinstance(outcome, dict) else None,
                 "status": outcome.get("status") if isinstance(outcome, dict) else None,
                 "revert_reason": outcome.get("revert_reason") if isinstance(outcome, dict) else None,
+                "planned_files": outcome.get("planned_files") if isinstance(outcome.get("planned_files"), list) else [],
                 "source_files": outcome.get("source_files") if isinstance(outcome.get("source_files"), list) else [],
                 "touched_files": outcome.get("touched_files") if isinstance(outcome.get("touched_files"), list) else [],
                 "commit_shas": outcome.get("commit_shas") if isinstance(outcome.get("commit_shas"), list) else [],
@@ -1338,16 +1339,26 @@ def enrich_task_lineage_with_artifacts(
         next_row = dict(row)
         artifact = artifacts_by_id.get(str(next_row.get("task_id") or ""))
         if artifact:
+            for field in (
+                "task_title",
+                "status",
+                "revert_reason",
+            ):
+                if field in artifact:
+                    next_row[field] = artifact.get(field)
+            for field in (
+                "planned_files",
+                "source_files",
+                "touched_files",
+                "commit_shas",
+            ):
+                if artifact.get(field):
+                    next_row[field] = artifact.get(field)
             if not next_row.get("eval"):
                 eval_summary = eval_summary_from_artifacts(artifact.get("evals") or [])
                 if eval_summary:
                     next_row["eval"] = eval_summary
             for field in (
-                "status",
-                "revert_reason",
-                "source_files",
-                "touched_files",
-                "commit_shas",
                 "has_obsolete_note",
                 "obsolete_note_path",
             ):

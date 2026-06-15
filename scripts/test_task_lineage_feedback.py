@@ -26,7 +26,14 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def append_event(path: Path, event_type: str, payload: dict[str, object], *, run_id: str | None = None) -> None:
+def append_event(
+    path: Path,
+    event_type: str,
+    payload: dict[str, object],
+    *,
+    run_id: str | None = None,
+    session_id: str | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     event = {
         "event_id": f"evt-{event_type}-{len(path.read_text(encoding='utf-8').splitlines()) if path.exists() else 0}",
@@ -35,6 +42,8 @@ def append_event(path: Path, event_type: str, payload: dict[str, object], *, run
     }
     if run_id:
         event["run_id"] = run_id
+    if session_id:
+        event["session_id"] = session_id
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, separators=(",", ":")) + "\n")
 
@@ -213,6 +222,10 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn("The harness only recognizes that exact marker line", evolve)
         self.assertIn("prose like \"task completed\"", evolve)
         self.assertIn("then end with the exact TASK_TERMINAL_EVIDENCE marker", evolve)
+        self.assertIn("Run focused verification after changes", evolve)
+        self.assertIn("Do not run full cargo test or full clippy inside the implementation", evolve)
+        self.assertIn("the harness runs global gates after the task", evolve)
+        self.assertNotIn("Run cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test after changes", evolve)
         self.assertNotIn("Backward-compatible fallback", evolve)
         self.assertNotIn("Task completed|All gates passed|Verification", evolve)
         self.assertIn("Early action requirement: by your 8th tool turn", evolve)
@@ -763,6 +776,87 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(trace_metrics["task_lineage_capture_coverage"], 1.0)
             self.assertEqual(trace_metrics["state_operational_event_count"], 0)
             self.assertEqual(trace_metrics["state_operational_capture_coverage"], 0.0)
+
+    def test_task_lineage_scopes_reused_task_ids_to_latest_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "day-new"
+            events_path = session / "state/events.jsonl"
+            append_event(
+                events_path,
+                "TaskLineageLinked",
+                {
+                    "phase": "task",
+                    "task_id": "task_01",
+                    "task_number": 1,
+                    "task_title": "Old failed task",
+                    "status": "started",
+                    "planned_files": ["src/tools.rs"],
+                },
+                session_id="day-old",
+            )
+            append_event(
+                events_path,
+                "TaskLineageLinked",
+                {
+                    "phase": "task",
+                    "task_id": "task_01",
+                    "task_number": 1,
+                    "task_title": "Old failed task",
+                    "status": "reverted",
+                    "revert_reason": "Task scope mismatch: task produced no git-visible file changes",
+                    "planned_files": ["src/tools.rs"],
+                    "source_files": [],
+                },
+                session_id="day-old",
+            )
+            append_event(
+                events_path,
+                "TaskLineageLinked",
+                {
+                    "phase": "task",
+                    "task_id": "task_01",
+                    "task_number": 1,
+                    "task_title": "Current completed task",
+                    "status": "started",
+                    "planned_files": ["src/commands_state.rs"],
+                    "base_commit": "base",
+                },
+                session_id="day-new",
+            )
+            append_event(
+                events_path,
+                "TaskLineageLinked",
+                {
+                    "phase": "task",
+                    "task_id": "task_01",
+                    "task_number": 1,
+                    "task_title": "Current completed task",
+                    "status": "completed",
+                    "revert_reason": None,
+                    "source_files": ["src/commands_state.rs"],
+                    "commit_shas": ["head"],
+                    "eval": {"verdict": "PASS", "reason": "verified"},
+                },
+                session_id="day-new",
+            )
+
+            summary = summarize_state_gnomes.summarize(
+                summarize_state_gnomes.load_jsonl(events_path),
+                events_path,
+            )
+            feedback_tasks = log_feedback.task_lineage(
+                session,
+                {"coding_log_score": 1.0},
+                {},
+            )
+
+            for task in (summary["task_lineage"][0], feedback_tasks[0]):
+                self.assertEqual(task["task_title"], "Current completed task")
+                self.assertEqual(task["planned_files"], ["src/commands_state.rs"])
+                self.assertEqual(task["source_files"], ["src/commands_state.rs"])
+                self.assertEqual(task["status"], "completed")
+                self.assertIsNone(task.get("revert_reason"))
 
     def test_summary_keeps_latest_decision_meaningful(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -3385,6 +3385,75 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(verification["verified_task_count"], 0)
             self.assertIn("no_passing_verifier", verification["rows"][0]["problems"])
 
+    def test_task_lineage_artifacts_override_stale_state_lineage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {"day": 1, "tasks_attempted": 1, "tasks_succeeded": 1, "build_ok": True, "test_ok": True},
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "event_count": 3,
+                    "event_counts": {"TaskLineageLinked": 2, "PatchEvaluated": 1},
+                    "task_lineage": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "task_title": "Old stale task",
+                            "status": "completed",
+                            "revert_reason": "Task scope mismatch: task produced no git-visible file changes",
+                            "planned_files": ["src/tools.rs"],
+                            "source_files": [],
+                        }
+                    ],
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Current completed task",
+                            "files": ["src/commands_state.rs"],
+                            "artifact_path": "tasks/task_01/task.md",
+                        }
+                    ],
+                },
+            )
+            (session / "tasks/task_01").mkdir(parents=True)
+            (session / "tasks/task_01/task.md").write_text("Title: Current completed task\n", encoding="utf-8")
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Current completed task",
+                    "status": "completed",
+                    "revert_reason": None,
+                    "planned_files": ["src/commands_state.rs"],
+                    "source_files": ["src/commands_state.rs"],
+                    "touched_files": ["src/commands_state.rs"],
+                    "commit_shas": ["abc"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "Verdict: PASS"},
+            )
+
+            data = build(root / "sessions", root / "out")
+            lineage = data["sessions"][0]["work_summary"]["task_lineage"][0]
+
+            self.assertEqual(lineage["task_title"], "Current completed task")
+            self.assertEqual(lineage["planned_files"], ["src/commands_state.rs"])
+            self.assertEqual(lineage["source_files"], ["src/commands_state.rs"])
+            self.assertIsNone(lineage.get("revert_reason"))
+
     def test_missing_assessment_is_visible_in_session_work_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

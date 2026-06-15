@@ -1869,7 +1869,10 @@ Follow the evolve skill rules:
   \`TASK_TERMINAL_EVIDENCE: changed\`, \`TASK_TERMINAL_EVIDENCE: obsolete\`, or \`TASK_TERMINAL_EVIDENCE: blocked\`.
   The harness only recognizes that exact marker line; prose like "task completed",
   "verification passed", or "committed" is not terminal task evidence.
-- Run cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test after changes
+- Run focused verification after changes: cargo fmt -- --check, then cargo build
+  or the smallest cargo test/clippy command directly tied to the changed task
+  surface. Do not run full cargo test or full clippy inside the implementation
+  turn; the harness runs global gates after the task.
 - If any check fails, read the error and fix it. Keep trying until it passes.
 - Only if you've tried 3+ times and are stuck, revert with: git checkout -- . (keeps previous commits)
 - After ALL checks pass, commit:

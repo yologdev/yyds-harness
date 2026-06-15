@@ -179,6 +179,37 @@ def event_run_id(event: dict[str, Any], data: dict[str, Any]) -> str | None:
     return None
 
 
+def event_session_id(event: dict[str, Any], data: dict[str, Any]) -> str | None:
+    value = event.get("session_id")
+    if isinstance(value, str) and value:
+        return value
+    raw_payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    raw_meta = raw_payload.get("_yoyo") if isinstance(raw_payload.get("_yoyo"), dict) else {}
+    value = raw_meta.get("session_id")
+    if isinstance(value, str) and value:
+        return value
+    value = data.get("session_id")
+    if isinstance(value, str) and value:
+        return value
+    meta = data.get("_yoyo") if isinstance(data.get("_yoyo"), dict) else {}
+    value = meta.get("session_id")
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def latest_task_session_id(events: list[dict[str, Any]]) -> str | None:
+    latest: str | None = None
+    for event in events:
+        data = payload(event)
+        if data.get("phase") not in {"task", "task_commit_linkage"}:
+            continue
+        session_id = event_session_id(event, data)
+        if session_id:
+            latest = session_id
+    return latest
+
+
 def deepseek_model_payload(data: dict[str, Any]) -> bool:
     model = data.get("model")
     provider = data.get("provider")
@@ -473,11 +504,14 @@ def task_key(data: dict[str, Any]) -> str:
 
 
 def summarize_task_lineage(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    current_session_id = latest_task_session_id(events)
     tasks: dict[str, dict[str, Any]] = {}
     for event in events:
         kind = event_type(event)
         data = payload(event)
         if data.get("phase") == "task":
+            if current_session_id and event_session_id(event, data) != current_session_id:
+                continue
             status = str(data.get("status") or "")
             key = task_key(data)
             if not key:
@@ -514,11 +548,15 @@ def summarize_task_lineage(events: list[dict[str, Any]]) -> list[dict[str, Any]]
                     value = data.get(field)
                     if field in {"touched_files", "source_files", "commit_shas", "commits"} and not value:
                         continue
-                    if value is not None:
+                    if field == "revert_reason" and field in data:
+                        row[field] = value
+                    elif value is not None:
                         row[field] = value
             continue
 
         if kind in {"DecisionRecorded", "TaskLineageLinked"} and data.get("phase") == "task_commit_linkage":
+            if current_session_id and event_session_id(event, data) != current_session_id:
+                continue
             for linked_task in data.get("tasks", []) or []:
                 if not isinstance(linked_task, dict):
                     continue
@@ -565,6 +603,8 @@ def summarize_task_lineage(events: list[dict[str, Any]]) -> list[dict[str, Any]]
         feedback = metrics.get("log_feedback")
         if not isinstance(feedback, dict):
             continue
+        if current_session_id and event_session_id(event, data) != current_session_id:
+            continue
         lineage = feedback.get("task_lineage")
         if not isinstance(lineage, dict):
             continue
@@ -602,7 +642,13 @@ def summarize_task_lineage(events: list[dict[str, Any]]) -> list[dict[str, Any]]
                 value = linked_task.get(field)
                 if field in {"touched_files", "source_files", "commit_shas", "commits"} and not value:
                     continue
-                if value is not None:
+                if field in {"gnome_metrics", "gnome_deltas"}:
+                    if value is not None:
+                        row[field] = value
+                elif field == "revert_reason":
+                    if field not in row and field in linked_task:
+                        row[field] = value
+                elif value is not None and not row.get(field):
                     row[field] = value
 
     return sorted(
