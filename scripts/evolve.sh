@@ -1911,16 +1911,20 @@ TEOF
             && [ ! -s "$TASK_OBSOLETE_NOTE" ] \
             && ! agent_log_has_terminal_evidence "$TASK_LOG"; then
             echo "    WARNING: Task $TASK_NUM exited 0 without final terminal evidence (attempt $ATTEMPT)."
-            TASK_ATTEMPT_STATUS="incomplete_no_terminal_evidence"
+            TASK_ATTEMPT_STATUS="missing_terminal_evidence"
         fi
         TASK_PROGRESS=false
         if task_has_progress_since_base "$PRE_TASK_SHA" || [ -s "$TASK_OBSOLETE_NOTE" ] || [ -s "$TASK_BLOCKED_NOTE" ]; then
             TASK_PROGRESS=true
         fi
-        if [ "$TASK_ATTEMPT_STATUS" = "incomplete_no_terminal_evidence" ] \
-            && [ "$TASK_PROGRESS" != true ]; then
-            echo "    WARNING: Task $TASK_NUM ended without terminal evidence or file progress (attempt $ATTEMPT)."
-            TASK_ATTEMPT_STATUS="analysis_only_no_terminal_evidence"
+        if [ "$TASK_ATTEMPT_STATUS" = "missing_terminal_evidence" ]; then
+            if [ "$TASK_PROGRESS" = true ]; then
+                echo "    Task $TASK_NUM made progress without terminal evidence; proceeding to verification instead of retrying for marker-only cleanup."
+                TASK_ATTEMPT_STATUS="completed_missing_terminal_evidence"
+            else
+                echo "    WARNING: Task $TASK_NUM ended without terminal evidence or file progress (attempt $ATTEMPT)."
+                TASK_ATTEMPT_STATUS="analysis_only_no_terminal_evidence"
+            fi
         fi
         append_task_attempt_evidence \
             "$TASK_ID" "implementation" "$ATTEMPT" "$TASK_STAGE_NAME" \

@@ -86,6 +86,10 @@ TASK_TERMINAL_EVIDENCE_RE = re.compile(
     r"^\s*TASK_TERMINAL_EVIDENCE:\s*(?:changed|obsolete|blocked)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
+MISSING_TERMINAL_EVIDENCE_STATUSES = {
+    "completed_missing_terminal_evidence",
+    "incomplete_no_terminal_evidence",
+}
 TASK_TRANSCRIPT_RE = re.compile(r"(?:(task)|(fix)|(bfix))_(?:task)?(\d+)_attempt(\d+)\.log$")
 TURN_MARKER_RE = re.compile(r"\bTurn\s+(\d+)\b")
 ACTION_LINE_RE = re.compile(r"^\s*▶\s+", re.MULTILINE)
@@ -880,7 +884,7 @@ def implementation_attempt_missing_terminal_evidence(
 ) -> bool:
     if str(attempt.get("phase") or "") != "implementation":
         return False
-    if str(attempt.get("status") or "") == "incomplete_no_terminal_evidence":
+    if str(attempt.get("status") or "") in MISSING_TERMINAL_EVIDENCE_STATUSES:
         return True
     if str(attempt.get("status") or "") != "completed":
         return False
