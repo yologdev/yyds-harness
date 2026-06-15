@@ -12,11 +12,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Once, OnceLock};
+use std::sync::{LazyLock, Mutex, Once};
 
 thread_local! {
     static LAST_RUN_ERROR: Cell<Option<String>> = const { Cell::new(None) };
     static LAST_DIAGNOSTIC_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+    static RUN_HAD_ERROR: Cell<bool> = const { Cell::new(false) };
 }
 
 static PANIC_HOOK_INSTALLED: Once = Once::new();
@@ -48,6 +49,7 @@ pub fn install_panic_hook() {
                 "recorded_at_ms": now_ms(),
             });
             // fail-soft: the global recorder might not be initialized yet
+            RUN_HAD_ERROR.with(|c| c.set(true));
             record(EventType::FailureObserved, Actor::Harness, payload);
             prev_hook(info);
         }));
@@ -79,7 +81,7 @@ pub fn take_diagnostic_error() -> Option<String> {
     LAST_DIAGNOSTIC_ERROR.with(|cell| cell.take())
 }
 
-static GLOBAL_RECORDER: OnceLock<StateRecorder> = OnceLock::new();
+static GLOBAL_RECORDER: Mutex<Option<StateRecorder>> = Mutex::new(None);
 pub const STATE_ADAPTER_NAME: &str = "yoagent-state";
 pub const STATE_ADAPTER_MODE: &str = "path-dependency";
 pub const STATE_SQLITE_SCHEMA_VERSION: u32 = 3;
@@ -302,7 +304,7 @@ pub fn init_global(config: StateConfig, startup_payload: Value) -> Result<(), St
     let init_result = recorder.append(EventType::RunStarted, Actor::Harness, startup_payload);
     match init_result {
         Ok(_) => {
-            let _ = GLOBAL_RECORDER.set(recorder);
+            *GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = Some(recorder);
             Ok(())
         }
         Err(e) if fail_soft => {
@@ -314,11 +316,15 @@ pub fn init_global(config: StateConfig, startup_payload: Value) -> Result<(), St
 }
 
 pub fn is_initialized() -> bool {
-    GLOBAL_RECORDER.get().is_some()
+    GLOBAL_RECORDER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some()
 }
 
 pub fn record(event_type: EventType, actor: Actor, payload: Value) {
-    let Some(recorder) = GLOBAL_RECORDER.get() else {
+    let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(recorder) = guard.as_ref() else {
         return;
     };
     if let Err(e) = recorder.append(event_type, actor, payload) {
@@ -345,7 +351,12 @@ impl RunCompletionGuard {
 
 impl Drop for RunCompletionGuard {
     fn drop(&mut self) {
-        mark_run_completed(self.status);
+        let status = if RUN_HAD_ERROR.with(|c| c.get()) {
+            "error"
+        } else {
+            self.status
+        };
+        mark_run_completed(status);
     }
 }
 
@@ -365,6 +376,7 @@ pub fn mark_run_completed(status: &str) {
 /// this call, it is included as `error_detail` in the payload alongside
 /// the explicit `msg` (typically the exit code).
 pub fn mark_run_completed_with_error(msg: &str) {
+    RUN_HAD_ERROR.with(|c| c.set(true));
     store_run_error(msg);
     let error_detail = take_diagnostic_error();
     record(
@@ -6524,5 +6536,86 @@ mod tests {
         LAST_RUN_ERROR.with(|cell| {
             assert_eq!(cell.take(), Some("second error".to_string()));
         });
+    }
+
+    #[test]
+    fn run_completion_guard_reports_error_on_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        install_panic_hook();
+
+        let result = std::panic::catch_unwind(|| {
+            let _guard = RunCompletionGuard::completed_on_drop();
+            panic!("test lifecycle error 107");
+        });
+
+        assert!(result.is_err());
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        // RunStarted (from init) + FailureObserved (from panic hook) + RunCompleted (from guard drop)
+        assert!(
+            raw.contains("RunStarted"),
+            "should contain RunStarted: {raw}"
+        );
+        assert!(
+            raw.contains("FailureObserved"),
+            "should contain FailureObserved: {raw}"
+        );
+        assert!(
+            raw.contains("RunCompleted"),
+            "should contain RunCompleted: {raw}"
+        );
+        // The RunCompleted status must be "error", not "completed"
+        assert!(
+            raw.contains("\"status\":\"error\""),
+            "RunCompleted should have error status after panic, got: {raw}"
+        );
+        assert!(
+            !raw.contains("\"status\":\"completed\""),
+            "RunCompleted should NOT have completed status after panic: {raw}"
+        );
+    }
+
+    #[test]
+    fn run_completion_guard_reports_completed_on_normal_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        install_panic_hook();
+
+        {
+            let _guard = RunCompletionGuard::completed_on_drop();
+            // Normal exit — no panic
+        }
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw.contains("RunStarted"),
+            "should contain RunStarted: {raw}"
+        );
+        assert!(
+            raw.contains("RunCompleted"),
+            "should contain RunCompleted: {raw}"
+        );
+        // Normal exit should still report "completed"
+        assert!(
+            raw.contains("\"status\":\"completed\""),
+            "RunCompleted should have completed status on normal exit: {raw}"
+        );
     }
 }
