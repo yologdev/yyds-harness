@@ -145,6 +145,39 @@ TASKS = [
     },
     {
         "keys": (
+            "run_completion_guard",
+            "test lifecycle error",
+            "flaky test",
+            "state::tests::run_completion_guard",
+        ),
+        "title": "Stabilize run completion guard panic test",
+        "files": "src/state.rs",
+        "objective": (
+            "Make the `run_completion_guard_reports_error_on_panic` test deterministic and preserve "
+            "the panic-path RunCompleted/FailureObserved behavior it verifies."
+        ),
+        "why": (
+            "The assessment found the run-completion guard test failing once and passing on retry. "
+            "A one-file flaky-test repair is more landable than broad lifecycle cleanup and directly "
+            "protects the state evidence used by DeepSeek evolution."
+        ),
+        "success": [
+            "The panic-path test no longer depends on timing, shared global state, or ambiguous event ordering.",
+            "The production panic-path lifecycle events remain unchanged.",
+            "The task touches only `src/state.rs` unless verification exposes a direct dependency.",
+        ],
+        "verification": [
+            "cargo test --lib state::tests::run_completion_guard -- --exact",
+            "cargo test --lib state::tests::run_completion_guard",
+            "cargo check",
+        ],
+        "evidence": [
+            "Future CI/log feedback stops repeating the `run_completion_guard` flaky failure.",
+            "Task lineage links a strict one-file source change to the lifecycle reliability issue.",
+        ],
+    },
+    {
+        "keys": (
             "state_run_incomplete",
             "state_run_unmatched_non_validation_completed",
             "deepseek_model_call_incomplete",
@@ -164,19 +197,18 @@ TASKS = [
         ),
         "title": LIFECYCLE_TASK_TITLE,
         "files": (
-            "scripts/evolve.sh, scripts/append_terminal_state_events.py, "
-            "scripts/log_feedback.py, scripts/summarize_state_gnomes.py"
+            "scripts/evolve.sh, scripts/log_feedback.py, scripts/summarize_state_gnomes.py"
         ),
         "objective": (
-            "Ensure every yyds DeepSeek invocation and model-call path records paired terminal lifecycle "
-            "events, and keep feedback lessons precise when lifecycle imbalance is real."
+            "Close one concrete yyds lifecycle feedback gap by keeping terminal event recording and "
+            "lifecycle lessons precise when current run/model-call imbalance is real."
         ),
         "why": (
             "The assessment found incomplete run/model-call lifecycle gnomes. Those signals affect "
             "state feedback, assessment trust, and future task selection more directly than dashboard display."
         ),
         "success": [
-            "Normal, timeout, error, and completion-file early-stop paths record terminal RunCompleted and ModelCallCompleted events.",
+            "One verified lifecycle gap is fixed or downgraded with precise evidence in the listed files.",
             "Pre-agent input-validation exits stay classified separately from non-validation unmatched completions.",
             "Log feedback and state summaries emit lifecycle lessons only for real incomplete or non-validation unmatched paths.",
         ],
@@ -335,6 +367,8 @@ def _self_tests_show_resolution(self_tests: str, task_keys: tuple[str, ...]) -> 
     """Check if self-test results show task-domain features already working."""
     for line in self_tests.splitlines():
         lower = line.strip().lower()
+        if any(word in lower for word in ("flaky", "fail", "failed", "error", "retry")):
+            continue
         if "\u2705" not in line and "pass" not in lower and "green" not in lower:
             continue
         if any(key in lower for key in task_keys):
@@ -527,6 +561,20 @@ Top tool-failure categories:
         assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
         assessment = """# Assessment
 
+## Self-Test Results
+`cargo test --lib state::tests::run_completion_guard` is FLAKY: `run_completion_guard_reports_error_on_panic` failed once with `test lifecycle error 107` and passed on retry.
+
+## Structured State Snapshot
+lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; state_run_incomplete_count=2; state_run_unmatched_completed_count=2; state_run_unmatched_non_validation_completed_count=0; state_run_unstarted_input_validation_error_count=2; deepseek_model_call_started_count=1; deepseek_model_call_completed_count=0; deepseek_model_call_incomplete_count=1
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Stabilize run completion guard panic test", task
+        assert task["files"] == "src/state.rs", task
+        text = render_task(task, "107", "21:45")
+        assert "run_completion_guard_reports_error_on_panic" in text, text
+
+        assessment = """# Assessment
+
 ## Structured State Snapshot
 lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; state_run_incomplete_count=2; state_run_unmatched_completed_count=2; state_run_unmatched_non_validation_completed_count=0; state_run_unstarted_input_validation_error_count=2; deepseek_model_call_started_count=1; deepseek_model_call_completed_count=0; deepseek_model_call_incomplete_count=1
 
@@ -536,6 +584,7 @@ Tool failures: search_regex_error=57; search_binary_match=19
 """
         task = choose_task(assessment)
         assert task["title"] == "Close yyds state and model lifecycle gaps", task
+        assert len(str(task["files"]).split(",")) <= 3, task
         assessment = """# Assessment
 
 ## Structured State Snapshot
