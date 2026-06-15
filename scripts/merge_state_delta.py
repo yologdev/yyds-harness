@@ -36,6 +36,36 @@ def event_key(event: dict[str, Any], raw: str) -> str:
     return "raw:" + hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()
 
 
+def event_timestamp_ms(event: dict[str, Any]) -> int | None:
+    for key in ("timestamp_ms", "ts_ms"):
+        value = event.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                pass
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    meta = payload.get("_yoyo") if isinstance(payload.get("_yoyo"), dict) else {}
+    for key in ("timestamp_ms", "ts_ms"):
+        value = meta.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                pass
+    return None
+
+
+def max_event_timestamp(rows: list[tuple[dict[str, Any], str]]) -> int | None:
+    values = [event_timestamp_ms(event) for event, _raw in rows]
+    values = [value for value in values if value is not None]
+    return max(values) if values else None
+
+
 def merge_delta(
     live_path: Path,
     session_path: Path,
@@ -52,6 +82,19 @@ def merge_delta(
     baseline_shrunk = live_below_baseline and not baseline_reset
     effective_base_lines = 0 if live_below_baseline else base_lines
     delta_rows = live_rows[effective_base_lines:]
+    reset_min_timestamp = None
+    reset_timestamp_filtered = False
+    if baseline_reset:
+        reset_min_timestamp = max_event_timestamp(session_rows)
+        if reset_min_timestamp is not None:
+            timestamped_delta_rows = [
+                (event, raw)
+                for event, raw in delta_rows
+                if (event_timestamp_ms(event) or -1) > reset_min_timestamp
+            ]
+            if timestamped_delta_rows or delta_rows:
+                delta_rows = timestamped_delta_rows
+                reset_timestamp_filtered = True
     merged_rows = list(session_rows)
     added = 0
     skipped_duplicate = 0
@@ -82,6 +125,8 @@ def merge_delta(
         "effective_base_lines": effective_base_lines,
         "baseline_reset": int(baseline_reset),
         "baseline_shrunk": int(baseline_shrunk),
+        "reset_timestamp_filtered": int(reset_timestamp_filtered),
+        "reset_min_timestamp_ms": reset_min_timestamp or 0,
         "delta_events": len(delta_rows),
         "session_events_before": len(session_rows),
         "session_events_after": len(merged_rows),
@@ -192,6 +237,35 @@ def run_self_tests() -> int:
         assert stats["delta_events"] == 1, stats
         assert stats["added"] == 1, stats
         assert [row["id"] for row in rows] == ["harness-start", "current-run"]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        live = root / "live.jsonl"
+        session = root / "session.jsonl"
+        live.write_text(
+            "\n".join(
+                [
+                    json.dumps({"id": "old-run", "kind": "RunStarted", "ts_ms": 100}),
+                    json.dumps({"id": "old-model", "kind": "ModelCallStarted", "ts_ms": 110}),
+                    json.dumps({"id": "new-model", "kind": "ModelCallStarted", "ts_ms": 310}),
+                    json.dumps({"id": "new-model-done", "kind": "ModelCallCompleted", "ts_ms": 320}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        session.write_text(
+            json.dumps({"id": "current-session", "kind": "RunStarted", "ts_ms": 300}) + "\n",
+            encoding="utf-8",
+        )
+        stats = merge_delta(live, session, 10, allow_baseline_reset=True)
+        rows = [json.loads(line) for line in session.read_text(encoding="utf-8").splitlines()]
+        assert stats["baseline_reset"] == 1, stats
+        assert stats["reset_timestamp_filtered"] == 1, stats
+        assert stats["reset_min_timestamp_ms"] == 300, stats
+        assert stats["delta_events"] == 2, stats
+        assert stats["added"] == 2, stats
+        assert [row["id"] for row in rows] == ["current-session", "new-model", "new-model-done"]
     print("merge_state_delta self-tests passed")
     return 0
 
