@@ -28,7 +28,9 @@ fn accumulate_usage(total: &mut Usage, delta: &Usage) {
     total.cache_write += delta.cache_write;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn model_call_terminal_payload(
+    model_call_id: &str,
     model: &str,
     usage: &Usage,
     thinking_observed: bool,
@@ -38,6 +40,7 @@ fn model_call_terminal_payload(
     last_tool_name: Option<&str>,
 ) -> serde_json::Value {
     let mut payload = serde_json::json!({
+        "model_call_id": model_call_id,
         "model": model,
         "status": status,
         "input_tokens": usage.input,
@@ -764,10 +767,17 @@ async fn handle_prompt_events(
 ) -> PromptResult {
     let mut state = PromptEventState::new();
     let mut model_call_terminal_recorded = false;
+    let model_call_id = format!(
+        "mc-{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
     crate::state::record(
         crate::state::EventType::ModelCallStarted,
         crate::state::Actor::Yoyo,
-        serde_json::json!({ "model": model }),
+        serde_json::json!({ "model_call_id": &model_call_id, "model": model }),
     );
 
     loop {
@@ -923,6 +933,7 @@ async fn handle_prompt_events(
                             crate::state::EventType::ModelCallCompleted,
                             crate::state::Actor::Yoyo,
                             model_call_terminal_payload(
+                                &model_call_id,
                                 model,
                                 &state.usage,
                                 state.thinking_observed,
@@ -994,6 +1005,7 @@ async fn handle_prompt_events(
                         crate::state::EventType::ModelCallCompleted,
                         crate::state::Actor::Yoyo,
                         model_call_terminal_payload(
+                            &model_call_id,
                             model,
                             &state.usage,
                             state.thinking_observed,
@@ -1035,6 +1047,7 @@ async fn handle_prompt_events(
             crate::state::EventType::ModelCallCompleted,
             crate::state::Actor::Yoyo,
             model_call_terminal_payload(
+                &model_call_id,
                 model,
                 &state.usage,
                 state.thinking_observed,
@@ -1828,6 +1841,7 @@ mod tests {
         };
 
         let payload = model_call_terminal_payload(
+            "mc-test-1",
             "deepseek-v4-pro",
             &usage,
             true,
@@ -1837,6 +1851,7 @@ mod tests {
             Some("edit_file"),
         );
 
+        assert_eq!(payload["model_call_id"], "mc-test-1");
         assert_eq!(payload["model"], "deepseek-v4-pro");
         assert_eq!(payload["status"], "stream_closed_without_agent_end");
         assert_eq!(
