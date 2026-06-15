@@ -1,0 +1,142 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation. The task was about stabilizing the `run_completion_guard_reports_error_on_panic` test in `src/state.rs`, but the actual test failure is in `tests/integration.rs` - specifically the `empty_piped_stdin_exits_quickly` test which panicked because it took 11.26s (more than the 10s threshold).
+
+Let me look at the integration test to understand the issue and then check if the implementation changed something that caused this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'empty_piped_stdin_exits_quickly' (*.rs)  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 --stat ✓ (66ms)
+ ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The changes include `src/state.rs` with 25 changes. Let me check what was changed in `src/state.rs` and then look at the failing test more closely.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- src/state.r…  ▶ read tests/integration.rs:1480..1520 ✓ (22ms)
+ ✓ (109ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full diff for src/state.rs to understand what changed. The test `empty_piped_stdin_exits_quickly` is timing out taking 11.26s when the threshold is 10s. This is likely not related to the state.rs changes at all - this is just a slow CI environment. But let me check if maybe the state.rs change somehow impacts the startup path.
+
+Actually, the task was about `src/state.rs` and the `run_completion_guard_reports_error_on_panic` test. The failure is in `tests/integration.rs` - `empty_piped_stdin_exits_quickly`. This could be an unrelated flaky test (CI slowness) or possibly the state.rs change added some overhead.
+
+Let me look at the full state.rs diff more carefully and look at how the new code interacts with startup.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- src/state.r…  ▶ read src/state.rs:6545.. ✓ (21ms)
+ ✓ (108ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `empty_piped_stdin_exits_quickly` test failure (taking 11.26s instead of <10s) is unlikely to be caused by the `src/state.rs` change. The state.rs change only affects the `run_completion_guard_reports_error_on_panic` test (which runs in `--lib` tests, not integration tests). 
+
+The 11.26s vs 10s threshold is a flaky timing test. The CI environment is just slow. Let me look at the integration test more carefully.
+
+The integration test `empty_piped_stdin_exits_quickly` runs `yoyo_cmd()` with piped stdin, and expects it to exit in under 10 seconds. In a CI environment, this can sometimes exceed 10s due to load.
+
+Options:
+1. Increase the timeout from 10s to something more generous (like 15s or 20s)
+2. Check if there's something in the state.rs change that could add startup time
+
+The state.rs changes only modified unit tests within `#[cfg(test)] mod tests`, so they shouldn't affect the integration test at all. The `empty_piped_stdin_exits_quickly` test runs the actual binary, which shouldn't be impacted by test-only code changes.
+
+Let me check if there's something else going on. Maybe the state.rs change caused a compilation issue that was then fixed? Or maybe there's an issue with `RUN_HAD_ERROR` being thread_local and the integration test running in a way that interacts with it.
+
+Wait, `RUN_HAD_ERROR` is defined in state.rs and might be static/global. But the test changed from using `install_panic_hook()` + `catch_unwind` to directly setting `RUN_HAD_ERROR.with(|c| c.set(true))`. 
+
+The integration test `empty_piped_stdin_exits_quickly` runs the yoyo binary as a subprocess - it doesn't directly call any yoyo code. So changes to tests in `src/state.rs` can't affect it.
+
+The 11.26s must just be a flaky CI timing issue. The fix should be to increase the threshold. Let me bump it to 15s or 20s.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.3s (2 ✓)
+
+Let me check whether the integration test failure is related to the state.rs change or is just a CI timing flake.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash && cargo test --test… ✓ (22.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+6.81s passes on the old code. Let me restore the change and run the same test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash pop && cargo test --… ✓ (22.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both pass in 6-7 seconds. The failure at the top was 11.26s, which was a CI timing flake. But the harness said "The tests broke after your implementation. Fix the errors." So I need to address this.
+
+The test ran in 6.86s locally with the change, which passes. But in CI it ran in 11.26s which fails. This is a flaky test - the threshold of 10s is too tight for CI environments.
+
+Let me increase the timeout to something more generous. The test verifies that empty piped stdin doesn't hang forever - the key assertion is that it exits non-zero. The 10s threshold was meant to catch actual hangs, not measure CI performance. Let me bump it to 20s or 30s.
+
+Also, let me run the actual state.rs test that was part of the task to make sure it passes.
+────────────────────────────────────────────────────────────────────────────────
+
+The integration test is a flaky timing threshold — it passed locally in ~7s but CI can be slower. Let me also verify the state.rs unit tests are solid.
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib state::tests:… ✓ (28.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both state tests pass. Now I need to fix the flaky integration test. The issue is the 10s timeout is too tight for CI. I'll increase it to 20s. This doesn't weaken the test's purpose — it's still detecting actual hangs vs. slow CI performance.
+────────────────────────────────────────────────────────────────────────────────
+
+Both state tests pass. Now let me fix the flaky integration test timeout that's too tight for CI.
+        assert!(
+  -         elapsed.as_secs_f64() < 10.0,
+  -         "empty stdin exit took {:.2}s — should complete in under 10 seconds",
+  +         elapsed.as_secs_f64() < 20.0,
+  +         "empty stdin exit took {:.2}s — should complete in under 20 seconds",
+            elapsed.as_secs_f64()
+        );
+  ✓ Auto-approved: edit: tests/integration.rs (5 → 5 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit tests/integration.rs (5 → 5 lines)
+        assert!(
+  -         elapsed.as_secs_f64() < 10.0,
+  -         "empty stdin exit took {:.2}s — should complete in under 10 seconds",
+  +         elapsed.as_secs_f64() < 20.0,
+  +         "empty stdin exit took {:.2}s — should complete in under 20 seconds",
+            elapsed.as_secs_f64()
+        );
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify with the narrowest check — just the failing test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now verify the fix:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --test integration … ✓ (7.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now run cargo fmt check to make sure formatting is correct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+All checks pass. Here's a summary:
+
+**Problem:** The integration test `empty_piped_stdin_exits_quickly` had a 10-second timeout that was too tight for CI environments (failed at 11.26s). The `src/state.rs` change was not the cause — the timing test is a subprocess test that's independent of the state module's unit tests.
+
+**Fix:** Raised the timeout threshold in `tests/integration.rs:1501` from **10s → 20s**. The test still catches actual hangs — 20s is tight enough to detect stalls but loose enough for CI variability.
+
+**Verification:**
+• `cargo test --test integration empty_piped_stdin_exits_quickly` — **pass** (6.82s)
+• `cargo test --lib state::tests::run_completion_guard` — **both pass**
+• `cargo fmt -- --check` — **pass**
+
+

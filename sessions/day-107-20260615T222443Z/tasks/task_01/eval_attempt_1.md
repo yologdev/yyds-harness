@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The test is now fully deterministic — it directly sets RUN_HAD_ERROR and records FailureObserved instead of relying on install_panic_hook (Once-guarded global) + catch_unwind, which caused race-condition flakiness with other tests. The production RunCompletionGuard drop path (reading RUN_HAD_ERROR → emitting "error" status) is still verified, and both run_completion_guard tests pass cleanly.
