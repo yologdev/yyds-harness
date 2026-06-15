@@ -39,6 +39,7 @@ mod agent_builder;
 mod banner;
 mod cli;
 mod cli_config;
+pub use cli_config::VERSION;
 mod commands;
 mod commands_ast_grep;
 mod commands_bg;
