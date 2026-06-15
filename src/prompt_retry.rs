@@ -122,9 +122,11 @@ pub fn tool_recovery_hint(tool_name: &str, attempt: u32) -> &'static str {
                  the symbol, then use edit_file on each file to replace them."
             }
             "bash" => {
-                "Try a simpler command: break the command into smaller steps, \
-                 check if the binary exists with `which <cmd>`, or try an alternative \
-                 tool (e.g., read_file instead of cat, search instead of grep)."
+                "Try a simpler bounded command: break into smaller steps with explicit \
+                 absolute paths. Check exit output first — don't retry the same command \
+                 without understanding the failure. Verify paths exist with `ls` or `test -f`. \
+                 Prefer targeted tools (read_file, search) over complex shell pipelines. \
+                 Avoid unbounded/recursive commands like `rm -rf`, `find /`, or unconstrained globs."
             }
             _ => "The tool call failed again. Try a completely different tool or approach.",
         }
@@ -132,8 +134,9 @@ pub fn tool_recovery_hint(tool_name: &str, attempt: u32) -> &'static str {
         // Attempt 1: diagnostic hint (fix the immediate error)
         match tool_name {
             "bash" => {
-                "The shell command failed. Check if the command exists, \
-                 try a simpler version, or use a different approach."
+                "The shell command failed. Inspect the exit code and stderr output above \
+                 to understand why. Check if the command and any file paths exist, \
+                 try a simpler bounded version, or use a different approach."
             }
             "edit_file" => {
                 "The edit failed (likely old_text mismatch). Use read_file to see \
@@ -769,8 +772,8 @@ mod tests {
     fn test_tool_recovery_hint_bash_attempt1() {
         let hint = tool_recovery_hint("bash", 1);
         assert!(
-            hint.contains("command") || hint.contains("shell"),
-            "bash hint should mention command or shell: {hint}"
+            hint.contains("exit") || hint.contains("stderr"),
+            "bash hint should mention exit code or stderr output: {hint}"
         );
         assert!(
             hint.contains("failed") || hint.contains("check") || hint.contains("different"),
@@ -782,12 +785,12 @@ mod tests {
     fn test_tool_recovery_hint_bash_attempt2() {
         let hint = tool_recovery_hint("bash", 2);
         assert!(
-            hint.contains("simpler") || hint.contains("break") || hint.contains("alternative"),
-            "bash escalated hint should suggest simplification or alternative: {hint}"
+            hint.contains("bounded") || hint.contains("explicit") || hint.contains("absolute"),
+            "bash escalated hint should suggest bounded/explicit/absolute approach: {hint}"
         );
         assert!(
-            hint.contains("which") || hint.contains("exists") || hint.contains("check"),
-            "bash escalated hint should suggest verifying the command: {hint}"
+            hint.contains("exit") || hint.contains("verify") || hint.contains("unbounded"),
+            "bash escalated hint should suggest exit inspection or path verification: {hint}"
         );
     }
 
