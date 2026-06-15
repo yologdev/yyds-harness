@@ -231,6 +231,33 @@ GNOME_KEYS = [
     "state_run_unstarted_input_validation_error_count",
 ]
 NORMAL_MODEL_COMPLETION_STATUSES = {"completed", "success", "ok", "stopped_after_completion_file"}
+SCORE_FAILURE_WEIGHTS = {
+    "distinct_failure_count": 1.0,
+    "provider_error_count": 1.0,
+    "json_error_count": 1.0,
+    "tool_error_count": 1.0,
+    "protected_file_revert_count": 2.0,
+    "recurring_failure_count": 2.0,
+    "evolution_friction_count": 1.0,
+    "planner_no_task_count": 3.0,
+    "task_unattempted_count": 2.0,
+    "task_obsolete_count": 1.0,
+    "task_seed_contradiction_count": 2.0,
+    "task_no_edit_revert_count": 2.0,
+    "task_api_error_count": 2.0,
+    "task_scope_mismatch_count": 2.0,
+    "evaluator_unverified_count": 1.0,
+    "evaluator_timeout_with_verdict_count": 2.0,
+    "task_unlanded_source_count": 2.0,
+    "task_incomplete_terminal_count": 2.0,
+    "task_unverified_raw_success_count": 1.0,
+    "state_live_baseline_shrink_count": 2.0,
+    "deepseek_model_call_abnormal_completed_count": 2.0,
+    "deepseek_model_call_incomplete_count": 2.0,
+    "deepseek_model_call_unmatched_completed_count": 2.0,
+    "state_run_incomplete_count": 2.0,
+    "state_run_unmatched_non_validation_completed_count": 2.0,
+}
 
 
 def explicit_pass(value: Any) -> bool:
@@ -1444,28 +1471,7 @@ def score_assessment(metrics: dict[str, Any]) -> float:
 
     failure_pressure = min(
         1.0,
-        (
-            float(metrics.get("distinct_failure_count") or 0)
-            + float(metrics.get("provider_error_count") or 0)
-            + float(metrics.get("json_error_count") or 0)
-            + float(metrics.get("tool_error_count") or 0)
-            + float(metrics.get("protected_file_revert_count") or 0) * 2.0
-            + float(metrics.get("recurring_failure_count") or 0) * 2.0
-            + float(metrics.get("evolution_friction_count") or 0)
-            + float(metrics.get("planner_no_task_count") or 0) * 3.0
-            + float(metrics.get("task_unattempted_count") or 0) * 2.0
-            + float(metrics.get("task_obsolete_count") or 0)
-            + float(metrics.get("task_seed_contradiction_count") or 0) * 2.0
-            + float(metrics.get("task_no_edit_revert_count") or 0) * 2.0
-            + float(metrics.get("task_api_error_count") or 0) * 2.0
-            + float(metrics.get("task_scope_mismatch_count") or 0) * 2.0
-            + float(metrics.get("evaluator_unverified_count") or 0)
-            + float(metrics.get("evaluator_timeout_with_verdict_count") or 0) * 2.0
-            + float(metrics.get("task_unlanded_source_count") or 0) * 2.0
-            + float(metrics.get("task_incomplete_terminal_count") or 0) * 2.0
-            + float(metrics.get("state_live_baseline_shrink_count") or 0) * 2.0
-        )
-        / 12.0,
+        sum(float(metrics.get(key) or 0) * weight for key, weight in SCORE_FAILURE_WEIGHTS.items()) / 12.0,
     )
     state_capture = metrics.get("state_operational_capture_coverage")
     if not isinstance(state_capture, (int, float)) or isinstance(state_capture, bool):

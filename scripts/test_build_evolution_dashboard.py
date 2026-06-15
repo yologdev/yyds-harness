@@ -67,6 +67,25 @@ class BuildEvolutionDashboard(unittest.TestCase):
 
         self.assertLessEqual(score, 0.25)
 
+    def test_corrected_coding_log_score_penalizes_lifecycle_gaps(self):
+        score = corrected_coding_log_score(
+            {
+                "coding_log_score": 1.0,
+                "workflow_success_rate": 1.0,
+                "session_success_rate": 1.0,
+                "task_success_rate": 1.0,
+                "session_reverted": False,
+                "state_operational_capture_coverage": 1.0,
+                "audit_capture_coverage": 1.0,
+                "closed_loop_fix_rate": 1.0,
+                "deepseek_model_call_unmatched_completed_count": 1,
+                "state_run_unmatched_non_validation_completed_count": 1,
+            }
+        )
+
+        self.assertIsNotNone(score)
+        self.assertLess(score, 1.0)
+
     def test_dashboard_derives_provider_blocked_session_gnome_and_lesson(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

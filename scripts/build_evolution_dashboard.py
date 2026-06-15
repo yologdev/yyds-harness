@@ -3265,6 +3265,35 @@ def provider_blocked_before_tasks(metrics: dict[str, Any]) -> bool:
     )
 
 
+SCORE_FAILURE_WEIGHTS = {
+    "distinct_failure_count": 1.0,
+    "provider_error_count": 1.0,
+    "json_error_count": 1.0,
+    "tool_error_count": 1.0,
+    "protected_file_revert_count": 2.0,
+    "recurring_failure_count": 2.0,
+    "evolution_friction_count": 1.0,
+    "planner_no_task_count": 3.0,
+    "task_unattempted_count": 2.0,
+    "task_obsolete_count": 1.0,
+    "task_seed_contradiction_count": 2.0,
+    "task_no_edit_revert_count": 2.0,
+    "task_api_error_count": 2.0,
+    "task_scope_mismatch_count": 2.0,
+    "evaluator_unverified_count": 1.0,
+    "evaluator_timeout_with_verdict_count": 2.0,
+    "task_unlanded_source_count": 2.0,
+    "task_incomplete_terminal_count": 2.0,
+    "task_unverified_raw_success_count": 1.0,
+    "state_live_baseline_shrink_count": 2.0,
+    "deepseek_model_call_abnormal_completed_count": 2.0,
+    "deepseek_model_call_incomplete_count": 2.0,
+    "deepseek_model_call_unmatched_completed_count": 2.0,
+    "state_run_incomplete_count": 2.0,
+    "state_run_unmatched_non_validation_completed_count": 2.0,
+}
+
+
 def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
     if not numeric_value(metrics.get("coding_log_score")):
         return None
@@ -3282,28 +3311,7 @@ def corrected_coding_log_score(metrics: dict[str, Any]) -> float | None:
     outcome = sum(outcome_parts) / len(outcome_parts)
     failure_pressure = min(
         1.0,
-        (
-            metric_float(metrics, "distinct_failure_count")
-            + metric_float(metrics, "provider_error_count")
-            + metric_float(metrics, "json_error_count")
-            + metric_float(metrics, "tool_error_count")
-            + metric_float(metrics, "protected_file_revert_count") * 2.0
-            + metric_float(metrics, "recurring_failure_count") * 2.0
-            + metric_float(metrics, "evolution_friction_count")
-            + metric_float(metrics, "planner_no_task_count") * 3.0
-            + metric_float(metrics, "task_unattempted_count") * 2.0
-            + metric_float(metrics, "task_obsolete_count")
-            + metric_float(metrics, "task_seed_contradiction_count") * 2.0
-            + metric_float(metrics, "task_no_edit_revert_count") * 2.0
-            + metric_float(metrics, "task_api_error_count") * 2.0
-            + metric_float(metrics, "task_scope_mismatch_count") * 2.0
-            + metric_float(metrics, "evaluator_unverified_count")
-            + metric_float(metrics, "evaluator_timeout_with_verdict_count") * 2.0
-            + metric_float(metrics, "task_unlanded_source_count") * 2.0
-            + metric_float(metrics, "task_unverified_raw_success_count")
-            + metric_float(metrics, "state_live_baseline_shrink_count") * 2.0
-        )
-        / 12.0,
+        sum(metric_float(metrics, key) * weight for key, weight in SCORE_FAILURE_WEIGHTS.items()) / 12.0,
     )
     state_capture = metrics.get("state_operational_capture_coverage")
     if not numeric_value(state_capture):

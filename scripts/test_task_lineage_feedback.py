@@ -40,6 +40,23 @@ def append_event(path: Path, event_type: str, payload: dict[str, object], *, run
 
 
 class TaskLineageFeedback(unittest.TestCase):
+    def test_score_assessment_penalizes_lifecycle_gaps(self):
+        score = log_feedback.score_assessment(
+            {
+                "workflow_success": True,
+                "session_success": True,
+                "task_success_rate": 1.0,
+                "session_reverted": False,
+                "state_operational_capture_coverage": 1.0,
+                "audit_capture_coverage": 1.0,
+                "closed_loop_fix_rate": 1.0,
+                "deepseek_model_call_unmatched_completed_count": 1,
+                "state_run_unmatched_non_validation_completed_count": 1,
+            }
+        )
+
+        self.assertLess(score, 1.0)
+
     def test_evolve_records_lineage_to_stable_session_state_delta(self):
         evolve = Path(__file__).with_name("evolve.sh").read_text(encoding="utf-8")
         self.assertIn('SESSION_STAGING="${RUNNER_TEMP:-/tmp}/yoyo-session-staging-${STATE_SESSION_ID}-$$"', evolve)
