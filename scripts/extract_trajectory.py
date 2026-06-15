@@ -1746,6 +1746,72 @@ def render_graph_suggestions(audit_dir: Path) -> str:
 # ── Final assembly ───────────────────────────────────────────────────────
 
 
+
+def compute_freshness(audit_dir: Path, snapshot_time: datetime) -> str:
+    """Return a freshness indicator line for the trajectory header.
+
+    Compares the snapshot computation time against the most recent
+    session timestamp in the audit-log. Returns a markdown line
+    indicating whether trajectory evidence is fresh or stale.
+    """
+    sessions = ordered_sessions(audit_dir)
+    if not sessions:
+        return "_Snapshot age: no audit-log sessions — treat with caution_"
+
+    # Parse timestamps from session outcomes
+    session_times: list[datetime] = []
+    for session_dir in sessions:
+        outcome = load_json(session_dir / "outcome.json")
+        ts_str = outcome.get("ts", "")
+        if not ts_str:
+            # Fall back to directory name parsing (day-N-YYYYMMDDTHHMMSSZ)
+            name = session_dir.name
+            parts = name.split("-")
+            if len(parts) >= 3:
+                ts_str = parts[-1]
+        try:
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            try:
+                ts = datetime.strptime(
+                    ts_str, "%Y%m%dT%H%M%SZ"
+                ).replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
+        session_times.append(ts)
+
+    if not session_times:
+        return (
+            "_Snapshot age: cannot parse session timestamps"
+            " — treat with caution_"
+        )
+
+    most_recent = max(session_times)
+    age_minutes = abs(int(
+        (snapshot_time - most_recent).total_seconds() / 60
+    ))
+
+    # Count sessions newer than the snapshot
+    sessions_newer = sum(1 for t in session_times if t > snapshot_time)
+
+    if sessions_newer == 0:
+        return (
+            f"_Snapshot age: {age_minutes}m (fresh)"
+            f" — reliable ✓_"
+        )
+    elif sessions_newer == 1:
+        return (
+            f"_Snapshot age: {age_minutes}m (1 session behind)"
+            f" — reliable ✓_"
+        )
+    else:
+        return (
+            f"_Snapshot age: {age_minutes}m"
+            f" ({sessions_newer} sessions behind)"
+            f" — treat with caution ⚠_"
+        )
+
+
 def main() -> int:
     audit_dir_str = os.environ.get("YOYO_AUDIT_DIR", "")
     repo = os.environ.get("YOYO_REPO", "")
@@ -1768,10 +1834,13 @@ def main() -> int:
 
     audit_dir = Path(audit_dir_str) if audit_dir_str else Path("/dev/null")
 
+    snapshot_time = datetime.now(timezone.utc)
+    freshness = compute_freshness(audit_dir, snapshot_time)
     header = (
         f"# YOUR TRAJECTORY\n\n"
-        f"Last computed: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%MZ')}. "
+        f"Last computed: {snapshot_time.strftime('%Y-%m-%dT%H:%MZ')}. "
         f"Day {day}. Window: last {WINDOW_SESSIONS} sessions / {WINDOW_DAYS} days.\n"
+        f"{freshness}\n"
     )
 
     # Gather all sections (each falls back to "" silently on no-data)
