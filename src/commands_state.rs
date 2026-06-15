@@ -23737,4 +23737,100 @@ mod tests {
             "should describe what state tail shows, got: {summary}"
         );
     }
+
+    #[test]
+    fn lifecycle_pairs_matched_model_calls_with_same_run_id() {
+        let started = event(
+            "mc-1-start",
+            "ModelCallStarted",
+            "run-1",
+            json!({"model_call_id": "mc-1", "model": "deepseek-v4-pro"}),
+        );
+        let completed = event(
+            "mc-1-end",
+            "ModelCallCompleted",
+            "run-1",
+            json!({"model_call_id": "mc-1", "model": "deepseek-v4-pro", "status": "completed"}),
+        );
+        let result = build_state_lifecycle_json(&[started, completed]);
+
+        assert_eq!(
+            result["model_calls"]["started"], 1,
+            "expected 1 model call started"
+        );
+        assert_eq!(
+            result["model_calls"]["completed"], 1,
+            "expected 1 model call completed"
+        );
+        assert_eq!(
+            result["model_calls"]["incomplete"], 0,
+            "expected 0 incomplete model calls"
+        );
+        assert_eq!(
+            result["model_calls"]["unmatched_completed"], 0,
+            "expected 0 unmatched completed"
+        );
+        assert_eq!(
+            result["balanced"], true,
+            "expected lifecycle to be balanced"
+        );
+    }
+
+    #[test]
+    fn lifecycle_detects_unpaired_model_call_started() {
+        let started = event(
+            "mc-2-start",
+            "ModelCallStarted",
+            "run-2",
+            json!({"model_call_id": "mc-2", "model": "deepseek-v4-pro"}),
+        );
+        // No matching ModelCallCompleted
+        let result = build_state_lifecycle_json(&[started]);
+
+        assert_eq!(
+            result["model_calls"]["started"], 1,
+            "expected 1 model call started"
+        );
+        assert_eq!(
+            result["model_calls"]["completed"], 0,
+            "expected 0 model calls completed"
+        );
+        assert!(
+            result["model_calls"]["incomplete"].as_u64().unwrap_or(0) > 0,
+            "expected incomplete model calls > 0 when started has no matching completed"
+        );
+        assert_eq!(
+            result["balanced"], false,
+            "expected lifecycle to be unbalanced"
+        );
+    }
+
+    #[test]
+    fn lifecycle_detects_unmatched_model_call_completed() {
+        let completed = event(
+            "mc-3-end",
+            "ModelCallCompleted",
+            "run-3",
+            json!({"model_call_id": "mc-3", "model": "deepseek-v4-pro", "status": "completed"}),
+        );
+        // No matching ModelCallStarted
+        let result = build_state_lifecycle_json(&[completed]);
+
+        assert_eq!(
+            result["model_calls"]["started"], 0,
+            "expected 0 model calls started"
+        );
+        assert_eq!(
+            result["model_calls"]["completed"], 1,
+            "expected 1 model call completed"
+        );
+        assert!(
+            result["model_calls"]["unmatched_completed"].as_u64().unwrap_or(0) > 0,
+            "expected unmatched completed > 0 when completed has no matching started"
+        );
+        assert_eq!(
+            result["balanced"], false,
+            "expected lifecycle to be unbalanced"
+        );
+    }
 }
