@@ -2310,7 +2310,15 @@ fn context_included_block_names(payload: &Value) -> Vec<String> {
 
 fn build_state_summary(events: &[Value]) -> String {
     if events.is_empty() {
-        return "  State: empty (no events recorded yet)".to_string();
+        return "\
+State: empty (no events recorded yet)
+
+  Diagnostic paths:
+    yyds state doctor        — full health check (events, store, projections)
+    yyds state crashes       — check for startup crashes
+    yyds state init          — explicit initialization (auto-initialized on first run)
+    yyds state tail --limit 5  — see most recent events"
+            .to_string();
     }
 
     let total = events.len();
@@ -23625,5 +23633,52 @@ mod tests {
         assert_eq!(payload["model_calls"]["completed"], 1);
         assert_eq!(payload["model_calls"]["incomplete"], 0);
         assert_eq!(payload["model_calls"]["unmatched_completed"], 0);
+    }
+
+    #[test]
+    fn state_summary_empty_suggests_diagnostic_paths() {
+        let events: Vec<Value> = vec![];
+        let summary = build_state_summary(&events);
+
+        assert!(
+            summary.contains("State: empty"),
+            "should report empty state, got: {summary}"
+        );
+        assert!(
+            summary.contains("Diagnostic paths"),
+            "should show diagnostic paths header, got: {summary}"
+        );
+        assert!(
+            summary.contains("state doctor"),
+            "should suggest state doctor, got: {summary}"
+        );
+        assert!(
+            summary.contains("state crashes"),
+            "should suggest state crashes, got: {summary}"
+        );
+        assert!(
+            summary.contains("state init"),
+            "should suggest state init, got: {summary}"
+        );
+        assert!(
+            summary.contains("state tail --limit 5"),
+            "should suggest state tail --limit 5, got: {summary}"
+        );
+        assert!(
+            summary.contains("full health check"),
+            "should describe what state doctor does, got: {summary}"
+        );
+        assert!(
+            summary.contains("startup crashes"),
+            "should describe what state crashes finds, got: {summary}"
+        );
+        assert!(
+            summary.contains("auto-initialized"),
+            "should explain auto-init, got: {summary}"
+        );
+        assert!(
+            summary.contains("most recent events"),
+            "should describe what state tail shows, got: {summary}"
+        );
     }
 }
