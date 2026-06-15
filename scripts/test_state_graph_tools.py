@@ -652,6 +652,35 @@ class StateGraphTools(unittest.TestCase):
             self.assertIn("task_scope_mismatch_count=2", suggestion["reason"])
             self.assertIn("scope-mismatched task edits", suggestion["reason"])
 
+    def test_evolution_suggestions_prioritize_task_failure_class_over_lifecycle_when_tasks_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "state_run_incomplete_count": 2,
+                        "task_success_rate": 0.0,
+                        "task_analysis_only_attempt_count": 2,
+                        "task_no_edit_revert_count": 1,
+                        "task_verification_rate": 0.0,
+                    }
+                },
+            )
+
+            suggestions = state_graph_tools.evolution_suggestions(session, limit=5)
+
+            self.assertEqual(suggestions[0]["title"], "Force analysis-only attempts into action")
+            self.assertEqual(suggestions[0]["metric"], "task_analysis_only_attempt_count")
+            self.assertIn(
+                "Raise verified task success rate",
+                [item["title"] for item in suggestions],
+            )
+            lifecycle = next(
+                item for item in suggestions if item["title"] == "Close yyds state and model lifecycle gaps"
+            )
+            self.assertLess(lifecycle["priority"], suggestions[0]["priority"])
+
     def test_evolution_suggestions_fall_back_to_outcome_task_success_rate(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"

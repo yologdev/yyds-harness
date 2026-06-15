@@ -1112,6 +1112,12 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
     suggestions: list[dict[str, Any]] = []
     provider_errors = int_metric(gnomes, "provider_error_count")
     task_api_errors = int_metric(gnomes, "task_api_error_count")
+    task_success_rate = float_metric(gnomes, "task_success_rate")
+    task_success_metric = "task_success_rate"
+    if task_success_rate is None:
+        task_success_rate = outcome_task_success_rate(session_dir)
+        task_success_metric = "outcome_task_success_rate"
+    task_success_pressure_active = task_success_rate is not None and task_success_rate < 1.0
 
     def add(kind: str, title: str, reason: str, metric: str, value: Any, priority: int) -> None:
         suggestions.append(
@@ -1229,7 +1235,7 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             reason,
             metric,
             value,
-            96,
+            84 if task_success_pressure_active else 96,
         )
     operational_capture = gnomes.get("state_operational_capture_coverage")
     state_capture = gnomes.get("state_capture_coverage")
@@ -1351,11 +1357,6 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
         add("eval", "Bound evaluator checks so verdicts are not skipped", "Some task evals were unverified or timed out.", "evaluator_unverified_count", gnomes.get("evaluator_unverified_count"), 90)
     if int(gnomes.get("evaluator_timeout_with_verdict_count") or 0) > 0:
         add("eval", "Stop evaluator once verdict evidence exists", "An evaluator wrote a verdict but still timed out, making the verifier evidence ambiguous.", "evaluator_timeout_with_verdict_count", gnomes.get("evaluator_timeout_with_verdict_count"), 92)
-    task_success_rate = float_metric(gnomes, "task_success_rate")
-    task_success_metric = "task_success_rate"
-    if task_success_rate is None:
-        task_success_rate = outcome_task_success_rate(session_dir)
-        task_success_metric = "outcome_task_success_rate"
     if task_success_rate is not None and task_success_rate < 1.0:
         failure_detail = dominant_task_failure_detail(gnomes)
         reason_prefix = f"{failure_detail} " if failure_detail else ""
@@ -1469,7 +1470,7 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             "Implementation tasks reverted without touching files; require an early scoped edit, obsolete note, or concrete blocker instead of analysis-only work.",
             "task_no_edit_revert_count",
             gnomes.get("task_no_edit_revert_count"),
-            86,
+            93 if task_success_pressure_active else 86,
         )
     if int(gnomes.get("task_analysis_only_attempt_count") or 0) > 0:
         add(
@@ -1478,7 +1479,7 @@ def evolution_suggestions(session_dir: Path, limit: int = 3) -> list[dict[str, A
             "Implementation ended without file progress or terminal evidence; retry once with an action-first checkpoint and require an early edit, obsolete note, or blocked note.",
             "task_analysis_only_attempt_count",
             gnomes.get("task_analysis_only_attempt_count"),
-            90,
+            94 if task_success_pressure_active else 90,
         )
     if int(gnomes.get("task_unlanded_source_count") or 0) > 0:
         add("commit", "Make source-edit outcomes land or explain reverts", "A task touched source files without a landed source commit.", "task_unlanded_source_count", gnomes.get("task_unlanded_source_count"), 88)
