@@ -4665,7 +4665,9 @@ class BuildEvolutionDashboard(unittest.TestCase):
 
             self.assertIn("coding_log_score", data["aggregate"]["gnome_keys"])
             self.assertIn("task_unlanded_source_count", data["aggregate"]["gnome_keys"])
+            self.assertIn("task_unlanded_source_count", data["sessions"][0]["gnome_keys"])
             self.assertEqual(data["aggregate"]["latest_gnomes"]["task_unlanded_source_count"], 1)
+            self.assertEqual(data["sessions"][0]["latest_gnomes"]["task_unlanded_source_count"], 1)
             self.assertEqual(data["aggregate"]["gnome_audit"]["corrected_session_count"], 1)
             self.assertGreaterEqual(data["aggregate"]["gnome_audit_corrections_by_source"].get("task_artifacts", 0), 1)
 

@@ -3349,6 +3349,17 @@ def gnome_corrections(raw: dict[str, Any], corrected: dict[str, Any]) -> dict[st
     return corrections
 
 
+def corrected_gnome_keys(summary: dict[str, Any], latest_gnomes: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    for key in summary.get("gnome_keys") or []:
+        if isinstance(key, str) and key not in keys:
+            keys.append(key)
+    for key in latest_gnomes.keys():
+        if isinstance(key, str) and key not in keys:
+            keys.append(key)
+    return keys
+
+
 def gnome_correction_source(key: str, corrected_value: Any, feedback_metrics: dict[str, Any]) -> tuple[str, str]:
     if key in feedback_metrics and feedback_metrics.get(key) == corrected_value:
         return ("log_feedback", "log_feedback.json metric overrode or filled the state gnome")
@@ -3614,7 +3625,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
             "latest_gnomes": latest_gnomes,
             "gnome_corrections": gnome_corrections(raw_state_gnomes, latest_gnomes),
             "state_gnome_audit": gnome_audit,
-            "gnome_keys": summary.get("gnome_keys", []),
+            "gnome_keys": corrected_gnome_keys(summary, latest_gnomes),
             "evals": evals,
             "latest_eval": latest_eval,
             "latest_eval_gnome_corrections": latest_eval_corrections,
