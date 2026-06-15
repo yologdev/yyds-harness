@@ -2787,6 +2787,39 @@ class BuildEvolutionDashboard(unittest.TestCase):
             "empty_input",
         )
 
+    def test_state_lifecycle_classifies_input_validation_past_example_limit(self):
+        rows = [
+            {
+                "kind": "RunCompleted",
+                "run_id": f"run-non-{idx:02d}",
+                "payload": {"status": "error", "error_detail": "agent_timeout"},
+            }
+            for idx in range(9)
+        ]
+        rows.append(
+            {
+                "kind": "RunCompleted",
+                "run_id": "run-z-validation",
+                "payload": {
+                    "status": "error",
+                    "error": "exit code 1",
+                    "error_detail": "empty_input",
+                },
+            }
+        )
+
+        work = summarize_events_for_work(rows)
+
+        lifecycle = work["state_lifecycle"]
+        self.assertEqual(lifecycle["runs"]["unmatched_completed"], 10)
+        self.assertEqual(lifecycle["runs"]["unstarted_input_validation_error"], 1)
+        self.assertEqual(lifecycle["runs"]["unmatched_non_validation_completed"], 9)
+        self.assertEqual(
+            lifecycle["runs"]["unstarted_input_validation_error_runs"][0]["run_id"],
+            "run-z-validation",
+        )
+        self.assertLessEqual(len(lifecycle["runs"]["unmatched_non_validation_completed_details"]), 8)
+
     def test_state_run_claim_reports_unstarted_input_validation_errors(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

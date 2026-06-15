@@ -2440,6 +2440,41 @@ class TaskLineageFeedback(unittest.TestCase):
             )
             self.assertTrue(lifecycle["runs"]["unstarted_input_validation_error_runs"][0]["session_started"])
 
+    def test_state_summary_classifies_input_validation_past_example_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            for idx in range(9):
+                append_event(
+                    events,
+                    "RunCompleted",
+                    {"status": "error", "error_detail": "agent_timeout"},
+                    run_id=f"run-non-{idx:02d}",
+                )
+            append_event(
+                events,
+                "RunCompleted",
+                {"status": "error", "error": "exit code 1", "error_detail": "empty_input"},
+                run_id="run-z-validation",
+            )
+
+            summary = summarize_state_gnomes.summarize(
+                summarize_state_gnomes.load_jsonl(events),
+                events,
+            )
+
+            lifecycle = summary["state_lifecycle"]
+            self.assertEqual(lifecycle["runs"]["unmatched_completed"], 10)
+            self.assertEqual(lifecycle["runs"]["unstarted_input_validation_error"], 1)
+            self.assertEqual(lifecycle["runs"]["unmatched_non_validation_completed"], 9)
+            self.assertEqual(
+                lifecycle["runs"]["unstarted_input_validation_error_runs"][0]["run_id"],
+                "run-z-validation",
+            )
+            self.assertLessEqual(len(lifecycle["runs"]["unmatched_non_validation_completed_details"]), 8)
+            latest = summary["latest_gnomes"]
+            self.assertEqual(latest["state_run_unstarted_input_validation_error_count"], 1)
+            self.assertEqual(latest["state_run_unmatched_non_validation_completed_count"], 9)
+
     def test_summarize_state_lifecycle_treats_stop_after_completion_file_as_normal(self):
         with tempfile.TemporaryDirectory() as tmp:
             events = Path(tmp) / "events.jsonl"

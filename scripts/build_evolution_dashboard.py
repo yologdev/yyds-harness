@@ -2218,17 +2218,18 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     cache_hit_ratio = round(cache_hit_tokens / cache_token_total, 6) if cache_token_total > 0 else None
     run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
     run_unmatched_completed_ids = sorted(run_id for run_id in run_completed_ids if run_id not in run_started_ids)
-    run_unmatched_completed = [
+    run_unmatched_completed_all = [
         {
             "run_id": run_id,
             "last_event": run_last_events.get(run_id),
             "session_started": run_id in run_session_started_ids,
         }
-        for run_id in run_unmatched_completed_ids[:8]
+        for run_id in run_unmatched_completed_ids
     ]
+    run_unmatched_completed = run_unmatched_completed_all[:8]
     run_unstarted_input_validation_errors = [
         run
-        for run in run_unmatched_completed
+        for run in run_unmatched_completed_all
         if is_input_validation_completion(run.get("last_event"))
     ]
     run_unstarted_input_validation_error_ids = {
@@ -2238,7 +2239,7 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
     run_unmatched_non_validation_completed = [
         run
-        for run in run_unmatched_completed
+        for run in run_unmatched_completed_all
         if str(run.get("run_id") or "") not in run_unstarted_input_validation_error_ids
     ]
     run_incomplete = [
@@ -2260,8 +2261,8 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
             "incomplete_runs": run_incomplete,
             "unmatched_completed_runs": run_unmatched_completed_ids[:8],
             "unmatched_completed_details": run_unmatched_completed,
-            "unstarted_input_validation_error_runs": run_unstarted_input_validation_errors,
-            "unmatched_non_validation_completed_details": run_unmatched_non_validation_completed,
+            "unstarted_input_validation_error_runs": run_unstarted_input_validation_errors[:8],
+            "unmatched_non_validation_completed_details": run_unmatched_non_validation_completed[:8],
         },
         "model_calls": {
             "started": deepseek_model_call_started,
