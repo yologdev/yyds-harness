@@ -927,7 +927,7 @@ fn find_incomplete_runs(events: &[Value]) -> Vec<(String, u64)> {
         })
         .collect();
     // Most recent first
-    incomplete.sort_by_key(|b| std::cmp::Reverse(b.1));
+    incomplete.sort_by(|a, b| b.1.cmp(&a.1));
     incomplete
 }
 
