@@ -2589,17 +2589,41 @@ fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
                     .unwrap_or(false)
             })
             .count();
-        if events.is_empty() || run_completed_count == 0 {
+        let run_started = events.iter().any(|e| {
+            event_string(e, "event_type") == Some("RunStarted")
+        });
+
+        if events.is_empty() || (run_completed_count == 0 && !run_started) {
             err.push_str("State recording is active but no sessions have completed yet.\n");
             err.push_str(
                 "Diagnostics become available after 2\u{2013}3 completed evolution sessions.",
             );
+            if id == "last-failure" {
+                err.push_str(
+                    "\n\nTry 'yoyo state tail --limit 5' to inspect recent events.",
+                );
+            }
+        } else if run_completed_count == 0 && run_started {
+            err.push_str("A session is currently in progress.\n");
+            err.push_str(
+                "Diagnostics and failure data become available after the session completes.",
+            );
+            if id == "last-failure" {
+                err.push_str(
+                    "\n\nTry 'yoyo state tail --limit 5' to follow live events.",
+                );
+            }
         } else if failure_count == 0 {
             err.push_str(&format!(
                 "{} successful session{} recorded. No failure data to diagnose.",
                 run_completed_count,
                 if run_completed_count == 1 { "" } else { "s" }
             ));
+            if id == "last-failure" {
+                err.push_str(
+                    "\n\nTry 'yoyo state crashes --limit 10' for crashed or incomplete sessions, or 'yoyo state why last-crash' to diagnose the latest crash.",
+                );
+            }
         } else {
             err.push_str(&format!(
                 "{} failure{} recorded but not enough to cluster into patterns.\nCheck back after 2\u{2013}3 more sessions.",
@@ -16834,6 +16858,67 @@ mod tests {
         let report = build_why_report(&events, "last-failure").unwrap();
         assert!(report.contains("JsonOutputFailure evt-2"));
         assert!(report.contains("structured-extraction"));
+    }
+
+    #[test]
+    fn why_report_suggests_alternatives_when_no_failure_found() {
+        // Empty state: no events
+        let events: Vec<Value> = vec![];
+        let err = build_why_report(&events, "last-failure").unwrap_err();
+        assert!(err.contains("no state event found for 'last-failure'"));
+        assert!(
+            err.contains("state tail --limit 5"),
+            "should suggest state tail when empty, got: {err}"
+        );
+
+        // All green: successful sessions but no failures
+        let events = vec![
+            event("evt-start", "RunStarted", "run-1", json!({"task": "x"})),
+            event(
+                "evt-done",
+                "RunCompleted",
+                "run-1",
+                json!({"status": "success"}),
+            ),
+        ];
+        let err = build_why_report(&events, "last-failure").unwrap_err();
+        assert!(
+            err.contains("successful"),
+            "should mention successful sessions, got: {err}"
+        );
+        assert!(
+            err.contains("state crashes --limit 10"),
+            "should suggest state crashes, got: {err}"
+        );
+        assert!(
+            err.contains("state why last-crash"),
+            "should suggest state why last-crash, got: {err}"
+        );
+
+        // Active incomplete run: RunStarted without RunCompleted
+        let events = vec![
+            event("evt-start", "RunStarted", "run-1", json!({"task": "x"})),
+            event("evt-other", "DecisionRecorded", "run-1", json!({})),
+        ];
+        let err = build_why_report(&events, "last-failure").unwrap_err();
+        assert!(
+            err.contains("in progress"),
+            "should mention session is in progress, got: {err}"
+        );
+
+        // Custom ID (not last-failure) keeps generic guidance
+        let events = vec![
+            event("evt-start", "RunStarted", "run-1", json!({"task": "x"})),
+            event(
+                "evt-done",
+                "RunCompleted",
+                "run-1",
+                json!({"status": "success"}),
+            ),
+        ];
+        let err = build_why_report(&events, "evt-nonexistent").unwrap_err();
+        // Custom IDs get a generic suggestion, not the last-failure-specific alternatives
+        assert!(err.contains("no state event found for 'evt-nonexistent'"));
     }
 
     #[test]
