@@ -4905,14 +4905,54 @@ class BuildEvolutionDashboard(unittest.TestCase):
                     "artifacts": {"manifest": "tasks/manifest.json"},
                 },
             )
+            write_json(
+                session / "evo_readiness.json",
+                {
+                    "classification": "not_ready",
+                    "can_drive_evolution": False,
+                    "session_id": "day-1",
+                    "issues": ["task success is complete but verifier rate is 0.0"],
+                    "warnings": [
+                        "task implementation terminal evidence incomplete for 2 task artifact(s)"
+                    ],
+                    "evidence": {
+                        "selected_task_count": 1,
+                        "tasks_attempted": 1,
+                        "provider_error_count": 0,
+                        "task_success_rate": 1.0,
+                        "task_verification_rate": 0.0,
+                        "task_artifact_coverage": 1.0,
+                        "task_lineage_capture_coverage": 1.0,
+                        "task_stale_seed_obsolete_note_count": 0,
+                        "task_incomplete_terminal_count": 2,
+                        "task_terminal_marker_missing_attempt_count": 0,
+                        "raw_task_attempt_count": 1,
+                        "graph_pressure_present": True,
+                        "dominant_task_failure_visible": True,
+                    },
+                },
+            )
 
             data = build(root / "sessions", root / "out")
             latest = data["sessions"][0]["latest_gnomes"]
+            readiness = data["sessions"][0]["evo_readiness"]
 
             self.assertEqual(latest["task_success_rate"], 1.0)
             self.assertEqual(latest["task_incomplete_terminal_count"], 0)
             self.assertEqual(latest["task_terminal_marker_missing_attempt_count"], 2)
             self.assertIn("task_terminal_marker_missing_attempt_count", data["sessions"][0]["gnome_keys"])
+            self.assertEqual(readiness["classification"], "verified_success")
+            self.assertIs(readiness["can_drive_evolution"], True)
+            self.assertTrue(readiness["dashboard_reconciled_from_gnomes"])
+            self.assertEqual(readiness["evidence"]["task_verification_rate"], 1.0)
+            self.assertEqual(readiness["evidence"]["task_incomplete_terminal_count"], 0)
+            self.assertEqual(readiness["evidence"]["task_terminal_marker_missing_attempt_count"], 2)
+            self.assertEqual(readiness["issues"], [])
+            self.assertEqual(
+                readiness["warnings"],
+                ["implementation terminal marker missing on 2 attempt(s); mechanical task proof exists"],
+            )
+            self.assertEqual(data["aggregate"]["latest_evo_readiness"], readiness)
 
     def test_dashboard_merges_log_feedback_metrics_missing_from_state_summary(self):
         with tempfile.TemporaryDirectory() as tmp:

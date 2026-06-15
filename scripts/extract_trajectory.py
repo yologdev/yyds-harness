@@ -50,6 +50,19 @@ TOOL_FAILURE_RECENT_TASK_PATTERNS: dict[str, tuple[str, ...]] = {
         "binary file matches",
     ),
 }
+READINESS_TASK_EVIDENCE_KEYS = (
+    "selected_task_count",
+    "tasks_attempted",
+    "provider_error_count",
+    "task_success_rate",
+    "task_verification_rate",
+    "task_artifact_coverage",
+    "task_lineage_capture_coverage",
+    "task_stale_seed_obsolete_note_count",
+    "task_incomplete_terminal_count",
+    "task_terminal_marker_missing_attempt_count",
+    "raw_task_attempt_count",
+)
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -177,7 +190,7 @@ def latest_evo_readiness(audit_dir: Path) -> Optional[tuple[Path, dict[str, Any]
     for session_dir in reversed(ordered_sessions(audit_dir)):
         report = load_json(session_dir / "evo_readiness.json")
         if isinstance(report, dict):
-            return session_dir, report
+            return session_dir, reconcile_evo_readiness_report(session_dir, report)
     return None
 
 
@@ -268,6 +281,82 @@ def int_metric(metrics: dict[str, Any], key: str) -> int:
         except ValueError:
             return 0
     return 0
+
+
+def numeric_metric(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def reconcile_evo_readiness_report(session_dir: Path, report: dict[str, Any]) -> dict[str, Any]:
+    gnomes = corrected_latest_gnomes(session_dir)
+    if not gnomes:
+        return report
+
+    reconciled = dict(report)
+    evidence = dict(report.get("evidence") if isinstance(report.get("evidence"), dict) else {})
+    for key in READINESS_TASK_EVIDENCE_KEYS:
+        if key in gnomes:
+            evidence[key] = gnomes.get(key)
+
+    issues = [
+        str(issue)
+        for issue in (report.get("issues") if isinstance(report.get("issues"), list) else [])
+        if not str(issue).startswith(
+            (
+                "task success is complete but verifier rate is",
+                "task implementation terminal evidence incomplete for",
+            )
+        )
+    ]
+    warnings = [
+        str(warning)
+        for warning in (report.get("warnings") if isinstance(report.get("warnings"), list) else [])
+        if not str(warning).startswith(
+            (
+                "task implementation terminal evidence incomplete for",
+                "implementation terminal marker missing on",
+            )
+        )
+    ]
+
+    selected = int_metric(evidence, "selected_task_count")
+    attempted = int_metric(evidence, "tasks_attempted")
+    provider_errors = int_metric(evidence, "provider_error_count")
+    task_success = evidence.get("task_success_rate")
+    verification_rate = evidence.get("task_verification_rate")
+    incomplete_terminal = int_metric(evidence, "task_incomplete_terminal_count")
+    marker_missing = int_metric(evidence, "task_terminal_marker_missing_attempt_count")
+
+    evidence_expected = selected > 0 or attempted > 0
+    provider_blocked = provider_errors > 0 and not evidence_expected
+    if incomplete_terminal:
+        warnings.append(
+            f"task implementation terminal evidence incomplete for {incomplete_terminal} task artifact(s)"
+        )
+    elif marker_missing:
+        warnings.append(
+            f"implementation terminal marker missing on {marker_missing} attempt(s); mechanical task proof exists"
+        )
+    if numeric_metric(task_success) and float(task_success) >= 1.0 and verification_rate != 1.0:
+        issues.append(f"task success is complete but verifier rate is {verification_rate}")
+
+    if provider_blocked:
+        classification = "provider_blocked"
+    elif not evidence_expected:
+        classification = "no_task_evidence"
+    elif issues:
+        classification = "not_ready"
+    elif numeric_metric(task_success) and float(task_success) >= 1.0:
+        classification = "verified_success"
+    else:
+        classification = "actionable"
+
+    reconciled["evidence"] = evidence
+    reconciled["issues"] = issues
+    reconciled["warnings"] = warnings
+    reconciled["classification"] = classification
+    reconciled["can_drive_evolution"] = classification in {"verified_success", "actionable"}
+    return reconciled
 
 
 def resolved_seed_replacement_metrics(metrics: dict[str, Any]) -> bool:

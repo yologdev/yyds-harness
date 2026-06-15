@@ -1390,6 +1390,52 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(metrics["task_incomplete_terminal_count"], 0)
             self.assertEqual(metrics["task_terminal_marker_missing_attempt_count"], 1)
 
+    def test_task_artifact_scope_accepts_repo_paths_named_in_task_body(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "title": "Add lifecycle pairing test",
+                            "files": ["src/prompt.rs", "src/state.rs"],
+                        }
+                    ]
+                },
+            )
+            task_dir = session / "tasks/task_01"
+            task_dir.mkdir(parents=True, exist_ok=True)
+            (task_dir / "task.md").write_text(
+                "Title: Add lifecycle pairing test\n"
+                "Files: src/prompt.rs, src/state.rs\n\n"
+                "Implementation notes:\n"
+                "- Add focused lifecycle assertions in src/commands_state.rs.\n",
+                encoding="utf-8",
+            )
+            write_json(
+                task_dir / "outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "planned_files": ["src/prompt.rs", "src/state.rs"],
+                    "touched_files": ["src/commands_state.rs"],
+                    "source_files": ["src/commands_state.rs"],
+                    "commit_shas": ["abc123"],
+                },
+            )
+            write_json(
+                task_dir / "eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "PASS"},
+            )
+
+            metrics = state_graph_tools.task_artifact_verification_metrics(session)
+
+            self.assertEqual(metrics["task_verification_rate"], 1.0)
+            self.assertEqual(metrics["task_scope_mismatch_count"], 0)
+            self.assertEqual(metrics["task_strict_verified_count"], 1)
+
     def test_completed_missing_terminal_marker_status_is_not_terminal_incomplete_when_proven(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
@@ -1438,6 +1484,48 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(metrics["task_verification_rate"], 1.0)
             self.assertEqual(metrics["task_incomplete_terminal_count"], 0)
             self.assertEqual(metrics["task_terminal_marker_missing_attempt_count"], 1)
+
+    def test_corrected_latest_gnomes_converts_stale_terminal_incomplete_when_task_proven(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "state/summary.json",
+                {"latest_gnomes": {"task_incomplete_terminal_count": 2}},
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "title": "Guard task terminality",
+                            "files": ["src/prompt.rs"],
+                        }
+                    ]
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "planned_files": ["src/prompt.rs"],
+                    "touched_files": ["src/prompt.rs"],
+                    "source_files": ["src/prompt.rs"],
+                    "commit_shas": ["abc123"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "PASS"},
+            )
+
+            gnomes = state_graph_tools.corrected_latest_gnomes(session)
+
+            self.assertEqual(gnomes["task_success_rate"], 1.0)
+            self.assertEqual(gnomes["task_verification_rate"], 1.0)
+            self.assertEqual(gnomes["task_incomplete_terminal_count"], 0)
+            self.assertEqual(gnomes["task_terminal_marker_missing_attempt_count"], 2)
 
     def test_task_artifacts_clear_stale_raw_and_evaluator_gnomes(self):
         with tempfile.TemporaryDirectory() as tmp:

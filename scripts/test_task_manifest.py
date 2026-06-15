@@ -16,6 +16,18 @@ import task_manifest  # noqa: E402
 
 
 class TaskManifest(unittest.TestCase):
+    def test_extract_file_mentions_accepts_sentence_punctuation(self):
+        text = (
+            "Add focused lifecycle assertions in src/commands_state.rs. "
+            "Do not count src/prompt.rs.bak as a source path. "
+            "Also inspect scripts/build_evolution_dashboard.py, then README.md."
+        )
+
+        self.assertEqual(
+            task_manifest.extract_file_mentions(text),
+            ["src/commands_state.rs", "scripts/build_evolution_dashboard.py", "README.md"],
+        )
+
     def test_manifest_captures_rich_task_decisions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -22,7 +22,7 @@ FILE_TRAILING_NOTE_RE = re.compile(r"\s+(?:-|--|—)\s+.*$")
 FILE_MENTION_RE = re.compile(
     r"(?<![\w./-])((?:src|scripts|tests|docs|eval|memory|skills|tasks|site|journals)/"
     r"[A-Za-z0-9_./+-]*[A-Za-z0-9_+-]\.[A-Za-z0-9_+-]+|"
-    r"Cargo\.(?:toml|lock)|README\.md)(?![\w./-])"
+    r"Cargo\.(?:toml|lock)|README\.md)(?!(?:[\w/-]|\.[A-Za-z0-9_+-]))"
 )
 SECTION_STOP_RE = re.compile(
     r"^(?:#+\s*)?(?:title|files|issue|origin|objective|goal|why this matters|"
@@ -66,7 +66,10 @@ def normalize_file_entry(value: object) -> str:
     text = text.strip("`'\"")
     text = FILE_ANNOTATION_RE.sub("", text).strip()
     text = FILE_TRAILING_NOTE_RE.sub("", text).strip()
-    return text.strip("`'\" ,")
+    text = text.strip("`'\" ,")
+    if text.endswith(".bak"):
+        return ""
+    return text
 
 
 def normalize_file_list(values: list[object]) -> list[str]:

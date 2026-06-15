@@ -60,6 +60,34 @@ SEED_TASK_CONTRADICTION_RE = re.compile(
     r"|\b(factual error|assessment clearly shows|contradict\w*)\b.*\bseed(?:ed)? task[\w.-]*\b",
     re.IGNORECASE,
 )
+READINESS_TASK_EVIDENCE_KEYS = (
+    "selected_task_count",
+    "tasks_attempted",
+    "provider_error_count",
+    "task_success_rate",
+    "task_verification_rate",
+    "task_artifact_coverage",
+    "task_lineage_capture_coverage",
+    "task_stale_seed_obsolete_note_count",
+    "task_incomplete_terminal_count",
+    "task_terminal_marker_missing_attempt_count",
+    "raw_task_attempt_count",
+)
+READINESS_RECOMPUTED_ISSUE_PREFIXES = (
+    "task manifest missing despite selected or attempted task evidence",
+    "task artifact coverage incomplete:",
+    "task lineage capture incomplete:",
+    "stale seed-obsolete note contamination present:",
+    "task success rate missing despite selected or attempted task evidence",
+    "task success is complete but verifier rate is",
+    "low task success lacks prompt-visible dominant failure pressure",
+    "provider blocked before task selection or task attempts",
+    "no selected or attempted task evidence captured",
+)
+READINESS_RECOMPUTED_WARNING_PREFIXES = (
+    "task implementation terminal evidence incomplete for",
+    "implementation terminal marker missing on",
+)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -97,6 +125,104 @@ def evo_readiness(session_dir: Path) -> dict[str, Any]:
         },
         "artifact_path": "evo_readiness.json",
     }
+
+
+def reconcile_evo_readiness(
+    readiness: dict[str, Any],
+    corrected_gnomes: dict[str, Any],
+) -> dict[str, Any]:
+    """Align readiness JSON with stronger dashboard task evidence.
+
+    The session artifact is written before later feedback/dashboard correction
+    passes finish. Keep the artifact link, but make the dashboard projection
+    match the corrected task gnomes that downstream trajectory consumers see.
+    """
+    if not readiness:
+        return readiness
+
+    reconciled = dict(readiness)
+    evidence = dict(readiness.get("evidence") if isinstance(readiness.get("evidence"), dict) else {})
+    changed = False
+    for key in READINESS_TASK_EVIDENCE_KEYS:
+        if key not in corrected_gnomes:
+            continue
+        value = corrected_gnomes.get(key)
+        if evidence.get(key) != value:
+            evidence[key] = value
+            changed = True
+
+    issues = [
+        str(issue)
+        for issue in (readiness.get("issues") if isinstance(readiness.get("issues"), list) else [])
+        if not any(str(issue).startswith(prefix) for prefix in READINESS_RECOMPUTED_ISSUE_PREFIXES)
+    ]
+    warnings = [
+        str(warning)
+        for warning in (readiness.get("warnings") if isinstance(readiness.get("warnings"), list) else [])
+        if not any(str(warning).startswith(prefix) for prefix in READINESS_RECOMPUTED_WARNING_PREFIXES)
+    ]
+
+    selected = metric_int(evidence, "selected_task_count")
+    attempted = metric_int(evidence, "tasks_attempted")
+    provider_errors = metric_int(evidence, "provider_error_count")
+    task_success = evidence.get("task_success_rate")
+    verification_rate = evidence.get("task_verification_rate")
+    artifact_coverage = evidence.get("task_artifact_coverage")
+    lineage_coverage = evidence.get("task_lineage_capture_coverage")
+    stale_seed_obsolete = metric_int(evidence, "task_stale_seed_obsolete_note_count")
+    incomplete_terminal = metric_int(evidence, "task_incomplete_terminal_count")
+    terminal_marker_missing = metric_int(evidence, "task_terminal_marker_missing_attempt_count")
+    graph_pressure_visible = bool(evidence.get("dominant_task_failure_visible"))
+
+    evidence_expected = selected > 0 or attempted > 0
+    provider_blocked = provider_errors > 0 and not evidence_expected
+
+    if provider_blocked:
+        issues.append("provider blocked before task selection or task attempts; task success is not measurable")
+    elif evidence_expected:
+        if artifact_coverage != 1.0:
+            issues.append(f"task artifact coverage incomplete: {artifact_coverage}")
+        if lineage_coverage != 1.0:
+            issues.append(f"task lineage capture incomplete: {lineage_coverage}")
+        if stale_seed_obsolete:
+            issues.append(f"stale seed-obsolete note contamination present: {stale_seed_obsolete}")
+        if incomplete_terminal:
+            warnings.append(
+                f"task implementation terminal evidence incomplete for {incomplete_terminal} task artifact(s)"
+            )
+        elif terminal_marker_missing:
+            warnings.append(
+                f"implementation terminal marker missing on {terminal_marker_missing} attempt(s); mechanical task proof exists"
+            )
+        if not numeric_value(task_success):
+            issues.append("task success rate missing despite selected or attempted task evidence")
+        elif float(task_success) >= 1.0:
+            if verification_rate != 1.0:
+                issues.append(f"task success is complete but verifier rate is {verification_rate}")
+        elif not graph_pressure_visible:
+            issues.append("low task success lacks prompt-visible dominant failure pressure")
+    else:
+        issues.append("no selected or attempted task evidence captured; task success is not measurable")
+
+    if provider_blocked:
+        classification = "provider_blocked"
+    elif not evidence_expected:
+        classification = "no_task_evidence"
+    elif issues:
+        classification = "not_ready"
+    elif numeric_value(task_success) and float(task_success) >= 1.0:
+        classification = "verified_success"
+    else:
+        classification = "actionable"
+
+    reconciled["evidence"] = evidence
+    reconciled["issues"] = issues
+    reconciled["warnings"] = warnings
+    reconciled["classification"] = classification
+    reconciled["can_drive_evolution"] = classification in {"verified_success", "actionable"}
+    if changed:
+        reconciled["dashboard_reconciled_from_gnomes"] = True
+    return reconciled
 
 
 def log_feedback_metrics(session_dir: Path) -> dict[str, Any]:
@@ -3605,6 +3731,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
         feedback_lessons = log_feedback_top_lessons(session_dir)
         raw_state_gnomes = summary.get("latest_gnomes") if isinstance(summary.get("latest_gnomes"), dict) else {}
         latest_gnomes = corrected_gnomes(summary, work, trace, outcome, feedback_metrics)
+        readiness = reconcile_evo_readiness(readiness, latest_gnomes)
         annotate_seed_contradicted_task_states(
             work,
             int(latest_gnomes.get("task_seed_contradiction_count") or 0),

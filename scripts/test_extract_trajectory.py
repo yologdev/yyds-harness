@@ -166,6 +166,95 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("no selected or attempted task evidence", rendered)
             self.assertIn("repair planning/task selection", rendered)
 
+    def test_render_evo_readiness_reconciles_stale_task_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "task_incomplete_terminal_count": 2,
+                        "coding_log_score": 0.8,
+                    }
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Verified task",
+                            "files": ["src/state.rs"],
+                        }
+                    ]
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "planned_files": ["src/state.rs"],
+                    "touched_files": ["src/state.rs"],
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": ["abc1234"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {
+                    "task_id": "task_01",
+                    "status": "pass",
+                    "exit_code": 0,
+                    "verdict": "Verdict: PASS",
+                },
+            )
+            write_json(
+                session / "evo_readiness.json",
+                {
+                    "classification": "not_ready",
+                    "can_drive_evolution": False,
+                    "issues": ["task success is complete but verifier rate is 0.0"],
+                    "warnings": [
+                        "task implementation terminal evidence incomplete for 2 task artifact(s)"
+                    ],
+                    "evidence": {
+                        "selected_task_count": 1,
+                        "tasks_attempted": 1,
+                        "provider_error_count": 0,
+                        "task_success_rate": 1.0,
+                        "task_verification_rate": 0.0,
+                        "task_artifact_coverage": 1.0,
+                        "task_lineage_capture_coverage": 1.0,
+                    },
+                },
+            )
+
+            rendered = extract_trajectory.render_evo_readiness(audit_dir)
+
+            self.assertIn("classification=verified_success", rendered)
+            self.assertIn("can_drive_evolution=true", rendered)
+            self.assertIn("task_success_rate=1.0", rendered)
+            self.assertIn("task_verification_rate=1.0", rendered)
+            self.assertIn("implementation terminal marker missing on 2 attempt(s)", rendered)
+            self.assertNotIn("task implementation terminal evidence incomplete", rendered)
+            self.assertNotIn("verifier rate is 0.0", rendered)
+
     def test_main_places_evo_readiness_before_graph_pressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "trajectory.md"

@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from task_manifest import extract_file_mentions, normalize_file_list
+
 TASK_TERMINAL_EVIDENCE_RE = re.compile(
     r"^\s*TASK_TERMINAL_EVIDENCE:\s*(?:changed|obsolete|blocked)\s*$",
     re.IGNORECASE | re.MULTILINE,
@@ -354,6 +356,16 @@ def task_artifact_rows(session_dir: Path) -> dict[str, dict[str, Any]]:
     return rows
 
 
+def task_planned_files(session_dir: Path, task: dict[str, Any], artifact: dict[str, Any], outcome: dict[str, Any]) -> list[str]:
+    task_file = str(artifact.get("task_file") or "")
+    task_text = read_text(session_dir / task_file) if task_file else ""
+    return normalize_file_list(
+        list(outcome.get("planned_files") or [])
+        + list(task.get("files") or [])
+        + extract_file_mentions(task_text)
+    )
+
+
 def stale_seed_obsolete_note(task: dict[str, Any], artifact: dict[str, Any]) -> bool:
     note = str(artifact.get("obsolete_note_text") or "")
     if not note:
@@ -402,7 +414,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             continue
         artifact = artifacts.get(task_id) or {}
         outcome = artifact.get("outcome") if isinstance(artifact.get("outcome"), dict) else {}
-        planned = [str(path) for path in (outcome.get("planned_files") or task.get("files") or []) if path]
+        planned = [str(path) for path in task_planned_files(session_dir, task, artifact, outcome) if path]
         source_files = [str(path) for path in (outcome.get("source_files") or []) if path]
         touched = [str(path) for path in (outcome.get("touched_files") or source_files or []) if path]
         source_touched = [path for path in source_files + touched if source_file(path)]
@@ -892,6 +904,7 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
         gnomes.update(feedback_metrics)
     artifact_metrics = task_artifact_verification_metrics(session_dir)
     if artifact_metrics:
+        state_incomplete_terminal = int_metric(gnomes, "task_incomplete_terminal_count")
         selected = int_metric(artifact_metrics, "selected_task_count")
         task_count = int_metric(artifact_metrics, "task_count")
         verified = int_metric(artifact_metrics, "task_strict_verified_count")
@@ -916,6 +929,16 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
         )
         for key in artifact_count_keys:
             gnomes[key] = int_metric(artifact_metrics, key)
+        if (
+            state_incomplete_terminal > 0
+            and task_count > 0
+            and verified == task_count
+            and int_metric(artifact_metrics, "task_incomplete_terminal_count") == 0
+        ):
+            gnomes["task_terminal_marker_missing_attempt_count"] = max(
+                int_metric(gnomes, "task_terminal_marker_missing_attempt_count"),
+                state_incomplete_terminal,
+            )
         if task_count > 0 and verified == task_count:
             gnomes["task_success_rate"] = 1.0
             gnomes["task_verification_rate"] = 1.0
