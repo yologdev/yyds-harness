@@ -13,12 +13,13 @@ pub(crate) fn handle_crashes(args: &[String]) {
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(10);
     let json_output = args.iter().any(|a| a == "--json");
+    let show_all = args.iter().any(|a| a == "--all");
     let path = default_events_path();
     let Ok(events) = read_events(&path) else {
         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
         return;
     };
-    match build_crashes_report(&events, limit, json_output) {
+    match build_crashes_report(&events, limit, json_output, show_all) {
         Ok(report) => println!("{report}"),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
     }
@@ -31,12 +32,18 @@ struct CrashEntry {
     api_key_present: bool,
     error_detail: String,
     duration_ms: i64,
+    is_preflight: bool,
+}
+
+fn is_preflight_error(error_detail: &str) -> bool {
+    error_detail.contains("empty_input") || error_detail.contains("slash_command_in_piped_mode")
 }
 
 fn build_crashes_report(
     events: &[Value],
     limit: usize,
     json_output: bool,
+    show_all: bool,
 ) -> Result<String, String> {
     // Find all RunCompleted events with status=error, collect crashes
     let now = std::time::SystemTime::now()
@@ -121,6 +128,7 @@ fn build_crashes_report(
             .unwrap_or("")
             .to_string();
         let duration_ms = ts_ms.saturating_sub(session_ts);
+        let is_preflight = is_preflight_error(&error_detail);
 
         crashes.push(CrashEntry {
             run_id,
@@ -128,47 +136,75 @@ fn build_crashes_report(
             api_key_present,
             error_detail,
             duration_ms,
+            is_preflight,
         });
     }
 
     let total_crashes = crashes.len();
+    let preflight_count = crashes.iter().filter(|c| c.is_preflight).count();
+    let preflight_crashes_hidden = if show_all { 0 } else { preflight_count };
     let window_sessions = sessions.len();
 
+    // Determine which crashes to display
+    let display_crashes: Vec<&CrashEntry> = if show_all {
+        crashes.iter().collect()
+    } else {
+        crashes.iter().filter(|c| !c.is_preflight).collect()
+    };
+
     if json_output {
-        let entries: Vec<Value> = crashes
+        let entries: Vec<Value> = display_crashes
             .iter()
             .map(|c| {
-                serde_json::json!({
+                let mut entry = serde_json::json!({
                     "run_id": c.run_id,
                     "ts_ms": c.ts_ms,
                     "api_key_present": c.api_key_present,
                     "error_detail": c.error_detail,
                     "duration_ms": c.duration_ms,
-                })
+                });
+                if c.is_preflight {
+                    entry["preflight"] = serde_json::Value::Bool(true);
+                }
+                entry
             })
             .collect();
         let output = serde_json::json!({
             "crashes": entries,
             "total_crashes": total_crashes,
+            "preflight_crashes_hidden": preflight_crashes_hidden,
             "window_sessions": window_sessions,
         });
         return serde_json::to_string_pretty(&output).map_err(|e| format!("serialize JSON: {e}"));
     }
 
     // Human-readable table
-    if crashes.is_empty() {
-        return Ok("No crash sessions found in recent history.".to_string());
+    if display_crashes.is_empty() {
+        let mut msg = "No crash sessions found in recent history.".to_string();
+        if preflight_crashes_hidden > 0 {
+            msg.push(' ');
+            msg.push_str(&format!(
+                "({} harness preflight crash{} hidden; use --all to show)",
+                preflight_crashes_hidden,
+                if preflight_crashes_hidden == 1 {
+                    ""
+                } else {
+                    "es"
+                }
+            ));
+        }
+        return Ok(msg);
     }
 
     let mut lines: Vec<String> = Vec::new();
-    let header = format!("Crashed sessions (last {}):", crashes.len());
+    let header = format!("Crashed sessions (last {}):", display_crashes.len());
     lines.push(header);
     lines.push(format!(
         "  {:<40} {:<18} {:<5}  {}",
         "RUN", "WHEN", "KEY?", "ERROR"
     ));
 
-    for crash in &crashes {
+    for crash in &display_crashes {
         let when = if now > crash.ts_ms {
             format_relative_ms(now - crash.ts_ms)
         } else {
@@ -176,9 +212,11 @@ fn build_crashes_report(
         };
         let key_str = if crash.api_key_present { "yes" } else { "no" };
         let err = if crash.error_detail.is_empty() {
-            "(none)"
+            "(none)".to_string()
+        } else if crash.is_preflight {
+            format!("{} (preflight)", crash.error_detail)
         } else {
-            &crash.error_detail
+            crash.error_detail.clone()
         };
         // Truncate run_id for display
         let short_run = if crash.run_id.len() > 38 {
@@ -189,6 +227,18 @@ fn build_crashes_report(
         lines.push(format!(
             "  {:<40} {:<18} {:<5}  {}",
             short_run, when, key_str, err
+        ));
+    }
+
+    if preflight_crashes_hidden > 0 {
+        lines.push(format!(
+            "({} harness preflight crash{} hidden; use --all to show)",
+            preflight_crashes_hidden,
+            if preflight_crashes_hidden == 1 {
+                ""
+            } else {
+                "es"
+            }
         ));
     }
 
@@ -205,5 +255,216 @@ fn format_relative_ms(diff_ms: i64) -> String {
         format!("{}h ago", secs / 3600)
     } else {
         format!("{}d ago", secs / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_event(id: &str, kind: &str, run_id: &str, payload: Value) -> Value {
+        json!({
+            "event_id": id,
+            "event_type": kind,
+            "schema_version": 1,
+            "timestamp_ms": 1000,
+            "actor": "harness",
+            "run_id": run_id,
+            "session_id": null,
+            "trace_id": "trace-1",
+            "parent_event_ids": [],
+            "payload": payload,
+        })
+    }
+
+    #[test]
+    fn preflight_empty_input_filtered_by_default() {
+        let events = vec![
+            make_event(
+                "e1",
+                "SessionStarted",
+                "run-1",
+                json!({"api_key_present": true}),
+            ),
+            make_event(
+                "e2",
+                "RunCompleted",
+                "run-1",
+                json!({"status": "error", "error_detail": "empty_input"}),
+            ),
+        ];
+        let report = build_crashes_report(&events, 10, false, false).unwrap();
+        // In default mode, preflight crash should be hidden
+        assert!(report.contains("No crash sessions found"));
+        assert!(report.contains("1 harness preflight crash hidden"));
+    }
+
+    #[test]
+    fn preflight_slash_command_filtered_by_default() {
+        let events = vec![
+            make_event(
+                "e1",
+                "SessionStarted",
+                "run-1",
+                json!({"api_key_present": true}),
+            ),
+            make_event(
+                "e2",
+                "RunCompleted",
+                "run-1",
+                json!({"status": "error", "error_detail": "slash_command_in_piped_mode"}),
+            ),
+        ];
+        let report = build_crashes_report(&events, 10, false, false).unwrap();
+        assert!(report.contains("No crash sessions found"));
+        assert!(report.contains("1 harness preflight crash hidden"));
+    }
+
+    #[test]
+    fn real_crash_still_appears() {
+        let events = vec![
+            make_event(
+                "e1",
+                "SessionStarted",
+                "run-1",
+                json!({"api_key_present": false}),
+            ),
+            make_event(
+                "e2",
+                "RunCompleted",
+                "run-1",
+                json!({"status": "error", "error_detail": "api_key missing"}),
+            ),
+        ];
+        let report = build_crashes_report(&events, 10, false, false).unwrap();
+        assert!(report.contains("Crashed sessions"));
+        assert!(report.contains("api_key missing"));
+        assert!(!report.contains("preflight"));
+    }
+
+    #[test]
+    fn show_all_includes_preflight_with_label() {
+        let events = vec![
+            make_event(
+                "e1",
+                "SessionStarted",
+                "run-1",
+                json!({"api_key_present": true}),
+            ),
+            make_event(
+                "e2",
+                "RunCompleted",
+                "run-1",
+                json!({"status": "error", "error_detail": "empty_input"}),
+            ),
+        ];
+        let report = build_crashes_report(&events, 10, false, true).unwrap();
+        assert!(report.contains("empty_input (preflight)"));
+        assert!(!report.contains("hidden"));
+    }
+
+    #[test]
+    fn json_output_includes_preflight_crashes_hidden() {
+        let events = vec![
+            make_event(
+                "e1",
+                "SessionStarted",
+                "run-1",
+                json!({"api_key_present": true}),
+            ),
+            make_event(
+                "e2",
+                "RunCompleted",
+                "run-1",
+                json!({"status": "error", "error_detail": "empty_input"}),
+            ),
+            make_event(
+                "e3",
+                "SessionStarted",
+                "run-2",
+                json!({"api_key_present": false}),
+            ),
+            make_event(
+                "e4",
+                "RunCompleted",
+                "run-2",
+                json!({"status": "error", "error_detail": "no api key"}),
+            ),
+        ];
+        let report = build_crashes_report(&events, 10, true, false).unwrap();
+        let parsed: Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(parsed["preflight_crashes_hidden"], 1);
+        assert_eq!(parsed["total_crashes"], 2);
+        assert_eq!(parsed["crashes"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn json_show_all_includes_preflight_flag() {
+        let events = vec![
+            make_event(
+                "e1",
+                "SessionStarted",
+                "run-1",
+                json!({"api_key_present": true}),
+            ),
+            make_event(
+                "e2",
+                "RunCompleted",
+                "run-1",
+                json!({"status": "error", "error_detail": "empty_input"}),
+            ),
+        ];
+        let report = build_crashes_report(&events, 10, true, true).unwrap();
+        let parsed: Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(parsed["preflight_crashes_hidden"], 0);
+        assert_eq!(parsed["crashes"][0]["preflight"], true);
+    }
+
+    #[test]
+    fn preflight_mixed_with_real_default_mode() {
+        let events = vec![
+            make_event(
+                "e1",
+                "SessionStarted",
+                "run-1",
+                json!({"api_key_present": true}),
+            ),
+            make_event(
+                "e2",
+                "RunCompleted",
+                "run-1",
+                json!({"status": "error", "error_detail": "empty_input"}),
+            ),
+            make_event(
+                "e3",
+                "SessionStarted",
+                "run-2",
+                json!({"api_key_present": false}),
+            ),
+            make_event(
+                "e4",
+                "RunCompleted",
+                "run-2",
+                json!({"status": "error", "error_detail": "timeout"}),
+            ),
+        ];
+        let report = build_crashes_report(&events, 10, false, false).unwrap();
+        // Should show the real crash (timeout) but not empty_input
+        assert!(report.contains("timeout"));
+        assert!(!report.contains("empty_input"));
+        assert!(report.contains("1 harness preflight crash hidden"));
+    }
+
+    #[test]
+    fn is_preflight_error_detection() {
+        assert!(is_preflight_error("empty_input"));
+        assert!(is_preflight_error("some empty_input error"));
+        assert!(is_preflight_error("slash_command_in_piped_mode"));
+        assert!(is_preflight_error(
+            "got slash_command_in_piped_mode failure"
+        ));
+        assert!(!is_preflight_error("api_key missing"));
+        assert!(!is_preflight_error(""));
     }
 }
