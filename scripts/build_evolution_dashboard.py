@@ -6385,6 +6385,8 @@ HTML = r"""<!doctype html>
       const readinessText = readiness.classification
         ? `readiness ${readiness.classification} / drive ${readiness.can_drive_evolution === true ? "yes" : "no"}`
         : "";
+      const taskSuccess = latestMetric(agg, "task_success_rate");
+      const taskVerification = latestMetric(agg, "task_verification_rate");
       document.getElementById("heroSummary").innerHTML = `
         <div>
           <span class="pill ${healthClass(health)}">${text(health)}</span>
@@ -6397,9 +6399,9 @@ HTML = r"""<!doctype html>
         </div>
         <aside class="hero-side">
           <div>
-            <div class="label">Latest coding score</div>
+            <div class="label">Latest coding log score</div>
             <div class="value">${score === null ? "-" : metricValue("coding_log_score", score)}</div>
-            <p class="muted">Gnome score from the latest log-feedback evidence.</p>
+            <p class="muted">Log-feedback score. Task success ${metricValue("task_success_rate", taskSuccess)} / verification ${metricValue("task_verification_rate", taskVerification)}.</p>
           </div>
           <div class="detail-grid">
             <div>

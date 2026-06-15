@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -129,6 +130,14 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
             if isinstance(value, dict):
                 events.append(value)
     return events
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def payload(event: dict[str, Any]) -> dict[str, Any]:
@@ -503,7 +512,72 @@ def task_key(data: dict[str, Any]) -> str:
     return str(number or "")
 
 
-def summarize_task_lineage(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def session_dir_for_source(source: Path) -> Path | None:
+    if source.name == "events.jsonl" and source.parent.name == "state":
+        return source.parent.parent
+    if source.name == "summary.json" and source.parent.name == "state":
+        return source.parent.parent
+    if source.name == "state":
+        return source.parent
+    return None
+
+
+def task_artifact_outcomes(session_dir: Path | None) -> dict[str, dict[str, Any]]:
+    if session_dir is None:
+        return {}
+    tasks_dir = session_dir / "tasks"
+    if not tasks_dir.is_dir():
+        return {}
+    outcomes: dict[str, dict[str, Any]] = {}
+    for child in sorted(tasks_dir.iterdir()):
+        if not child.is_dir() or not child.name.startswith("task_"):
+            continue
+        outcome = load_json(child / "outcome.json")
+        if outcome:
+            outcomes[child.name] = outcome
+    return outcomes
+
+
+def overlay_task_artifacts(
+    rows_by_task: dict[str, dict[str, Any]],
+    outcomes: dict[str, dict[str, Any]],
+) -> None:
+    """Prefer per-task outcome artifacts over replayed lineage fragments."""
+    for task_id, outcome in sorted(outcomes.items()):
+        row = rows_by_task.setdefault(
+            task_id,
+            {
+                "task_id": task_id,
+                "gnome_metrics": {},
+                "gnome_deltas": {},
+            },
+        )
+        row["task_id"] = task_id
+        if isinstance(outcome.get("task_number"), int):
+            row["task_number"] = outcome.get("task_number")
+        title = outcome.get("task_title") or outcome.get("task_file_title")
+        if title:
+            row["task_title"] = title
+        for field in (
+            "status",
+            "base_commit",
+            "head_commit",
+            "planned_files",
+            "touched_files",
+            "source_files",
+            "commit_shas",
+            "commits",
+            "eval",
+            "issue",
+            "revert_reason",
+        ):
+            if field in outcome:
+                row[field] = outcome.get(field)
+        if row.get("status") == "completed" and "revert_reason" not in outcome:
+            row["revert_reason"] = None
+
+
+def summarize_task_lineage(events: list[dict[str, Any]], source: Path | None = None) -> list[dict[str, Any]]:
     current_session_id = latest_task_session_id(events)
     tasks: dict[str, dict[str, Any]] = {}
     for event in events:
@@ -651,6 +725,7 @@ def summarize_task_lineage(events: list[dict[str, Any]]) -> list[dict[str, Any]]
                 elif value is not None and not row.get(field):
                     row[field] = value
 
+    overlay_task_artifacts(tasks, task_artifact_outcomes(session_dir_for_source(source)) if source else {})
     return sorted(
         tasks.values(),
         key=lambda row: (
@@ -790,7 +865,7 @@ def summarize(events: list[dict[str, Any]], source: Path) -> dict[str, Any]:
 
     latest_eval = evals[-1] if evals else None
     latest_decision = decisions[-1] if decisions else None
-    task_lineage = summarize_task_lineage(events)
+    task_lineage = summarize_task_lineage(events, source)
     state_lifecycle = summarize_state_lifecycle(events)
     latest_gnomes.update(lifecycle_gnomes(state_lifecycle))
     return {
@@ -813,11 +888,83 @@ def summarize(events: list[dict[str, Any]], source: Path) -> dict[str, Any]:
     }
 
 
+def run_tests() -> int:
+    with tempfile.TemporaryDirectory(prefix="summarize-state-gnomes-") as tmp:
+        session = Path(tmp) / "day-1"
+        state_dir = session / "state"
+        task_dir = session / "tasks" / "task_01"
+        state_dir.mkdir(parents=True)
+        task_dir.mkdir(parents=True)
+        (task_dir / "outcome.json").write_text(
+            json.dumps(
+                {
+                    "task_id": "task_01",
+                    "task_number": 1,
+                    "task_title": "Correct artifact title",
+                    "status": "completed",
+                    "planned_files": ["src/right.rs"],
+                    "touched_files": ["src/right.rs"],
+                    "source_files": ["src/right.rs"],
+                    "commit_shas": ["abc123"],
+                    "revert_reason": None,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        events = [
+            {
+                "event_id": "evt-start",
+                "event_type": "RunStarted",
+                "session_id": "s1",
+                "payload": {
+                    "phase": "task",
+                    "status": "started",
+                    "task_id": "task_01",
+                    "task_number": 1,
+                    "task_title": "Stale event title",
+                    "planned_files": ["src/wrong.rs"],
+                },
+            },
+            {
+                "event_id": "evt-complete",
+                "event_type": "RunCompleted",
+                "session_id": "s1",
+                "payload": {
+                    "phase": "task",
+                    "status": "completed",
+                    "task_id": "task_01",
+                    "task_number": 1,
+                    "task_title": "Stale event title",
+                    "touched_files": ["src/wrong.rs"],
+                    "revert_reason": "Task scope mismatch: stale replay fragment",
+                },
+            },
+        ]
+        summary = summarize(events, state_dir / "events.jsonl")
+        lineage = summary["task_lineage"]
+        assert len(lineage) == 1, lineage
+        task = lineage[0]
+        assert task["task_title"] == "Correct artifact title", task
+        assert task["planned_files"] == ["src/right.rs"], task
+        assert task["touched_files"] == ["src/right.rs"], task
+        assert task["commit_shas"] == ["abc123"], task
+        assert task["revert_reason"] is None, task
+    print("summarize_state_gnomes self-tests passed")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--events", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--events", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--test", action="store_true")
     args = parser.parse_args()
+
+    if args.test:
+        return run_tests()
+    if args.events is None or args.output is None:
+        parser.error("--events and --output are required unless --test is used")
 
     events = load_jsonl(args.events)
     summary = summarize(events, args.events)
