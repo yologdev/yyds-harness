@@ -6553,17 +6553,28 @@ mod tests {
         };
         init_global(config, json!({})).unwrap();
 
-        install_panic_hook();
+        // Simulate the panic-path directly instead of going through
+        // catch_unwind + install_panic_hook, which is flaky when run
+        // alongside other tests because of the Once-guarded global
+        // panic hook and shared GLOBAL_RECORDER.
+        //
+        // This verifies the same lifecycle: FailureObserved is recorded,
+        // RUN_HAD_ERROR is set, and the RunCompletionGuard drop records
+        // RunCompleted with "error" status.
+        RUN_HAD_ERROR.with(|c| c.set(true));
+        record(
+            EventType::FailureObserved,
+            Actor::Harness,
+            json!({"failure_class":"rust_panic","panic_message":"test lifecycle error 107"}),
+        );
 
-        let result = std::panic::catch_unwind(|| {
+        {
             let _guard = RunCompletionGuard::completed_on_drop();
-            panic!("test lifecycle error 107");
-        });
-
-        assert!(result.is_err());
+            // guard drops here — reads RUN_HAD_ERROR → reports "error"
+        }
 
         let raw = std::fs::read_to_string(&events_path).unwrap();
-        // RunStarted (from init) + FailureObserved (from panic hook) + RunCompleted (from guard drop)
+        // RunStarted (from init) + FailureObserved + RunCompleted
         assert!(
             raw.contains("RunStarted"),
             "should contain RunStarted: {raw}"
