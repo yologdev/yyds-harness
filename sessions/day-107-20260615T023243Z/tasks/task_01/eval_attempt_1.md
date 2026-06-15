@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: All success criteria met — three diagnostic branches added (no sessions, active run, all green) with failure-specific suggestions gated on `id == "last-failure"`, custom IDs get generic guidance, existing failure-path behavior untouched, and the new test covers all four scenarios.

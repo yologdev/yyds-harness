@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: The `rejected_flags` field is populated in `parse_grep_args` but never checked in `handle_grep`, `run_grep`, `run_grep_count`, or `run_grep_with_context` — the error messages are collected but silently dropped instead of being surfaced to the user. The task explicitly required checking `rejected_flags` in `run_grep` to return an early error (per the implementation notes' option b), and required tests for `--json` and `--null` rejection, neither of which was done.

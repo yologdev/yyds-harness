@@ -1,0 +1,407 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The user is asking me to enter Phase A2: PLANNING. I need to:
+
+1. First, create the session_plan directory
+2. Check if task_01.md already exists (the instructions say it might be pre-created by the harness)
+3. Write task files based on the assessment evidence
+
+Let me start by creating the session_plan directory and checking what exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null || echo "empty" ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md and an assessment.md. Let me read both to understand what's been pre-seeded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment.md ✓ (37ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze what I have:
+
+1. **task_01.md exists** — seeded by the harness: "Improve cold-start state failure diagnostics" — it wants to make `yyds state why last-failure` more useful when there are no completed failed sessions yet.
+
+2. **assessment.md** — confirms the codebase is healthy, 4 consecutive successful runs, no CI failures.
+
+Now I need to evaluate:
+
+- Is the seed task valid? Let me check the assessment evidence: the assessment says `yyds state why last-failure` returns "no state event found for 'last-failure'" and there are no failures in the current session. But this was also noted as "clean" — the assessment itself says "No friction in self-testing." So the seed task's premise (cold-start `why last-failure` returning only `no state event found`) is actually expected behavior — there ARE no failures to report. The seed task is trying to fix something that isn't broken.
+
+Wait, let me re-read: The seed task says "Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence." It's about improving the output when there genuinely are no failures, giving more helpful diagnostics instead of just "no state event found."
+
+But the assessment also notes Day 104 already made error message improvements in `commands_state.rs` — "cold-start `/state why` explanation (7 lines)." So this may have already been partially addressed.
+
+Let me check: The assessment says the self-test of `yyds state why last-failure` returned: "no state event found for 'last-failure'" (no failures in current session). This is the expected result when there are genuinely no failures. The seed task seems to want to make this output more helpful by suggesting other things to inspect.
+
+However, looking at the assessment's state evidence more carefully:
+- **Top tool-failure categories**: missing path parameter (3), search regex errors (2), transport timeouts (5)
+- **Search tool `--json` flag sanitization** is a concrete, evidence-backed gap
+- **Tool-level input validation** is a recurring pattern that would reduce model-side friction
+
+The seed task is reasonable but I should assess whether it's the most impactful thing to do. The assessment notes that Day 104 already added cold-start `/state why` explanation. So the seed task might be partially redundant.
+
+Let me think about what tasks to create considering the 3-slot budget:
+
+**Slot 1**: The seed task_01.md already exists. I should refine it or keep it. But the assessment shows Day 104 already improved cold-start state diagnostics. Let me check if the seed task is adding something genuinely new beyond what Day 104 did.
+
+The seed task is about `yyds state why last-failure` command, while Day 104 was about `/state why` (the REPL slash command). These might be different code paths.
+
+**Slot 2**: Search tool `--json` flag sanitization — this is a concrete, evidence-backed fix. The assessment found `grep: unrecognized option '--json'` in state failures. This is a tool input sanitization gap. Fix: intercept `--json` and similar flags in the search tool before passing to grep. This would touch `src/commands_search.rs` (maybe also `src/tools.rs`).
+
+**Slot 3**: Tool-level input validation for missing path parameter — this is the most recurring pattern (3 occurrences). But it's flagged as "model-side issue, not code defect" with low priority. And it would require understanding the tool execution pipeline which might touch too many files.
+
+Actually, looking more carefully: the search `--json` sanitization is also low priority ("model rarely issues this flag"). And the missing path parameter has 3 occurrences. Let me prioritize:
+
+Actually, let me re-read the policy:
+- "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence"
+- The policy also says: "Prefer tasks that address the highest ranked pressure rows"
+
+The assessment doesn't show graph-pressure rows explicitly, but it does show tool-failure categories. Let me look at what's most actionable:
+
+1. Search tool `--json` sanitization — very concrete, 1 file change, easy to verify
+2. Missing path parameter input validation — pattern-level fix, could affect multiple tools
+
+The seed task is there. Let me check if it's genuinely useful or if I should refine it.
+
+Actually, I think the seed task is poorly motivated. The assessment itself says `yyds state why last-failure` returned a clean result because there ARE no failures. Making it report "nearby startup errors" when there are no failures would be noise. And Day 104 already improved the cold-start `/state why` explanation.
+
+But the planning rules say: "Treat it as a valid seed task. You may refine it... but do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+Given the assessment evidence, here's what I think makes sense:
+
+1. **task_01.md** (refine the seed): Keep the cold-start diagnostics idea but narrow it. Instead of the vague "report nearby startup errors," focus on a concrete improvement: when `state why last-failure` has nothing to report, suggest running `state crashes --limit 5` and `state why last-crash` as alternative diagnostic paths. This gives the user an actionable next step instead of a dead end. This is a small, focused improvement.
+
+2. **task_02.md** (new): Search tool `--json` flag sanitization — intercept grep-incompatible flags before shell execution. Concrete, evidence-backed from state failure event.
+
+3. **task_03.md** (new): This is tricky. The missing path parameter issue affects multiple tools and might require broader changes. Let me think...
+
+Actually, the assessment says the "missing path parameter" is a model-side issue, not a code defect. Adding input validation at the tool level to catch it before execution would be useful but might require changes in the tool execution pipeline which could be complex.
+
+Another option: The assessment notes that `commands_state.rs` is 23,548 lines (17% of codebase) but says this is deferred structural work. I shouldn't tackle that in a 20-minute task.
+
+Let me look at what's most evidence-backed and scoped within 3 files:
+
+The search tool `--json` sanitization is the most concrete, single-file fix. Let me create:
+- task_01: refine the seed task to be more concrete
+- task_02: search tool flag sanitization
+- task_03: issue_responses.md only (no third task — the assessment says there are no open issues, and the remaining gaps are either low-priority model-side issues or deferred structural work)
+
+Actually, let me re-check. The policy says "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence." If I have only 2 real tasks (seed + search sanitization), that's still 2 slots.
+
+But let me think about a third task. The assessment mentions `commands_state.rs` is 17% of codebase — one file. That's a structural observation, not an actionable task in 20 minutes. 
+
+What about the tool-level input validation for missing path parameters? The assessment says this would "benefit from tool-level input validation that catches these before they reach grep/edit_file." But this might require changes across multiple tool files. Let me scope it to just the search tool and read_file tool — capturing required parameter validation before execution.
+
+Actually, looking at the policy: "Each task MUST touch at most 3 source files." So I could have a task that adds input validation for missing parameters in `src/tools.rs` and `src/commands_search.rs`.
+
+Let me settle on:
+
+1. **task_01.md** (refine): Cold-start state failure diagnostics — make `state why last-failure` suggest alternative diagnostic commands when no failure is found. Files: `src/commands_state.rs`. This is a small, focused change.
+
+2. **task_02.md** (new): Search tool flag sanitization — intercept `--json` and similar grep-incompatible flags. Files: `src/commands_search.rs`. Concrete, single-file.
+
+3. **task_03.md** (new): Tool input validation for missing required parameters — add pre-execution validation for required tool parameters (path) to produce clear errors instead of letting them surface as grep/file errors. Files: `src/tools.rs`. This could catch the "missing path parameter" pattern.
+
+Wait, but I should check whether task 3 is feasible. The tool execution pipeline in yoagent might handle parameter validation already. The "missing parameter" errors are likely coming from the model not including required parameters in tool calls, and the tool itself catches it. Let me think about what we can actually do...
+
+Actually, let me focus on what's concrete and verifiable. The search `--json` sanitization is the clearest win. The seed task is already there. Let me refine it and add task_02 for search sanitization. For task_03, I could add a third task around tool resilience, or I could just do 2 tasks.
+
+But the policy says I should have at least 2 state-driven slots. Let me do 3 tasks:
+
+1. task_01: refine the seed (state diagnostics)
+2. task_02: search tool sanitization (state evidence-backed)
+3. task_03: tool input validation for missing parameters (state evidence-backed, 3 occurrences)
+
+For task_03, I'll scope it to adding a validation layer in the search and file tools that checks required parameters exist before execution and returns a clear error message. This can be done in `src/commands_search.rs` and `src/tools.rs`.
+
+Actually wait, looking at the search tool more carefully — the `--json` issue is about a flag being passed to grep that grep doesn't understand. The fix is to strip or reject known bad flags before passing to grep. This is in the search tool's shell command construction.
+
+And for missing parameters, the fix is to validate that required parameters are present before executing the tool. This could be in the tool wrapper or in individual tool implementations.
+
+Let me write the task files now. I need to also write `session_plan/issue_responses.md` — there are no open issues, so it'll be brief.
+
+Let me refine task_01 to be more concrete, then create task_02 and task_03.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 43.4s (2 ✓)
+
+Now let me understand the state of the search tool and the existing `state why` command to refine the seed task and plan the additional tasks.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'unrecognized option' (*.rs)  ▶ search 'last-failure' (*.rs) ✓ (11ms)
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `state why` implementation to understand how it currently handles "last-failure" and what the cold-start path looks like.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:835..865  ▶ read src/commands_state.rs:16825..16855 ✓ (35ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me look at the `build_why_report` function to understand the error returned when "last-failure" isn't found.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' (*.rs) ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the build_why_report function to understand what it does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2571..2651 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the `build_why_report` function already has good cold-start diagnostics! It already handles the case when no failure event is found:
+
+- If no sessions completed: "State recording is active but no sessions have completed yet. Diagnostics become available after 2–3 completed evolution sessions."
+- If all sessions succeeded: "N successful sessions recorded. No failure data to diagnose."
+- If some failures but not enough: "N failures recorded but not enough to cluster into patterns."
+
+This was likely added on Day 104 as the assessment mentioned. So the seed task's premise is partially outdated — the function already does what it claims to need.
+
+But let me look more carefully: the seed task says to make it report "nearby startup errors, incomplete runs, or missing diagnostic evidence." The current implementation already reports the state summary and has three branches for cold-start guidance. What could be improved?
+
+One thing: looking at the error message, when `id` is `"last-failure"` and no failure exists, the current message is generic and doesn't suggest alternative diagnostic commands. It could suggest running `yyds state crashes` or `yyds state why last-crash` as alternative paths.
+
+Also, the seed task says "Output distinguishes no history from missing diagnostics and from active/incomplete runs." The current code already handles "no history" (no sessions completed) vs "no failures" (sessions completed but all green). But it doesn't distinguish "active/incomplete runs."
+
+Let me refine the seed task to be more concrete: add a suggestion for alternative diagnostic commands when no failure is found, and add a branch for "active/incomplete run in progress."
+
+Now for task_02: search tool `--json` flag sanitization. Let me look at how the search tool constructs its grep command.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_search_command' (*.rs)  ▶ search 'grep.*pattern' in src/commands_search.rs (*.rs) ✓ (11ms)
+ ✓ (37ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly for how the search command constructs grep calls.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'rg.*-e.*pattern|grep.*-e' in src (*.rs) ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the search tool to understand how it works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn.*search.*tool|fn.*handle_search' in src/commands_search.rs (*.rs) ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the search command in a different way.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn ' in src/commands_search.rs (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the function list.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^fn \|^pub fn ' src/commands_search.rs | head -40 ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `parse_grep_args` and `run_grep` to understand how the search tool constructs its grep command.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:721..831 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The `parse_grep_args` function tokenizes the input and matches known flags. Unknown tokens get pushed into `remaining_parts`. The first remaining part becomes the pattern, and the rest becomes the path.
+
+So if the model passes `--json`, it would end up in `remaining_parts` and become part of the path. Then `run_grep` would construct a grep command like `grep -rn ... --json` which grep would interpret as its own flag.
+
+The fix should be to intercept known grep-incompatible flags (like `--json`, `--jsonl`, or any flag that grep doesn't support but the model might emit) and either produce a clear error message or strip them before passing to grep.
+
+Now I have enough understanding to write the task files. Let me proceed.
+
+Here's my plan:
+
+**task_01.md** (refine the seed): Focus on adding alternative diagnostic command suggestions to the "no failure found" path in `build_why_report`. Specifically:
+- When `id` is "last-failure" and no failure is found, suggest `yyds state crashes --limit 10` and `yyds state why last-crash` as alternative paths.
+- Add a branch for distinguishing active/incomplete runs (check if there are events from the current run without a RunCompleted event).
+
+**task_02.md** (new): Search tool flag sanitization — add a validation layer in `parse_grep_args` that rejects grep-incompatible flags like `--json`, `--jsonl`, `--format`, `--color`, `--no-color`, `--null`, `-Z`, `-z`, `--only-matching`, `-o`, etc. These are common flags the model might emit that grep would misinterpret.
+
+**task_03.md** (new): I need a third task. Let me think...
+
+Actually, looking at the policy again: "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists." I have task_01 (harness-seed, diagnostics) and task_02 (state-evidence: search `--json` error). That's 2 slots from state evidence. Task_03 could be another, but the remaining gaps are either low-priority or too broad.
+
+The "missing path parameter" issue has 3 occurrences but the assessment says it's a model-side issue, not a code defect. Adding validation to catch it would require understanding how the tool execution pipeline passes parameters, which could span multiple files.
+
+Actually, let me re-read: "Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality."
+
+A third task could be: improve the search tool's error recovery hint (from Day 105) to also cover the `--json` case. But that's basically task_02.
+
+Let me just do 2 tasks. The policy says "at least 2 slots SHOULD" — 2 is sufficient. I don't need to force a third task.
+
+Wait, but the policy also says: "You have 3 task slots per session. Task allocation: State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+I think 2 tasks is fine. Let me write them both and the issue_responses.md.
+
+Let me refine task_01 to be more concrete based on what I found in the code:
+
+Current state of `build_why_report`:
+- Already handles: no state events file, no completed sessions, all-success sessions, few-failure sessions
+- Already shows `--limit` guidance when limit clipped results
+- Missing: doesn't suggest alternative diagnostic commands when "last-failure" isn't found
+- Missing: doesn't distinguish "run in progress" from "no runs"
+
+The improvement: When `id` is "last-failure" and no matching event is found, append a suggestion to try `yyds state crashes --limit 10` or `yyds state why last-crash`. Also, detect if there's an active (incomplete) run and mention it.
+
+Now let me write the files.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough understanding. Let me write the refined task files and issue_responses.md. The seed task_01 is valid but too vague — I'll refine it based on the actual code. I'll add task_02 for the search tool sanitization (evidence-backed from state failures). And I'll write issue_responses.md since there are no open issues.
+  - Title: Improve cold-start state failure diagnostics
+  - Files: src/commands_state.rs, src/state.rs
+  + Title: Improve cold-start `state why last-failure` with alternative diagnostic paths
+  + Files: src/commands_state.rs
+    Issue: none
+  - Origin: harness-seed
+  + Origin: planner (refined from harness-seed)
+    
+    Objective:
+  - Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence.
+  + Make `yyds state why last-failure` suggest concrete alternative diagnostic
+  + commands when no failure event exists, instead of leaving the user at a dead
+  + end. The existing `build_why_report` already distinguishes "no sessions
+  + completed" from "all green" from "few failures" — this task adds alternative
+  + next-step suggestions and a branch for active/incomplete runs.
+    
+    Why this matters:
+  - The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions. That leaves yyds unable to explain the earliest failures that block evolution.
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (63 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (63 lines) ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task_02 for search tool flag sanitization.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Sanitize search tool input against grep-incompatible flags
+  + Files: src/commands_search.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Prevent the search tool from passing grep-incompatible flags (like `--json`)
+  + through to grep, which causes `grep: unrecognized option '--json'` errors.
+  + Intercept these flags in `parse_grep_args` and either reject them with a clear
+  + error message or strip them with a warning.
+  + 
+  + Why this matters:
+  + State evidence shows `grep: unrecognized option '--json'` failures. When the
+  + model generates a search call with `--json` (or similar flags like `--format`,
+  + `--null`, `-Z`), the flag passes through `parse_grep_args` as an unknown token
+  + into `remaining_parts`, then gets appended to the grep command as a flag that
+  + grep doesn't understand. This wastes tokens on retry turns and produces
+  + confusing error output.
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (70 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (70 lines) ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the issue_responses.md. There are no open issues, so this will be brief.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 107
+  + 
+  + No open trusted-owner issues on yologdev/yyds-harness. No responses needed this session.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (3 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (3 lines) ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the task files are all correct and complete. Let me also do a quick check on the GrepArgs struct to make sure my task_02 suggestion is feasible.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the `GrepArgs` struct to ensure the task_02 plan is feasible:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct GrepArgs' in src/commands_search.rs (*.rs) ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the GrepArgs struct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:679..704 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Adding a `rejected_flags` field to `GrepArgs` is straightforward — the struct is small and only used within this file. The plan is feasible.
+
+Let me verify all three task files are in place:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/ && echo "---" && wc -l session_plan/task_*.md session_plan/… ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The planning phase is complete. Let me verify the output by showing what was produced and confirming the task file structure.
+
+Let me also check: the task files don't show up in the `ls` listing fully - let me look at the ls output again. Actually the output says "2 more similar lines" — that's just the read_file truncation. Let me look at the actual ls output more carefully.
+
+Actually, I see:
+- assessment.md - the pre-existing assessment
+- task_01.md - 63 lines (my refined version)
+- task_02.md - 70 lines (new)
+- issue_responses.md - 3 lines (brief)
+
+The `ls` says total 32, which is 4 files. Good.
+
+Let me summarize what I've done.
+────────────────────────────────────────────────────────────────────────────────
+
+Planning phase complete. Here's a summary:
+
+## Session Plan — Day 107
+
+**2 tasks**, both state-evidence-backed, no open issues to respond to.
+
+### task_01: Improve cold-start `state why last-failure` diagnostics
+• **File**: `src/commands_state.rs` (1 file)
+• **What**: Add alternative diagnostic command suggestions when no failure event exists (suggest `state crashes`, `state why last-crash`), plus a branch for active/incomplete runs
+• **Why**: The existing `build_why_report` already has three cold-start branches but doesn't tell the user what to try next — it leaves them at a dead end
+• **Evidence**: Assessment self-test showed `state why last-failure` returning only "no state event found" with no next-step guidance
+
+### task_02: Sanitize search tool input against grep-incompatible flags
+• **File**: `src/commands_search.rs` (1 file)
+• **What**: Intercept `--json`, `--null`, `-Z`, `-o`, `--only-matching` and other grep-incompatible flags in `parse_grep_args` before they reach grep
+• **Why**: State evidence shows `grep: unrecognized option '--json'` failures — same class of fix as Day 105's regex hint but for a different failure mode
+• **Evidence**: State failure event `event_d90ca617867d4716bdb47c5e4d84f4e1`
+
+### issue_responses.md
+No open issues — nothing to respond to.
+
+Both tasks touch at most 1 file each, are independently verifiable with `cargo test`, and fit within 20-minute implementation windows.
+
+

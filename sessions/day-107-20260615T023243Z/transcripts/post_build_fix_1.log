@@ -1,0 +1,390 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the failing test:
+
+```
+test dispatch_sub::tests::test_resolve_api_key_from_env ... FAILED
+```
+
+The assertion at `src/dispatch_sub.rs:1180` fails:
+```
+assertion `left == right` failed
+  left: None
+ right: Some("sk-test-review")
+```
+
+Let me look at the test and the function it's testing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'test_resolve_api_key_from_env' (*.rs)  ▶ search 'fn resolve_api_key' (*.rs) ✓ (14ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test and the function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:1170..1200  ▶ read src/dispatch_sub.rs:412..472 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The function `resolve_api_key` uses `ANTHROPIC_API_KEY` as a fallback (hardcoded at line 430), but when the provider is "anthropic", the function first checks `provider_api_key_env("anthropic")` at line 421-427. Let me check what `provider_api_key_env("anthropic")` returns.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn provider_api_key_env' (*.rs) ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/providers.rs:30..70 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `provider_api_key_env("anthropic")` returns `Some("ANTHROPIC_API_KEY")`. So when the test calls `resolve_api_key(args, "anthropic")`, the function should:
+
+1. First check `--api-key` flag → not present
+2. Then check `provider_api_key_env("anthropic")` → returns `Some("ANTHROPIC_API_KEY")` → checks env var → `ANTHROPIC_API_KEY` is set to `"sk-test-review"` → returns `Some("sk-test-review")`
+
+Wait, but the test says the function returned `None`. Let me re-read.
+
+The assertion says:
+```
+left: None
+right: Some("sk-test-review")
+```
+
+So `key` is `None` but should be `Some("sk-test-review")`. That means the env var lookup isn't finding it.
+
+But wait, maybe the test is running in an environment where `ANTHROPIC_API_KEY` is already set to something, or maybe there's something conflicting. But the test sets it before calling and removes after... Let me look more carefully.
+
+Actually, let me look at the `resolve_api_key` function again. The flow for `provider = "anthropic"`:
+
+1. Check `--api-key` flag → not present (args are `["yoyo", "review"]`)
+2. `provider_api_key_env("anthropic")` → `Some("ANTHROPIC_API_KEY")` → check `std::env::var("ANTHROPIC_API_KEY")` → this should return `Ok("sk-test-review")` since we just set it
+
+Wait, but the test result shows the function returns `None`. So something must be preventing the env var from being read. 
+
+Hmm, maybe the issue is something else entirely. Let me look at the code flow more carefully. Perhaps `flag_value` or the provider API key env path has some issue. Or maybe I'm not seeing the full picture.
+
+Actually wait - let me re-read the function. At line 421, `provider_api_key_env(provider)` where provider is "anthropic" returns `Some("ANTHROPIC_API_KEY")`. Then `std::env::var("ANTHROPIC_API_KEY")` should return the value we set.
+
+But the test says `key` is `None`. 
+
+Hmm, let me think about what could go wrong. Oh wait - could there be a race condition with environment variable setting in tests? No, the test runs in sequence...
+
+Let me look at whether there's something about the `flag_value` function causing issues, or if perhaps the `resolve_api_key` function was recently changed.
+
+Let me look at the actual test output more carefully. The assertion at line 1180 failed. Let me look at the function between lines 412 and 450 again.
+
+Actually wait - I'm being silly. Let me just run the specific failing test to see what's happening:
+
+But first, let me look at the `flag_value` function to make sure it's not interfering.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn flag_value' in src/dispatch_sub.rs (*.rs) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the flag_value function and also the load_config_file function. Actually, maybe the issue is that `load_config_file` returns a config that has `api_key` set to empty string... but that would only matter if the env var check failed.
+
+Wait, let me re-read the test. The test sets `ANTHROPIC_API_KEY` to `"sk-test-review"`. Then calls `resolve_api_key(&args, "anthropic")`. 
+
+The function:
+1. No `--api-key` flag → skip
+2. `provider_api_key_env("anthropic")` → `Some("ANTHROPIC_API_KEY")` → check env → should get `"sk-test-review"` → return it
+
+But the test says the result is `None`. So the env var check is failing, OR `provider_api_key_env("anthropic")` is returning something unexpected...
+
+Wait - actually, could it be that `provider_api_key_env` is not matching "anthropic"? Let me check if there could be a case issue. The test passes `"anthropic"` as the provider. And the match arm in `provider_api_key_env` looks for `"anthropic"`.
+
+Actually, let me look very carefully. Maybe the test expectation is wrong, or maybe the function was recently modified. Let me look at the git log for dispatch_sub.rs.
+
+Actually wait, let me check: maybe the issue is that `ANTHROPIC_API_KEY` is already set to an empty string in the CI environment, and setting it via `set_var` works, but the actual env var conflict...
+
+No, that doesn't make sense. `set_var` overwrites.
+
+Let me look at the function more carefully. Actually, let me check line 414 more carefully:
+
+```rust
+if let Some(key) = flag_value(args, &["--api-key"]) {
+```
+
+And let me check `flag_value`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:346..396 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the `flag_value` function looks fine. It searches for the flag in args and returns the next value.
+
+Let me look more carefully at the `resolve_api_key` function. There's nothing obviously wrong with it. Let me try running the specific test to see the actual behavior:
+
+Actually wait - let me check the git log to see if this test was recently added or if there were recent changes to `resolve_api_key` or `provider_api_key_env`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -10 -- src/d… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only one commit. Let me look at the recent changes to understand what might have changed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- src/dispatc… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No diff shown. Let me check the diff differently. Maybe the issue is that the test was there before and just started failing because of some other change.
+
+Let me run the specific test to get more details.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test dispatch_sub::tests… ✓ (172ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! The test passes when run in isolation. That means there's a test ordering issue — some other test modifies the environment and causes this test to fail.
+
+Let me look at what test comes right before this one, or which test might be polluting the environment. The test sets `ANTHROPIC_API_KEY` and later removes it. But if the test before it sets some environment state that interferes...
+
+Wait, the test passed when run alone. So it's a test pollution issue. But the output shows it failed with the first run (all tests), and it's at line 1180. The issue is that `resolve_api_key(&args, "anthropic")` returns `None` instead of `Some("sk-test-review")`.
+
+This could happen if `ANTHROPIC_API_KEY` is already set BEFORE the test runs, and then the test sets it to `"sk-test-review"`, but then something... no, setting it should override.
+
+Actually wait — the more likely issue is that some other test sets `ANTHROPIC_API_KEY` to an empty string, and then this test sets it to `"sk-test-review"`. But that should still work fine.
+
+Actually, let me look at this differently. Maybe `load_config_file()` in a previous test leaves behind a config file that has `api_key` set to something. But no, `load_config_file()` reads from config, it doesn't affect env vars.
+
+Hmm, but wait. Let me look at the `load_config_file` call. If there's a config file that exists with an empty `api_key` field and the env var check somehow fails...
+
+Actually, let me look more carefully at the test. The test passes when run in isolation but fails when run with others. This is classic test pollution.
+
+But actually wait - the test `test_resolve_api_key_flag_overrides_env` runs right after and ALSO sets `ANTHROPIC_API_KEY`. And that test passes? Let me check...
+
+Looking at the output:
+```
+test dispatch_sub::tests::test_resolve_api_key_from_env ... FAILED
+...
+test dispatch_sub::tests::test_resolve_api_key_flag_overrides_env ... ok
+```
+
+Both set `ANTHROPIC_API_KEY`. The first one fails, the second passes. The difference is that the second test passes `--api-key` flag, so it gets the key from there instead of the env var.
+
+Wait — could the issue be that the _previous_ test sets some state that causes `provider_api_key_env` to behave differently? No, that's a pure function.
+
+Actually, let me look at this more carefully. Maybe the issue is `load_config_file`. If some previous test writes a config file somewhere that gets picked up, and that config has `api_key = ""` (empty), and for some reason the env var check is being bypassed...
+
+No, the env var check comes before the config file check. So the env var should be found first.
+
+Wait, could there be an issue with `provider_api_key_env("anthropic")`? Let me check if "anthropic" case matching could be an issue. No, the match arm is `"anthropic" => Some("ANTHROPIC_API_KEY")`.
+
+OK, let me think about this differently. The test passes when run alone, which means the function logic is correct. But it fails when run with other tests. This is a test ordering issue.
+
+One possibility: another test calls `load_config_file()` which creates or modifies some config file that causes `load_config_file()` to fail or behave differently when this test runs. But that shouldn't affect env var lookup...
+
+Actually, wait. Let me re-read the code. The function is:
+
+```rust
+fn resolve_api_key(args: &[String], provider: &str) -> Option<String> {
+    if let Some(key) = flag_value(args, &["--api-key"]) {
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+    if let Some(env_var) = crate::providers::provider_api_key_env(provider) {
+        if let Ok(key) = std::env::var(env_var) {
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+    }
+    // Fallback env vars
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+    ...
+}
+```
+
+When `provider = "anthropic"`, `provider_api_key_env` returns `Some("ANTHROPIC_API_KEY")`. Then `std::env::var("ANTHROPIC_API_KEY")` is called. If the env var is set to `"sk-test-review"`, it should return `Ok("sk-test-review")` and the function returns `Some("sk-test-review")`.
+
+So the test should pass. The fact that it passes in isolation confirms this. But failing with other tests suggests some test pollution.
+
+Hmm, is it possible that `std::env::var` is racing with another test's `set_var` call? In Rust, tests run on multiple threads by default. But environment variables are process-wide...
+
+Wait! Let me look at the test output again:
+```
+running 4220 tests
+...
+test dispatch_sub::tests::test_resolve_api_key_from_env ... FAILED
+```
+
+These are running in parallel. The test `test_resolve_api_key_from_env` sets `ANTHROPIC_API_KEY` to `"sk-test-review"`, calls `resolve_api_key`, then removes it. 
+
+But `test_resolve_api_key_flag_overrides_env` also sets `ANTHROPIC_API_KEY` to `"sk-from-env"`. If these run concurrently, there could be a race condition where:
+1. Test A sets `ANTHROPIC_API_KEY` to `"sk-test-review"`  
+2. Test B sets `ANTHROPIC_API_KEY` to `"sk-from-env"`
+3. Test A calls `resolve_api_key` which sees `"sk-from-env"`? No, that should still match.
+
+Or:
+1. Test B sets `ANTHROPIC_API_KEY` to `"sk-from-env"`
+2. Test A removes `ANTHROPIC_API_KEY`  
+3. Test B calls `resolve_api_key` and can't find the env var
+
+But the test that fails is `test_resolve_api_key_from_env`, which accesses before removing. So even if another test removes it after, the access should see it.
+
+Unless... another test removes it before test A accesses it. For example, if `test_resolve_api_key_flag_overrides_env` runs first:
+1. Test B sets `ANTHROPIC_API_KEY` to `"sk-from-env"`
+2. Test B runs and removes `ANTHROPIC_API_KEY`
+3. Test A sets `ANTHROPIC_API_KEY` to `"sk-test-review"`
+4. Test A calls `resolve_api_key` → should see it
+
+That should still work.
+
+Unless... between steps 3 and 4, another test interferes. But since they're on different threads, it could be:
+1. Thread A: set ANTHROPIC_API_KEY="sk-test-review"
+2. Thread B: remove ANTHROPIC_API_KEY (from some other test's cleanup)
+3. Thread A: read ANTHROPIC_API_KEY → None
+
+That's a legitimate race condition! Tests running in parallel with env vars.
+
+But actually, a more specific theory: there's another test that sets `ANTHROPIC_API_KEY` to an empty string and removes it between test A's set and read.
+
+Actually, the simplest explanation: `test_resolve_api_key_flag_overrides_env` sets `ANTHROPIC_API_KEY` to `"sk-from-env"` and then removes it. If these tests run on different threads:
+
+Thread 1 (test_resolve_api_key_flag_overrides_env):
+- set `ANTHROPIC_API_KEY` = `"sk-from-env"`
+- call `resolve_api_key` → gets it from flag, passes
+- remove `ANTHROPIC_API_KEY`
+
+Thread 2 (test_resolve_api_key_from_env):
+- set `ANTHROPIC_API_KEY` = `"sk-test-review"`
+- call `resolve_api_key` → needs env var
+
+If Thread 1's remove happens between Thread 2's set and read, we get None.
+
+This is a race condition in the test! The fix would be to either:
+1. Not use env vars in tests (use dependency injection)
+2. Use a mutex or other synchronization
+3. Make the env var name unique per test
+
+But wait, can I reproduce this? Let me run both tests together repeatedly.
+
+Actually, the simplest fix would be to ensure these tests use `#[serial]` or to make them not rely on shared env vars. But looking at the test infrastructure here, let me see if there's a `serial_test` dependency or similar.
+
+Actually, let me re-examine the problem. Looking at the test again:
+
+```rust
+fn test_resolve_api_key_from_env() {
+    std::env::set_var("ANTHROPIC_API_KEY", "sk-test-review");
+    let args: Vec<String> = vec!["yoyo".into(), "review".into()];
+    let key = resolve_api_key(&args, "anthropic");
+    assert_eq!(key, Some("sk-test-review".to_string()));
+    std::env::remove_var("ANTHROPIC_API_KEY");
+}
+```
+
+The test sets the env var and then expects the function to find it. When running in parallel with `test_resolve_api_key_flag_overrides_env` (which also sets and removes `ANTHROPIC_API_KEY`), there's a race condition.
+
+The fix: I should make the test use a unique env var name, or use a different approach. But wait - the function hardcodes `ANTHROPIC_API_KEY` as a fallback. So we can't easily change the test env var name.
+
+Alternatively, we could:
+1. Lock the env var access with a mutex
+2. Use a `#[serial]` attribute
+3. Run tests with `--test-threads=1`
+
+Looking at the harness output, the test command is: `cargo test --bin yyds -- --test-threads=1`
+
+So tests for the binary run with `--test-threads=1`, but the lib tests don't. The failing test is in the lib tests.
+
+The easiest fix is to make the test robust against parallel execution. One approach: use a unique env var name. But the function hardcodes `ANTHROPIC_API_KEY`.
+
+Actually, wait. Let me re-read the function more carefully:
+
+```rust
+fn resolve_api_key(args: &[String], provider: &str) -> Option<String> {
+    // --api-key flag
+    if let Some(key) = flag_value(args, &["--api-key"]) {
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+
+    // Provider-specific env var
+    if let Some(env_var) = crate::providers::provider_api_key_env(provider) {
+        if let Ok(key) = std::env::var(env_var) {
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+    }
+
+    // Fallback env vars
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+```
+
+For `provider = "anthropic"`, `provider_api_key_env` returns `Some("ANTHROPIC_API_KEY")`. So the "Provider-specific env var" path already checks `ANTHROPIC_API_KEY` before the fallback. Both paths check the same env var.
+
+So the test sets `ANTHROPIC_API_KEY`, and the function should find it via the provider-specific path (line 421-427).
+
+Now, the race condition: if another test running in parallel clears `ANTHROPIC_API_KEY` between this test's `set_var` and `resolve_api_key` calls, we get `None`.
+
+The cleanest fix: use a serial test, or change the test to not depend on env vars. Since we can't change the function's behavior, let me see if there's a serial test mechanism.
+
+Actually, looking at the `--test-threads=1` hint in the harness output, maybe the fix is simply to make the test use a serial execution mechanism. But the simplest approach would be to restructure the test to not be affected by parallel env var manipulation.
+
+Wait, actually, there's an even simpler observation: when run with `--test-threads=1` (as the harness contract requires), the test should pass. The issue is that the lib tests don't use `--test-threads=1`. Let me check the harness contract:
+
+```
+required_gates:
+- cargo fmt --check
+- cargo check
+- cargo test --bin yyds -- --test-threads=1
+- cargo test --test integration -- --test-threads=1
+```
+
+So the harness gates test `--bin yyds` with `--test-threads=1` but NOT the lib tests! The lib tests (`cargo test`) run in parallel.
+
+The fix could be either:
+1. Add `--test-threads=1` to the lib test gate
+2. Fix the test to be thread-safe
+
+Actually, looking at the user's command output, they ran `cargo test` (which runs all tests including lib tests in parallel), and the test failed. But the harness gates only test the binary and integration tests with `--test-threads=1`.
+
+The real question is: should I fix the test or change the harness gates? The user said "fix them NOW" referring to the errors. The test failure is a real issue - it's a race condition.
+
+The best fix: make the test use a unique env var key per test. But the function hardcodes the env var name. So we'd need to refactor `resolve_api_key` to accept the env var as a parameter, or we need a different approach.
+
+Actually, the simplest and most correct fix is to use a serial test. Let me check if `serial_test` crate is available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -r "serial_test\|serial_"… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`serial_test` is available. But adding `#[serial]` to the test would require importing it. Let me check if it's already imported in `dispatch_sub.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "serial" src/dispatch_… ✓ (9ms)
+
+

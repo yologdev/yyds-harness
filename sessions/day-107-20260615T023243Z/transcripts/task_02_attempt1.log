@@ -1,0 +1,416 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and reading the evolve skill first, then examining the relevant code file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_search.rs:700..780 ✓ (18ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the rest of `parse_grep_args` and also look at the `GrepArgs` struct and `run_grep` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:779..879  ▶ search 'struct GrepArgs' in src/commands_search.rs ✓ (11ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the GrepArgs struct definition.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:675..705 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure:
+
+1. `GrepArgs` struct (line 679) with fields: pattern, path, case_sensitive, context_lines, include, exclude, count_only
+2. `parse_grep_args` (line 721) parses flags and returns `Option<GrepArgs>`
+3. `run_grep` (line 830) runs grep and returns `Result<Vec<GrepMatch>, String>`
+
+The task says to use option (b): add a `rejected_flags: Vec<String>` field to GrepArgs, populate it in parse_grep_args, and check it in run_grep to return an early error. This avoids changing the function signature.
+
+But wait, I need to also understand how these functions are called. Let me check the callers.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also check how `parse_grep_args` and `run_grep` are called, and look at any existing tests:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'parse_grep_args' in src/commands_search.rs  ▶ search 'fn test_' in src/commands_search.rs ✓ (13ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the test module and also how parse_grep_args is called in non-test code.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'parse_grep_args(' in src/commands_search.rs  ▶ read src/commands_search.rs:960..1020 ✓ (6ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find where `parse_grep_args` is called in non-test code to understand the caller pattern:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ grep ✗ (11ms)
+    │ Tool grep not found
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me use bash grep or search tool.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'parse_grep_args(' in src/commands_search.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the non-test caller of parse_grep_args to understand how it chains to run_grep.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:570..620 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `handle_grep` or `handle_search` to find where parse_grep_args and run_grep are connected.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_grep' in src/commands_search.rs  ▶ search 'fn handle_search' in src/commands_search.rs ✓ (12ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:1361..1441 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture:
+
+1. `parse_grep_args` returns `Option<GrepArgs>` - not a Result
+2. `GrepArgs` has fields: pattern, path, case_sensitive, context_lines, include, exclude, count_only
+3. `run_grep` returns `Result<Vec<GrepMatch>, String>`
+4. `handle_grep` calls `parse_grep_args`, then `run_grep`/`run_grep_with_context`/`run_grep_count`
+
+The task suggests option (b): add `rejected_flags: Vec<String>` to GrepArgs, populate in parse_grep_args, check in run_grep (and also run_grep_with_context and run_grep_count).
+
+Let me plan the implementation:
+
+1. Add `rejected_flags: Vec<String>` field to `GrepArgs` 
+2. In `parse_grep_args`, add cases in the match block for known grep-incompatible flags:
+   - `--json` → push to rejected_flags
+   - `--jsonl` → push to rejected_flags
+   - `--null` / `-Z` → push to rejected_flags
+   - `--only-matching` / `-o` → push to rejected_flags
+   - For format-changing flags that could confuse parsing
+   - `--color` / `--no-color` → silently ignore
+   - `--max-count` / `-m` → consume next token (the number), push warning
+3. In `run_grep`, check if rejected_flags is non-empty and return early error
+4. Also check in `run_grep_with_context` and `run_grep_count`
+5. Add tests
+
+Wait, let me think about the design more carefully. The task says:
+- For flags that change grep output format in ways that break our parser (`--json`, `--jsonl`, `--null`/`-Z`, `--only-matching`/`-o`): return an error
+- For benign flags (`--color`, `--no-color`): silently ignore
+- `--max-count` / `-m`: changes behavior
+
+For `--max-count -m N`, we'd need to skip the next token too. For `--format VALUE` we'd also need to skip the next token.
+
+Let me implement this. I'll add:
+1. `rejected_flags: Vec<String>` to GrepArgs
+2. In parse_grep_args, handle the problematic flags
+3. In the run functions, check and return error early
+
+Let me also look at how `run_grep_with_context` and `run_grep_count` are structured:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn run_grep_with_context' in src/commands_search.rs  ▶ search 'fn run_grep_count' in src/commands_search.rs ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at run_grep_with_context and run_grep_count briefly to understand their structure, particularly to see where to put the early rejection check.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:925..960  ▶ read src/commands_search.rs:1036..1071  ▶ read src/commands_search.rs:830..850 ✓ (32ms)
+ ✓ (26ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a full understanding. Let me also check if `GrepArgs` is constructed anywhere else (besides the test module) to make sure I update all constructors:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'GrepArgs' in src ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at line 2316 where GrepArgs is manually constructed in tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:2310..2350 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have everything I need. Let me also check how the search tool invokes grep to see if there's a `search` tool function that calls `parse_grep_args`. The task is about the "search tool," which likely means the `search` tool in the agent that maps to the `/grep` command. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_search_tool\|search.*parse_grep\|grep.*tool' in src ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how the `search` tool in the agent flows into commands_search.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn handle_' in src/commands_search.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what other handle_ functions are there:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search '^pub fn handle_' in src/commands_search.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at how the `search` tool in the main agent is wired to `/grep`. The task is about the "search tool" — this is likely the `search` tool that agents use. Let me check the tool definition:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'SearchTool\|search_tool\|tool.*search' in src ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `search` tool is provided by yoagent. The `/grep` command in yyds uses the same parsing. The key insight is that the problem is about the `parse_grep_args` function in `commands_search.rs` that parses grep arguments and passes unknown flags through as `remaining_parts`, which then get appended to the grep command.
+
+Now I'm confident about the approach. Let me implement it.
+
+Plan:
+1. Add `rejected_flags: Vec<String>` to `GrepArgs` struct
+2. In `parse_grep_args`, add match arms for problematic flags
+3. Add a helper function to check rejected flags in all three run functions (run_grep, run_grep_with_context, run_grep_count)
+4. Update the test construction at line 2316
+5. Add new tests
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the changes.
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start implementing. First, add `rejected_flags` to `GrepArgs`:
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 1.7s (6 ✓)
+
+**Step 1: Add `rejected_flags` field to `GrepArgs`**
+        /// When true, show match counts per file instead of individual lines.
+        pub count_only: bool,
+  +     /// Flags that were rejected because grep doesn't support them or they'd
+  +     /// break output parsing (e.g. `--json`, `--null`, `--only-matching`).
+  +     /// If non-empty, run_grep / run_grep_with_context / run_grep_count
+  +     /// return an error before spawning the grep process.
+  +     pub rejected_flags: Vec<String>,
+    }
+  ✓ Auto-approved: edit: src/commands_search.rs (3 → 8 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (10ms)
+  ▶ edit src/commands_search.rs (3 → 8 lines)
+        /// When true, show match counts per file instead of individual lines.
+        pub count_only: bool,
+  +     /// Flags that were rejected because grep doesn't support them or they'd
+  +     /// break output parsing (e.g. `--json`, `--null`, `--only-matching`).
+  +     /// If non-empty, run_grep / run_grep_with_context / run_grep_count
+  +     /// return an error before spawning the grep process.
+  +     pub rejected_flags: Vec<String>,
+    }
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me update the constructor in parse_grep_args to include `rejected_flags`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+Now add `rejected_flags` to the constructor in `parse_grep_args`. Let me first re-read that section to get exact context:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:807..822 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, I need to add a `rejected_flags` vector in the function and collect flags there, then pass it to GrepArgs. Let me also add the match arms for the problematic flags.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            include,
+            exclude,
+            count_only,
+  +         rejected_flags,
+        })
+    }
+  ✓ Auto-approved: edit: src/commands_search.rs (10 → 11 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_search.rs (10 → 11 lines)
+            include,
+            exclude,
+            count_only,
+  +         rejected_flags,
+        })
+    }
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add the `rejected_flags` vector variable and the match arms for problematic flags. Let me re-read the current match block:
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the `rejected_flags` vector and the flag-detection match arms:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:730..785 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read a few more lines to see the end of the match block:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:784..794 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to:
+1. Add `rejected_flags` vector variable
+2. Add match arms for problematic flags BEFORE the `_` catch-all
+
+Flags to handle:
+- `--json` — break output parsing → reject with error
+- `--jsonl` — same → reject with error  
+- `--null` / `-Z` — break output parsing → reject with error
+- `--only-matching` / `-o` — change output format → reject with error
+- `--color` / `--no-color` — benign → silently ignore
+- `--max-count` / `-m` — changes behavior, consume next arg → reject with error
+- `--format` — has value arg → reject with error
+
+Let me implement:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll add the `rejected_flags` variable and the match arms:
+        let mut include: Option<String> = None;
+        let mut exclude: Option<String> = None;
+        let mut remaining_parts: Vec<String> = Vec::new();
+  +     let mut rejected_flags: Vec<String> = Vec::new();
+  ✓ Auto-approved: edit: src/commands_search.rs (7 → 8 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_search.rs (7 → 8 lines)
+        let mut include: Option<String> = None;
+        let mut exclude: Option<String> = None;
+        let mut remaining_parts: Vec<String> = Vec::new();
+  +     let mut rejected_flags: Vec<String> = Vec::new();
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now add the match arms before the `_` catch-all:
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the flag-detection match arms before the catch-all:
+                "-c" | "--count" => {
+                    count_only = true;
+  +             }
+  +             // Grep-incompatible flags: reject with clear error
+  +             "--json" | "--jsonl" => {
+  +                 rejected_flags.push(format!(
+  +                     "{} — grep does not support JSON output; this tool parses grep's default line format",
+  +                     token
+  +                 ));
+  +             }
+  +             "-Z" | "--null" => {
+  +                 rejected_flags.push(format!(
+  +                     "{} — null-separated output is not supported; use --include/--exclude for pattern matching",
+  +                     token
+  +                 ));
+  +             }
+  +             "-o" | "--only-matching" => {
+  +                 rejected_flags.push(format!(
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_search.rs (4 → 43 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_search.rs (4 → 43 lines)
+                "-c" | "--count" => {
+                    count_only = true;
+  +             }
+  +             // Grep-incompatible flags: reject with clear error
+  +             "--json" | "--jsonl" => {
+  +                 rejected_flags.push(format!(
+  +                     "{} — grep does not support JSON output; this tool parses grep's default line format",
+  +                     token
+  +                 ));
+  +             }
+  +             "-Z" | "--null" => {
+  +                 rejected_flags.push(format!(
+  +                     "{} — null-separated output is not supported; use --include/--exclude for pattern matching",
+  +                     token
+  +                 ));
+  +             }
+  +             "-o" | "--only-matching" => {
+  +                 rejected_flags.push(format!(
+  +                     "{} — only-matching mode changes grep output format; use without this flag for full-line matches",
+  +                     token
+  ... (23 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to add the early rejection check in the three run functions. Let me add a helper function and use it in all three.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add a helper function to check rejected flags, and add the check at the top of run_grep, run_grep_with_context, and run_grep_count.
+
+Let me add a helper function right before `run_grep`:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.4s (3 ✓)
+
+Now add the helper function and early checks. Let me add `check_rejected_flags` right before `run_grep`:
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:826..834 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to find the location right before `run_grep`. The struct definition is around line 680, parse_grep_args around line 725, then run_grep around line ~885 now. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn run_grep\(args: &GrepArgs\)' in src/commands_search.rs ✓ (5ms)
+
+

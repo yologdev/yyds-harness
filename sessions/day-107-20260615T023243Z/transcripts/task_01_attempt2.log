@@ -1,0 +1,553 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill, then examine the current state of `build_why_report` in `commands_state.rs` to understand what needs to change.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ search 'fn build_why_report' (*.rs) ✓ (25ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `build_why_report` function and surrounding context.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2571..2691 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the `build_why_report` function clearly. The task is about improving the error case when `find_target_event` returns `None`. Currently there are three branches:
+1. No sessions (events empty or RunCompleted == 0)
+2. All green (failure_count == 0) 
+3. Few failures (else)
+
+The task asks me to:
+1. In "no sessions" branch: suggest `yyds state tail --limit 5`
+2. In "all green" branch: suggest `yyds state crashes --limit 10` and `yyds state why last-crash`
+3. Add a new branch: check for active/incomplete run (RunStarted without RunCompleted)
+4. When `id` is "last-failure", tailor suggestions; when custom ID, keep generic
+
+Let me also look at what helpers are available - `find_target_event`, `event_string`, `is_failure_event_type`, `build_state_summary`.
+
+Let me also check the test file to see existing tests, and look at the pre-existing aborted diff to understand what was being worked on.
+
+The previous agent's test is pretty good. Let me look at the existing tests to find an appropriate place to add it.
+
+Let me first look for the test module:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me find the existing test location and understand the helper functions available:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn why_report' (*.rs)  ▶ search 'fn find_target_event' (*.rs)  ▶ search 'is_failure_event_type' (*.rs) ✓ (40ms)
+ ✓ (34ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `find_target_event` and `is_failure_event_type`, and also look at the event helper and how `build_state_summary` works.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13525..13575  ▶ search 'fn build_state_summary' (*.rs)  ▶ search 'fn event_string' (*.rs) ✓ (36ms)
+ ✓ (34ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to understand the full picture. Let me also check the existing tests for `why_report` to know where to place the new test, and look at the test helper `event` function:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:15020..15080  ▶ search 'fn event("' in src/commands_state.rs (*.rs) ✓ (21ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the test helper `event` function differently:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event(' in src/commands_state.rs (*.rs) ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, it's in the `#[cfg(test)]` module. Now let me look at where the last `why_report` test is to know where to add mine:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:16769..16829  ▶ read src/commands_state.rs:16800..16830 ✓ (32ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the end of the test module to see if there's a good place to insert the new test:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:16830..16910 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The test at line 16838 (`last_failure_includes_json_output_failures`) is the last `why_report` test before the lineage tests. I'll insert my new test right before the lineage test at line 16839.
+
+Now I have a clear picture. Let me plan the changes:
+
+### Changes to `build_why_report` (line 2571):
+
+1. **No sessions branch** (line 2592-2596): Add suggestion `yyds state tail --limit 5`
+2. **All green branch** (line 2597-2602): Add suggestions `yyds state crashes --limit 10` and `yyds state why last-crash`
+3. **New branch for active/incomplete run**: Check for `RunStarted` without matching `RunCompleted` - mention session in progress
+4. **When `id` is "last-failure"**: Tailor suggestions. When custom ID, keep generic.
+
+### New test:
+Insert test around line 16838 (before `lineage_report_links_patch_events_by_patch_id_and_evidence`).
+
+Let me now implement this. First, let me write the test, then modify the function.
+
+Let me look more carefully at the current code to understand all the branches:
+
+Lines 2592-2609:
+```rust
+if events.is_empty() || run_completed_count == 0 {
+    err.push_str("State recording is active but no sessions have completed yet.\n");
+    err.push_str(
+        "Diagnostics become available after 2\u{2013}3 completed evolution sessions.",
+    );
+} else if failure_count == 0 {
+    err.push_str(&format!(
+        "{} successful session{} recorded. No failure data to diagnose.",
+        run_completed_count,
+        if run_completed_count == 1 { "" } else { "s" }
+    ));
+} else {
+    err.push_str(&format!(
+        "{} failure{} recorded but not enough to cluster into patterns.\nCheck back after 2\u{2013}3 more sessions.",
+        failure_count,
+        if failure_count == 1 { "" } else { "s" }
+    ));
+}
+```
+
+Now let me implement:
+
+1. For "no sessions": Add `state tail --limit 5` suggestion
+2. For "all green": Add `state crashes --limit 10` and `state why last-crash` suggestions
+3. New branch: Check if there's RunStarted without RunCompleted
+4. For `id == "last-failure"`: Tailor suggestions; for custom ID: keep generic
+
+Let me write the implementation.
+
+For the "active/incomplete run" check, I need to see if there's a `RunStarted` event without a matching `RunCompleted` for the same run_id. I'll do a simple scan: collect run_ids that have RunStarted, then see which don't have RunCompleted.
+
+Actually, looking more carefully, the "no sessions" condition (`events.is_empty() || run_completed_count == 0`) already catches the case where there are zero RunCompleted. So the new "in progress" branch should be checked when `events` is non-empty AND `run_completed_count == 0` BUT there IS a `RunStarted`. Let me think about the ordering...
+
+Current flow:
+- `events.is_empty()` → "no sessions completed"
+- `run_completed_count == 0` → "no sessions completed"
+- `failure_count == 0` → "all green"
+- else → "few failures"
+
+The "in progress" check should go between the "no sessions" and "all green" branches. Specifically:
+- If `run_completed_count == 0` BUT there's a `RunStarted` event → "in progress"
+- If `run_completed_count == 0` AND no `RunStarted` → "no sessions completed" (existing)
+- If `failure_count == 0` → "all green" (existing)
+- else → "few failures" (existing)
+
+Let me now implement this.
+
+For the code, I need to restructure the conditionals:
+
+```rust
+let run_started = events.iter().any(|e| event_string(e, "event_type") == Some("RunStarted"));
+
+if events.is_empty() || (run_completed_count == 0 && !run_started) {
+    // no sessions completed - add tail suggestion
+} else if run_completed_count == 0 && run_started {
+    // active/incomplete run - mention in progress
+} else if failure_count == 0 {
+    // all green - add crashes suggestions
+} else {
+    // few failures
+}
+```
+
+Wait, but let me look more carefully. The original code says "no sessions have completed yet" when `events.is_empty() || run_completed_count == 0`. If events is empty, there can't be a RunStarted either. If run_completed_count == 0 but there IS a RunStarted, that's the "in progress" case. So:
+
+```rust
+if events.is_empty() || run_completed_count == 0 {
+    if !events.is_empty() && run_started {
+        // active/incomplete run
+    } else {
+        // no sessions completed (original message + tail suggestion)
+    }
+} else if failure_count == 0 {
+    // all green (original message + crashes suggestions)
+} else {
+    // few failures (keep as is)
+}
+```
+
+Let me also handle the custom ID vs "last-failure" distinction. Looking at the task spec:
+- When `id` is specifically "last-failure", tailor the suggestions to failure-specific alternatives
+- When `id` is a custom ID, keep the generic guidance
+
+I need to add `if id == "last-failure"` conditions inside the branches.
+
+Now let me write the actual code. I also need to check how `state tail` works in the binary. Let me search for what the CLI subcommand is:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me also verify `state tail` and `state crashes` are valid subcommands:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search '"tail"' in src (*.rs)  ▶ search '"crashes"' in src (*.rs) ✓ (23ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, both `tail` and `crashes` are valid subcommands. Now let me write the code.
+
+Let me also check the "why last-crash" pattern — does `build_why_report` already handle "last-crash"?
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'last-crash' in src (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - "last-crash" doesn't exist as a pattern in `find_target_event`. Let me check what "why" maps to and how it handles "last-crash":
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:45..75 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also look at the "why" subcommand handler to see how it works:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search '"why" =>' in src/commands_state.rs (*.rs) ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:78..108 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `state why last-failure` works; `state why last-crash` would also work as long as `find_target_event` finds something. But `find_target_event` doesn't have a special case for "last-crash" — it falls through to `event_matches_id` which checks if any event has `event_id`, `run_id`, `trace_id` etc. matching "last-crash". That would almost certainly not match anything.
+
+So suggesting `state why last-crash` as an alternative isn't actually valid unless `find_target_event` handles "last-crash" specially. But wait — the task says "state why last-crash works as expected (it already maps to crash events)." Let me check if there's something else...
+
+Actually, looking at the `is_failure_event_type` function, it matches "FailureObserved", "JsonOutputFailure", "ToolSchemaFailure". Crashes would need a different event type. Let me check what event types exist for crashes:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search '"CrashObserved"' (*.rs)  ▶ search 'crash' in src/commands_state_crashes.rs (*.rs) ✓ (12ms)
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the crashes module to understand what event types it looks for:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs (80 lines) ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `crashes` subcommand looks for `RunCompleted` events with status=error, or `SessionStarted` without a matching `RunCompleted`. It's not based on a "CrashObserved" event type — it's about incomplete/error sessions.
+
+Now, the task says `state why last-crash` should work. But looking at `find_target_event`, there's no "last-crash" special case. Unless the task means we should also add support for that. Let me re-read the task:
+
+The task says:
+- `state why last-crash` works as expected (it already maps to crash events).
+
+But looking at the code, it doesn't. `find_target_event` only handles "last-failure" specially.
+
+However, the task says "Success Criteria" includes that "state why last-crash works as expected". But this is a suggestion we're making to the user, not something we're implementing. The point is: if there are no failure events, suggest `state crashes --limit 10` and `state why last-crash` as alternative diagnostic paths. Even if `state why last-crash` doesn't work perfectly today, it's a valid "next step" that might work (it'll try to find an event_id matching "last-crash", which might fail, but the suggestion chain is still useful).
+
+Actually, let me re-read the task more carefully. The task says:
+> `state why last-crash` works as expected (it already maps to crash events).
+
+This implies the task author believes it already works. But it doesn't have special handling in `find_target_event`. The task says "it already maps to crash events" — maybe they're saying it maps through `event_matches_id` to events that happen to have `last-crash` as an id? No, that doesn't make sense.
+
+I think the task author might be mistaken, or they consider that `state why last-crash` would have behavior similar to `state why <anything>` where it says "no state event found" with the generic guidance, which is still a diagnostic path.
+
+Either way, my job is just to add suggestions — adding "last-crash" support to `find_target_event` is NOT in the task scope. Let me just add the suggestions as described.
+
+Actually, wait - re-reading the task: "state why last-crash works as expected (it already maps to crash events)." This is listed under Success Criteria. I think the task author is saying that suggesting `state why last-crash` is a valid alternative because they believe it already works. Whether it actually works today or not, my job is to add the suggestions. If `find_target_event` doesn't handle "last-crash", that's a separate concern - the suggestion is still an actionable next step for the user.
+
+OK, let me just implement the task as described. Now let me also figure out whether the `yyds` binary has `state` subcommand or if it's `yoyo`. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me also check what the binary is called and how `state` suggestions should be phrased:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search '"state tail"' in src (*.rs)  ▶ search '"state crashes"' in src (*.rs) ✓ (24ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what format the suggestions use elsewhere in the codebase. Let me search for "yoyo state" or "yyds state" in existing suggestion messages:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'Try yoyo state' in src/commands_state.rs (*.rs) ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how the `state summary` suggests things or look at the `build_state_summary` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2311..2371 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I have enough context now. Let me write the implementation. 
+
+The plan:
+1. Modify `build_why_report` to add:
+   - "state tail --limit 5" suggestion in the "no sessions" branch
+   - "state crashes --limit 10" and "state why last-crash" in the "all green" branch
+   - New branch for active/incomplete run (RunStarted without RunCompleted)
+   - Tailor suggestions when `id == "last-failure"` vs custom ID
+
+2. Add a test
+
+Let me now implement. First the test, then the code change.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have full context. Let me implement the task: write the test first, then modify `build_why_report`.
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (12ms)
+  ▶ todo ✓ (10ms)
+  ▶ todo ✓ (11ms)
+  ▶ todo ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now write the test. I'll insert it right after `last_failure_includes_json_output_failures` (line 16837) and before `lineage_report_links_patch_events_by_patch_id_and_evidence` (line 16839).
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.6s (4 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me write the test now. I need to insert it after the closing `}` of `last_failure_includes_json_output_failures` at line 16837 and before the `#[test]` of `lineage_report_links_patch_events_by_patch_id_and_evidence` at line 16839.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert!(report.contains("structured-extraction"));
+  +     }
+  + 
+  +     #[test]
+  +     fn why_report_suggests_alternatives_when_no_failure_found() {
+  +         // Empty state: no events
+  +         let events: Vec<Value> = vec![];
+  +         let err = build_why_report(&events, "last-failure").unwrap_err();
+  +         assert!(err.contains("no state event found for 'last-failure'"));
+  +         assert!(
+  +             err.contains("state tail --limit 5"),
+  +             "should suggest state tail when empty, got: {err}"
+  +         );
+  + 
+  +         // All green: successful sessions but no failures
+  +         let events = vec![
+  +             event("evt-start", "RunStarted", "run-1", json!({"task": "x"})),
+  +             event(
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (5 → 66 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (5 → 66 lines)
+            assert!(report.contains("structured-extraction"));
+  +     }
+  + 
+  +     #[test]
+  +     fn why_report_suggests_alternatives_when_no_failure_found() {
+  +         // Empty state: no events
+  +         let events: Vec<Value> = vec![];
+  +         let err = build_why_report(&events, "last-failure").unwrap_err();
+  +         assert!(err.contains("no state event found for 'last-failure'"));
+  +         assert!(
+  +             err.contains("state tail --limit 5"),
+  +             "should suggest state tail when empty, got: {err}"
+  +         );
+  + 
+  +         // All green: successful sessions but no failures
+  +         let events = vec![
+  +             event("evt-start", "RunStarted", "run-1", json!({"task": "x"})),
+  +             event(
+  +                 "evt-done",
+  +                 "RunCompleted",
+  ... (45 more lines)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, test is in place. Now let me modify `build_why_report`. Let me re-read the current code to make a precise edit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (11ms)
+  ▶ todo ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me modify `build_why_report`. Let me re-read the current function to make the edit precise.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2571..2621 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll edit the `build_why_report` function. I need to replace the block from line 2592 to 2609 with the new logic. This is a local edit.
+
+Let me plan the replacement:
+
+```rust
+        let run_started = events.iter().any(|e| {
+            event_string(e, "event_type") == Some("RunStarted")
+        });
+
+        if events.is_empty() || (run_completed_count == 0 && !run_started) {
+            err.push_str("State recording is active but no sessions have completed yet.\n");
+            err.push_str(
+                "Diagnostics become available after 2\u{2013}3 completed evolution sessions.",
+            );
+            if id == "last-failure" {
+                err.push_str("\n\nTry 'yoyo state tail --limit 5' to inspect recent events.");
+            }
+        } else if run_completed_count == 0 && run_started {
+            err.push_str("A session is currently in progress.\n");
+            err.push_str(
+                "Diagnostics and failure data become available after the session completes.",
+            );
+            if id == "last-failure" {
+                err.push_str("\n\nTry 'yoyo state tail --limit 5' to follow live events.");
+            }
+        } else if failure_count == 0 {
+            err.push_str(&format!(
+                "{} successful session{} recorded. No failure data to diagnose.",
+                run_completed_count,
+                if run_completed_count == 1 { "" } else { "s" }
+            ));
+            if id == "last-failure" {
+                err.push_str("\n\nTry 'yoyo state crashes --limit 10' for crashed or incomplete sessions, or 'yoyo state why last-crash' to diagnose the latest crash.");
+            }
+        } else {
+            err.push_str(&format!(
+                "{} failure{} recorded but not enough to cluster into patterns.\nCheck back after 2\u{2013}3 more sessions.",
+                failure_count,
+                if failure_count == 1 { "" } else { "s" }
+            ));
+        }
+```
+
+Wait, but the task says "tailor the suggestions to failure-specific alternatives." In the "all green" branch with a custom ID, we should still suggest alternatives but maybe differently. Let me re-read:
+
+> 4. When `id` is specifically "last-failure" (not a custom event ID), tailor
+   the suggestions to failure-specific alternatives. When `id` is a custom
+   ID, keep the generic guidance.
+
+So for custom IDs, we should keep the generic guidance (don't add specific suggestions). Let me make the suggestions conditional on `id == "last-failure"`.
+
+Actually, looking at this more carefully, I think the approach should be:
+- For "last-failure": add the specific alternative suggestions
+- For custom IDs: keep the existing message without extra suggestions
+
+Let me implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll modify the `build_why_report` function to add the alternative diagnostic paths:
+  -         if events.is_empty() || run_completed_count == 0 {
+  +         let run_started = events.iter().any(|e| {
+  +             event_string(e, "event_type") == Some("RunStarted")
+  +         });
+  + 
+  +         if events.is_empty() || (run_completed_count == 0 && !run_started) {
+                err.push_str("State recording is active but no sessions have completed yet.\n");
+                err.push_str(
+                    "Diagnostics become available after 2\u{2013}3 completed evolution sessions.",
+  +             );
+  +             if id == "last-failure" {
+  +                 err.push_str(
+  +                     "\n\nTry 'yoyo state tail --limit 5' to inspect recent events.",
+  +                 );
+  +             }
+  +         } else if run_completed_count == 0 && run_started {
+  +             err.push_str("A session is currently in progress.\n");
+  +             err.push_str(
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (18 → 42 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (18 → 42 lines)
+  -         if events.is_empty() || run_completed_count == 0 {
+  +         let run_started = events.iter().any(|e| {
+  +             event_string(e, "event_type") == Some("RunStarted")
+  +         });
+  + 
+  +         if events.is_empty() || (run_completed_count == 0 && !run_started) {
+                err.push_str("State recording is active but no sessions have completed yet.\n");
+                err.push_str(
+                    "Diagnostics become available after 2\u{2013}3 completed evolution sessions.",
+  +             );
+  +             if id == "last-failure" {
+  +                 err.push_str(
+  +                     "\n\nTry 'yoyo state tail --limit 5' to inspect recent events.",
+  +                 );
+  +             }
+  +         } else if run_completed_count == 0 && run_started {
+  +             err.push_str("A session is currently in progress.\n");
+  +             err.push_str(
+  +                 "Diagnostics and failure data become available after the session completes.",
+                );
+  ... (19 more lines)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit is done. Now let me run the tests to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (10ms)
+  ▶ todo ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run `cargo test commands_state` first to verify the new tests pass.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state -- -… ✓ (33.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 154 tests passed. Let me verify my specific test ran:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test why_report_suggests… ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Test passes. Now let me run the full gate: cargo fmt, clippy, build, test.
+────────────────────────────────────────────────────────────────────────────────
+
+Test passes. Now let me run the full CI gate:
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+
