@@ -227,7 +227,7 @@ def task_success_pressure_visible(graph_pressure: str) -> bool:
 
 
 def workflow_optional_installs_bounded(repo_root: Path) -> list[str]:
-    """Return optional workflow install commands that can block evolution indefinitely."""
+    """Return optional bootstrap commands that can block evolution indefinitely."""
     offenders: list[str] = []
     for workflow in (
         repo_root / ".github" / "workflows" / "evolve.yml",
@@ -240,6 +240,24 @@ def workflow_optional_installs_bounded(repo_root: Path) -> list[str]:
             stripped = line.strip()
             if stripped.startswith("cargo install ") and "timeout " not in stripped:
                 offenders.append(f"{workflow}:{line_number}: {stripped}")
+    evolve = repo_root / "scripts" / "evolve.sh"
+    if not evolve.exists():
+        offenders.append(f"{evolve}: missing")
+    else:
+        lines = evolve.read_text(encoding="utf-8").splitlines()
+        in_external_skills = False
+        for line_number, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("setup_external_skills()"):
+                in_external_skills = True
+            elif in_external_skills and stripped == "}":
+                in_external_skills = False
+            if stripped.startswith("git pull --rebase --quiet"):
+                offenders.append(f"{evolve}:{line_number}: {stripped}")
+            if in_external_skills and (
+                stripped.startswith("git -C ") or stripped.startswith("git clone ")
+            ):
+                offenders.append(f"{evolve}:{line_number}: {stripped}")
     return offenders
 
 

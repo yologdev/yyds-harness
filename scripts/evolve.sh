@@ -24,6 +24,18 @@ set -euo pipefail
 # Auto-detect REPO, BOT_LOGIN, BIRTH_DATE (fork-friendly)
 source "$(dirname "$0")/common.sh"
 
+run_optional_with_timeout() {
+    local seconds="$1"
+    shift
+    if command -v timeout &>/dev/null; then
+        timeout "${seconds}s" "$@"
+    elif command -v gtimeout &>/dev/null; then
+        gtimeout "${seconds}s" "$@"
+    else
+        "$@"
+    fi
+}
+
 MODEL="${MODEL:-deepseek-v4-pro}"
 YOAGENT_REPO="${YOAGENT_REPO:-}"
 export YOYO_DEEPSEEK_NATIVE="${YOYO_DEEPSEEK_NATIVE:-1}"
@@ -58,8 +70,9 @@ STATE_RUN_ID="github-actions-${GITHUB_RUN_ID:-local}"
 STATE_TRACE_ID="trace-evolve-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-${DAY}-$(echo "$SESSION_TIME" | tr ':' '-')"
 # DAY_COUNT is written at the end of the session (separate commit, immune to task reverts)
 
-# Pull latest changes (in case a queued run starts with stale checkout)
-git pull --rebase --quiet 2>/dev/null || true
+# Pull latest changes (in case a queued run starts with stale checkout).
+# This is best-effort bootstrap work; it must not block task evidence forever.
+run_optional_with_timeout 60 git pull --rebase --quiet 2>/dev/null || true
 
 echo "=== Day $DAY ($DATE $SESSION_TIME) ==="
 echo "Model: $MODEL"
@@ -656,13 +669,13 @@ setup_external_skills() {
         skills_dir="$dir/skills"
 
         if [ -d "$dir/.git" ]; then
-            if ! git -C "$dir" fetch --depth 1 origin "$ref" >/dev/null 2>&1 ||
+            if ! run_optional_with_timeout 60 git -C "$dir" fetch --depth 1 origin "$ref" >/dev/null 2>&1 ||
                ! git -C "$dir" reset --hard FETCH_HEAD >/dev/null 2>&1; then
                 echo "  Warning: could not update external skill '$name'; using existing checkout if valid."
             fi
         elif [ ! -e "$dir" ]; then
             mkdir -p "$(dirname "$dir")"
-            if ! git clone --depth 1 --branch "$ref" "$repo" "$dir" >/dev/null 2>&1; then
+            if ! run_optional_with_timeout 90 git clone --depth 1 --branch "$ref" "$repo" "$dir" >/dev/null 2>&1; then
                 echo "  Warning: could not fetch external skill '$name'; continuing without it."
             fi
         else
