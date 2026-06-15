@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from state_graph_tools import build_causal_chains, evolution_suggestions
+from state_graph_tools import build_causal_chains, evolution_suggestions, session_dirs
 from task_manifest import normalize_file_list, parse_task as parse_task_file
 
 
@@ -3531,9 +3531,7 @@ def load_sessions(audit_sessions: Path, repo_root: Path) -> list[dict[str, Any]]
     if not audit_sessions.is_dir():
         return sessions
 
-    for session_dir in sorted(audit_sessions.iterdir(), key=session_sort_key):
-        if not session_dir.is_dir():
-            continue
+    for session_dir in sorted(session_dirs(audit_sessions), key=session_sort_key):
         outcome = load_json(session_dir / "outcome.json")
         summary = load_json(session_dir / "state" / "summary.json")
         evals = dedupe_evals(summary.get("evals", []))

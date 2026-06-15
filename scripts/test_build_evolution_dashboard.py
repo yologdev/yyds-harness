@@ -815,6 +815,32 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertIn("function sessionSourceLine", html)
             self.assertIn("source revision not recorded", html)
 
+    def test_build_accepts_full_audit_root_without_source_dir_sessions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-3-20260603T000000Z"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 3,
+                    "ts": "2026-06-03T00:00:00Z",
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {"latest_gnomes": {"task_success_rate": 1.0}},
+            )
+            (root / "src").mkdir()
+            (root / "tests").mkdir()
+            (root / "skills/evolve").mkdir(parents=True)
+
+            data = build(root, root / "out")
+
+            self.assertEqual([row["id"] for row in data["sessions"]], [session.name])
+            self.assertEqual(data["aggregate"]["latest_session_id"], session.name)
+
     def test_derives_operational_state_capture_from_trace_quality(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

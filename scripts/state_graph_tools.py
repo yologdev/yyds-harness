@@ -155,17 +155,30 @@ def event_counts(events: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def looks_like_session_dir(path: Path) -> bool:
+    return (
+        path.name.startswith("day-")
+        or (path / "outcome.json").is_file()
+        or (path / "log_feedback.json").is_file()
+        or (path / "evo_readiness.json").is_file()
+        or (path / "state" / "summary.json").is_file()
+        or (path / "state" / "events.jsonl").is_file()
+        or (path / "tasks" / "manifest.json").is_file()
+    )
+
+
 def session_dirs(sessions_dir: Path) -> list[Path]:
     if not sessions_dir.is_dir():
         return []
-    if (
-        (sessions_dir / "outcome.json").is_file()
-        or (sessions_dir / "log_feedback.json").is_file()
-        or (sessions_dir / "state" / "summary.json").is_file()
-        or (sessions_dir / "tasks" / "manifest.json").is_file()
-    ):
+    if looks_like_session_dir(sessions_dir):
         return [sessions_dir]
-    return sorted(path for path in sessions_dir.iterdir() if path.is_dir())
+    audit_sessions = sessions_dir / "sessions"
+    search_dir = audit_sessions if audit_sessions.is_dir() else sessions_dir
+    return sorted(
+        path
+        for path in search_dir.iterdir()
+        if path.is_dir() and looks_like_session_dir(path)
+    )
 
 
 def session_sort_key(session_dir: Path) -> tuple[int, str, str]:

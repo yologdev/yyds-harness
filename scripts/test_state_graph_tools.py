@@ -38,6 +38,32 @@ class StateGraphTools(unittest.TestCase):
 
             self.assertEqual(state_graph_tools.ordered_sessions(session), [session])
 
+    def test_ordered_sessions_resolves_full_audit_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            older = root / "sessions/day-1"
+            newer = root / "sessions/day-2"
+            write_json(older / "outcome.json", {"day": 1, "ts": "2026-06-14T00:00:00Z"})
+            write_json(newer / "outcome.json", {"day": 2, "ts": "2026-06-15T00:00:00Z"})
+            (root / "tests").mkdir()
+            (root / "src").mkdir()
+            (root / "skills/evolve").mkdir(parents=True)
+
+            self.assertEqual(
+                state_graph_tools.ordered_sessions(root),
+                [older, newer],
+            )
+
+    def test_ordered_sessions_ignores_non_session_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "day-1"
+            write_json(session / "state/summary.json", {"latest_gnomes": {}})
+            (root / "tests").mkdir()
+            (root / "src").mkdir()
+
+            self.assertEqual(state_graph_tools.ordered_sessions(root), [session])
+
     def test_replay_check_and_causal_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
