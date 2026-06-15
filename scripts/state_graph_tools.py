@@ -406,6 +406,19 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
     tasks = selected_tasks(manifest)
     if not tasks:
         return {}
+    warnings = manifest.get("warnings") if isinstance(manifest.get("warnings"), list) else []
+    manifest_seed_contradictions = sum(
+        1
+        for task in tasks
+        if isinstance(task, dict)
+        and isinstance(task.get("quality"), dict)
+        and isinstance(task["quality"].get("assessment_alignment"), dict)
+        and task["quality"]["assessment_alignment"].get("contradicted_by_assessment")
+    )
+    manifest_seed_contradictions = max(
+        manifest_seed_contradictions,
+        sum(1 for warning in warnings if str(warning).endswith(":assessment_contradiction")),
+    )
     artifacts = task_artifact_rows(session_dir)
     rows: list[dict[str, Any]] = []
     for task in tasks:
@@ -427,12 +440,14 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             for row in attempts
             if isinstance(row, dict) and implementation_attempt_missing_terminal_evidence(session_dir, row)
         )
-        analysis_only_attempt = any(
-            isinstance(row, dict)
+        analysis_only_attempt_count = sum(
+            1
+            for row in attempts
+            if isinstance(row, dict)
             and str(row.get("phase") or "") == "implementation"
             and str(row.get("status") or "") == "analysis_only_no_terminal_evidence"
-            for row in attempts
         )
+        analysis_only_attempt = analysis_only_attempt_count > 0
         problems: list[str] = []
         overlap = file_overlap(planned, touched) if planned and touched else False
         if not planned:
@@ -481,6 +496,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
                 "incomplete_terminal": incomplete_terminal,
                 "terminal_marker_missing_attempt_count": terminal_marker_missing_attempt_count,
                 "analysis_only_attempt": analysis_only_attempt,
+                "analysis_only_attempt_count": analysis_only_attempt_count,
             }
         )
     if not rows:
@@ -498,6 +514,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
         "task_mechanical_verification_rate": mechanical_verified / len(rows),
         "task_obsolete_count": sum(1 for row in rows if row["obsolete"] or "task_marked_obsolete" in row["problems"]),
         "task_stale_seed_obsolete_note_count": sum(1 for row in rows if row["stale_seed_obsolete_note"]),
+        "task_manifest_seed_contradiction_count": manifest_seed_contradictions,
         "task_api_error_count": sum(1 for row in rows if row["api_error"] or "implementation_api_error" in row["problems"]),
         "task_no_edit_revert_count": sum(1 for row in rows if "no_edit_revert" in row["problems"]),
         "protected_file_revert_count": sum(1 for row in rows if row["protected_revert"] or "modified_protected_files" in row["problems"]),
@@ -513,7 +530,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
         "task_terminal_marker_missing_attempt_count": sum(
             int(row["terminal_marker_missing_attempt_count"]) for row in rows
         ),
-        "task_analysis_only_attempt_count": sum(1 for row in rows if row["analysis_only_attempt"]),
+        "task_analysis_only_attempt_count": sum(int(row["analysis_only_attempt_count"]) for row in rows),
         "evaluator_unverified_raw_count": unverified,
     }
 
@@ -955,10 +972,13 @@ def corrected_latest_gnomes(session_dir: Path) -> dict[str, Any]:
             gnomes["task_mechanical_verification_rate"] = float(
                 artifact_metrics.get("task_mechanical_verification_rate") or 0.0
             )
-            seed_contradictions = int_metric(gnomes, "task_seed_contradiction_count")
+            manifest_seed_contradictions = int_metric(
+                artifact_metrics, "task_manifest_seed_contradiction_count"
+            )
+            gnomes["task_seed_contradiction_count"] = manifest_seed_contradictions
             no_edit = int_metric(artifact_metrics, "task_no_edit_revert_count")
             explained = (
-                max(seed_contradictions, int_metric(artifact_metrics, "task_no_edit_revert_count"))
+                max(manifest_seed_contradictions, int_metric(artifact_metrics, "task_no_edit_revert_count"))
                 + int_metric(artifact_metrics, "task_obsolete_count")
                 + int_metric(artifact_metrics, "task_api_error_count")
                 + int_metric(artifact_metrics, "protected_file_revert_count")

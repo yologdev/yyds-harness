@@ -934,6 +934,72 @@ class StateGraphTools(unittest.TestCase):
 
             self.assertNotIn("Require task evidence specs", [item["title"] for item in suggestions])
 
+    def test_task_artifact_metrics_count_analysis_only_attempts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Blocked task",
+                            "files": ["scripts/evolve.sh"],
+                        }
+                    ],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Task blocked by agent; no implementation landed",
+                    "planned_files": ["scripts/evolve.sh"],
+                    "source_files": [],
+                    "commit_shas": [],
+                },
+            )
+            write_jsonl(
+                session / "tasks/task_01/attempts.jsonl",
+                [
+                    {
+                        "task_id": "task_01",
+                        "phase": "implementation",
+                        "attempt": 1,
+                        "status": "analysis_only_no_terminal_evidence",
+                    },
+                    {
+                        "task_id": "task_01",
+                        "phase": "implementation",
+                        "attempt": 2,
+                        "status": "analysis_only_no_terminal_evidence",
+                    },
+                ],
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "task_seed_contradiction_count": 1,
+                        "task_analysis_only_attempt_count": 1,
+                        "task_no_edit_revert_count": 1,
+                        "task_success_rate": 0.0,
+                    }
+                },
+            )
+
+            metrics = state_graph_tools.task_artifact_verification_metrics(session)
+            gnomes = state_graph_tools.corrected_latest_gnomes(session)
+
+            self.assertEqual(metrics["task_analysis_only_attempt_count"], 2)
+            self.assertEqual(metrics["task_no_edit_revert_count"], 1)
+            self.assertEqual(metrics["task_manifest_seed_contradiction_count"], 0)
+            self.assertEqual(gnomes["task_analysis_only_attempt_count"], 2)
+            self.assertEqual(gnomes["task_seed_contradiction_count"], 0)
+
     def test_evolution_suggestions_surface_contradicted_task_specs(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
@@ -1604,6 +1670,12 @@ class StateGraphTools(unittest.TestCase):
                             "title": "Contradicted seed",
                             "origin": "harness-seed",
                             "files": ["src/eval.rs"],
+                            "quality": {
+                                "assessment_alignment": {
+                                    "contradicted_by_assessment": True,
+                                    "evidence": ["assessment reports the seed premise is already resolved"],
+                                }
+                            },
                         }
                     ]
                 },

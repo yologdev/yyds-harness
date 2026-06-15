@@ -170,7 +170,17 @@ def stale_seed_obsolete_note(task: dict[str, Any], note_text: str) -> bool:
 
 
 def seed_task_contradiction_text(text: str) -> bool:
-    return bool(SEED_TASK_CONTRADICTION_RE.search(str(text or "")))
+    raw = str(text or "")
+    lower = raw.lower()
+    if "graph pressure" in lower or "task_seed_contradiction_count" in lower:
+        return False
+    if "?" in raw and not (
+        "factual error" in lower
+        or "assessment clearly shows" in lower
+        or "contradicted by fresh assessment" in lower
+    ):
+        return False
+    return bool(SEED_TASK_CONTRADICTION_RE.search(raw))
 
 
 GNOME_KEYS = [

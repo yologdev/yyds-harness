@@ -1252,6 +1252,59 @@ class TaskLineageFeedback(unittest.TestCase):
                 any(lesson["kind"] == "task_seed_contradiction" for lesson in assessment["top_lessons"])
             )
 
+    def test_log_feedback_does_not_count_seed_contradiction_question_as_fact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {"task_id": "task_01", "origin": "harness-seed"},
+                    ],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Task blocked by agent; no implementation landed",
+                    "source_files": [],
+                    "commit_shas": [],
+                },
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text=(
+                    "2. Assessment contradicts the seed task's scope? Let me check.\n"
+                    "5. **MEDIUM: Seed contradiction** - Graph pressure: "
+                    '"Validate seeded tasks against fresh assessment (task_seed_contradiction_count=1)."\n'
+                ),
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["task_seed_contradiction_count"], 0)
+            self.assertFalse(
+                any(lesson["kind"] == "task_seed_contradiction" for lesson in assessment["top_lessons"])
+            )
+
     def test_log_feedback_separates_protected_and_backup_reverts_from_unlanded_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
