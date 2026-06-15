@@ -2037,8 +2037,11 @@ $CHECKPOINT_BUILD_OUTPUT}
 Continue from the committed state. The uncommitted diff shows what
 the previous agent was working on — use it as a hint, not gospel.
 Do NOT redo work that's already committed. Focus on what's remaining.
-If the task appears complete, verify with cargo build && cargo test
-and commit if needed, then end with the exact TASK_TERMINAL_EVIDENCE marker."
+If the task appears complete, run cargo fmt -- --check and one focused
+build/test command tied to the changed task surface. Do not run full cargo
+test or full clippy inside this retry; the harness runs global gates after
+the task. Commit if needed, then end with the exact TASK_TERMINAL_EVIDENCE
+marker."
                 echo "    Using mechanical checkpoint (git state)."
             fi
 
@@ -2261,7 +2264,9 @@ $BFIX_ERRORS
 
 === WHAT TO DO ===
 Fix the $BUILD_FAILED errors. Do not start over — fix the specific errors shown above.
-After fixing, run: cargo fmt && cargo build && cargo test
+After fixing, run cargo fmt -- --check and the smallest cargo build/test command
+that exercises the failing file or module. Do not run full cargo test or full
+clippy inside this repair turn; the harness reruns global gates after you stop.
 BFIXEOF
         BFIX_LOG=$(mktemp)
         BFIX_EXIT=0
@@ -2412,7 +2417,7 @@ $TASK_DESC
 $EVAL_FEEDBACK
 
 === WHAT TO DO ===
-Fix the issues the evaluator identified. The build and tests already pass ��� focus on completing the missing functionality, not on refactoring what works.
+Fix the issues the evaluator identified. The build and tests already pass — focus on completing the missing functionality, not on refactoring what works.
 
 Search discipline:
 - Verify guessed paths with \`list_files\` or \`git ls-files <path>\` before reading them.
@@ -2421,7 +2426,9 @@ Search discipline:
 - Do not assume \`rg\` is installed; check \`command -v rg\` first if you want to use it.
 - Keep searches scoped away from target and generated state files.
 
-After fixing, run: cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test
+After fixing, run cargo fmt -- --check and at most one focused verification command
+directly tied to the evaluator feedback. Do not run full cargo test or full
+clippy inside this repair turn; the harness reruns global gates after you stop.
 FIXEOF
                 FIX_LOG=$(mktemp)
                 FIX_EXIT=0
@@ -2762,11 +2769,12 @@ Your code has errors. Fix them NOW. Do not add features — only fix these error
 $(echo -e "$ERRORS")
 
 Steps:
-1. Read the .rs files under src/
-2. Fix the errors above
-3. Run: cargo fmt && cargo clippy --all-targets -- -D warnings && cargo build && cargo test
-4. Keep fixing until all checks pass
-5. Commit:
+1. Read only the files named in the errors above; if unclear, search one concrete symbol.
+2. Fix the errors above.
+3. Run cargo fmt -- --check and the smallest focused command that exercises the failing file or module.
+4. Do not run full cargo test or full clippy inside this repair turn; the harness reruns global gates after you stop.
+5. Keep fixing until the focused check passes.
+6. Commit:
      git add -A && git commit -m "Day $DAY ($SESSION_TIME): fix build errors" || true
 FIXEOF
         FIX_LOG=$(mktemp)
