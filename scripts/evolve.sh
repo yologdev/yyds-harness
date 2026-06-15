@@ -1520,7 +1520,14 @@ ARTIFACT-FIRST REQUIREMENT:
 
 IMPORTANT: Do NOT read source code files when an assessment is available. The
 assessment above already contains the source architecture, build status, bugs,
-and capability gaps. Plan from the assessment. If the assessment section says
+and capability gaps. Plan from the assessment. You may still use cheap
+ownership checks before finalizing Files: entries: \`git ls-files <path>\`,
+\`git grep -n -- <symbol> src/\`, or a scoped \`rg -n <simple_identifier> src/\`.
+Do not read the matched files during planning. Use those checks only to avoid
+assigning a task to the wrong source file. If the assessment says the likely
+owner is uncertain, include every plausible owner file up to the 3-file task
+limit. If the likely owner would exceed the 3-file limit, split or narrow the
+task instead of writing a misleading Files: line. If the assessment section says
 "NO ASSESSMENT AVAILABLE", follow the fallback planning rule above instead of
 redoing assessment.
 
@@ -1587,6 +1594,11 @@ Expected Evidence:
 
 [Detailed description of what to do — specific enough for a focused implementation agent.
 Include which docs need updating (CLAUDE.md, README.md, docs/src/) if the task changes behavior, features, or architecture.]
+Do not tell the implementation agent to keep a fix in a file that your own
+ownership check did not verify. If the task asks the agent to investigate a
+specific symbol, command, or failure class, the Files line must include the
+probable owning module(s), not only the first file mentioned by assessment
+prose.
 
 PLANNER OUTPUT GUARD:
 - By the time your final third of turns begins, at least one valid session_plan/task_*.md file must already exist.
@@ -1849,6 +1861,10 @@ Follow the evolve skill rules:
 - Early action requirement: by your 8th tool turn, you must have written a test, edited one listed task-scope file, written session_plan/${TASK_ID}_obsolete.md, or written session_plan/${TASK_ID}_blocked.md. Do not spend the whole task budget reading and planning. If you still lack enough certainty by then, write the blocked note with the exact missing evidence instead of continuing archaeology.
 - Before your final answer, run \`git diff --name-only\` and inspect the result. Your final answer must name one of: the task-scope files you changed, the obsolete-task note you wrote, or the concrete blocker that prevented any honest scoped edit.
 - If \`git diff --name-only\` is empty and you did not write session_plan/${TASK_ID}_obsolete.md or session_plan/${TASK_ID}_blocked.md, the task is not complete. Keep working inside the task scope instead of ending with analysis only.
+- If you discover that the real owning file is outside the task's Files list,
+  do not edit that outside file. Write session_plan/${TASK_ID}_blocked.md with
+  the exact owner file, the symbol/evidence that proves the mismatch, and the
+  smallest corrected Files list for a future task.
 - End your final answer with exactly one terminal evidence marker:
   \`TASK_TERMINAL_EVIDENCE: changed\`, \`TASK_TERMINAL_EVIDENCE: obsolete\`, or \`TASK_TERMINAL_EVIDENCE: blocked\`.
   The harness only recognizes that exact marker line; prose like "task completed",
