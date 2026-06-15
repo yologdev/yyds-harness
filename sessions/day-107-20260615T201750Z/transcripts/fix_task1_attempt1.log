@@ -1,0 +1,502 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. The evaluator rejected a previous implementation attempt
+2. A new module `src/commands_state_reports.rs` was created but the functions were never removed from `commands_state.rs`
+3. The file is still 23,839 lines — zero reduction
+4. The new module's functions are dead code (unused)
+5. I need to complete the extraction by actually moving the functions
+
+Let me start by examining the current state of both files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by examining the current state of both files.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 2.5s (6 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l src/commands_state.rs src/commands_state_reports.rs 2>/dev/null; echo "---…  ▶ ls src (commands_state*) ✓ (8ms)
+ ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the rest of the top of commands_state.rs to find the mod declarations, and also what's in commands_state_reports.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:60..90  ▶ read src/commands_state.rs:400..460  ▶ read src/commands_state.rs:670..780 ✓ (24ms)
+ ✓ (16ms)
+ ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see what's in commands_state_reports.rs and the mod declarations in commands_state.rs. I also need to find the functions that need to be moved.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.4s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_reports.rs  ▶ $ grep -n "^mod \|^pub.*mod \|^pub(crate) mod " src/commands_state.rs | head -10 ✓ (23ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No module declarations at the top of commands_state.rs! I see there's only `mod tests` at line 13854. Let me check how the other modules (commands_state_crashes, commands_state_graph, commands_state_memory) are declared.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "commands_state_crashes\|commands_state_graph\|commands_state_memory\|co…  ▶ $ grep -n "commands_state_crashes\|commands_state_graph\|commands_state_memory\|co… ✓ (16ms)
+ ✓ (49ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the modules are declared in `src/lib.rs`, not in `commands_state.rs`. And `commands_state_reports` is already declared in lib.rs too. The submodules are called via `crate::commands_state_*` — they're top-level modules in the crate (declared in lib.rs), not submodules of `commands_state`.
+
+So the issue is: 
+1. `commands_state_reports.rs` exists with the functions, but they're not being used
+2. The original functions still exist in `commands_state.rs`
+3. The handlers in `commands_state.rs` call the local functions (e.g., `build_trace_report`, `build_recent_failure_report`, etc.) directly
+
+Now the fix is:
+1. Verify `commands_state_reports.rs` has all the necessary functions with correct visibility (`pub(crate)`)
+2. Remove those functions from `commands_state.rs`
+3. Make the handlers in `commands_state.rs` call `crate::commands_state_reports::*` instead
+
+But wait - there might be circular dependency issues. The functions in `commands_state_reports.rs` currently import from `crate::commands_state`. If `commands_state.rs` also imports from `crate::commands_state_reports`, that could create a circular dependency in Rust modules.
+
+Let me check: in Rust, modules form a tree. `lib.rs` declares both `commands_state` and `commands_state_reports` as sibling modules. A sibling can freely `use` from another sibling. So `commands_state_reports` can import from `commands_state`, and `commands_state` can import from `commands_state_reports`. No circularity because they're both declared at the same level in `lib.rs`.
+
+But wait — if `commands_state_reports` already `use`s from `crate::commands_state`, that's fine. And I need `commands_state` to `use` from `crate::commands_state_reports`. That's also fine — they're sibling modules.
+
+Let me now:
+1. List exactly which functions are in `commands_state_reports.rs` (already seen)
+2. Find the corresponding functions in `commands_state.rs` that need to be removed
+3. Check if the `commands_state_reports.rs` has correct visibility (`pub(crate)`) on all exported functions
+4. Verify that `commands_state.rs` handlers call the correct functions from `commands_state_reports`
+
+Let me first search for the function definitions in commands_state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.5s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the exact line ranges for the functions to move.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "^fn \|^pub.*fn \|^struct " src/commands_state.rs | grep -E "format_fail… ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to also find the `RollbackReportRow` struct. Let me also check what functions the `commands_state_reports.rs` already has vs what `commands_state.rs` has. Let me see the exact locations.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "^struct RollbackReportRow" src/commands_state.rs  ▶ $ grep -n "^fn \|^pub.*fn \|^struct " src/commands_state_reports.rs ✓ (30ms)
+ ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`RollbackReportRow` is not defined as a struct with `struct` keyword. Let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RollbackReportRow' in src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It's an enum! Let me see it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2049..2074 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check what functions `commands_state_reports.rs` has and what's missing. Let me look at the full list of functions in it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "^fn \|^pub.*fn \|^struct \|^enum " src/commands_state_reports.rs ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output was truncated due to "19 more similar lines". Let me get the full explicit list.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "^fn \|^pub.*fn \|^struct \|^enum " src/commands_state_reports.rs | cat ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. So `commands_state_reports.rs` already has:
+
+1. `struct FailureTaxonomy`
+2. `fn format_failure_event_value`
+3. `pub(crate) fn build_trace_report`
+4. `pub(crate) fn build_recent_failure_report`
+5. `fn classify_failure_event`
+6. `fn classify_failure_payload`
+7. `fn taxonomy`
+8. `fn payload_has_source`
+9. `fn payload_mentions`
+10. `fn failure_payload_text`
+11. `fn collect_payload_text`
+12. `pub(crate) fn build_policy_report`
+13. `pub(crate) fn build_failure_fix_report`
+14. `pub(crate) fn build_rollback_rows`
+15. `pub(crate) fn build_rollback_report`
+16. `fn format_rollback_row`
+17. `pub(crate) fn build_rollback_payload`
+18. `fn rollback_row_payload`
+19. `fn eval_failed`
+20. `fn eval_status_label`
+21. `fn payload_scalar_label`
+
+But it's MISSING the `RollbackReportRow` enum! And some functions might use `RollbackReportRow` — let me check.
+
+Also, I need to check if:
+- `commands_state_reports.rs` imports what it needs without creating circular deps
+- The functions it imports from `crate::commands_state` are actually `pub(crate)` in commands_state.rs
+
+Let me check the imports at the top of commands_state_reports.rs — it imports:
+```rust
+use crate::commands_state::{
+    context_included_block_names, event_string, event_timestamp, evidence_ids, extract_patch_id,
+    failure_signal, format_event_value, is_eval_event, is_failure_event_type, normalize_status,
+    patch_outcome_evidence, patch_summaries, payload_str, payload_string_array, preview_line,
+};
+```
+
+I need to verify these are all `pub(crate)` in commands_state.rs.
+
+And I also need to find the `RollbackReportRow` enum in commands_state_reports.rs — it may be referenced by `build_rollback_rows` etc. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "RollbackReportRow" src/commands_state_reports.rs ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `RollbackReportRow` is at line 464 in `commands_state_reports.rs`. Let me read that section to see what it looks like.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_reports.rs:464..489 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `RollbackReportRow` is already in `commands_state_reports.rs` with `pub(crate)` visibility. Now I need to:
+
+1. Verify all functions that `commands_state_reports.rs` imports from `crate::commands_state` are actually `pub(crate)` in `commands_state.rs`
+2. Remove the moved functions/structs/enums from `commands_state.rs`
+3. Make the handlers in `commands_state.rs` call the versions from `commands_state_reports`
+4. Verify build passes
+
+But wait - there's a potential circular dependency problem. If `commands_state_reports` uses functions from `crate::commands_state`, and `commands_state` uses functions from `crate::commands_state_reports`, that's actually fine in Rust because they're sibling modules — Rust resolves modules via `lib.rs` which has both declared.
+
+However, I need to make sure that the functions `commands_state_reports.rs` imports from `crate::commands_state` are indeed `pub(crate)` (or `pub`). Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "^pub.*fn context_included_block_names\|^pub.*fn event_string\|^pub.*fn … ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — they're all `pub(crate)`. Let me also check `payload_string_array`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "^pub.*fn payload_string_array\|^pub.*fn payload_str\b" src/commands_sta… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, all the imports are `pub(crate)`. Now let me understand the plan:
+
+1. **commands_state_reports.rs** already has all the functions with correct `pub(crate)` visibility
+2. The functions in `commands_state.rs` need to be **removed** 
+3. The handlers in `commands_state.rs` need to use `crate::commands_state_reports::*` instead of the local functions
+
+But wait — there's a subtlety. Some of the functions in `commands_state_reports.rs` are NOT `pub(crate)`:
+- `format_failure_event_value` — private
+- `classify_failure_event` — private
+- `classify_failure_payload` — private
+- `taxonomy` — private
+- `payload_has_source` — private
+- `payload_mentions` — private
+- `failure_payload_text` — private
+- `collect_payload_text` — private
+- `format_rollback_row` — private
+- `rollback_row_payload` — private
+- `eval_failed` — private
+- `eval_status_label` — private
+- `payload_scalar_label` — private
+
+These are only called internally within `commands_state_reports.rs`, so they don't need to be exported. The `pub(crate)` ones are:
+- `build_trace_report`
+- `build_recent_failure_report`
+- `build_policy_report`
+- `build_failure_fix_report`
+- `build_rollback_rows`
+- `build_rollback_report`
+- `build_rollback_payload`
+- `RollbackReportRow` (enum)
+
+Now I need to check if any of the private functions (like `eval_failed`, `eval_status_label`, `payload_scalar_label`) are called from anywhere else in `commands_state.rs` or other files.
+
+Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "eval_failed\|eval_status_label\|payload_scalar_label" src/commands_stat… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! `eval_failed`, `eval_status_label`, and `payload_scalar_label` are used OUTSIDE the report builder functions — they're used in the `build_state_lifecycle_json` function (or similar) within `commands_state.rs`. 
+
+Wait, let me look at the context around line 1868, 1893, 2108, 2117, 2134. These might be inside one of the report builder functions that I'm already moving. Let me check what function those lines are in.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1860..1870  ▶ read src/commands_state.rs:2095..2125 ✓ (25ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+These are all inside functions that are part of the report builders being moved:
+- Line 1860 is `build_policy_report` — being moved ✓
+- Lines 2095+ are in `build_rollback_rows` — being moved ✓
+
+Now let me also check if `eval_failed`, `eval_status_label`, `payload_scalar_label` are used elsewhere in `commands_state.rs` outside the functions being moved.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "eval_failed\|eval_status_label\|payload_scalar_label" src/commands_stat… ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Lines 1868, 1893 (in `build_policy_report`) and 2108, 2117, 2134 (in `build_rollback_rows`) are all within the functions being moved. Lines 2282, 2301, 2315 are the definitions. So these private functions are only used within the report builder functions — they can safely be moved.
+
+Now let me also check if any of the `pub(crate)` functions are called from outside `commands_state.rs`.
+
+Actually wait — let me check the handlers more carefully. The handlers call:
+- `build_trace_report` (line 439) 
+- `build_policy_report` (line 686)
+- `build_failure_fix_report` (line 706)
+- `build_rollback_payload` (line 730)
+- `build_rollback_report` (line 738)
+- `build_recent_failure_report` (line 758)
+
+These handlers are all `fn` (not `pub(crate) fn`) — they're private to `commands_state.rs`. So I just need to make the handlers call `crate::commands_state_reports::*` instead.
+
+Now let me also check if any other file calls these functions:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn "commands_state_reports\|build_trace_report\|build_recent_failure_repor… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `build_rollback_payload` in `commands_evolve.rs` is a **different** function — it has a different signature. The one in `commands_state.rs` takes `(events: &[Value], limit: usize) -> Result<Value, String>`, while the one in `commands_evolve.rs` takes `(patch_id, &report, &reason, reverted_at_ms)`.
+
+So no external callers of the `commands_state` report builders. Good.
+
+Now, let me also check if any function in `commands_state.rs` that isn't being moved calls the functions being moved:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "format_failure_event_value\|build_trace_report\|build_recent_failure_re… ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Important finding! Line 1507: `let taxonomy = classify_failure_payload(kind, payload);` — this is OUTSIDE the functions to be moved. Let me check what function contains line 1507.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1490..1530 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 1507 is inside `format_event_value` — which is the main event formatting function. This function calls `classify_failure_payload` directly.
+
+And `classify_failure_payload` is being moved to `commands_state_reports.rs` as a PRIVATE function. If I move it, `format_event_value` in `commands_state.rs` can't call it anymore.
+
+This is a problem. The task says:
+> If functions from the IO/formatting range (lines 975-1606) are called by the failure report builders, do NOT move those IO functions — this task only moves the failure/policy/rollback report builders.
+
+But the opposite case is: the IO function `format_event_value` (which stays in `commands_state.rs`) calls `classify_failure_payload` (one of the report builders being moved). 
+
+I need to handle this. Options:
+1. Keep `classify_failure_payload` in `commands_state.rs` (not move it) — but then the report builders in `commands_state_reports.rs` need it
+2. Make `classify_failure_payload` `pub(crate)` in `commands_state_reports.rs` and have `commands_state.rs` call it from there
+3. Duplicate the function (bad)
+
+Option 2 is best. But `classify_failure_payload` also depends on `classify_failure_event`, `taxonomy`, `failure_payload_text`, `collect_payload_text`, `payload_mentions`, `payload_has_source`. If I make `classify_failure_payload` `pub(crate)`, the other helper functions can stay private.
+
+But wait — `classify_failure_payload` uses `classify_failure_event` which uses `failure_payload_text` which uses `collect_payload_text`. And `classify_failure_event` also uses `payload_mentions`. And `classify_failure_payload` also uses `payload_has_source`. These are all internal to the failure taxonomy logic.
+
+So I need to at minimum:
+- Make `classify_failure_payload` `pub(crate)` in `commands_state_reports.rs` (since `format_event_value` in `commands_state.rs` calls it)
+- Keep all the helper functions it uses (`classify_failure_event`, `taxonomy`, `payload_has_source`, `payload_mentions`, `failure_payload_text`, `collect_payload_text`) in `commands_state_reports.rs` as private
+
+Also: is `FailureTaxonomy` used in `commands_state.rs` outside the moved functions? Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "FailureTaxonomy" src/commands_state.rs ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see all matches:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "FailureTaxonomy" src/commands_state.rs | cat ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`FailureTaxonomy` is only used within the functions being moved (and in `classify_failure_payload` which I'm keeping accessible). The struct definition itself (line 1600) is also being moved.
+
+BUT wait — does anything else in `commands_state.rs` reference `FailureTaxonomy` as a type? Like a variable declaration? Let me check line 1507 again — it does `let taxonomy = classify_failure_payload(kind, payload);` — this creates a variable of type `FailureTaxonomy`. If the struct is moved, it needs to be accessible.
+
+So I need `FailureTaxonomy` to be `pub(crate)` in `commands_state_reports.rs`.
+
+And I need `classify_failure_payload` to be `pub(crate)` in `commands_state_reports.rs`.
+
+Let me also check if `format_failure_event_value` is used outside the moved functions:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "format_failure_event_value" src/commands_state.rs ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 13938 — that's in the test module! Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13930..13940 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test function calls `format_failure_event_value`. Let me check where the test module is and whether it accesses other functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13854..13914 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for all test functions that reference the functions being moved to understand the test dependencies.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "fn \|classify_failure\|FailureTaxonomy\|build_trace_report\|build_recen… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the test references more carefully. Let me look for tests in the test module that reference the moved functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "classify_failure\|FailureTaxonomy\|build_trace_report\|build_recent_fai… ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test functions more broadly — list all test functions and then check which reference the moved symbols:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "#\[test\]" src/commands_state.rs | head -60 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more specifically for test functions that reference the moved symbols.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -B5 "classify_failure\|FailureTaxonomy\|build_trace_report\|build_recent_fa… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me do this differently — find the lines with these symbols in the test module range (lines 13854+).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ $ awk '/^mod tests/,0' src/commands_state.rs | grep -n "classify_failure\|FailureT… ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so there are tests in the test module that directly call `classify_failure_event`, `format_failure_event_value`, `build_trace_report`, etc. The test module is at line 13854 and uses `use super::*;`. If I remove the functions from `commands_state.rs`, these tests will break.
+
+I have two options:
+1. Move the tests along with the functions to `commands_state_reports.rs`
+2. Make the test-related functions `pub(crate)` so the test module can still access them
+
+The task says "Do not change function behavior — this is a pure code-move refactor" and "All existing state subcommand behaviors are preserved". 
+
+Since the test module is within `commands_state.rs` and uses `use super::*;`, I need to make sure the functions that the tests use are accessible. Let me check what exactly the tests reference:
+
+Tests reference:
+- `classify_failure_event` — used in tests
+- `format_failure_event_value` — used in tests
+- `build_trace_report` — used in tests (already `pub(crate)`)
+- `build_recent_failure_report` — used in tests (already `pub(crate)`)
+- `build_policy_report` — used in tests (already `pub(crate)`)
+- `build_failure_fix_report` — used in tests (already `pub(crate)`)
+- `build_rollback_report` — used in tests (already `pub(crate)`)
+- `build_rollback_payload` — used in tests (already `pub(crate)`)
+
+So I need to either:
+1. Make `classify_failure_event` and `format_failure_event_value` `pub(crate)` in `commands_state_reports.rs` and add a `use crate::commands_state_reports::*` (or specific imports) in the test module
+2. Or move the tests to `commands_state_reports.rs`
+
+Option 1 is simpler and cleaner. Let me check what other functions/structs the tests reference from the moved set.
+
+Let me look at the test code properly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 33 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13893..13943  ▶ read src/commands_state.rs:13929..13979 ✓ (8ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now get the full picture. I need to know which test functions reference the moved symbols and how they do it. Let me also check the test functions around the policy, fixes, rollback tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 34 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:15200..15320 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find the rollback test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 35 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:15519..15594 ✓ (8ms)
+
+

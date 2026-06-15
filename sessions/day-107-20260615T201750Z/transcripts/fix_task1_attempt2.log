@@ -1,0 +1,670 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the evaluator's feedback. The issue is clear:
+
+1. `src/commands_state_reports.rs` was created with copies of the target functions
+2. But the originals were never removed from `commands_state.rs`
+3. So line count didn't decrease, and the new module is dead code
+
+I need to:
+1. Verify that the new module exists and has the functions
+2. Remove the duplicate functions from `commands_state.rs`
+3. Ensure proper module declarations and re-exports
+4. Verify build passes
+
+Let me start by examining the current state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ read src/commands_state_reports.rs (30 lines)  ▶ $ wc -l src/commands_state.rs src/commands_state_reports.rs ✓ (26ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The new module exists with 744 lines, but the originals are still in commands_state.rs. I need to:
+
+1. Check what module declarations exist in commands_state.rs
+2. Find the duplicated functions in commands_state.rs and remove them
+3. Make sure the new module is properly imported
+
+Let me check the top of commands_state.rs for existing module declarations, and then find the exact line ranges of the functions that need to be removed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^mod commands_state' in src/commands_state.rs  ▶ search '^fn format_failure_event_value' in src/commands_state.rs  ▶ search '^struct FailureTaxonomy' in src/commands_state.rs  ▶ search '^struct RollbackReportRow' in src/commands_state.rs ✓ (32ms)
+ ✓ (33ms)
+ ✓ (33ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No module declarations found with that pattern. Let me search for `mod command` more broadly to see what module declarations exist. Also let me search for `format_failure_event_value` (without the `^` anchor) since the function might be indented.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.0s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'format_failure_event_value' in src/commands_state.rs  ▶ search 'FailureTaxonomy' in src/commands_state.rs  ▶ search 'RollbackReportRow' in src/commands_state.rs ✓ (23ms)
+ ✓ (23ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the functions are still in commands_state.rs. Let me find the exact line numbers for the functions that need to be removed. The task says the target range is ~1600-2310. Let me read that section to understand the exact boundaries.
+
+The structure in commands_state.rs:
+- `FailureTaxonomy` struct at line 1600
+- `format_failure_event_value` at 1606
+- `build_trace_report` at 1617
+- `build_recent_failure_report` at 1692
+- `classify_failure_event` at 1739
+- `classify_failure_payload` at 1804
+- `taxonomy` at 1811
+- `failure_payload_text` at 1834
+- `build_policy_report` at 1860
+- `build_failure_fix_report` at 1929
+- `RollbackReportRow` at 2049
+- `build_rollback_rows` at 2072
+- `build_rollback_report` at 2165
+- `format_rollback_row` at 2176
+- `build_rollback_payload` at 2217
+- `rollback_row_payload` at 2237
+- `eval_failed` at 2282
+- `eval_status_label` at 2301
+
+Let me also check what's around line 1570-1600 to find the exact start boundary, and around 2310 to find the end.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.0s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1585..1605  ▶ read src/commands_state.rs:2290..2320 ✓ (22ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the exact boundaries. The functions to remove start at line 1599 (`FailureTaxonomy`) and end at line 2313 (`eval_status_label` closing brace). Let me verify the end by checking what follows after line 2313.
+
+Let me also check what functions are called by these report builders from the "IO/formatting range" that need to stay, and what functions in commands_state.rs call the report builders.
+
+Let me also check the module declarations at the top of commands_state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs (30 lines)  ▶ search '^mod |^pub.* mod' in src/commands_state.rs ✓ (8ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No `mod` declarations at all in commands_state.rs. That's unusual - let me search for `commands_state_crashes` since the task says that was already extracted.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'commands_state_crashes' in src/commands_state.rs  ▶ search 'commands_state_memory' in src/commands_state.rs ✓ (15ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `commands_state_crashes` and `commands_state_memory` are separate crate-level modules (not sub-modules of commands_state). They're referenced as `crate::commands_state_crashes` and `crate::commands_state_memory`.
+
+But the task says to put `mod commands_state_reports;` inside `commands_state.rs` and use `pub(crate) use commands_state_reports::*;`. 
+
+Wait, looking more carefully: the task says:
+- `mod commands_state_reports;` near the other `mod` declarations
+- re-export handlers from the new module
+
+But the existing extracted modules are used as `crate::commands_state_crashes`, which means they're declared at crate level (in `main.rs` or `lib.rs`), not as sub-modules of `commands_state`.
+
+Let me check where `commands_state_crashes` and `commands_state_memory` are declared.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'commands_state_crashes|commands_state_memory|commands_state_…' in src/main.rs  ▶ search 'commands_state_crashes|commands_state_memory|commands_state_…' in src/lib.rs ✗ (26ms)
+    │ Search error: grep: src/main.rs: No such file or directory
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where these modules are declared.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.6s (1 ✓, 1 ✗)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn "mod commands_state_crashes\|mod commands_state_memory\|mod commands_st… ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the modules are declared in `src/lib.rs`. The new module `commands_state_reports` is already declared there. Let me check the context around line 78.
+
+Now, the key issue is: the functions exist in BOTH `src/commands_state.rs` and `src/commands_state_reports.rs`. I need to remove them from `src/commands_state.rs`.
+
+But wait - I need to check if the functions in `commands_state_reports.rs` are using the right imports. The functions import from `crate::commands_state::...` those utilities that are defined in `commands_state.rs`. The new module needs to publicly export the report builder functions.
+
+Let me also check if any functions in `commands_state.rs` call the report builder functions (like `build_recent_failure_report`, `build_policy_report`, etc.) so I know what needs to remain accessible.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_recent_failure_report|build_policy_report|build_rollba…' in src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, no matches in commands_state.rs. But wait, that can't be right — the functions are still in commands_state.rs. Let me search without regex.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "build_recent_failure_report\|build_policy_report\|build_rollback_report… ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full picture:
+
+1. The functions are in commands_state.rs starting at line 1600 (FailureTaxonomy) through line 2313 (eval_status_label).
+2. They are called from commands_state.rs at lines 439, 686, 706, 738, 758, 1507, 3837, 12363, and in tests at lines 13920-14030.
+
+The key callers are:
+- Line 439: `build_trace_report(&events, id)` 
+- Line 686: `build_policy_report(&events, limit)`
+- Line 706: `build_failure_fix_report(&events, class_filter, limit)`
+- Line 738: `build_rollback_report(&events, limit)`
+- Line 758: `build_recent_failure_report(&events, limit)`
+- Line 1507: `classify_failure_payload(kind, payload)`
+- Line 3837: `classify_failure_event(target)`
+- Line 12363: `classify_failure_event(&event)`
+
+So I need to:
+1. Remove lines 1599-2313 from commands_state.rs (the functions that are now in commands_state_reports.rs)
+2. Add `use crate::commands_state_reports::*;` or specific imports to commands_state.rs so the callers still work
+
+But wait, line 1507 calls `classify_failure_payload` which would be moved. Let me read that area to understand the context.
+
+Let me also check the end boundary more carefully. Line 2313 is `eval_status_label` closing brace. Let me check that `payload_scalar_label` at line 2315 is NOT moved.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2310..2325  ▶ read src/commands_state.rs:1500..1525 ✓ (7ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see that `classify_failure_payload` is called at line 1507 from `commands_state.rs`. This is within the "IO/formatting range" (lines 975-1606) that should NOT be moved. So I need to make sure that after moving, the caller at line 1507 can still access `classify_failure_payload` via an import.
+
+Now I also need to check which functions in commands_state_reports.rs are `pub(crate)` and which are private. Let me check the new file.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_reports.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the state of the new module. Let me check what functions need to be `pub(crate)` so they can be called from `commands_state.rs`.
+
+The callers in `commands_state.rs`:
+- Line 439: `build_trace_report` → needs `pub(crate)` ✓ (already is)
+- Line 686: `build_policy_report` → needs `pub(crate)` — let me check
+- Line 706: `build_failure_fix_report` → needs `pub(crate)` — let me check
+- Line 738: `build_rollback_report` → needs `pub(crate)` — let me check
+- Line 758: `build_recent_failure_report` → needs `pub(crate)` — let me check
+- Line 1507: `classify_failure_payload` → needs `pub(crate)` — let me check
+- Line 3837: `classify_failure_event` → needs `pub(crate)` — let me check
+- Line 12363: `classify_failure_event` → needs `pub(crate)` — let me check
+
+Let me check which functions are `pub(crate)` vs private in the new module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "^pub(crate) fn\|^fn \|^pub(crate) struct\|^struct \|^pub(crate) enum\|^… ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me get better output that shows which are pub(crate) and which are plain fn.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "^pub(crate) fn\|^fn \|^pub(crate) struct\|^struct \|^pub(crate) enum\|^… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The grep seems to not differentiate. Let me just use read_file to check specific lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -nE "^(pub\(crate\) )?(fn|struct|enum) " src/commands_state_reports.rs ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the visibility situation:
+
+In `commands_state_reports.rs`:
+- `pub(crate)`: `build_trace_report`, `build_recent_failure_report`, `build_policy_report`, `build_failure_fix_report`, `RollbackReportRow`, `build_rollback_rows`, `build_rollback_report`, `build_rollback_payload`
+- Private: `FailureTaxonomy`, `format_failure_event_value`, `classify_failure_event`, `classify_failure_payload`, `taxonomy`, `payload_has_source`, `payload_mentions`, `failure_payload_text`, `collect_payload_text`, `format_rollback_row`, `rollback_row_payload`, `eval_failed`, `eval_status_label`, `payload_scalar_label`
+
+Now, looking at the callers in `commands_state.rs`:
+- Line 1507 calls `classify_failure_payload` → this needs to be `pub(crate)` 
+- Line 3837 calls `classify_failure_event` → this needs to be `pub(crate)`
+- Line 12363 calls `classify_failure_event` → this needs to be `pub(crate)`
+- Tests in commands_state.rs at lines 13920-14030 call `classify_failure_event`, `format_failure_event_value`, `build_trace_report`, `build_recent_failure_report` → these are tests within `commands_state.rs`
+
+Wait, tests at lines 13920+ are inside `commands_state.rs`. After moving, those tests would reference functions that no longer exist in the current module. I have two options:
+1. Move the tests to `commands_state_reports.rs` too
+2. Make the functions `pub(crate)` so the tests in commands_state.rs can still call them
+
+Let me check what tests exist that would be affected.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13915..13995 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The tests at lines 13920-14035 call these functions. Since the tests are within `#[cfg(test)] mod tests { ... }` inside `commands_state.rs`, after the move they need to either:
+1. Import the functions from `crate::commands_state_reports`
+2. Or the tests should be moved too
+
+Since the task says not to change behavior and the test functions are already in the test module, the simplest fix is to make `classify_failure_event`, `classify_failure_payload`, `format_failure_event_value`, and `FailureTaxonomy` with `pub(crate)` visibility. Then add `use crate::commands_state_reports::*;` to the test module.
+
+Actually, let me check where the test module is.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13845..13855 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the tests are in a `mod tests` inside `commands_state.rs` starting at line 13853. 
+
+Now let me also check the callers at lines 3837 and 12363 to understand if they're in the main code or in tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3830..3840  ▶ read src/commands_state.rs:12357..12367 ✓ (24ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So line 3837 is in regular code (not tests), and line 12363 is also in regular code. Both call `classify_failure_event`. These need to remain accessible after the move.
+
+Now I need to also check `payload_scalar_label` at line 733 of `commands_state_reports.rs` — this is duplicated. But wait, let me check — `payload_scalar_label` at line 2315 of `commands_state.rs` is NOT in the moved range. The task says not to move IO/formatting functions from lines 975-1606 range. But `payload_scalar_label` is at line 2315, which is after the moved range.
+
+Wait — why is `payload_scalar_label` in the new file? Let me look more carefully. Line 733 of the new file has `payload_scalar_label`. But in commands_state.rs it's at line 2315, which is AFTER `eval_status_label` (line 2301). But the task says the moved range ends at `eval_status_label`. 
+
+Hmm, `payload_scalar_label` at line 733 of commands_state_reports.rs is a duplicate. It shouldn't be in the reports module because it's a utility function that stays in commands_state.rs. But it's private in both, so it doesn't cause a compilation error... wait, would it? If both files define `fn payload_scalar_label`, and the reports module imports `use crate::commands_state::...`, there shouldn't be a conflict since they're private in both. But actually, if `commands_state_reports.rs` defines `payload_scalar_label` locally and it's private, that's fine.
+
+OK let me step back and think about this systematically.
+
+The plan:
+1. Delete lines 1599-2313 from `commands_state.rs` (from `FailureTaxonomy` through `eval_status_label`)
+2. Make private functions in `commands_state_reports.rs` that are called from `commands_state.rs` into `pub(crate)`:
+   - `classify_failure_event` → `pub(crate)`
+   - `classify_failure_payload` → `pub(crate)`
+   - `FailureTaxonomy` → `pub(crate)` (since `classify_failure_event` returns it)
+3. In `commands_state.rs`, add `use crate::commands_state_reports::*;` (or specific imports)
+4. In the test module within commands_state.rs, the tests need access to `classify_failure_event`, `format_failure_event_value`, `build_trace_report`, `build_recent_failure_report`. Some are already `pub(crate)`, but `format_failure_event_value` is private. Need to make it at least `pub(crate)` for tests, or better, add a `use` in the test module.
+
+Actually, wait. The tests are `#[cfg(test)] mod tests` inside `commands_state.rs`. The test module automatically has access to private items of the parent module. But if the functions are now in a DIFFERENT module (`commands_state_reports`), the test module in `commands_state.rs` won't have access to private functions there.
+
+So I need to:
+1. Make `format_failure_event_value` and `classify_failure_event` `pub(crate)` so tests in commands_state.rs can call them
+2. Or move the tests to the new module
+3. Or in the test module, add `use crate::commands_state_reports::*;`
+
+The cleanest approach: make the needed functions `pub(crate)` and add the appropriate `use` in the test module.
+
+Let me also check if `payload_scalar_label` in the new module is actually used by any functions there.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.2s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "payload_scalar_label" src/commands_state_reports.rs ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`payload_scalar_label` is used in the reports module! But it's also defined in `commands_state.rs` at line 2315. So it needs to either:
+1. Be imported from `commands_state` 
+2. Or kept as a private duplicate
+
+Since the function at line 733 in the new module is private, it won't conflict with the one in commands_state.rs. The new module already has its own copy at line 733.
+
+But wait, `payload_scalar_label` was NOT in the original list of functions to move. It seems like the previous attempt copied it into the new module. This is fine as a private helper - it's used by `build_policy_report` in the reports module.
+
+Now, let me plan the actual edits:
+
+### Step 1: In `commands_state_reports.rs`, make private functions `pub(crate)` as needed:
+
+- `FailureTaxonomy` → `pub(crate) struct`  (used as return type of `classify_failure_event` and `classify_failure_payload`)
+- `classify_failure_event` → `pub(crate) fn` (used in commands_state.rs at lines 3837, 12363, and in tests)
+- `classify_failure_payload` → `pub(crate) fn` (used in commands_state.rs at line 1507)
+- `format_failure_event_value` → `pub(crate) fn` (used in tests at line 13938)
+- `eval_failed` → `pub(crate) fn` (used in... let me check if it's used outside the reports module. Actually, `build_rollback_rows` and `rollback_row_payload` use it internally, but is it called from commands_state proper?)
+- `eval_status_label` → `pub(crate) fn` (same question)
+
+Let me check if `eval_failed` and `eval_status_label` are called from the main code in commands_state.rs outside of the moved range.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "eval_failed\|eval_status_label" src/commands_state.rs | grep -v "^1600:… ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me do a simpler grep.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "eval_failed\|eval_status_label" src/commands_state.rs ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `eval_failed` is used at lines 2117 and 2293, and `eval_status_label` is used at lines 2134 and 2301. All of these lines are within the range that will be moved/deleted! So after the move:
+- `eval_failed` is only used within `commands_state_reports.rs` (in `build_rollback_rows` and `rollback_row_payload`)
+- `eval_status_label` is only used within `commands_state_reports.rs` (in `build_rollback_rows` and the eval_status_label function itself)
+
+So these can stay private. Good.
+
+Now let me also check if `taxonomy` helper is used outside the moved functions:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "fn taxonomy\|\btaxonomy(" src/commands_state.rs | head -20 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All `taxonomy` calls are within the range that will be deleted. The function is only called from `classify_failure_event`. Good — it can stay private.
+
+Now let me check if `payload_has_source`, `payload_mentions`, `failure_payload_text`, `collect_payload_text` are used outside the moved range:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "payload_has_source\|payload_mentions\|failure_payload_text\|collect_pay… ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All used within the range that will be deleted. Good — they can stay private.
+
+Now for the functions that need to be `pub(crate)`:
+1. `FailureTaxonomy` — needs `pub(crate)` since `classify_failure_event` and `classify_failure_payload` return it and are used by commands_state.rs
+2. `classify_failure_event` — needs `pub(crate)` since it's called from commands_state.rs lines 3837, 12363, and tests
+3. `classify_failure_payload` — needs `pub(crate)` since it's called from commands_state.rs line 1507
+4. `format_failure_event_value` — needs `pub(crate)` since it's called from tests at line 13938
+5. `build_trace_report` — already `pub(crate)` ✓
+6. `build_recent_failure_report` — already `pub(crate)` ✓
+7. `build_policy_report` — already `pub(crate)` ✓
+8. `build_failure_fix_report` — already `pub(crate)` ✓
+9. `RollbackReportRow` — already `pub(crate)` ✓
+10. `build_rollback_rows` — already `pub(crate)` ✓
+11. `build_rollback_report` — already `pub(crate)` ✓
+12. `build_rollback_payload` — already `pub(crate)` ✓
+
+Now, let me plan the changes:
+
+### Changes to `commands_state_reports.rs`:
+1. `struct FailureTaxonomy` → `pub(crate) struct FailureTaxonomy`
+2. `fn format_failure_event_value` → `pub(crate) fn format_failure_event_value`
+3. `fn classify_failure_event` → `pub(crate) fn classify_failure_event`
+4. `fn classify_failure_payload` → `pub(crate) fn classify_failure_payload`
+
+### Changes to `commands_state.rs`:
+1. Delete lines 1599-2313 (the duplicated functions)
+2. Add `use crate::commands_state_reports::*;` somewhere near the top of the file, so the callers can find these functions.
+
+But wait — if I add `use crate::commands_state_reports::*;` at the top, then ALL the pub(crate) items become available. That includes `build_trace_report`, `build_recent_failure_report`, etc. And the callers in `commands_state.rs` would use them via the `use` statement. Let me verify this won't cause any name conflicts.
+
+Let me check if any of the moved public functions conflict with names still in `commands_state.rs`. The names are: `build_trace_report`, `build_recent_failure_report`, `build_policy_report`, `build_failure_fix_report`, `RollbackReportRow`, `build_rollback_rows`, `build_rollback_report`, `build_rollback_payload`, and after my changes: `FailureTaxonomy`, `format_failure_event_value`, `classify_failure_event`, `classify_failure_payload`.
+
+None of these should exist in the main body of `commands_state.rs` after deletion. Let me verify by checking if any of these identifiers appear outside the range we're deleting in `commands_state.rs`.
+
+Let me also check the `use` imports at the top of commands_state.rs to make sure I don't add any conflicting imports.
+
+Actually, there's another consideration. The test module at line 13853 `#[cfg(test)] mod tests` uses these functions. With `use crate::commands_state_reports::*;` at the file level (or even better, in the test module), the tests can access them.
+
+Let me also check for the test helper `event()` function that's used in the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13853..13903 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — the test module uses `use super::*;` which would pull in everything from the parent module `commands_state`. After moving the functions out, `use super::*;` won't bring in the moved functions. I need to add `use crate::commands_state_reports::*;` (or specific imports) to the test module.
+
+Actually, wait. Let me reconsider the approach. If I add `use crate::commands_state_reports::*;` at the top level of `commands_state.rs`, then all the pub(crate) items from commands_state_reports will be available in the whole file including the test module (since `use super::*` pulls from the parent module). But `use crate::commands_state_reports::*;` at the file level doesn't automatically make items available inside child modules. Child modules have their own namespace — they'd need their own import.
+
+Hmm actually, in Rust, child modules don't automatically inherit `use` statements from the parent module. So the test module needs its own import.
+
+Let me also add `use crate::commands_state_reports::*;` at the test module level. Actually, let me keep it simple — add `use crate::commands_state_reports::*;` at the file level of `commands_state.rs` for the main code callers, and also in the test module.
+
+Actually wait, I also need to check: does the test module reference any types that are now in `commands_state_reports` but were private? Let me look at the actual test code.
+
+Line 13920: `classify_failure_event(&context).class` — needs `classify_failure_event` to be accessible
+Line 13938: `format_failure_event_value(&failure)` — needs `format_failure_event_value`
+Line 13986: `build_trace_report(&events, "run-1")` — already pub(crate)
+Line 14030: `build_recent_failure_report(&events, 2)` — already pub(crate)
+
+I don't see `FailureTaxonomy` directly referenced in tests (it uses `.class`, `.retryable`, `.owner` which are field accesses). The type doesn't need to be importable for field access through a return value.
+
+OK here's my plan:
+
+### edits to commands_state_reports.rs:
+1. Line 12: `struct FailureTaxonomy` → `pub(crate) struct FailureTaxonomy`
+2. Line 18: `fn format_failure_event_value` → `pub(crate) fn format_failure_event_value`
+3. Line 154: `fn classify_failure_event` → `pub(crate) fn classify_failure_event`
+4. Line 219: `fn classify_failure_payload` → `pub(crate) fn classify_failure_payload`
+
+### edits to commands_state.rs:
+1. Add `use crate::commands_state_reports::{build_failure_fix_report, build_policy_report, build_recent_failure_report, build_rollback_payload, build_rollback_report, build_trace_report, classify_failure_event, classify_failure_payload, RollbackReportRow};` near the top (after the existing crate imports). Actually using `*` is simpler but could cause conflicts. Let me check what `eval_failed` and `eval_status_label` do — they're currently private but both files have them. If I use `*`, they'd still be private so they wouldn't be imported. That's safe.
+
+Actually, I should just do `use crate::commands_state_reports::*;` since only `pub(crate)` items will be imported.
+
+2. Delete lines 1599-2313.
+3. In the test module (around line 13855), add `use crate::commands_state_reports::{build_recent_failure_report, build_trace_report, classify_failure_event, format_failure_event_value};`
+
+Wait, there's a subtlety. The test module uses `use super::*;` which would have pulled in the moved functions when they were in the parent module. After deletion, those names are no longer available through `super::*`. But the test module also uses `use crate::commands_state_memory::...` so it already imports from other modules. Adding `use crate::commands_state_reports::*;` is natural.
+
+Let me now do the actual edits. Let me start with the approach.
+
+First, let me read the exact lines to delete from commands_state.rs to make sure I get the exact text right.
+
+Actually, the safest way is to use `edit_file` to make targeted changes. Let me do:
+
+1. Edit commands_state_reports.rs to add `pub(crate)`
+2. Delete the duplicate block from commands_state.rs
+3. Add imports to commands_state.rs
+
+For deleting the block from commands_state.rs, I need to match a unique text at the start and end of the block.
+
+Start (line 1598-1604):
+```
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FailureTaxonomy {
+    class: &'static str,
+    owner: &'static str,
+    retryable: bool,
+}
+```
+
+End (line 2313-2315):
+```
+}
+
+fn payload_scalar_label(payload: &Value, key: &str) -> String {
+```
+
+Wait, `}` is too generic. Let me use more context.
+
+Actually, let me use a different approach. I'll use `bash` with `sed` to delete the line range. Let me first verify the exact line numbers.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1594..1599  ▶ read src/commands_state.rs:2312..2317 ✓ (24ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The block to delete is lines 1599-2313. Line 1599 is `#[derive(Debug, Clone, PartialEq, Eq)]` and line 2313 is the closing `}` of `eval_status_label`.
+
+Let me now execute the changes:
+
+1. First, add `pub(crate)` to the needed functions in commands_state_reports.rs
+2. Delete lines 1599-2313 from commands_state.rs
+3. Add imports to commands_state.rs
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+Now I understand the state. The evaluator's feedback is clear: functions were copied to `commands_state_reports.rs` but never removed from `commands_state.rs`. I need to:
+
+1. Make necessary items `pub(crate)` in the new module
+2. Delete the duplicated block from `commands_state.rs`
+3. Add proper imports
+
+Let me start:
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with task #1: making functions pub(crate) in commands_state_reports.rs.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.0s (4 ✓)
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me edit the four private items in commands_state_reports.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - pub struct FailureTaxonomy {
+  + pub(crate) fn build_trace_report(events: &[Value], id: &str) -> Result<String, String> {
+  ✓ Auto-approved: edit: src/commands_state_reports.rs (1 → 1 lines)
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_reports.rs (1 → 1 lines)
+  - pub struct FailureTaxonomy {
+  + pub(crate) fn build_trace_report(events: &[Value], id: &str) -> Result<String, String> {
+ ✗ (15ms)
+    │ old_text not found in src/commands_state_reports.rs.
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the exact text at those lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_reports.rs:11..16 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — the `struct` is at line 12, and the `#[derive]` attribute is at line 11. I need to include the attribute in my match text. Let me fix all four edits.
+────────────────────────────────────────────────────────────────────────────────
+
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+  - struct FailureTaxonomy {
+  + pub(crate) struct FailureTaxonomy {
+  ✓ Auto-approved: edit: src/commands_state_reports.rs (2 → 2 lines)
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_reports.rs (2 → 2 lines)
+    #[derive(Debug, Clone, PartialEq, Eq)]
+  - struct FailureTaxonomy {
+  + pub(crate) struct FailureTaxonomy {
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me do the same for `format_failure_event_value`, `classify_failure_event`, and `classify_failure_payload`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - fn format_failure_event_value(event: &Value) -> String {
+  + pub(crate) fn format_failure_event_value(event: &Value) -> String {
+  ✓ Auto-approved: edit: src/commands_state_reports.rs (1 → 1 lines)
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_reports.rs (1 → 1 lines)
+  - fn format_failure_event_value(event: &Value) -> String {
+  + pub(crate) fn format_failure_event_value(event: &Value) -> String {
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now `classify_failure_event`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - fn classify_failure_event(event: &Value) -> FailureTaxonomy {
+  + pub(crate) fn classify_failure_event(event: &Value) -> FailureTaxonomy {
+  ✓ Auto-approved: edit: src/commands_state_reports.rs (1 → 1 lines)
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_reports.rs (1 → 1 lines)
+  - fn classify_failure_event(event: &Value) -> FailureTaxonomy {
+  + pub(crate) fn classify_failure_event(event: &Value) -> FailureTaxonomy {
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now `classify_failure_payload`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - fn classify_failure_payload(kind: &str, payload: &Value) -> FailureTaxonomy {
+  + pub(crate) fn classify_failure_payload(kind: &str, payload: &Value) -> FailureTaxonomy {
+  ✓ Auto-approved: edit: src/commands_state_reports.rs (1 → 1 lines)
+  ╭─ Turn 33 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_reports.rs (1 → 1 lines)
+  - fn classify_failure_payload(kind: &str, payload: &Value) -> FailureTaxonomy {
+  + pub(crate) fn classify_failure_payload(kind: &str, payload: &Value) -> FailureTaxonomy {
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me mark task #1 done and move to task #2: deleting lines 1599-2313 from commands_state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 34 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to use `edit_file` to remove the duplicate block. The block starts at line 1599 with:
+
+```
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FailureTaxonomy {
+```
+
+And ends at line 2313 with `}` (closing brace of `eval_status_label`), followed by blank line and `fn payload_scalar_label`.
+
+Let me use `edit_file` with the exact text. But the block is ~715 lines. Let me use `bash` with sed instead, or use `read_file` + `write_file` to get the exact text.
+
+Actually, using `edit_file` for a 715-line removal is fine. I just need the first few and last few lines of the block with unique context.
+
+Let me read the start and end more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 35 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1597..1605  ▶ read src/commands_state.rs:2309..2317 ✓ (22ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The start is at line 1599 and the end is at line 2313. The old_text needs to be unique to match. Let me use a unique start and end.
+
+The start context: the closing `}` of the previous function (line 1597), a blank line, and then the `#[derive]` attribute.
+
+The end context: the closing `}` of `eval_status_label` at line 2313, blank line, and `fn payload_scalar_label`.
+
+Let me construct a match. I'll use a large enough context from both sides. Actually, let me use `bash` to do this with `sed`, which is more reliable for large block deletions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 36 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -i '1599,2313d' src/commands_state.rs && wc -l src/commands_state.rs ✓ (13ms)
+
+

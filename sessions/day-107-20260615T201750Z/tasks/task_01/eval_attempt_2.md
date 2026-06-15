@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: The extraction was not completed — `commands_state.rs` remains at 23,839 lines (0 line reduction vs. the 500+ target). The new `src/commands_state_reports.rs` (744 lines) was created with copies of the target functions, but the originals were never removed from `commands_state.rs`, so the new module is dead code and the old code is still in place. The task requires moving functions, not duplicating them.

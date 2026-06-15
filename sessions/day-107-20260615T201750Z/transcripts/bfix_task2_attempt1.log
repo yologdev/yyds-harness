@@ -1,0 +1,516 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the test failure. The test `state::tests::run_completion_guard_reports_error_on_panic` is failing. This test is in `src/state.rs`, not in `src/commands_state.rs`. Let me understand what happened.
+
+The task was to extract IO utilities from `commands_state.rs` to `commands_state_io.rs`. The error is in `state::tests::run_completion_guard_reports_error_on_panic` which is in `src/state.rs`. 
+
+Let me look at the test to understand what's happening. The test panics at line 6560 with "test lifecycle error 107", and then at line 6575 it expects to find "RunCompleted" in the events but doesn't.
+
+Wait, the panic at line 6560 is likely the test itself panicking (it's a test that tests panic handling). Then at line 6575 it checks whether the events contain a RunCompleted event. The fact that the test is FAILING rather than passing means something changed.
+
+Let me look at the test and understand what's going on. The error says:
+
+```
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (60136) panicked at src/state.rs:6560:13:
+test lifecycle error 107
+
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (60136) panicked at src/state.rs:6575:9:
+should contain RunCompleted: {"id":"event_cc86445056f74631b2e9486084e57e8a"...
+```
+
+So the test panics (which is expected, as it's testing panic handling), but then the assertion at line 6575 fails because the captured events don't contain "RunCompleted".
+
+But wait - this test is in `state.rs`, not in `commands_state.rs`. The extraction task moved functions out of `commands_state.rs`. This shouldn't affect `state.rs` tests at all...
+
+Unless there's something else going on. Let me look at the actual state of the code. Let me check what changes were made.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat HEAD ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No git diff output - let me check the git status and see what's changed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's only an untracked file `src/commands_state_io.rs` - no modifications to `commands_state.rs` yet. The task was partially implemented (the new file was created) but the extraction from `commands_state.rs` was not completed. So the test failure is likely a pre-existing issue, not caused by this task.
+
+Wait, let me re-read the error. The test `state::tests::run_completion_guard_reports_error_on_panic` is failing. This is in `src/state.rs`. Let me look at the test to understand if it's a pre-existing failure or if something else is going on.
+
+Actually, looking more carefully, this test failure may be pre-existing and unrelated to the extraction task. But the user says "The tests broke after your implementation" so let me investigate.
+
+Let me look at the test first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:6545..6605 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This test is failing at line 6576 (`raw.contains("RunCompleted")`). The test is in `state.rs`, and it's checking that when a panic occurs, the `RunCompletionGuard` drops and writes a `RunCompleted` event with `"status":"error"`.
+
+Let me think about what could have changed. The new file `src/commands_state_io.rs` was created but it's untracked. The code in `commands_state.rs` was not modified (according to git status, no changes). So the test failure is likely pre-existing.
+
+Wait, but the user says "The tests broke after your implementation." Let me check... maybe the untracked file is causing issues? No, an untracked file shouldn't affect compilation.
+
+Let me check if there's actually an issue with the test itself that previously existed. Let me look at the `run_completed_payload` function in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn run_completed_payload' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the run_completed_payload function and RunCompletionGuard to understand the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:392..472 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `RunCompletionGuard` and `mark_run_completed_with_error` to understand what happens on panic:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct RunCompletionGuard' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the RunCompletionGuard implementation:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:343..393 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the logic. When `RunCompletionGuard` is dropped:
+1. If `RUN_HAD_ERROR` is set, it records with `"error"` status
+2. Otherwise, it records with `"completed"` status
+
+The test does:
+1. Creates a `RunCompletionGuard::completed_on_drop()` 
+2. Panics inside `catch_unwind`
+3. Checks that the events contain `RunCompleted` with `"status":"error"`
+
+For this to work, the panic hook must set `RUN_HAD_ERROR`. Let me look at `install_panic_hook`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn install_panic_hook' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the panic hook:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:31..81 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the panic hook sets `RUN_HAD_ERROR` and records a `FailureObserved` event. Then when the `RunCompletionGuard` drops (after `catch_unwind`), it checks `RUN_HAD_ERROR`, which should be `true`, so it records `RunCompleted` with `"status":"error"`.
+
+But the test is failing at line 6576: `raw.contains("RunCompleted")` returns false. The test output shows only `RunStarted` and `FailureObserved` events — no `RunCompleted`.
+
+This means the `RunCompletionGuard` is not being dropped properly, or `RUN_HAD_ERROR` is not being set, or the `mark_run_completed` function is failing.
+
+Wait — but the `_guard` is declared inside `catch_unwind`. When the panic happens inside `catch_unwind`, the stack is unwound, and local variables' destructors should run. But there's a subtlety with `catch_unwind` and destructors...
+
+Actually, `catch_unwind` does run destructors for local variables in the closure. The guard is declared as `let _guard = RunCompletionGuard::completed_on_drop();` which means it's a local variable that should be dropped when the closure exits (either normally or via panic unwinding).
+
+Let me think about this more carefully... when a panic happens inside `catch_unwind`, the stack unwinding does run destructors, including the `Drop` impl for `RunCompletionGuard`. So the `mark_run_completed` should be called.
+
+But wait — could this be a pre-existing test failure? Let me check whether the untracked `commands_state_io.rs` could have any effect.
+
+Actually, the file is untracked, meaning it's not compiled. So it has no effect on the test. The test failure must be pre-existing.
+
+Let me re-run just this specific test to confirm it's failing:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::run_c… ✓ (187ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes when run in isolation. This is a flaky test! The test failure is likely due to a race condition or thread-local state contamination from other tests running in parallel.
+
+Let me re-run the full test suite to see if it fails consistently:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::run_c… ✓ (212ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests pass when run in isolation. This is a test flakiness issue, likely caused by global state contamination from other tests running in parallel. The test uses `PANIC_HOOK_INSTALLED` (a `OnceLock`) and thread-local storage (`RUN_HAD_ERROR`), which can be affected by other tests.
+
+But the user is telling me the test broke after my implementation. Let me check if the `commands_state_io.rs` file has any issues, or if there's something else at play.
+
+Let me look at the created `commands_state_io.rs` to see if it's properly formed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state_io.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file is created but it's untracked. And the `commands_state.rs` wasn't modified. So the extraction wasn't completed (the functions weren't removed from `commands_state.rs` and the `mod` declaration wasn't added).
+
+Since this is an incomplete implementation (the extraction task isn't done), the test failure is likely a pre-existing flaky test. But the user is asking me to fix it, so let me investigate more carefully.
+
+Let me check if there's something in the `commands_state_io.rs` that could cause issues - but it's not even compiled since it's untracked and not referenced from `commands_state.rs`.
+
+Let me look at the test more carefully. The failure is that after the panic, `raw` doesn't contain "RunCompleted". Looking at the test output:
+
+```
+should contain RunCompleted: {"id":"event_cc86445056f74631b2e9486084e57e8a",..."kind":"RunStarted",...}
+{"id":"event_1ae62e0fbdf84b388eb319dd578dd4fd",..."kind":"FailureObserved",...}
+```
+
+So there are only 2 events: RunStarted and FailureObserved. The RunCompleted event is missing.
+
+This means either:
+1. The `RunCompletionGuard` Drop didn't execute (but `catch_unwind` should run destructors)
+2. The `mark_run_completed` function failed silently (but `fail_soft` is true)
+3. `RUN_HAD_ERROR` was false when the guard dropped
+
+Wait, actually, the `RUN_HAD_ERROR` could be false if `install_panic_hook` wasn't actually called! The `PANIC_HOOK_INSTALLED` is a `OnceLock` — if another test already installed the panic hook, `call_once` won't execute again. But the panic hook should still fire...
+
+Actually, I think I see the issue. `PANIC_HOOK_INSTALLED` is a `OnceLock`, which means `install_panic_hook` will only install the hook the first time it's called. The second call does nothing. So if another test called `install_panic_hook` first, the custom hook is already installed, and the panic should still trigger it.
+
+Hmm, but let me look at the full test output more carefully. The test panicked at line 6560 (the intentional panic), then panicked again at line 6575 (the assertion failure). The test harness caught both panics. The `RunCompletionGuard` should have been dropped during unwinding from the first panic.
+
+Wait — could there be an issue with global state mutation causing this test to fail when run in parallel with other tests? For example, if `init_global` is called with conflicting configs, or if `RECORDER` state is corrupted...
+
+Let me look at `init_global`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn init_global' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `init_global`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:301..343 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `record` function uses `GLOBAL_RECORDER.lock()`. If the lock is poisoned (because another test panicked while holding it), then `unwrap_or_else(|e| e.into_inner())` recovers the lock, but maybe the state is in an inconsistent state.
+
+Actually wait, let me look at this test more carefully. The test creates a new config with a temp dir and calls `init_global`. But `GLOBAL_RECORDER` is a global static. If another test also calls `init_global`, it will overwrite the recorder. That's the problem — running tests in parallel with global state that gets overwritten.
+
+But the issue is specifically that `RunCompleted` doesn't appear. Let me think about what could cause that...
+
+When the panic happens inside `catch_unwind`:
+1. The panic hook fires: sets `RUN_HAD_ERROR = true`, calls `record(FailureObserved, ...)` 
+2. The stack unwinds inside the `catch_unwind` closure
+3. `_guard` is dropped, `Drop` checks `RUN_HAD_ERROR` → should be true → calls `mark_run_completed("error")` → `record(RunCompleted, ...)`
+
+But if a concurrent test has reset `GLOBAL_RECORDER` after step 1 but before step 3, or if the recorder's `events_path` is different...
+
+Actually, the `GLOBAL_RECORDER` is set with the test's temp dir. If another test calls `init_global` with a different path, the `RunCompleted` record will go to that different path instead of the test's temp events file.
+
+That's a classic race condition with global state in tests. This test is inherently flaky because `GLOBAL_RECORDER` is global mutable state shared across all tests.
+
+But the user says "The tests broke after your implementation." So either:
+1. The test was always flaky and the user is wrong about the causality
+2. Something in the implementation actually caused it
+
+Since the implementation file (`commands_state_io.rs`) is untracked and not compiled, it can't be causing the issue. The test must be flaky.
+
+However, the user asked me to fix it. Let me see if I can make the test more robust. The issue is that the test uses global mutable state (`GLOBAL_RECORDER`) which conflicts with other tests.
+
+One fix would be to make the test use a different approach that doesn't rely on global state, but that would be a significant change. Another option is to ensure the test properly isolates its state.
+
+Actually, let me look at how other tests in the same module handle this. Maybe there's a pattern already used.
+
+Let me search for other tests that use `init_global`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'init_global' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are two tests calling `init_global` — the one that's failing (line 6554) and the next one (line 6600). Both use temp dirs. If they run in parallel, the second one will overwrite the first one's recorder.
+
+But wait, with `--test-threads=1`, they run serially. The failure was with the full test run which uses the default number of threads.
+
+Let me look at the `StateRecorder` to understand how `append` works:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct StateRecorder' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the StateRecorder:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:256..302 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the `StateRecorder` holds the `events_path` and writes events to it. If another test replaces the global recorder, the new recorder will have a different `events_path`, and the `RunCompleted` event will be written to that different path.
+
+The fix for this flaky test would be to ensure isolation. But actually, this is a fundamental issue with global mutable state. The existing code uses `GLOBAL_RECORDER` and `init_global`.
+
+Let me check if there's some test synchronization or if this test was always flaky. Let me look at the git log for this test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -10 -- src/s… ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test was added in commit `c132095`. Let me check what the test looks like in that commit:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show c132095 --stat ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is a recent change (Day 107). The test was added then. Let me look at that commit to see the exact test as written:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show c132095:src/state.rs … ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the test was added in Day 107, and it passed at that point. Now it's failing when run as part of the full test suite. This is likely due to global state interaction.
+
+Let me look at the `PANIC_HOOK_INSTALLED` OnceLock — if another test calls `install_panic_hook` first, this test's call to `install_panic_hook` is a no-op. But the hook should still be installed, so the panic should still trigger the hook.
+
+Wait, but there's a subtle issue. If another test has already initialized the global recorder with a different path, then when this test calls `init_global`, it replaces the global recorder. Then the panic hook fires `record(FailureObserved, ...)` which uses the current global recorder (the test's recorder). Then when the guard drops, it calls `record(RunCompleted, ...)` which also uses the test's recorder. So the events should go to the test's `events_path`.
+
+But what if another test is running simultaneously and calls `init_global` AFTER this test's `init_global` but BEFORE the guard drops? Then the `RunCompleted` would go to the other test's path.
+
+This is exactly the kind of race condition that happens when tests share global mutable state without synchronization.
+
+But actually, `init_global` uses `GLOBAL_RECORDER.lock()` which is a mutex, so it's not truly concurrent. But between the `init_global` and the `catch_unwind`, another test could run and overwrite the recorder.
+
+Let me think about what actually happens. The test:
+1. Creates temp dir
+2. Calls `init_global` — sets GLOBAL_RECORDER
+3. Calls `install_panic_hook` — only works first time
+4. Calls `catch_unwind(|| { let _guard = ...; panic!(...) })`
+5. Reads events_path
+
+If between steps 2 and 4, another test's `init_global` runs, the recorder is replaced. Then when the panic hook fires, it records `FailureObserved` to the other test's path. And when the guard drops, it records `RunCompleted` to the other test's path. The test's `events_path` only has `RunStarted`.
+
+This is exactly the failure mode: the test's `events_path` has `RunStarted` but no `FailureObserved` or `RunCompleted`.
+
+The fix would be to ensure the test uses the same global recorder throughout. But since this is a test-level isolation issue, one approach is to make the test save the current recorder before init and restore it after.
+
+Actually, a simpler approach: use `#[serial]` or the existing `serial_test` crate if available. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -r "serial_test" Cargo.to… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`serial_test` is available. Let me check how it's used elsewhere in the codebase:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && rg "serial_test" --include '*.… ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me use search instead:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'serial_test' (*.rs) ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `serial_test` is used extensively. The test `run_completion_guard_reports_error_on_panic` doesn't use `#[serial]` annotation. Let me check - other tests in `state.rs` that use global state might also need it. Let me search:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search '#\[serial\]' (*.rs) ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me try with escaped brackets:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'serial_test::serial' (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how one of these uses `#[serial]` to understand the pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/prompt_budget.rs:407..417 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I can see the pattern. The `#[serial_test::serial]` attribute is used to ensure tests don't run in parallel.
+
+Now let me check the state.rs test module to see if any tests there already use serial:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ search 'serial' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs (*.rs) ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No `serial_test` usage in `state.rs`. The test is missing the `#[serial]` annotation. Since it uses global mutable state (`GLOBAL_RECORDER`), it needs to be serialized with other tests that also use global state.
+
+But actually, looking at the issue more carefully, the question is: is this really a flaky test or did the user's implementation cause it?
+
+The user said: "The tests broke after your implementation." But the only change is the untracked `commands_state_io.rs` file, which isn't even compiled. So the test failure must be pre-existing.
+
+However, the user wants me to fix it. The proper fix is to add `#[serial_test::serial]` to the two tests that use `init_global` and global state.
+
+But wait — does using `#[serial]` on individual tests actually prevent them from running in parallel with other tests NOT marked `#[serial]`? Let me think...
+
+In `serial_test`, the `#[serial]` attribute creates a global mutex that serializes all tests with that annotation. Tests without `#[serial]` could still run in parallel with each other, but they'd be blocked by the `#[serial]` tests.
+
+However, that's not the full solution. If another non-serial test also calls `init_global`, it could still race with this test. The issue is that `init_global` replaces the global recorder.
+
+Let me look at the test more carefully. The failure occurs when the test's `init_global` is called, then another test's `init_global` is called, and then this test's `catch_unwind` runs. The `RunCompleted` goes to the wrong file.
+
+The real fix would be to either:
+1. Make `init_global` return a guard that restores the previous recorder on drop
+2. Use `#[serial]` on ALL tests that call `init_global`
+3. Make the test not depend on the global recorder at all
+
+Option 2 is the simplest and follows the existing pattern in the codebase.
+
+Let me check if there are other tests in state.rs that call `init_global`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "init_global" src/stat… ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are 3 test calls to `init_global` at lines 6475, 6554, and 6600. The ones at 6554 and 6600 are the two `run_completion_guard_*` tests. Let me check what's at line 6475:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:6460..6490 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so there are 3 tests that use `init_global` with global state:
+1. `panic_hook_records_to_state` (line 6465)
+2. `run_completion_guard_reports_error_on_panic` (line 6545)
+3. `run_completion_guard_reports_completed_on_normal_exit` (line 6591)
+
+All three use global mutable state and need to be serialized. The proper fix is to add `#[serial_test::serial]` to all three.
+
+But wait, let me first verify that the test is actually flaky and not consistently failing. Let me re-run the test a few times:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::run_c… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Can't pass multiple test names that way. Let me run them as separate filters:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::run_c… ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+When run with `--test-threads=1`, these tests pass. The issue is that the default test runner uses parallelism, and the 3 tests that use `init_global` can race with each other.
+
+The fix is to add `#[serial_test::serial]` to all 3 tests. Let me also add the import `use serial_test::serial;` to the test module.
+
+Let me check what imports are already in the test module:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:4755..4785 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the test module's start:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 33 ────────────────────────────────────────────────────────────╮
+  ▶ search '#\[cfg\(test\)\]' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, let me search for the module marker differently:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 34 ────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 3099 is too early for those tests at lines ~6465-6610. Let me check what the test module structure looks like. It seems like one big `mod tests` block. Let me look at the test imports:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 35 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:3099..3129 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so there's a single `mod tests` block. I need to add `use serial_test::serial;` inside the module and then add `#[serial]` or `#[serial_test::serial]` to the three tests.
+
+Actually, looking at the existing patterns, some tests use `#[serial_test::serial]` directly (like `prompt_budget.rs`) and others import `use serial_test::serial;` and then use `#[serial]`. Let me use the simpler approach of `#[serial_test::serial]` on each test since no import needed.
+
+Now, I'm fairly confident this is a flaky test caused by global state contamination. The fix is to add `#[serial_test::serial]` to the three tests that use `init_global` and global state.
+
+But wait — I need to also consider whether this is actually the right fix. Let me re-read the test failure output:
+
+```
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (60136) panicked at src/state.rs:6560:13:
+test lifecycle error 107
+
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (60136) panicked at src/state.rs:6575:9:
+should contain RunCompleted: {"id":"event_cc86445056f74631b2e9486084e57e8a",..."kind":"RunStarted"...}
+{"id":"event_1ae62e0fbdf84b388eb319dd578dd4fd",..."kind":"FailureObserved"...}
+```
+
+The events file contains `RunStarted` and `FailureObserved` but no `RunCompleted`. This means the `FailureObserved` was recorded (by the panic hook) but `RunCompleted` was not (from the guard drop). 
+
+Wait, that's interesting. Both `FailureObserved` AND `RunStarted` are in the same file, which means the panic hook recorded to the test's events_path. So the global recorder hasn't been replaced between `init_global` and the panic hook execution.
+
+But `RunCompleted` is missing. This could mean:
+1. The guard's `Drop` didn't execute
+2. The `mark_run_completed` recorded to a different path
+3. `RUN_HAD_ERROR` was false when the guard dropped
+
+Actually, looking more carefully, I think there might be a more subtle issue. If the panic hook was already installed by another test (because `PANIC_HOOK_INSTALLED` is a `OnceLock`), then `install_panic_hook()` in this test is a no-op. But the existing hook should still work.
+
+However, there's a potential issue: if another test previously installed a DIFFERENT panic hook that doesn't set `RUN_HAD_ERROR`, then... no, `install_panic_hook` uses `call_once`, so only the first call installs the hook. Subsequent calls are no-ops, but the hook set by the first call persists.
+
+Actually wait - `PANIC_HOOK_INSTALLED` is a `OnceLock`. If it was already set by a previous test, the `call_once` closure won't run. But `std::panic::set_hook` replaces the global panic hook. So if the first test installed the hook, it stays installed for the entire process lifetime. This should be fine.
+
+But what if `PANIC_HOOK_INSTALLED` is set but no hook was actually installed? That would happen if `install_panic_hook` was called, and then another test calls it again (which is a no-op), but the hook was somehow removed...
+
+Actually, I realize this might be a different issue. Let me look at how `PANIC_HOOK_INSTALLED` is defined:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 36 ────────────────────────────────────────────────────────────╮
+  ▶ search 'PANIC_HOOK_INSTALLED' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (7ms)
+
+

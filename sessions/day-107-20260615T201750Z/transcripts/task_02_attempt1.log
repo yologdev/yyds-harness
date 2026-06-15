@@ -1,0 +1,813 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to extract event file IO and formatting utilities from `src/commands_state.rs` into a new `src/commands_state_io.rs` module.
+
+First, let me read the evolve skill, then examine the current state of `commands_state.rs` to understand what needs to be extracted.
+
+Let me also check whether task_01 (failure reports extraction) has already been completed, since the task says to do this AFTER task_01.
+
+Let me start by reading the evolve skill and checking the current state of things.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ read skills/evolve/SKILL.md  ▶ $ wc -l src/commands_state.rs  ▶ $ ls src/commands_state*.rs 2>/dev/null ✓ (38ms)
+ ✓ (23ms)
+ ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now examine the relevant section of `commands_state.rs` to find the exact functions that need to be moved. The task says the functions are in the range ~lines 975-1600. Let me read that section.
+
+First, let me check if task_01 has been completed - i.e., is there a `commands_state_failures.rs` or was the failure reports extraction done?
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls src/commands_state_failures.rs 2>/dev/null; echo "---"; git log --oneline -5  ▶ read src/commands_state.rs:1..31 ✓ (8ms)
+ ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No `commands_state_failures.rs` exists, so task_01 hasn't been completed. But the task says this should be done AFTER task_01 or coordinate carefully. Let me check the session plan to see if there are multiple tasks.
+
+Let me check what session plan tasks exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/ 2>/dev/null  ▶ read src/commands_state.rs:960..1010 ✓ (8ms)
+ ✓ (37ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to find the full extent of the functions that need to be moved. I need to read from around line 975 to about 1610.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1010..1260  ▶ read src/commands_state.rs:1260..1460 ✓ (23ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to find the end of `event_payload_summary`, `compact_payload_summary`, `tool_arg_summary`, etc. Also need to check `format_failure_event_value` around line 1606 which should NOT be moved.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1460..1660 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me identify the helper functions used within the functions to move. For instance, `event_payload_summary` depends on `payload_str`, `payload_u64`, `payload_bool`, `payload_f64`, `context_included_block_names`, `payload_string_array`, `classify_failure_payload`, `classify_failure_event`, `event_timestamp`, `event_string`. Let me figure out which of these are already defined elsewhere or need to be handled.
+
+The task says:
+- Move functions from lines 11-25 (default_events_path, default_store_path) and ~975-1597 (from read_tail through tool_arg_summary)
+- Do NOT move format_failure_event_value (line 1606), FailureTaxonomy (line 1599), classify_failure_payload, classify_failure_event
+
+Wait, `classify_failure_payload` is used inside `event_payload_summary` at line 1507. And `event_payload_summary` should be moved. So I need to check if `classify_failure_payload` and `classify_failure_event` are defined before or after the function range.
+
+Actually, looking more carefully at the task description, it says to move functions in the range ~975-1600. But `compact_payload_summary` at 1572 and `tool_arg_summary` at 1577 are within that range and should be moved. The `FailureTaxonomy` struct at 1599 and `format_failure_event_value` at 1606 should NOT be moved.
+
+Let me check where `classify_failure_payload` is defined - it's used inside `event_payload_summary`.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check where the helper functions used by `event_payload_summary` are defined, and also check what imports the moved functions need.
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn classify_failure_payload' in src/commands_state.rs  ▶ search 'fn payload_str' in src/commands_state.rs  ▶ search 'fn payload_u64' in src/commands_state.rs ✓ (24ms)
+ ✓ (25ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `classify_failure_payload` is at line 1804 (after the functions I'm extracting), `payload_str` is at line 13532 (also after), and `payload_u64` is at line 13536 (also after). So the extracted functions depend on helpers that are defined later in the file.
+
+This means when I extract `event_payload_summary` and related functions into `commands_state_io.rs`, I'll need to make sure those helpers are accessible. Since `payload_str` is already `pub(crate)`, it can be accessed from the new module. But `payload_u64` and `classify_failure_payload` are private.
+
+Let me check what's needed more carefully. The functions I'm moving that call these helpers are:
+- `event_payload_summary` calls `payload_str`, `payload_u64`, `payload_bool`, `payload_f64`, `compact_payload_summary`, `tool_arg_summary`, `context_included_block_names`, `payload_string_array`, `classify_failure_payload`, `preview_line`
+- `format_event_value` calls `event_payload_summary`
+- `tool_arg_summary` calls `payload_str`, `payload_bool`, `preview_line`
+- `compact_payload_summary` calls `preview_line`
+
+The functions I plan NOT to move: `payload_str`, `payload_u64`, `payload_bool`, `payload_f64`, `classify_failure_payload`, `classify_failure_event`, `format_failure_event_value`, `context_included_block_names`, `payload_string_array`, `event_timestamp`, `event_string`.
+
+Wait, but the task says the moved functions are in the range ~975-1600. Looking at `compact_payload_summary` (line 1572) and `tool_arg_summary` (line 1577) - these are in the range and should be moved. But they depend on `payload_str`, `payload_u64`, `payload_bool`, etc. which are at line 13532+.
+
+So the new module `commands_state_io.rs` will need to import these from `crate::commands_state`. That's fine - `payload_str` is `pub(crate)`. But others like `payload_u64` are not public.
+
+Let me check which helpers are not pub(crate):
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 7.9s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn payload_bool' in src/commands_state.rs  ▶ search 'fn payload_f64' in src/commands_state.rs  ▶ search 'fn context_included_block_names' in src/commands_state.rs ✓ (26ms)
+ ✓ (26ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `payload_u64`, `payload_f64`, `payload_bool`, `context_included_block_names`, `payload_string_array`, and `classify_failure_payload` are all private functions (not `pub(crate)`).
+
+This means I have two options:
+1. Make those helpers `pub(crate)` so the new module can use them
+2. Keep the event formatters in `commands_state.rs` and only move the pure IO functions
+
+The task says to move functions in the range ~975-1600. Let me review what the task specifically says:
+
+**Event file IO:**
+- read_tail (975)
+- read_events (987) - pub(crate)
+- read_limited_events (991)
+- read_tail_events (1002)
+- export_events (1053)
+- import_events (1070)
+- apply_retention_policy (1108)
+- recover_events (1175)
+- validate_event_jsonl (1242)
+- write_normalized_jsonl (1256)
+- write_text_artifact (1268) - pub(crate)
+
+**Timestamp and path utilities:**
+- event_timestamp_ms (1276) - pub(crate)
+- retention_cutoff_ms (1283)
+- recovered_events_path (1289)
+- backup_events_path (1297)
+- default_retention_archive_path (1305)
+- retention_backup_path (1313)
+- current_time_ms (1321) - pub(crate)
+- format_timestamp_ms (1328) - pub(crate)
+- days_to_ymd (1349)
+
+**CLI argument helper:**
+- flag_value (1364) - pub(crate)
+- preview_line (1370) - pub(crate)
+
+**Event formatting/display:**
+- print_event_line (1381)
+- event_line_value (1388)
+- format_event_value (1394)
+- event_payload_summary (1417)
+- compact_payload_summary (1572)
+- tool_arg_summary (1577)
+
+The issue is that `event_payload_summary` calls `classify_failure_payload` (private, at line 1804), `payload_u64` (private, at line 13536), `payload_f64` (private), `payload_bool` (private), `context_included_block_names` (private), `payload_string_array` (private).
+
+So I need to handle this. Options:
+1. Make the needed private functions `pub(crate)` 
+2. Move those helpers too
+3. Keep the formatting functions that depend on those helpers in commands_state.rs, and only move pure IO/timestamp utilities
+
+Let me think about which approach is most consistent with the task. The task says to move functions in the range ~975-1600. But it also says "format_failure_event_value (line 1606) should NOT be moved — it belongs with the failure report builders extracted in task_01."
+
+The fact that the task calls out not moving `format_failure_event_value` but doesn't say anything about the other helpers suggests the task planner expects the formatting functions to move. 
+
+I think the cleanest approach is to make the needed private helpers `pub(crate)`. That way:
+- `payload_u64`, `payload_f64`, `payload_bool`, `classify_failure_payload` become `pub(crate)` 
+- Or alternatively, I could keep `event_payload_summary`, `compact_payload_summary`, `tool_arg_summary`, `format_event_value`, `event_line_value`, `print_event_line` in `commands_state.rs`
+
+Actually wait - looking at this more carefully, the task also needs to define new structs in the new module: `ImportReport`, `RecoveryIssue`, `RecoveryReport`, `RetentionReport` - are those used only by the IO functions? Let me check.
+
+`ImportReport` is used by `import_events`. 
+`RecoveryReport` is used by `recover_events`.
+`RetentionReport` is used by `apply_retention_policy`.
+
+These structs are only used within the IO functions being extracted and their callers. Let me check which callers use them.
+
+Actually, looking at the functions that need to move more carefully, let me see which ones are `pub(crate)` vs private:
+
+pub(crate): default_events_path, default_store_path, read_events, write_text_artifact, event_timestamp_ms, current_time_ms, format_timestamp_ms, flag_value, preview_line
+
+private: read_tail, read_limited_events, read_tail_events, export_events, import_events, apply_retention_policy, recover_events, validate_event_jsonl, write_normalized_jsonl, retention_cutoff_ms, recovered_events_path, backup_events_path, default_retention_archive_path, retention_backup_path, days_to_ymd, print_event_line, event_line_value, format_event_value, event_payload_summary, compact_payload_summary, tool_arg_summary
+
+The callers of the private functions within commands_state.rs need to also work. Since we're adding `mod commands_state_io;` and using `use` statements, the private functions in `commands_state_io.rs` won't be accessible from `commands_state.rs` unless we make them `pub(crate)` and re-export them.
+
+Let me look at which private functions are called from within (remaining) commands_state.rs:
+- `read_tail` - let me search
+- `read_limited_events` - let me search
+- `read_tail_events` - let me search
+- `export_events` - probably called by handle_export
+- `import_events` - probably called by handle_import
+- `apply_retention_policy` - probably called by handle_retention
+- `recover_events` - probably called by handle_recover
+- `validate_event_jsonl` - probably called by export_events and import_events
+- `write_normalized_jsonl` - probably called by retention/recover functions
+- `print_event_line` - probably called by handle_tail
+- `retention_cutoff_ms` - called by apply_retention_policy (which moves)
+- `recovered_events_path` - called by recover_events (which moves)
+- etc.
+
+So most of the private functions are only used within the IO module itself. The ones I need to check are `handle_export`, `handle_import`, `handle_retention`, `handle_recover`, `handle_tail` - these dispatch handlers call the IO functions.
+
+Let me look at which of these private functions are called from the remaining code in `commands_state.rs`.
+
+Actually, I think the simplest approach is:
+1. Move ALL the listed functions to `commands_state_io.rs`
+2. Make them all `pub(crate)` (since they were already accessible within the module, this doesn't expand visibility)
+3. Re-export the ones needed by other modules (already pub(crate)) 
+4. The structs (`ImportReport`, `RecoveryIssue`, `RecoveryReport`, `RetentionReport`) also move since they're only used by the IO functions
+
+Wait, actually `RecoveryReport` etc. might be used by callers in commands_state.rs for printing results. Let me search for their usage.
+
+Actually, let me just check if these structs are used outside their defining functions. Let me search for `ImportReport`, `RecoveryReport`, `RecoveryIssue`, `RetentionReport`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 14.1s (3 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ImportReport\|RecoveryReport\|RecoveryIssue\|RetentionReport' src/comma…  ▶ $ grep -n -F 'read_tail(' src/commands_state.rs | head -20  ▶ $ grep -n -F 'export_events(' src/commands_state.rs | head -20 ✓ (27ms)
+ ✓ (29ms)
+ ✓ (73ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `read_tail` is used at line 414 (presumably handle_tail) and line 23596 (test). `export_events` is used at line 643 (handle_export) and line 14056/14084 (tests).
+
+Let me also check which functions from the IO set are used by handle_* functions and which by the `handle_state_subcommand`. Let me also check handle_import, handle_retention, handle_recover.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.2s (3 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'handle_tail\|handle_export\|handle_import\|handle_retention\|handle_rec…  ▶ $ grep -n 'print_event_line\|event_line_value\|format_event_value' src/commands_st… ✓ (28ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, `print_event_line` is only used at line 424 (handle_tail) and in the implementations at 1381. `format_event_value` is heavily used throughout the file - many callers. `event_line_value` is used at 1382 and 14116 (test).
+
+So if I move `format_event_value` to a new module, I'll need to make it `pub(crate)` and re-export it so all existing callers still work.
+
+Let me also check if `event_payload_summary` is called from outside the formatting functions:
+
+Let me also check: does `format_event_value` call anything in the remaining portion of `commands_state.rs`? It calls `event_payload_summary` which calls `classify_failure_payload` (line 1804, private), `payload_u64` (13536, private), etc.
+
+So I need to handle these dependencies. The cleanest approach:
+1. Move ALL the listed IO/formatting functions to `commands_state_io.rs`
+2. Make the private helpers they depend on `pub(crate)` in `commands_state.rs` so `commands_state_io.rs` can use them
+3. Add `mod commands_state_io;` and re-exports in `commands_state.rs`
+
+OR, a simpler approach:
+- Only move the functions that are self-contained (the IO functions and timestamp utilities)
+- Keep the formatting/display functions (`print_event_line`, `event_line_value`, `format_event_value`, `event_payload_summary`, `compact_payload_summary`, `tool_arg_summary`) in `commands_state.rs`
+
+Let me re-read the task description more carefully:
+
+"Objective: Reduce commands_state.rs by moving ~600 lines of event file IO and formatting utility functions into a new `commands_state_io.rs` module."
+
+And the guideline says "These utilities are re-exported as `pub(crate)` symbols used by the extracted submodules"
+
+The task explicitly lists formatting functions as part of what should be moved, under "Event formatting/display". So the task wants them moved.
+
+I think the best approach is:
+1. Make needed helpers `pub(crate)` in commands_state.rs: `payload_u64`, `payload_f64`, `payload_bool`, `payload_string_array`, `context_included_block_names`, `classify_failure_payload`
+2. Move all listed functions to `commands_state_io.rs`
+3. Re-export the pub(crate) symbols from `commands_state_io` back through `commands_state.rs`
+
+But wait, this changes visibility of several functions from private to `pub(crate)`. That's not ideal for a pure refactor. 
+
+Actually, a better pattern: I can make the extracted functions in `commands_state_io.rs` import from `super::` (i.e., `commands_state`) for the helpers they need. That means the private functions stay in `commands_state.rs` and the new module uses `use super::` to access them.
+
+In Rust, a submodule CAN access `pub(crate)` items from its parent module, but NOT private items. So private functions in `commands_state.rs` would NOT be accessible from `commands_state_io.rs`.
+
+So the options are:
+a) Make helpers `pub(crate)` - changes visibility
+b) Move the helpers too - but they're used heavily in the remaining code
+c) Keep formatting functions in commands_state.rs - contradicts the task
+
+Let me go with (a) but only for the minimal set needed. Actually wait, let me reconsider. The task says ~600 lines should be extracted. Let me count:
+
+IO functions (read_tail through write_text_artifact): lines 975-1274 = ~300 lines
+Timestamp/path utilities (retention_cutoff_ms through days_to_ymd): lines 1276-1362 = ~87 lines
+CLI helpers (flag_value, preview_line): lines 1364-1379 = ~16 lines
+Formatting (print_event_line through tool_arg_summary): lines 1381-1597 = ~217 lines
+Structs (ImportReport, RecoveryIssue, RecoveryReport, RetentionReport): lines 1016-1051 = ~36 lines
+default_events_path, default_store_path: lines 11-25 = ~15 lines
+
+Total: ~300 + 87 + 16 + 217 + 36 + 15 = ~671 lines
+
+That's within the ~600 range the task mentions.
+
+Let me check what helpers the formatting functions need:
+- `format_event_value` → `event_payload_summary`
+- `event_payload_summary` → `payload_str`, `payload_u64`, `payload_f64`, `payload_bool`, `payload_string_array`, `context_included_block_names`, `classify_failure_payload`, `compact_payload_summary`, `tool_arg_summary`, `preview_line`
+- `compact_payload_summary` → `preview_line` (moved)
+- `tool_arg_summary` → `payload_str`, `payload_bool`, `preview_line`
+
+So the remaining helpers needed: `payload_str` (already pub(crate)), `payload_u64` (private), `payload_f64` (private), `payload_bool` (private), `payload_string_array` (private), `context_included_block_names` (private), `classify_failure_payload` (private).
+
+I need to make these `pub(crate)`. That's 6 functions to change visibility on. That feels like a reasonable tradeoff.
+
+Actually, wait. Let me reconsider the architecture. The task says this is a "pure code-move refactor" and to not change function behavior. Changing visibility from private to pub(crate) is technically not a behavior change but is a visibility change. The task doesn't explicitly forbid visibility changes for this purpose.
+
+Let me proceed with the plan:
+1. Make `payload_u64`, `payload_f64`, `payload_bool`, `payload_string_array`, `context_included_block_names`, and `classify_failure_payload` `pub(crate)` in commands_state.rs
+2. Create `commands_state_io.rs` with all the listed functions and structs
+3. Add `mod commands_state_io;` and re-exports in `commands_state.rs`
+4. Remove the moved functions from `commands_state.rs`
+
+But actually, I realize there can be a circular dependency issue. If `commands_state_io.rs` needs to import from `commands_state.rs` (for `payload_str`, `payload_u64` etc.), and `commands_state.rs` needs to import from `commands_state_io.rs`... that's fine in Rust, modules within the same crate can have circular dependencies through `super::`.
+
+Let me plan the edit:
+
+1. First, read the full list of functions to move and their exact line ranges
+2. Create `commands_state_io.rs` with all the moved code
+3. Edit `commands_state.rs` to:
+   a. Add `mod commands_state_io;`
+   b. Add re-exports
+   c. Remove moved functions
+   d. Make needed helpers `pub(crate)`
+
+Let me start with step 1: identify the exact code blocks to move.
+
+Actually, let me think about this differently to minimize the scope of visibility changes. I could move the formatting functions BUT keep them calling back into the parent module. That would require making the helpers `pub(crate)` though.
+
+Alternatively, I could keep the formatting functions in `commands_state.rs` and only move the IO/timestamp/CLI-helper functions. But the task explicitly lists them.
+
+Let me proceed with the full extraction and make the needed helpers `pub(crate)`.
+
+Wait, actually there's an even cleaner pattern: I can move ALL the listed functions PLUS the helper functions they depend on. But some of those helpers (like `payload_str`, `payload_u64`, `payload_bool`, `payload_f64`) are used everywhere in the remaining `commands_state.rs`. So moving them would require making them `pub(crate)` anyway and having the remaining code import them.
+
+OK, let me just go with making the needed helpers `pub(crate)`.
+
+Let me now plan the exact edits. I need to:
+
+1. Read the complete source of functions to move (lines 11-25, and 975-1597)
+2. Read the helper functions to make pub(crate) (lines ~1804, 2328, 2348, 13532, 13536, 13540, 13569, 13573)
+3. Create `commands_state_io.rs`
+4. Modify `commands_state.rs`
+
+Let me start reading the full extent.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 18.3s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the helper functions that need to become pub(crate).
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 1.6s (5 ✓)
+
+Let me now read the helper functions that the moved code depends on, plus the `read_tail` caller in `handle_tail` to understand how the moved functions are used:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1804..1824  ▶ read src/commands_state.rs:2328..2358  ▶ read src/commands_state.rs:2348..2358 ✓ (41ms)
+ ✓ (32ms)
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of `context_included_block_names` and the `payload_*` helpers at the bottom:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.5s (3 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2348..2363  ▶ read src/commands_state.rs:13530..13550 ✓ (9ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me read the `payload_f64` and `payload_bool` functions too:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13569..13584 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. Let me also check what `use` statements are at the top of `commands_state.rs` that the moved code depends on, so I know what to include in the new module.
+
+The moved code uses:
+- `Path`, `PathBuf` from `std::path`
+- `VecDeque` from `std::collections`
+- `Value` from `serde_json`
+- `crate::format::*` (for Color constants like YELLOW, RESET)
+- `crate::state` (for read_compatibility_events, normalize_event_json_line, compatibility_event_json_line, sqlite_projection_path, rebuild_sqlite_projection, ProjectionReport)
+- `crate::config::load_deepseek_config_file`
+- `crate::state::EvalResult` and `crate::state::HarnessPatch` (but these aren't used in the IO functions)
+- `rusqlite::{params, Connection}` (not used in IO functions)
+- `BTreeMap`, `BTreeSet` (not used in IO functions)
+
+The new module needs:
+```rust
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use serde_json::Value;
+```
+
+And it will call:
+- `crate::state::{read_compatibility_events, normalize_event_json_line, compatibility_event_json_line, sqlite_projection_path, rebuild_sqlite_projection}`
+- `crate::config::load_deepseek_config_file`
+- `super::{payload_str, payload_u64, payload_f64, payload_bool, payload_string_array, context_included_block_names, classify_failure_payload, preview_line, format_timestamp_ms, event_timestamp_ms, compact_payload_summary, tool_arg_summary}`
+
+Wait, actually `compact_payload_summary` and `tool_arg_summary` are being moved, so they'll be in the same module. `preview_line` is also being moved. `format_timestamp_ms` is being moved. `event_timestamp_ms` is being moved.
+
+So within the new module, the formatting functions can call each other directly. They only need `super::` for the helpers staying in `commands_state.rs`.
+
+Let me now create a detailed extraction plan:
+
+Move to `commands_state_io.rs`:
+1. `default_events_path` (line 11)
+2. `default_store_path` (line 19)
+3. `read_tail` (975)
+4. `read_events` (987)
+5. `read_limited_events` (991)
+6. `read_tail_events` (1002)
+7. `ImportReport` struct (1016)
+8. `RecoveryIssue` struct (1024)
+9. `RecoveryReport` struct (1031)
+10. `RetentionReport` struct (1041)
+11. `export_events` (1053)
+12. `import_events` (1070)
+13. `apply_retention_policy` (1108)
+14. `recover_events` (1175)
+15. `validate_event_jsonl` (1242)
+16. `write_normalized_jsonl` (1256)
+17. `write_text_artifact` (1268)
+18. `event_timestamp_ms` (1276)
+19. `retention_cutoff_ms` (1283)
+20. `recovered_events_path` (1289)
+21. `backup_events_path` (1297)
+22. `default_retention_archive_path` (1305)
+23. `retention_backup_path` (1313)
+24. `current_time_ms` (1321)
+25. `format_timestamp_ms` (1328)
+26. `days_to_ymd` (1349)
+27. `flag_value` (1364)
+28. `preview_line` (1370)
+29. `print_event_line` (1381)
+30. `event_line_value` (1388)
+31. `format_event_value` (1394)
+32. `event_payload_summary` (1417)
+33. `compact_payload_summary` (1572)
+34. `tool_arg_summary` (1577)
+
+Make pub(crate) in commands_state.rs:
+- `classify_failure_payload` (line 1804)
+- `payload_string_array` (line 2328)
+- `context_included_block_names` (line 2348)
+- `payload_u64` (line 13536)
+- `payload_bool` (line 13569)
+- `payload_f64` (line 13573)
+
+Wait, actually I realize there might be a cleaner approach. The `event_payload_summary` function at line 1417 calls many helpers. Instead of making all those helpers pub(crate), maybe I should keep the formatting functions in `commands_state.rs` and only extract the truly standalone IO and utility functions. But the task explicitly lists the formatting functions to move.
+
+Let me just go ahead. Let me write the code.
+
+Actually, let me also check: is `handle_tail` (line 412) the ONLY caller of the formatting functions from outside the set being moved? And where does `handle_tail` access `print_event_line`?
+
+I already checked - `print_event_line` is called at line 424. That's in `handle_tail`. So after moving `print_event_line` to the submodule, `handle_tail` needs to access it via `commands_state_io::print_event_line`. Since it's private, I'd need to make it `pub(crate)` in the submodule OR keep it accessible internally.
+
+Actually, in Rust, a parent module can access private items of its child modules. Wait, no — private items in a child module are NOT accessible from the parent. Only `pub` or `pub(crate)` items are accessible.
+
+So I need to make `print_event_line` `pub(crate)` in the new module so `handle_tail` can call it.
+
+Similarly, all the functions called from `handle_export`, `handle_import`, etc. need to be `pub(crate)` or at least visible from the parent.
+
+Let me check which functions are called from outside the moved set:
+- `read_tail` → called from `handle_tail` (line 414) and test (line 23596)
+- `export_events` → called from `handle_export` (line 643) and tests
+- `import_events` → called from `handle_import` (line 654) and tests
+- `apply_retention_policy` → called from `handle_retention` (line 559)
+- `recover_events` → called from `handle_recover` (line 516)
+- `validate_event_jsonl` → called from tests and from `export_events`, `import_events` (both moving)
+- `print_event_line` → called from `handle_tail` (line 424) 
+- `format_event_value` → called from MANY places throughout the file
+
+For functions that are only called internally within the moving set (like `read_limited_events`, `read_tail_events`, `write_normalized_jsonl`, `retention_cutoff_ms`, `recovered_events_path`, `backup_events_path`, etc.), they can stay private in the new module.
+
+For functions called from the remaining `commands_state.rs`: they need to be at least `pub(crate)` in the new module.
+
+Let me check each call:
+
+Actually, let me just plan to make all moved functions that are used from the parent `pub(crate)` in `commands_state_io.rs`. And for the ones re-exported for other modules, add those to the re-export list.
+
+Actually, the simplest approach: make nearly everything `pub(crate)` in the new module, and re-export everything through `commands_state.rs`. This preserves all existing access patterns. The only exception is truly internal functions that no one outside the set calls.
+
+Let me now create the new file.
+
+Let me read the complete range of code to move. I already have most of it. Let me read lines 1349-1400 (days_to_ymd through format_event_value) and make sure I have the full `context_included_block_names`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2348..2398  ▶ read src/commands_state.rs:1349..1399 ✓ (8ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the information I need. Let me also check what `use` statements are at the top that I'll need in the new module. The new module needs:
+- `std::collections::VecDeque` (for read_tail)
+- `std::path::{Path, PathBuf}`
+- `serde_json::Value`
+
+And it calls:
+- `crate::state::read_compatibility_events`
+- `crate::state::normalize_event_json_line`
+- `crate::state::compatibility_event_json_line`
+- `crate::state::sqlite_projection_path`
+- `crate::state::rebuild_sqlite_projection`
+- `crate::config::load_deepseek_config_file`
+- `super::payload_str` (already pub(crate))
+- `super::payload_u64` (needs pub(crate))
+- `super::payload_f64` (needs pub(crate))
+- `super::payload_bool` (needs pub(crate))
+- `super::payload_string_array` (needs pub(crate))
+- `super::context_included_block_names` (needs pub(crate))
+- `super::classify_failure_payload` (needs pub(crate))
+
+Also, the structs `ImportReport`, `RecoveryIssue`, `RecoveryReport`, `RetentionReport` need to be `pub(crate)` since they're used in the function return types that are called from the parent module.
+
+Let me now plan the exact code for `commands_state_io.rs`. I need to extract lines 11-25 and 975-1597.
+
+For the module, I'll use a slightly different approach. Rather than extracting line by line, let me read the exact text I need to extract, then write the new file.
+
+Actually, the most efficient way is to read the text with `cat` for the ranges I need, write the new file, then edit `commands_state.rs` to remove what was moved.
+
+Let me use `sed` to extract the ranges I need.
+
+Wait, I should use the `read_file` tool instead to precisely capture the text. Let me read all the blocks.
+
+Actually, let me just write the new file by copying the exact content from what I've already read. I can piece it together from my reads. Let me read any remaining bits I'm missing.
+
+I need to also read lines around the `handle_tail` function to see how it uses the moved functions, and the `handle_*` functions to see how they use the moved IO functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.8s (2 ✓)
+
+Now let me read the handle functions that call into the IO/formatting layer to understand which moved functions need to remain accessible:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:412..522  ▶ read src/commands_state.rs:516..566 ✓ (25ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I can see which moved functions are called from the remaining `commands_state.rs`:
+
+- `default_events_path` → pub(crate), called everywhere
+- `default_store_path` → pub(crate), called everywhere
+- `read_tail` → private, called from `handle_tail` → after move, needs pub(crate) OR we make it accessible
+- `read_events` → pub(crate), called from many places
+- `read_limited_events` → private, called from `handle_lifecycle` (line 451) → needs pub(crate) after move
+- `read_tail_events` → private, seems only internally used within IO functions? Let me check
+- `export_events` → private, called from `handle_export` (line 643) → needs pub(crate) after move
+- `import_events` → private, called from `handle_import` (line 654) → needs pub(crate) after move
+- `apply_retention_policy` → private, called from `handle_retention` (line 559 area) → needs pub(crate)
+- `recover_events` → private, called from `handle_recover` (line 526) → needs pub(crate)
+- `validate_event_jsonl` → private, called from `export_events` and `import_events` (both moving) → can stay private
+- `write_normalized_jsonl` → private, called from IO functions → can stay private
+- `write_text_artifact` → pub(crate)
+- `event_timestamp_ms` → pub(crate)
+- `retention_cutoff_ms` → private, called from `apply_retention_policy` (moving) → can stay private
+- `recovered_events_path` → private, called from `recover_events` (moving) → can stay private
+- `backup_events_path` → private, called from `recover_events` (moving) → can stay private
+- `default_retention_archive_path` → private, called from `apply_retention_policy` (moving) → can stay private
+- `retention_backup_path` → private, called from `apply_retention_policy` (moving) → can stay private
+- `current_time_ms` → pub(crate)
+- `format_timestamp_ms` → pub(crate)
+- `days_to_ymd` → private, called from `format_timestamp_ms` (moving) → can stay private
+- `flag_value` → pub(crate)
+- `preview_line` → pub(crate)
+- `print_event_line` → private, called from `handle_tail` (line 424) → needs pub(crate)
+- `event_line_value` → private, called from `print_event_line` (moving) → can stay private
+- `format_event_value` → private, used heavily throughout `commands_state.rs` → MUST be pub(crate)
+- `event_payload_summary` → private, called from `format_event_value` (moving) → can stay private
+- `compact_payload_summary` → private, called from `event_payload_summary` (moving) → can stay private
+- `tool_arg_summary` → private, called from `event_payload_summary` (moving) → can stay private
+
+Wait, but `format_event_value` is used ALL over the remaining `commands_state.rs` (I saw matches at lines 1610, 1686, 2750, 2761, 2771, 3738, 3753, 4531, 13401, 13454, 14122, 14165, 14166). So it needs to be `pub(crate)` from the new module. Same for any function it depends on, but since those are in the same module, they can be private.
+
+Also, structs `ImportReport`, `RecoveryIssue`, `RecoveryReport`, `RetentionReport` are used in return types of functions called from parent, so they also need to be `pub(crate)`.
+
+Let me also check `read_tail_events` - is it used from outside the moved set?
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.4s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'read_tail_events\|read_limited_events\|validate_event_jsonl\|write_norm… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `read_tail_events` is called at lines 838 and 937 from the remaining code. That means I need to make it `pub(crate)` too.
+
+Let me also check which tests call the moved functions and from where — they're probably in a `#[cfg(test)]` module at the bottom.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '#\[cfg(test)\]' src/commands_state.rs  ▶ $ grep -n 'fn read_tail\|fn export_events\|fn import_events\|fn validate_event\|fn… ✓ (14ms)
+ ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the tests are in a `#[cfg(test)]` module at line 13853. Since `commands_state_io` is a submodule of `commands_state`, the tests within `commands_state.rs` will need access to moved functions. They can use `super::commands_state_io::function_name` or I can import them into the test module.
+
+Since the tests are inside `commands_state.rs` in a `#[cfg(test)] mod tests { ... }`, and `commands_state_io` is a child module, the tests can access it as `super::commands_state_io::read_tail(...)` etc.
+
+But changing all the test calls would be a large refactor. Instead, I can add `use super::commands_state_io::*;` inside the test module to pull in everything. Or even better, keep re-exports.
+
+Wait, actually, the tests are at the module level with `use super::*;` most likely. Let me check.
+
+Actually, the tests are a `mod tests` inside `commands_state.rs`. If I do `use super::*;` in the test module, that won't bring in `commands_state_io` items. I'd need to do `use super::commands_state_io::*;` or similar.
+
+Hmm, but that would be a large change in the test code. Let me think about this differently.
+
+The simplest approach: make the moved functions that are used from `commands_state.rs` (including its tests) `pub(crate)` in `commands_state_io.rs`, then add re-exports in `commands_state.rs` like:
+```rust
+pub(crate) use commands_state_io::{
+    default_events_path, default_store_path, read_events, write_text_artifact,
+    event_timestamp_ms, current_time_ms, format_timestamp_ms,
+    flag_value, preview_line,
+};
+```
+
+But that only covers the `pub(crate)` symbols. The private functions like `read_tail`, `export_events`, etc. used by the handlers won't be accessible.
+
+So I need to either:
+a) Make them all `pub(crate)` and re-export them too
+b) Or use `use commands_state_io::*;` at the module level
+
+Actually, in Rust, `use module::*` only brings in public items. Private items in a submodule are NOT accessible from the parent, period. So I need to make all functions called from the parent `pub(crate)`.
+
+Let me list all functions that need to be `pub(crate)` in the new module:
+- `default_events_path` → already pub(crate)
+- `default_store_path` → already pub(crate)
+- `read_tail` → called from handle_tail (line 414), tests
+- `read_events` → already pub(crate)
+- `read_limited_events` → called from handle_lifecycle (line 451)
+- `read_tail_events` → called from lines 838, 937
+- `export_events` → called from handle_export (line 643), tests
+- `import_events` → called from handle_import (line 657), tests
+- `apply_retention_policy` → called from handle_retention (line 575)
+- `recover_events` → called from handle_recover (line 526), tests
+- `validate_event_jsonl` → called from export_events, import_events (both moving; also test at line 14279)
+- `print_event_line` → called from handle_tail (line 424)
+- `format_event_value` → called from many places in commands_state.rs
+- `ImportReport` struct → used in return type
+- `RecoveryIssue` struct → used in RecoveryReport
+- `RecoveryReport` struct → used in return type, handle_recover
+- `RetentionReport` struct → used in return type, handle_retention
+
+And the rest can stay private in `commands_state_io.rs`:
+- `write_normalized_jsonl` → only called from IO functions
+- `retention_cutoff_ms` → only called from apply_retention_policy
+- `recovered_events_path` → only called from recover_events
+- `backup_events_path` → only called from recover_events
+- `default_retention_archive_path` → only called from apply_retention_policy
+- `retention_backup_path` → only called from apply_retention_policy
+- `days_to_ymd` → only called from format_timestamp_ms
+- `event_line_value` → only called from print_event_line
+- `event_payload_summary` → only called from format_event_value
+- `compact_payload_summary` → only called from event_payload_summary
+- `tool_arg_summary` → only called from event_payload_summary
+
+OK, let me now write the code. First, I need to read the exact text of the full range I'm extracting. Let me capture the exact text using `cat` with line numbers to write the new file.
+
+Actually, I'll use the `read_file` tool to read the exact complete range. Let me also read the handle_* functions that I haven't read yet.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.0s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:555..635 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a complete picture. Let me proceed with creating the new file. Let me use the `bash` tool to extract the exact text from the source file for the ranges I need, then write the new module.
+
+Actually, the cleanest way to do this is:
+1. Use bash to extract lines 11-25 and 975-1597 from commands_state.rs
+2. Create the new module file with proper imports, module doc, and the extracted code
+3. Edit commands_state.rs to remove the moved code and add the mod declaration and re-exports
+
+Let me use `sed` to extract the ranges.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me extract the exact code blocks using bash.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '11,25p' src/commands_state.rs  ▶ $ sed -n '975,1597p' src/commands_state.rs ✓ (29ms)
+ ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output was truncated. Let me get the full content for both ranges into files so I can construct the new module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '11,25p' src/commands_state.rs > /tmp/commands_state_io_header.txt && wc …  ▶ $ sed -n '975,1597p' src/commands_state.rs > /tmp/commands_state_io_body.txt && wc… ✓ (30ms)
+ ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So 623 lines for the body + 15 lines for the header = 638 lines total. That's within the ~600 range the task mentions (close enough with structs and blank lines).
+
+Now let me construct the new `commands_state_io.rs` file. I need to:
+1. Add a module doc comment
+2. Add use statements for the types needed
+3. Include the extracted code with visibility adjustments
+
+The functions I need to make pub(crate) (because they're called from commands_state.rs):
+- read_tail → pub(crate)
+- read_limited_events → pub(crate)
+- read_tail_events → pub(crate)
+- export_events → pub(crate)
+- import_events → pub(crate)
+- apply_retention_policy → pub(crate)
+- recover_events → pub(crate)
+- validate_event_jsonl → pub(crate)
+- print_event_line → pub(crate)
+- format_event_value → pub(crate)
+- ImportReport → pub(crate)
+- RecoveryIssue → pub(crate)
+- RecoveryReport → pub(crate)
+- RetentionReport → pub(crate)
+
+Functions that can stay private (only called within moved functions):
+- write_normalized_jsonl → private
+- retention_cutoff_ms → private
+- recovered_events_path → private
+- backup_events_path → private
+- default_retention_archive_path → private
+- retention_backup_path → private
+- days_to_ymd → private
+- event_line_value → private
+- event_payload_summary → private
+- compact_payload_summary → private
+- tool_arg_summary → private
+
+But wait, there's a subtle issue. functions like `validate_event_jsonl` is called from tests in the parent module. And all the tests that call these functions are in a `#[cfg(test)] mod tests { ... }` block at the bottom of `commands_state.rs`. The test module can access `pub(crate)` items from the parent through `use super::*;` but NOT from sibling modules.
+
+So I need to make sure the tests can access these functions. The tests are in `commands_state.rs` itself. After the move, the functions will be in `commands_state_io.rs`. The test module in `commands_state.rs` would need to access them as `super::commands_state_io::function_name`.
+
+Options:
+a) Make all needed functions `pub(crate)` in `commands_state_io.rs` and re-export them from `commands_state.rs`
+b) Add `use super::commands_state_io::*;` in the test module
+c) Move the relevant tests to `commands_state_io.rs`
+
+Option (a) is the cleanest. Let me make ALL the moved functions `pub(crate)` in the new module, then re-export them all from `commands_state.rs`. This preserves all existing call sites.
+
+That's the safest approach. Let me do that.
+
+But wait, for private functions that are called from other moved functions (like `write_normalized_jsonl` called from `apply_retention_policy`), making them `pub(crate)` doesn't hurt — it just makes them more visible than needed. That's fine for a refactor.
+
+Actually, I realize I should keep truly internal functions private to avoid expanding the API surface. Let me only make `pub(crate)` the ones that are called from outside the new module:
+
+Functions called from the parent module (commands_state.rs including its tests):
+- `read_tail` → pub(crate) [handle_tail, tests]
+- `read_limited_events` → pub(crate) [handle_lifecycle]
+- `read_tail_events` → pub(crate) [lines 838, 937]
+- `export_events` → pub(crate) [handle_export, tests]
+- `import_events` → pub(crate) [handle_import, tests]
+- `apply_retention_policy` → pub(crate) [handle_retention]
+- `recover_events` → pub(crate) [handle_recover, tests]
+- `validate_event_jsonl` → pub(crate) [tests]
+- `print_event_line` → pub(crate) [handle_tail]
+- `format_event_value` → pub(crate) [many places]
+- plus all structs
+
+Let me write the full new file now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.3s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me create the new module. I'll write `commands_state_io.rs` with all the extracted functions. Let me construct the file content carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 38.2s (2 ✓)
+
+
+  + //! Event file IO, formatting, and utility functions — extracted from commands_state.rs.
+  + 
+  + use std::collections::VecDeque;
+  + use std::path::{Path, PathBuf};
+  + 
+  + use serde_json::Value;
+  + 
+  + // Re-imported from the parent module for display formatting
+  + use super::{
+  +     classify_failure_payload, context_included_block_names, payload_bool, payload_f64,
+  +     payload_str, payload_string_array, payload_u64,
+  + };
+  + 
+  + pub(crate) fn default_events_path() -> PathBuf {
+  +     let (config, _) = crate::config::load_deepseek_config_file();
+  +     config
+  +         .get("state_events")
+  +         .map(PathBuf::from)
+  ... (3 more lines)
+  ✓ Auto-approved: write: src/commands_state_io.rs (665 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ write src/commands_state_io.rs (665 lines) ✓ (30ms)
+
+

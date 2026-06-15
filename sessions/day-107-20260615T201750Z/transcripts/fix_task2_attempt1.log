@@ -1,0 +1,783 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the situation:
+
+1. Task 02 was to extract IO/formatting utilities from `commands_state.rs` into a new `commands_state_io.rs` module
+2. The evaluator says:
+   - `commands_state_io.rs` was created (665 lines) but is never declared as a module — no `mod commands_state_io;` in `lib.rs` or `commands_state.rs`
+   - The IO/formatting functions were never removed from `commands_state.rs` (still 23,839 lines)
+   - Required re-exports were never added
+   - The new file is dead code; no actual extraction occurred
+
+So I need to:
+1. Check if `commands_state_io.rs` exists and what's in it
+2. Add `mod commands_state_io;` in `commands_state.rs`
+3. Add re-exports in `commands_state.rs`
+4. Remove the duplicated functions from `commands_state.rs`
+5. Verify build passes
+
+Let me start by examining the current state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (12ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first check if `commands_state_io.rs` exists and what's in it, and check the current state of `commands_state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 1.8s (5 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if commands_state_io.rs exists and get its line count, and check the mod declarations in commands_state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l src/commands_state_io.rs 2>/dev/null || echo "FILE NOT FOUND"  ▶ $ head -5 src/commands_state_io.rs 2>/dev/null || echo "FILE NOT FOUND"  ▶ $ grep -n '^mod ' src/commands_state.rs | head -20  ▶ $ grep -n '^pub(crate) use' src/commands_state.rs | head -20 ✓ (63ms)
+ ✓ (61ms)
+ ✓ (60ms)
+ ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So:
+1. `commands_state_io.rs` exists with 665 lines
+2. No `mod commands_state_io;` in `commands_state.rs` (only `mod tests` at line 13854)
+3. No `pub(crate) use` re-exports
+
+Now I need to understand the structure. Let me look at the beginning of `commands_state.rs` to see other `mod` declarations and where to add ours. Also need to check `lib.rs` for how modules are declared.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.1s (4 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^mod \|^pub mod \|^pub(crate) mod ' src/commands_state.rs | head -20  ▶ $ wc -l src/commands_state.rs  ▶ $ grep -n '^mod commands_state\|^pub.*mod commands_state' src/lib.rs | head -10 ✓ (45ms)
+ ✓ (31ms)
+ ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So in `lib.rs`, the modules are declared as separate top-level modules, not as submodules of `commands_state`. They are:
+```
+mod commands_state;
+mod commands_state_crashes;
+mod commands_state_graph;
+mod commands_state_memory;
+```
+
+But the task says to add `mod commands_state_io;` in `commands_state.rs` (as a submodule). And the submodules `commands_state_crashes.rs`, `commands_state_graph.rs`, `commands_state_memory.rs` import from `crate::commands_state::`.
+
+Wait, let me check - are these submodules of `commands_state` or top-level? In Rust, `commands_state_crashes.rs` could be either:
+1. A top-level module declared in `lib.rs` as `mod commands_state_crashes;`
+2. A submodule of `commands_state` declared in `commands_state.rs` as `mod commands_state_crashes;`
+
+But the `lib.rs` shows them as top-level. And the task says they import from `crate::commands_state::`. Let me check...
+
+If they import from `crate::commands_state::`, that means `commands_state_crashes`, etc., are NOT submodules of `commands_state`. They're top-level modules that import symbols from `commands_state`. So the re-exports need to be in `commands_state` so they can be accessed as `crate::commands_state::symbol_name`.
+
+But wait, where do these submodules see `commands_state_crashes`? They must be in `lib.rs` as top-level `mod` declarations. Let me verify.
+
+Actually, looking at the lib.rs output, they are top-level modules. So the import path `crate::commands_state::` refers to the `commands_state` module (file `commands_state.rs`), and inside that module we need to declare `mod commands_state_io;` and add re-exports.
+
+Now let me understand the task better. The evaluator says:
+- No `mod commands_state_io;` in `commands_state.rs`
+- Functions were never removed from `commands_state.rs`
+- No re-exports
+
+So I need to:
+1. Check what functions are in `commands_state_io.rs` already
+2. Add `mod commands_state_io;` near the top of `commands_state.rs` (before the `use` statements ideally, or after them, just like other mod declarations)
+3. Add re-exports
+4. Remove the moved functions from `commands_state.rs`
+
+Let me first look at the functions in `commands_state_io.rs` to understand what was moved (or what should be there), and the corresponding functions in `commands_state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 7.0s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_io.rs (50 lines)  ▶ read src/commands_state.rs (70 lines) ✓ (26ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I can see the situation clearly:
+
+1. `commands_state_io.rs` exists with 665 lines, containing the extracted functions
+2. `commands_state.rs` still has the original functions (at least `default_events_path` and `default_store_path` are there at lines 11-25)
+3. No `mod commands_state_io;` declaration
+4. No re-exports
+
+I need to:
+1. Check what functions are in `commands_state_io.rs` (to know which ones to remove from `commands_state.rs`)
+2. Add `mod commands_state_io;` to `commands_state.rs` (near the top, after the use statements)
+3. Add `pub(crate) use` re-exports
+4. Remove the duplicated functions from `commands_state.rs`
+
+Let me first check what functions are defined in commands_state_io.rs (look at function signatures), and also check which functions in commands_state.rs need to be removed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^pub(crate) fn \|^pub fn \|^fn ' src/commands_state_io.rs  ▶ $ grep -n '^pub(crate) fn \|^pub fn \|^fn ' src/commands_state.rs | head -60 ✓ (17ms)
+ ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the functions in `commands_state.rs` and the ones in `commands_state_io.rs`. The functions that should be moved (lines 975-1606 in commands_state.rs) are:
+
+From the grep output, these are the ones in `commands_state.rs` that should move:
+- `read_tail` (line 975)
+- `read_events` (line 987)
+- `read_limited_events` (line 991)
+- `read_tail_events` (line 1002)
+- `export_events` (line 1053)
+- `import_events` (line 1070)
+- `apply_retention_policy` (line 1108)
+- `recover_events` (line 1175)
+- `validate_event_jsonl` (line 1242)
+- `write_normalized_jsonl` (line 1256)
+- `write_text_artifact` (line 1268)
+- `event_timestamp_ms` (line 1276)
+- `retention_cutoff_ms` (line 1283)
+- `recovered_events_path` (line 1289)
+- `backup_events_path` (line 1297)
+- `default_retention_archive_path` (line 1305)
+- `retention_backup_path` (line 1313)
+- `current_time_ms` (line 1321)
+- `format_timestamp_ms` (line 1328)
+- `days_to_ymd` (line 1349)
+- `flag_value` (line 1364)
+- `preview_line` (line 1370)
+- `print_event_line` (line 1381)
+- `event_line_value` (line 1388)
+- `format_event_value` (line 1394)
+- `event_payload_summary` (line 1417)
+- `compact_payload_summary` (line 1572)
+- `tool_arg_summary` (line 1577)
+
+Plus `default_events_path` (line 11) and `default_store_path` (line 19).
+
+The task says `format_failure_event_value` (line 1606) should NOT be moved.
+
+Now let me check which functions are in `commands_state_io.rs` already and verify completeness:
+
+From the `commands_state_io.rs` grep, I saw 30 functions. Let me verify which ones exactly.
+
+But first, let me understand the approach. The evaluator says `commands_state_io.rs` was created with 665 lines but is dead code. So the functions exist there. I need to:
+1. Add `mod commands_state_io;` to `commands_state.rs`
+2. Add re-exports
+3. Remove the functions from `commands_state.rs`
+
+But wait - there's a complication. The `commands_state_io.rs` uses `use super::{...}` to import from the parent module. If I declare it as a submodule of `commands_state`, that will work. The functions it imports from `super::` include `classify_failure_payload`, `context_included_block_names`, `payload_bool`, `payload_f64`, `payload_str`, `payload_string_array`, `payload_u64`.
+
+Let me verify those functions exist in `commands_state.rs`:
+
+Actually, let me first check the full list of functions in `commands_state_io.rs`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.7s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^pub(crate) fn \|^pub fn \|^fn ' src/commands_state_io.rs ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output is truncated (only 30 matches shown but the tool says there are more). Let me get the full list:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^pub(crate) fn \|^pub fn \|^fn ' src/commands_state_io.rs | cat ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `commands_state_io.rs` has all the functions listed in the task. The functions are already there, complete. Now I need to:
+
+1. Add `mod commands_state_io;` declaration in `commands_state.rs`
+2. Add re-exports
+3. Remove those same functions from `commands_state.rs`
+
+Let me check the `commands_state_io.rs` imports from super - it uses:
+```
+use super::{
+    classify_failure_payload, context_included_block_names, payload_bool, payload_f64,
+    payload_str, payload_string_array, payload_u64,
+};
+```
+
+I need to verify those functions exist in `commands_state.rs`. Let me check.
+
+But wait, there are a few things I need to consider:
+- `format_failure_event_value` (line 1606) should NOT be moved
+- Some functions in `commands_state_io.rs` are `pub(crate)` (used externally) and some are private (used only within the module or by internal callers). But the private ones like `retention_cutoff_ms`, `recovered_events_path`, `backup_events_path`, `default_retention_archive_path`, `retention_backup_path`, `days_to_ymd`, `event_line_value`, `event_payload_summary`, `compact_payload_summary`, `tool_arg_summary`, `write_normalized_jsonl` are called by other functions in the same module (both the ones being moved and the ones staying).
+
+Wait, some of those private functions might be called by code that's STAYING in `commands_state.rs`. For example, `handle_export` calls `export_events`, `handle_import` calls `import_events`, etc. But `handle_export` and `handle_import` are in `commands_state.rs` and won't move. So those functions must be accessible.
+
+If I move those functions to `commands_state_io` and they're `pub(crate)`, then `handle_export` in `commands_state.rs` can call `commands_state_io::export_events` directly, or I need re-exports.
+
+Actually wait - the handlers like `handle_export`, `handle_import`, `handle_recover`, `handle_retention` are all in `commands_state.rs` and they call these IO functions. So these IO functions need to be accessible from `commands_state.rs`. Since `commands_state_io` would be a submodule of `commands_state`, the functions can be accessed as either:
+- `commands_state_io::function_name` (if they're `pub(crate)`)
+- Or through re-exports: `use commands_state_io::function_name` in the parent
+
+The re-exports serve external callers (like `commands_state_crashes.rs` which imports from `crate::commands_state::`). But for internal calls within `commands_state.rs`, I can either use `commands_state_io::function_name` or rely on re-exports.
+
+Let me think about what the cleanest approach is:
+
+1. Add `mod commands_state_io;` to `commands_state.rs`
+2. Add re-exports for external consumers
+3. For internal callers in `commands_state.rs`, I'll need to either:
+   a. Change all call sites from `function_name(...)` to `commands_state_io::function_name(...)`
+   b. Or add a `use commands_state_io::*;` or specific imports
+
+The simplest approach for internal callers is a `use` import at the top. But I need to be careful not to import things that conflict.
+
+Actually, let me check if the functions being moved are called from within `commands_state.rs`:
+
+- `handle_export` calls `export_events` 
+- `handle_import` calls `import_events`
+- `handle_recover` calls `recover_events`
+- `handle_retention` calls `apply_retention_policy`
+- `handle_tail` likely calls `read_tail` or `read_tail_events`
+- Various handler functions call `read_events`, `write_text_artifact`, etc.
+
+So I'll need to make these accessible. The cleanest way:
+1. Add `use commands_state_io::*;` at the top of `commands_state.rs` after the `mod` declaration, bringing all pub(crate) items into scope
+2. Or use targeted imports
+
+But wait, some functions are NOT `pub(crate)` in `commands_state_io.rs` (like `retention_cutoff_ms`, `recovered_events_path`, `backup_events_path`, etc.). Those are only used internally by other IO functions. So they don't need to be exported. Let me verify which ones are called from `commands_state.rs` proper:
+
+Actually, the task says to include `write_normalized_jsonl` in the IO module - it's called by `handle_recover`. And `handle_export` calls `export_events`, etc.
+
+Let me check which IO functions are called from non-IO code in `commands_state.rs`:
+
+Looking at `commands_state.rs` handlers:
+- `handle_tail` (line 412): calls `read_tail_events` probably
+- `handle_export` (line 641): calls `export_events`
+- `handle_import` (line 654): calls `import_events`
+- `handle_recover` (line 516): calls `recover_events`
+- `handle_retention` (line 559): calls `apply_retention_policy`
+
+These are all `pub(crate)` in the IO module already, so they can be accessed via `commands_state_io::function_name` or via re-exports.
+
+Let me check the exact code that calls these. Let me look at `handle_export` and `handle_import` and `handle_recover` and `handle_retention`:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check how the handler functions in `commands_state.rs` call the IO functions to understand the import needs:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:641..671  ▶ read src/commands_state.rs:516..566  ▶ read src/commands_state.rs:559..609 ✓ (27ms)
+ ✓ (17ms)
+ ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check `handle_tail` to see what it calls:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.8s (3 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:412..437 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the pattern. The handler functions in `commands_state.rs` call these IO functions directly by name (they're all in the same module). When I move them to `commands_state_io.rs`, I'll need those calls to still work.
+
+The approach:
+1. Add `mod commands_state_io;` to `commands_state.rs`
+2. Add a `use commands_state_io::*;` line to bring all `pub(crate)` items into scope for internal callers
+3. Add `pub(crate) use` re-exports for external consumers (commands_state_crashes.rs, etc.)
+4. Remove the moved functions from `commands_state.rs`
+
+But wait, I need to also handle the import from `super::` in `commands_state_io.rs`. Let me check if the functions referenced from `super::` exist:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^fn classify_failure_payload\|^fn context_included_block_names\|^fn pay… ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, those functions exist in `commands_state.rs`. When `commands_state_io` is a submodule of `commands_state`, the `super::` imports will resolve correctly.
+
+Now let me understand the plan:
+
+1. Add `mod commands_state_io;` to `commands_state.rs` near the top (after `use` statements)
+2. Add re-exports
+3. Remove the moved functions from `commands_state.rs`
+
+But there's a subtlety: `commands_state_io.rs` imports from `super::` (i.e., from `commands_state.rs`). If I remove those functions from `commands_state.rs`, the imports will still work because `super::` refers to the parent module's namespace, which includes any `use` imports and any other `pub` items in `commands_state.rs`.
+
+Wait, `super::` in a submodule refers to the parent module's own namespace, not what's re-exported. So `super::payload_bool` in `commands_state_io.rs` looks for `payload_bool` in `commands_state.rs`. Since `payload_bool` is still in `commands_state.rs` (it's not one of the moved functions), this should be fine.
+
+Now let me check: which functions are being kept in `commands_state.rs` and which are being moved? Let me verify the boundaries.
+
+From the task:
+- Functions to move: `read_tail` through `tool_arg_summary` (lines 975-1577), plus `default_events_path` (line 11) and `default_store_path` (line 19)
+- `format_failure_event_value` (line 1606) should NOT be moved
+
+I also need to check `handle_tail` calls `print_event_line` which IS being moved. But `handle_tail` is a handler that stays. So after the move, `handle_tail` will need to access `print_event_line` from the submodule. Since `print_event_line` is `pub(crate)` in `commands_state_io.rs`, I can access it via `commands_state_io::print_event_line(...)` or via a `use` import.
+
+Let me also check what other functions in `commands_state.rs` call the moved functions:
+- `handle_tail` calls `default_events_path`, `read_tail`, `print_event_line`
+- `handle_trace` calls `default_events_path`, `read_events`
+- `handle_export` calls `default_events_path`, `export_events`
+- `handle_import` calls `default_events_path`, `default_store_path`, `import_events`
+- `handle_recover` calls `default_events_path`, `default_store_path`, `recover_events`
+- `handle_retention` calls `default_events_path`, `default_store_path`, `apply_retention_policy`, `current_time_ms`
+- `handle_state_summary` probably calls some of these
+- `handle_lineage` probably calls some of these
+
+So all these handlers need access to the IO functions. The cleanest approach is a `use commands_state_io::*;` right after the `mod` declaration.
+
+Now let me also check what the re-exports should cover. The task mentions:
+```rust
+pub(crate) use commands_state_io::{
+    default_events_path, default_store_path, read_events, write_text_artifact,
+    event_timestamp_ms, current_time_ms, format_timestamp_ms,
+    flag_value, preview_line,
+};
+```
+
+Let me verify what `commands_state_crashes.rs`, `commands_state_graph.rs`, and `commands_state_memory.rs` actually import from `crate::commands_state::`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'crate::commands_state::' src/commands_state_crashes.rs src/commands_sta… ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full import lists:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:1..11  ▶ read src/commands_state_memory.rs:1..21  ▶ $ grep -n 'crate::commands_state::' src/commands_state_graph.rs ✓ (39ms)
+ ✓ (33ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me get the full list of imports from `commands_state_graph.rs`:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.0s (3 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep 'crate::commands_state::' src/commands_state_graph.rs | head -10 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output is truncated. Let me get all lines with `crate::commands_state::` from commands_state_graph.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'crate::commands_state::' src/commands_state_graph.rs ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output is being truncated by the tool. Let me use a different approach - read the first 40 lines of commands_state_graph.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs (45 lines) ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the imports needed. Let me summarize:
+
+**Imports from `commands_state_crashes.rs`:**
+- `default_events_path`, `event_string`, `event_timestamp_ms`, `flag_value`, `format_timestamp_ms`, `read_events`
+
+**Imports from `commands_state_memory.rs`:**
+- `current_time_ms`, `default_events_path`, `default_store_path`, `event_string`, `evidence_ids`, `flag_value`, `payload_str`, `preview_line`, `push_report_section`, `read_events`, `write_text_artifact`
+
+**Imports from `commands_state_graph.rs`:**
+- `default_events_path`, `default_store_path`, `flag_value`, `infer_graph_node_kind` + all the `build_graph_*` functions
+
+So the re-exports I need to provide from `commands_state.rs` for these IO functions are:
+- `default_events_path` ✓
+- `default_store_path` ✓
+- `read_events` ✓
+- `event_timestamp_ms` ✓
+- `flag_value` ✓
+- `format_timestamp_ms` ✓
+- `current_time_ms` ✓
+- `preview_line` ✓
+- `write_text_artifact` ✓
+
+The task's suggested re-export list matches what's needed. But I should also check that `commands_state_io.rs` doesn't need `use` imports adjusted. Let me look at what it imports from `super::`:
+
+```
+use super::{
+    classify_failure_payload, context_included_block_names, payload_bool, payload_f64,
+    payload_str, payload_string_array, payload_u64,
+};
+```
+
+These are all functions that remain in `commands_state.rs`, so this is fine.
+
+Now let me also check what `commands_state_io.rs` uses from the external crates. It uses:
+- `std::collections::VecDeque`
+- `std::path::{Path, PathBuf}`
+- `serde_json::Value`
+
+And it also likely uses `crate::state::read_compatibility_events`, `crate::state::sqlite_projection_path`, `crate::config::load_deepseek_config_file`, `crate::format::*` maybe, `crate::state::*` maybe.
+
+Let me verify the full imports in commands_state_io.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check the full imports of `commands_state_io.rs`:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_io.rs (15 lines) ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, now I have a clear picture. Let me also check what the `format` module items are used in `commands_state_io.rs` - specifically the `event_payload_summary` and `format_event_value` functions. They might use `crate::format::*` items.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'crate::' src/commands_state_io.rs | head -20 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have all the information I need. The `commands_state_io.rs` file uses:
+- `crate::config::load_deepseek_config_file`
+- `crate::state::sqlite_projection_path`
+- `crate::state::read_compatibility_events`
+- `crate::state::rebuild_sqlite_projection`
+- `crate::state::normalize_event_json_line`
+- `crate::state::compatibility_event_json_line`
+- `crate::state::ProjectionReport`
+- `super::classify_failure_payload`, etc.
+
+None of these are being moved, so the imports are correct.
+
+Now let me also check if `commands_state_io.rs` uses `crate::format::*` items (like color constants). Let me check for format usage:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'RED\|YELLOW\|GREEN\|DIM\|RESET\|BOLD\|BLUE\|CYAN\|MAGENTA\|WHITE' src/c… ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No `crate::format::*` usage in `commands_state_io.rs`. The formatting is done via the `super::` imports of helper functions.
+
+Now let me also check what the functions being removed from `commands_state.rs` use internally (for dependencies that might only be in `commands_state.rs`'s `use` statements). For instance, do the IO functions use `rusqlite`, `BTreeMap`, etc.?
+
+Let me check what imports in `commands_state.rs` are used ONLY by the functions being moved:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'use std::collections::VecDeque\|use std::collections::BTreeMap\|use std… ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The imports `rusqlite`, `serde_json::Value`, `std::collections::VecDeque`, `std::path::{Path, PathBuf}`, and `std::collections::{BTreeMap, BTreeSet}` are all also used by the code that stays in `commands_state.rs`. So I don't need to worry about removing imports.
+
+Now, let me also check: the IO functions use `crate::state::ProjectionReport` and `crate::state::*`. Are those imported in `commands_state_io.rs`? Let me check:
+
+Actually, `commands_state_io.rs` uses `crate::state::ProjectionReport` directly with full path. It doesn't have a `use crate::state::*` import. Good.
+
+Now the key question: do the functions in `commands_state_io.rs` use any symbols from `commands_state.rs` that are NOT in the `super::` import list? Let me check the `compact_payload_summary` and `event_payload_summary` functions in detail to see what they call:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_io.rs:476..506  ▶ read src/commands_state_io.rs:640..670 ✓ (27ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The functions `event_payload_summary`, `compact_payload_summary`, and `tool_arg_summary` call:
+- `payload_str`, `payload_u64`, `payload_bool` — all imported from `super::`
+- `preview_line` — this is defined in `commands_state_io.rs` itself (it's one of the moved functions)
+- `tool_arg_summary` — defined in `commands_state_io.rs`
+
+So all dependencies are within `commands_state_io.rs` itself or from `super::`. Good.
+
+Now let me also check `format_event_value` and other display functions:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_io.rs:453..478 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `format_event_value` only uses:
+- `event_payload_summary` — from same module
+- `serde_json::Value` methods
+
+Now I have full confidence that the extraction is clean. Let me proceed.
+
+**Plan:**
+1. Add `mod commands_state_io;` declaration in `commands_state.rs` after line 9 (after the `use std::path::{Path, PathBuf};` import)
+2. Add `use commands_state_io::*;` on the next line to bring all `pub(crate)` functions into scope for internal callers
+3. Add `pub(crate) use` re-exports below
+4. Remove all the moved functions from `commands_state.rs`
+
+Wait, actually, if I use `use commands_state_io::*;`, that brings EVERYTHING public into scope, including items that will be re-exported. That's fine — it's a convenience for internal callers in `commands_state.rs`.
+
+But actually, there might be a conflict if `commands_state_io::*` includes things with the same name as items defined in `commands_state.rs`. Let me check:
+
+Functions that stay in `commands_state.rs`:
+- `handle_state_subcommand`, `handle_init`, `handle_doctor`, `group_event_types`, `human_bytes`, `handle_tail`, `handle_trace`, etc.
+- `classify_failure_payload`, `context_included_block_names`, `payload_bool`, `payload_f64`, `payload_str`, `payload_string_array`, `payload_u64`, etc.
+- `format_failure_event_value`, `build_trace_report`, `build_recent_failure_report`, etc.
+
+Functions moving to `commands_state_io.rs`:
+- `default_events_path`, `default_store_path`, `read_tail`, `read_events`, `read_limited_events`, `read_tail_events`, `export_events`, `import_events`, `apply_retention_policy`, `recover_events`, `validate_event_jsonl`, `write_normalized_jsonl`, `write_text_artifact`, `event_timestamp_ms`, `retention_cutoff_ms`, `recovered_events_path`, `backup_events_path`, `default_retention_archive_path`, `retention_backup_path`, `current_time_ms`, `format_timestamp_ms`, `days_to_ymd`, `flag_value`, `preview_line`, `print_event_line`, `event_line_value`, `format_event_value`, `event_payload_summary`, `compact_payload_summary`, `tool_arg_summary`
+
+No naming conflicts. Good.
+
+But wait — `write_normalized_jsonl` is NOT `pub(crate)` in `commands_state_io.rs`. If I use `use commands_state_io::*;`, it won't import private items. But `handle_recover` calls... let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'write_normalized_jsonl\|event_line_value\|event_payload_summary\|compac… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check which callers in commands_state.rs (outside the moved functions) call these private IO functions:
+
+From the grep, the callers that are in the section I need to remove (these are within the moved functions themselves):
+- Lines 1056, 1078, 1118, 1142, 1144, 1148, 1150, 1202, 1215, 1216 - these are inside `export_events`, `import_events`, `apply_retention_policy`, `recover_events` which are all being moved
+- Lines 1345 - inside `format_timestamp_ms` which is being moved
+- Lines 1382, 1413-1568 - inside `print_event_line`, `format_event_value`, `event_payload_summary` which are all being moved
+- Line 12273 - let me check what this is
+- Line 14116 - in tests
+- Line 14453 - in tests
+
+Let me check line 12273:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:12270..12280 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is in the graph builder section. `tool_arg_summary` is called from a function that stays in `commands_state.rs`. But `tool_arg_summary` is NOT `pub(crate)` in `commands_state_io.rs` — it's private! So I need to make it `pub(crate)` OR I need to handle this differently.
+
+Wait, let me re-check the function signature in `commands_state_io.rs`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^fn tool_arg_summary\|^pub.*fn tool_arg_summary' src/commands_state_io.… ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `tool_arg_summary` is private in both. But it's called from `commands_state.rs` at line 12273 (which is NOT being moved). So after the move, `tool_arg_summary` needs to be accessible from `commands_state.rs`. I need to make it `pub(crate)` in `commands_state_io.rs`, or keep it accessible via some other mechanism.
+
+Also, let me check what other private functions in `commands_state_io.rs` are called from outside the moved functions in `commands_state.rs`:
+
+Actually, the call at line 12273 in `commands_state.rs` is within the `graph_tool_events_payload_summary` or similar function. After the extraction, `tool_arg_summary` is in `commands_state_io.rs` and is private. If `commands_state_io` is a submodule, then `commands_state.rs` code can't access private items of the submodule.
+
+So I need to either:
+1. Make `tool_arg_summary` `pub(crate)` in `commands_state_io.rs`
+2. Or find another solution
+
+Let me check if there are other private functions called from outside the moved block. Let me also check `event_line_value`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'event_line_value\|compact_payload_summary\|event_payload_summary\|tool_… ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me categorize:
+
+**Callers in code that STAYS in `commands_state.rs` (not being moved):**
+
+Lines 414, 451, 838, 937 — These are in `handle_tail`, `handle_trace`, `handle_why`, `handle_state_summary`. They call `read_tail`, `read_limited_events`, `read_tail_events`. These are `pub(crate)` in `commands_state_io.rs`, so they'll be accessible.
+
+Line 12273 — Calls `tool_arg_summary`. This is private in both files. After the move, `commands_state.rs` can't access it. I need to make it `pub(crate)` in `commands_state_io.rs`.
+
+Lines 14116 — In tests (`mod tests`). Calls `event_line_value`. After the move, tests in `commands_state.rs` can't access `event_line_value` from `commands_state_io.rs` unless it's `pub(crate)`.
+
+Lines 23596-23597 — In tests. Call `read_tail`. This is `pub(crate)`, so accessible.
+
+**Callers in code being MOVED (these will move with the functions):**
+Lines 1006, 1056, 1078, 1118, 1142, 1144, 1148, 1149, 1150, 1202, 1215, 1216, 1345, 1382, 1413, 1421, 1424, 1427, 1444, 1464, 1481, 1568 — These are all inside the moved functions.
+
+So I need to make `tool_arg_summary` and `event_line_value` `pub(crate)` in `commands_state_io.rs` since they're called from outside the IO module within `commands_state.rs`.
+
+Let me also check if `event_payload_summary`, `compact_payload_summary`, `validate_event_jsonl`, `write_normalized_jsonl`, `retention_cutoff_ms`, `recovered_events_path`, `backup_events_path`, `default_retention_archive_path`, `retention_backup_path`, `days_to_ymd`, `read_limited_events`, `read_tail_events` are called from outside:
+
+- `event_payload_summary` — called from `format_event_value` (moved) only. No external callers in `commands_state.rs`. But it's called from within the moved code. OK.
+- `compact_payload_summary` — called from `event_payload_summary` (moved) only. OK.
+- `validate_event_jsonl` — called from `export_events` and `import_events` (moved). OK.
+- `write_normalized_jsonl` — called from `apply_retention_policy` and `recover_events` (moved). OK.
+- `retention_cutoff_ms`, `recovered_events_path`, `backup_events_path`, `default_retention_archive_path`, `retention_backup_path` — called from `apply_retention_policy` and `recover_events` (moved). OK.
+- `days_to_ymd` — called from `format_timestamp_ms` (moved). OK.
+- `read_limited_events` — called from `handle_trace` (line 451, stays) and within moved code. IS `pub(crate)`. OK.
+- `read_tail_events` — called from `handle_why` (line 838) and `handle_state_summary` (line 937) and within moved code. IS `pub(crate)`. OK.
+
+So I only need to change `tool_arg_summary` and `event_line_value` to `pub(crate)`.
+
+Also, the tests at lines 14116 and 23596 need to access `event_line_value` and `read_tail`. The tests are in `mod tests` inside `commands_state.rs`. They can access `pub(crate)` items from `commands_state_io` if `commands_state_io` is a submodule and the items are `pub(crate)`.
+
+Wait, actually, the tests `mod tests` is a submodule of `commands_state`. Within tests, to access items from `commands_state_io`, it would use `super::commands_state_io::item` or via re-exports: `super::item`. Since I'll have `pub(crate) use commands_state_io::{...};` re-exports, `super::event_line_value` should work.
+
+But `event_line_value` is only called at line 14116 in tests. Let me verify it's in the `mod tests` block:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14112..14122 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where `mod tests` starts:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13852..13857 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the tests use `use super::*;` which brings in everything from the parent (`commands_state.rs`). If I add re-exports in `commands_state.rs`, then `super::*` will include those re-exports. Good.
+
+Now, `event_line_value` needs to be accessible through re-exports or through a glob import. Since the tests use `use super::*;`, and I'll have either:
+- `pub(crate) use commands_state_io::event_line_value;` — explicit re-export
+- Or `use commands_state_io::*;` — glob import (but this doesn't re-export for external users)
+
+Actually wait: `use super::*;` in the tests module brings into scope everything that's visible in the parent module. This includes items defined in the parent AND items that the parent `use`s. But `use` items in the parent are private to the parent by default — they don't get re-exported via `*`. For `super::*` in the test module to see items from `commands_state_io`, those items need to be either:
+1. Defined directly in `commands_state.rs`
+2. `pub use`d (or `pub(crate) use`d) in `commands_state.rs`
+
+So I need explicit `pub(crate) use commands_state_io::{...}` re-exports in `commands_state.rs`.
+
+But wait, I also need to check: if I add BOTH `use commands_state_io::*;` (for internal convenience) AND `pub(crate) use commands_state_io::{specific_list};` (for re-exports), there might be conflicts. Actually, `pub(crate) use` IS a re-export — it makes items available as if they were defined in the current module. `use` alone just brings them into scope.
+
+But having both `use commands_state_io::*;` and `pub(crate) use commands_state_io::{item1, item2};` should work — the glob import brings things into scope for the module's own code, and the explicit re-exports make them visible to external consumers.
+
+Actually, let me simplify: I'll just use explicit `pub(crate) use` for all the items that need to be accessible from both within `commands_state.rs` and from external modules. This way:
+- Internal code in `commands_state.rs` can reference them by name (since they're re-exported in the same module)
+- External modules like `commands_state_crashes.rs` can import them via `crate::commands_state::item`
+- Tests can access them via `super::item`
+
+Let me also check: does `event_line_value` need to be `pub(crate)`? It's called from tests at line 14116, which uses `super::event_line_value`. If I make it `pub(crate)` in `commands_state_io.rs` and add it to the re-exports, the tests will see it.
+
+And `tool_arg_summary` is called at line 12273. If I make it `pub(crate)` in `commands_state_io.rs` and re-export it, that call site will work.
+
+OK, let me now plan the exact edits:
+
+1. **Edit `commands_state_io.rs`**: Change `fn tool_arg_summary` and `fn event_line_value` to `pub(crate) fn`
+
+2. **Edit `commands_state.rs`**: 
+   a. Add `mod commands_state_io;` after the use statements (around line 9)
+   b. Add `pub(crate) use` re-exports
+   c. Remove all the moved functions (lines 11-25 and lines 975-1605)
+
+Wait, I need to be more precise about which lines to remove. Let me identify the exact line ranges.
+
+From the grep output:
+- `default_events_path` at line 11-17
+- `default_store_path` at line 19-25
+- `read_tail` at line 975
+- ...through `tool_arg_summary` at line 1577
+- But NOT `format_failure_event_value` at line 1606
+
+So I need to remove everything from line 11 through line 25, and lines 975 through somewhere before line 1606 (the line before `format_failure_event_value`).
+
+Let me check what's at line 1605:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1600..1610 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `FailureTaxonomy` struct at line 1600 stays, and `format_failure_event_value` at line 1606 stays. But let me check if `FailureTaxonomy` is used by the IO functions... Let me search:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'FailureTaxonomy' src/commands_state_io.rs src/commands_state.rs ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`FailureTaxonomy` is only used in `commands_state.rs`, not in `commands_state_io.rs`. Good.
+
+Now let me also check whether `commands_state_io.rs` defines `FailureTaxonomy` or any types that `commands_state.rs` needs. Let me check if there are struct/enum definitions:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^struct \|^enum \|^type \|^pub.*struct \|^pub.*enum ' src/commands_stat… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are structs in `commands_state_io.rs` that are used by `commands_state.rs` (e.g., `ImportReport` returned by `import_events`, `RetentionReport` returned by `apply_retention_policy`). Let me check if these are used in `commands_state.rs`:
+
+Actually, looking at `handle_import` (lines 654-670), it calls `import_events` and accesses `report.imported_events`, `report.replaced`, `report.projection`. These fields are on the `ImportReport` struct. Since `import_events` returns `Result<ImportReport, String>`, `commands_state.rs` needs to know the type `ImportReport`.
+
+But wait, the return type is inferred by the caller. In `handle_import`:
+```rust
+match import_events(Path::new(path), &events_path, &sqlite_path, replace) {
+    Ok(report) => {
+        println!("  imported: {}", report.imported_events);
+        ...
+    }
+}
+```
+
+The `report` variable's type is inferred from the return type of `import_events`. As long as `import_events` is accessible (via `pub(crate) use`), the type will be resolved through the function signature. The struct fields are accessed through the returned value — Rust resolves field access through the type, not through visibility of the struct. But wait, struct fields need to be visible too!
+
+Let me check the `ImportReport` struct:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_io.rs:75..105 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the structs have `pub(crate)` fields and `pub(crate)` visibility. They're used in `commands_state.rs` through the function return types. Since `import_events` returns `Result<ImportReport, String>`, and `ImportReport` is `pub(crate)` in `commands_state_io`, `commands_state.rs` can access it via `commands_state_io::ImportReport` or through re-exports.
+
+But do I need to re-export these structs? The code in `commands_state.rs` accesses them through pattern matching on the return value, which doesn't require naming the type explicitly. The type is inferred. So explicit re-exports aren't strictly necessary for the struct types themselves. But let me verify...
+
+In `handle_import`:
+```rust
+match import_events(Path::new(path), &events_path, &sqlite_path, replace) {
+    Ok(report) => {
+        println!("  imported: {}", report.imported_events);
+```
+
+Here `report` has type `ImportReport`, which is inferred. But for the code to access `report.imported_events`, the field must be visible. Since `imported_events` is `pub(crate)` and `ImportReport` is `pub(crate)` in `commands_state_io` (a submodule of `commands_state`), `commands_state` can access it because it's the parent module. Actually wait, in Rust, `pub(crate)` makes items visible within the entire crate, not just within the parent module. So `ImportReport` in `commands_state_io` with `pub(crate)` is visible to all modules in the crate, including `commands_state`.
+
+But actually, for field access, Rust needs to resolve the type. The type `ImportReport` is in `commands_state_io` module. The code in `commands_state` uses `report.imported_events`. For this to work, the `commands_state` module must be able to name the type `ImportReport` to resolve the field access. But the type is inferred from the function return type...
+
+Actually, let me think about this more carefully. In Rust, when you write:
+```rust
+match import_events(...) {
+    Ok(report) => {
+        report.imported_events
+    }
+}
+```
+
+The compiler infers `report: ImportReport`. But `ImportReport` is `pub(crate)` in `commands_state_io`. The `commands_state` module is in the same crate, so it can see `pub(crate)` items. But does it need to import them by name? No — the type is inferred through the function signature. The compiler resolves the type, checks field visibility, and since everything is `pub(crate)` and in the same crate, it compiles fine.
+
+So the struct types don't need to be re-exported. The function re-exports are sufficient.
+
+Now let me also check if there are any other private functions in `commands_state_io.rs` that are called from `commands_state.rs` (outside the moved code). The ones I identified are:
+- `tool_arg_summary` (line 12273) — needs to be `pub(crate)`
+- `event_line_value` (line 14116 in tests) — needs to be `pub(crate)` for tests
+
+Let me also look for any other call sites I might have missed. Let me check what's at line 14116 more carefully — is it inside `mod tests`? Yes, it's at line 14116 which is inside the `mod tests` block (which starts at line 13854).
+
+For tests, `event_line_value` needs to be accessible via `super::event_line_value`. With `pub(crate) use commands_state_io::event_line_value;` in `commands_state.rs`, this will work because `super::*` in the test module will see it.
+
+OK, now let me plan the exact edits. Let me also check if there's anything between line 25 and 975 that needs to stay. The functions from line 27 to line 973 are handlers like `handle_state_subcommand`, `handle_init`, `handle_doctor`, etc. These should stay.
+
+And between `tool_arg_summary` (line 1577) and `format_failure_event_value` (line 1606), there's `FailureTaxonomy` struct (line 1600). This should stay.
+
+So the removal in `commands_state.rs` should be:
+1. Lines 11-25: `default_events_path` and `default_store_path`
+2. Lines 975-1599 (from `read_tail` to just before `FailureTaxonomy`)
+
+Wait, let me be more precise. Let me check lines 1577-1606:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 33 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1575..1605 ✓ (7ms)
+
+
