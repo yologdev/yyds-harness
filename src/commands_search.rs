@@ -694,6 +694,11 @@ pub struct GrepArgs {
     pub exclude: Option<String>,
     /// When true, show match counts per file instead of individual lines.
     pub count_only: bool,
+    /// Flags that were rejected because grep doesn't support them or they'd
+    /// break output parsing (e.g. `--json`, `--null`, `--only-matching`).
+    /// If non-empty, run_grep / run_grep_with_context / run_grep_count
+    /// return an error before spawning the grep process.
+    pub rejected_flags: Vec<String>,
 }
 
 /// Parse `/grep` arguments.
@@ -734,6 +739,7 @@ pub fn parse_grep_args(input: &str) -> Option<GrepArgs> {
     let mut include: Option<String> = None;
     let mut exclude: Option<String> = None;
     let mut remaining_parts: Vec<String> = Vec::new();
+    let mut rejected_flags: Vec<String> = Vec::new();
 
     let mut i = 0;
     while i < tokens.len() {
@@ -779,6 +785,45 @@ pub fn parse_grep_args(input: &str) -> Option<GrepArgs> {
             "-c" | "--count" => {
                 count_only = true;
             }
+            // Grep-incompatible flags: reject with clear error
+            "--json" | "--jsonl" => {
+                rejected_flags.push(format!(
+                    "{} — grep does not support JSON output; this tool parses grep's default line format",
+                    token
+                ));
+            }
+            "-Z" | "--null" => {
+                rejected_flags.push(format!(
+                    "{} — null-separated output is not supported; use --include/--exclude for pattern matching",
+                    token
+                ));
+            }
+            "-o" | "--only-matching" => {
+                rejected_flags.push(format!(
+                    "{} — only-matching mode changes grep output format; use without this flag for full-line matches",
+                    token
+                ));
+            }
+            "--format" => {
+                // --format <fmt> consumes a value argument
+                let val = tokens.get(i + 1).map(|v| v.as_str()).unwrap_or("<none>");
+                rejected_flags.push(format!(
+                    "--format {val} — grep does not support --format; this is likely an rg/ag flag",
+                ));
+                i += 1; // consume the format value
+            }
+            "-m" | "--max-count" => {
+                let val = tokens.get(i + 1).map(|v| v.as_str()).unwrap_or("<none>");
+                rejected_flags.push(format!(
+                    "{token} {val} — max-count is not supported; use without this flag or pipe through head",
+                ));
+                i += 1; // consume the count value
+            }
+            // Benign flags: silently ignore
+            "--color" | "--no-color" | "--colour" | "--no-colour" => {
+                // grep output is always piped with --color=never already;
+                // these flags are harmless but unnecessary
+            }
             _ => {
                 remaining_parts.push(token.clone());
             }
@@ -812,6 +857,7 @@ pub fn parse_grep_args(input: &str) -> Option<GrepArgs> {
         include,
         exclude,
         count_only,
+        rejected_flags,
     })
 }
 
@@ -1392,6 +1438,14 @@ pub fn handle_grep(input: &str) {
         }
     };
 
+    if !args.rejected_flags.is_empty() {
+        for msg in &args.rejected_flags {
+            println!("{RED}  Error: {msg}{RESET}");
+        }
+        println!();
+        return;
+    }
+
     if args.count_only {
         // Count mode: show per-file match counts
         match run_grep_count(&args) {
@@ -1958,6 +2012,7 @@ mod tests {
             include: None,
             exclude: None,
             count_only: false,
+            rejected_flags: Vec::new(),
         };
         let matches = run_grep(&args).unwrap();
         assert!(
@@ -2081,6 +2136,7 @@ mod tests {
             include: Some("*.rs".to_string()),
             exclude: None,
             count_only: false,
+            rejected_flags: Vec::new(),
         };
         let matches = run_grep(&args).unwrap();
         assert!(
@@ -2108,6 +2164,7 @@ mod tests {
             include: Some("*.toml".to_string()),
             exclude: None,
             count_only: false,
+            rejected_flags: Vec::new(),
         };
         let matches = run_grep(&args).unwrap();
         // All results should be .toml files (no .rs, .md, etc.)
@@ -2180,6 +2237,7 @@ src/b.rs:20:match two";
             include: None,
             exclude: None,
             count_only: false,
+            rejected_flags: Vec::new(),
         };
         let result = run_grep_with_context(&args).unwrap();
         assert!(
@@ -2239,6 +2297,112 @@ src/b.rs:20:match two";
     fn parse_grep_args_exclude_without_value_ignored() {
         // --exclude at end with no value → no pattern left → returns None
         assert!(parse_grep_args("/grep --exclude").is_none());
+    }
+
+    #[test]
+    fn parse_grep_args_rejects_json_flag() {
+        let args = parse_grep_args("/grep --json test").unwrap();
+        assert_eq!(args.pattern, "test");
+        assert!(!args.rejected_flags.is_empty());
+        assert!(
+            args.rejected_flags
+                .iter()
+                .any(|m| m.contains("--json") && m.contains("grep does not support")),
+            "Expected --json rejection message, got: {:?}",
+            args.rejected_flags
+        );
+    }
+
+    #[test]
+    fn parse_grep_args_rejects_jsonl_flag() {
+        let args = parse_grep_args("/grep --jsonl pattern").unwrap();
+        assert!(!args.rejected_flags.is_empty());
+        assert!(args.rejected_flags.iter().any(|m| m.contains("--jsonl")));
+        // Pattern should still be parsed correctly
+        assert_eq!(args.pattern, "pattern");
+    }
+
+    #[test]
+    fn parse_grep_args_rejects_null_flag() {
+        let args = parse_grep_args("/grep -Z pattern").unwrap();
+        assert!(!args.rejected_flags.is_empty());
+        assert!(args.rejected_flags.iter().any(|m| m.contains("-Z")));
+        assert_eq!(args.pattern, "pattern");
+    }
+
+    #[test]
+    fn parse_grep_args_rejects_long_null_flag() {
+        let args = parse_grep_args("/grep --null needle").unwrap();
+        assert!(!args.rejected_flags.is_empty());
+        assert!(args.rejected_flags.iter().any(|m| m.contains("--null")));
+        assert_eq!(args.pattern, "needle");
+    }
+
+    #[test]
+    fn parse_grep_args_rejects_only_matching_flag() {
+        let args = parse_grep_args("/grep -o pattern").unwrap();
+        assert!(!args.rejected_flags.is_empty());
+        assert!(args.rejected_flags.iter().any(|m| m.contains("-o")));
+        assert_eq!(args.pattern, "pattern");
+    }
+
+    #[test]
+    fn parse_grep_args_rejects_format_flag() {
+        let args = parse_grep_args("/grep --format json haystack").unwrap();
+        assert!(!args.rejected_flags.is_empty());
+        assert!(args.rejected_flags.iter().any(|m| m.contains("--format")));
+        // Pattern should still be "haystack" (format's value was consumed)
+        assert_eq!(args.pattern, "haystack");
+    }
+
+    #[test]
+    fn parse_grep_args_rejects_max_count_flag() {
+        let args = parse_grep_args("/grep -m 5 pattern").unwrap();
+        assert!(!args.rejected_flags.is_empty());
+        assert!(args.rejected_flags.iter().any(|m| m.contains("-m")));
+        assert_eq!(args.pattern, "pattern");
+    }
+
+    #[test]
+    fn parse_grep_args_silently_ignores_color_flags() {
+        let args = parse_grep_args("/grep --color pattern").unwrap();
+        assert!(args.rejected_flags.is_empty());
+        assert_eq!(args.pattern, "pattern");
+
+        let args = parse_grep_args("/grep --no-color pattern").unwrap();
+        assert!(args.rejected_flags.is_empty());
+        assert_eq!(args.pattern, "pattern");
+    }
+
+    #[test]
+    fn parse_grep_args_valid_flags_still_work() {
+        // -s (case sensitive) still works
+        let args = parse_grep_args("/grep -s MyStruct src/").unwrap();
+        assert!(args.case_sensitive);
+        assert_eq!(args.pattern, "MyStruct");
+        assert_eq!(args.path, "src/");
+        assert!(args.rejected_flags.is_empty());
+
+        // -C with context still works
+        let args = parse_grep_args("/grep -C 3 TODO src/").unwrap();
+        assert_eq!(args.context_lines, Some((3, 3)));
+        assert_eq!(args.pattern, "TODO");
+        assert!(args.rejected_flags.is_empty());
+
+        // --include still works
+        let args = parse_grep_args(r#"/grep --include "*.rs" fn_main"#).unwrap();
+        assert_eq!(args.include, Some("*.rs".to_string()));
+        assert_eq!(args.pattern, "fn_main");
+        assert!(args.rejected_flags.is_empty());
+    }
+
+    #[test]
+    fn parse_grep_args_rejected_flags_dont_block_pattern() {
+        // Even when flags are rejected, pattern and path should still parse
+        let args = parse_grep_args(r##"/grep --json --null -o "needle haystack" src/"##).unwrap();
+        assert_eq!(args.pattern, "needle haystack");
+        assert_eq!(args.path, "src/");
+        assert_eq!(args.rejected_flags.len(), 3);
     }
 
     #[test]
@@ -2302,6 +2466,7 @@ src/b.rs:20:match two";
             include: None,
             exclude: None,
             count_only: true,
+            rejected_flags: Vec::new(),
         };
         let entries = run_grep_count(&args).unwrap();
         assert!(!entries.is_empty(), "Should find 'fn main' counts in src/");
@@ -2321,6 +2486,7 @@ src/b.rs:20:match two";
             include: None,
             exclude: Some("*.rs".to_string()),
             count_only: false,
+            rejected_flags: Vec::new(),
         };
         let matches = run_grep(&args).unwrap();
         for m in &matches {
