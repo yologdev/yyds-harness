@@ -2910,6 +2910,13 @@ def corrected_gnomes(
         gnomes["task_mechanical_verification_rate"] = mechanical_verified / task_count
         gnomes["session_success_rate"] = 1.0 if verified == task_count else 0.0
         recalc_score = True
+        incomplete_terminal = int(gnomes.get("task_incomplete_terminal_count") or 0)
+        if incomplete_terminal and verified == task_count and mechanical_verified == task_count:
+            gnomes["task_terminal_marker_missing_attempt_count"] = max(
+                int(gnomes.get("task_terminal_marker_missing_attempt_count") or 0),
+                incomplete_terminal,
+            )
+            gnomes["task_incomplete_terminal_count"] = 0
         gnomes["task_obsolete_count"] = max(
             int(gnomes.get("task_obsolete_count") or 0),
             obsolete,

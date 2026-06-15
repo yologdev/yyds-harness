@@ -4671,6 +4671,76 @@ class BuildEvolutionDashboard(unittest.TestCase):
             self.assertEqual(data["aggregate"]["gnome_audit"]["corrected_session_count"], 1)
             self.assertGreaterEqual(data["aggregate"]["gnome_audit_corrections_by_source"].get("task_artifacts", 0), 1)
 
+    def test_dashboard_converts_stale_terminal_incomplete_to_marker_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "day": 1,
+                    "ts": "2026-06-06T00:00:00Z",
+                    "build_ok": True,
+                    "test_ok": True,
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "coding_log_score": 0.8,
+                        "task_incomplete_terminal_count": 2,
+                    },
+                    "gnome_keys": ["coding_log_score", "task_incomplete_terminal_count"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "task_title": "Verified task",
+                    "status": "completed",
+                    "planned_files": ["src/state.rs"],
+                    "touched_files": ["src/state.rs"],
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": ["abc1234"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {
+                    "task_id": "task_01",
+                    "status": "pass",
+                    "exit_code": 0,
+                    "verdict": "Verdict: PASS",
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Verified task",
+                            "files": ["src/state.rs"],
+                        }
+                    ],
+                    "artifacts": {"manifest": "tasks/manifest.json"},
+                },
+            )
+
+            data = build(root / "sessions", root / "out")
+            latest = data["sessions"][0]["latest_gnomes"]
+
+            self.assertEqual(latest["task_success_rate"], 1.0)
+            self.assertEqual(latest["task_incomplete_terminal_count"], 0)
+            self.assertEqual(latest["task_terminal_marker_missing_attempt_count"], 2)
+            self.assertIn("task_terminal_marker_missing_attempt_count", data["sessions"][0]["gnome_keys"])
+
     def test_dashboard_merges_log_feedback_metrics_missing_from_state_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
