@@ -23825,7 +23825,10 @@ mod tests {
             "expected 1 model call completed"
         );
         assert!(
-            result["model_calls"]["unmatched_completed"].as_u64().unwrap_or(0) > 0,
+            result["model_calls"]["unmatched_completed"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0,
             "expected unmatched completed > 0 when completed has no matching started"
         );
         assert_eq!(
