@@ -125,7 +125,10 @@ def open_lifecycle(
     if after_line > len(events):
         # The live state file can be reset/rebuilt during an agent invocation.
         # In that case the saved pre-agent line number belongs to the old file,
-        # so scan the current file rather than silently missing open runs.
+        # so scan the current file rather than silently missing a single fresh
+        # open run. If the rebuilt file exposes multiple open runs, it is
+        # usually a replayed historical state snapshot; closing all of them
+        # creates ghost terminal events in the current session.
         scan_start = 0
         scope = "full_after_line_exceeded_file"
     else:
@@ -135,6 +138,12 @@ def open_lifecycle(
     diagnostics["event_count"] = len(events)
     diagnostics["requested_after_line"] = after_line
     diagnostics["scope"] = scope
+    if scope == "full_after_line_exceeded_file":
+        visible_open_runs = set(open_runs) | set(open_models)
+        if len(visible_open_runs) > 1:
+            diagnostics["scope"] = "ambiguous_reset_full_scan"
+            diagnostics["ambiguous_open_run_count"] = len(visible_open_runs)
+            return {}, set(), diagnostics
     if (
         diagnostics["lifecycle_start_count"] == 0
         and fallback_after_line is not None

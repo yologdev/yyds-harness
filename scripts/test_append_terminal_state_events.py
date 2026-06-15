@@ -219,6 +219,36 @@ class AppendTerminalStateEvents(unittest.TestCase):
                 )
             )
 
+    def test_ambiguous_reset_scan_does_not_close_historical_open_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            write_event(events, "RunStarted", "old-run-1")
+            write_event(events, "ModelCallStarted", "old-run-1", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunStarted", "old-run-2")
+            write_event(events, "ModelCallStarted", "old-run-2", {"model": "deepseek-v4-pro"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                99,
+                None,
+                "session-1",
+                "trace-1",
+                "task_03_attempt2",
+                "completed",
+                "completed",
+                "agent_process_exited",
+                "",
+                "agent process exited with status 0",
+            )
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            self.assertEqual(result["diagnostics"]["scope"], "ambiguous_reset_full_scan")
+            self.assertEqual(result["diagnostics"]["ambiguous_open_run_count"], 2)
+            self.assertEqual(result["completed_model_calls"], [])
+            self.assertEqual(result["completed_runs"], [])
+            self.assertFalse(any(row["event_type"] == "RunCompleted" for row in rows))
+            self.assertFalse(any(row["event_type"] == "ModelCallCompleted" for row in rows))
+
     def test_fallback_after_line_closes_open_agent_run_without_closing_session_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             events = Path(tmp) / "events.jsonl"
