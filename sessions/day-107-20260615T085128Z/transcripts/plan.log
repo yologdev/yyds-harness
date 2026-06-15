@@ -1,0 +1,603 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The assessment is clear: healthy build, no bugs, 14 consecutive successful runs. The main pressure points from trajectory/structure:
+
+1. **HIGH: Close lifecycle gaps** — `state_incomplete/open_after_SessionStarted=1` and `model_unmatched/completion_without_run_start=1`. The log feedback corrected lesson says "emit RunCompleted events for every started run, including timeout and API-error exits."
+
+2. **MEDIUM: Bound bash retries** — pre-retry checks for failing shell commands.
+
+3. **MEDIUM: Reconcile state-only tool failures** — 10 state events with failed tool actions but no matching transcript entries.
+
+4. **LOW: Verify cache ratios with token evidence** — token-backed verification.
+
+5. **LOW: `state summary` cold-start** — same diagnostic-path treatment as `state why last-failure`.
+
+The assessment says there's a seed task already at `session_plan/task_01.md`. Let me check if it exists.
+
+I need to:
+1. `mkdir -p session_plan`
+2. Check if task_01.md exists
+3. Write task files based on priority
+
+Since the assessment is available and thorough, I should plan from it. Priority is the lifecycle gaps (#1), which is directly backed by graph pressure and log feedback.
+
+Let me check if session_plan/task_01.md already exists, and then proceed.
+
+For the tasks:
+- Task 01: Close lifecycle gaps (emit RunCompleted events for every started run)
+- Task 02: Bound bash retries (pre-retry checks for failing shell commands)
+- Task 03: Investigate state-only tool failures (reconcile 10 mismatched events) — though this might be bigger than 20 min. Let me think about scoping it small.
+
+Actually, let me re-read the task sizing rules: each task must touch at most 3 source files and be completable in 20 minutes.
+
+Task 1 (lifecycle gaps): This likely touches `src/state.rs` and possibly `src/lib.rs` or wherever RunStarted/RunCompleted events are emitted. Need to find where runs are started and ensure RunCompleted is always emitted even on timeout/API-error exits.
+
+Task 2 (bound bash retries): This would touch `src/tools.rs` or `src/prompt_retry.rs` or wherever retry logic lives. Need to add pre-retry checks.
+
+Task 3 (state-only tool failures): This is investigation + fix. Might be larger. Could scope it to just add the reconciliation command or diagnostic.
+
+Let me first check if task_01.md exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null || echo "no session_pl… ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a `task_01.md` and `assessment.md`. Let me read the existing task_01.md to see what the seed task is.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task is about improving cold-start `state why last-failure` diagnostics. But the assessment says this was ALREADY DONE in Day 107 session 1. This is a contradiction — the seed task is for work that's already been completed.
+
+The assessment explicitly says:
+> "Day 107 session 1 (02:32) — 2 tasks: (1) Improved cold-start `state why last-failure` to show alternative diagnostic paths instead of 'no failures recorded'"
+> "`yyds state why last-failure` — **OK**: cold-start path now shows diagnostic guidance"
+
+This seed task is obsolete. The harness seeded it from old state evidence before the assessment was known. Per the planning instruction precedence:
+
+> "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+I should write `session_plan/task_01_obsolete.md` explaining the contradiction, then create fresh task files from the assessment.
+
+Now for planning:
+
+**Priority tasks from assessment and trajectory:**
+
+1. **Close lifecycle gaps** (graph pressure #1): Wire RunCompleted events for every started run. The log feedback corrected lesson: "emit RunCompleted events for every started run, including timeout and API-error exits." This is concrete, touches likely 1-2 files (state.rs + maybe a harness script).
+
+2. **Bound bash retries** (graph pressure #2): Add pre-retry checks. Likely touches `src/prompt_retry.rs` or `src/tools.rs`.
+
+3. **Reconcile state-only tool failures** (graph pressure #3): 10 state events without matching transcript entries. This is more investigation-heavy.
+
+Let me think about what's scoped to work in 20 min and touches ≤3 files:
+
+**Task 01: Close lifecycle gaps** — Need to understand where RunStarted/RunCompleted events are emitted, and ensure RunCompleted is always emitted. This likely means adding RunCompleted emission in error/exit paths. Could touch `src/state.rs` and possibly `src/lib.rs` or wherever the run lifecycle is managed.
+
+**Task 02: Bound bash retries** — Add pre-retry checks. This would be in the retry/prompt logic. Need to check where retries happen.
+
+**Task 03: `state summary` cold-start** — Apply same diagnostic-path treatment from session 1 to `state summary`. This is small, well-scoped, touches just `src/commands_state.rs`. Low risk, high usability.
+
+Let me scope these carefully.
+
+For task 01, I need to understand where RunStarted is emitted currently. Let me search for it briefly.
+
+Actually, wait — the planning instruction says: "Do not run cargo build, cargo test, clippy, broad source scans, or GitHub log archaeology before session_plan/task_01.md exists." But since task_01.md already exists (just obsolete), I should write the obsolete notice first, then plan fresh tasks.
+
+Let me also check if there's an `ISSUES_TODAY.md` to look at.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ test -f ISSUES_TODAY.md && wc -l ISSUES_TODAY.md && head -5 ISSUES_TODAY.md || e… ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No trusted owner issues. Good, so all task slots go to state/trajectory-driven harness work.
+
+Let me now write the task_01_obsolete.md to explain the seed task contradiction, then create fresh task files.
+
+Let me plan the three tasks:
+
+**Task 01: Close lifecycle gaps — emit RunCompleted for every started run**
+- Graph pressure #1: `state_incomplete/open_after_SessionStarted=1`, `model_unmatched/completion_without_run_start=1`
+- Log feedback corrected lesson: "emit RunCompleted events for every started run, including timeout and API-error exits"
+- Need to find where runs are started and ensure RunCompleted is always emitted
+- Likely touches `src/state.rs` and possibly where runs are started in `src/lib.rs`
+- This is the highest priority
+
+**Task 02: Bound bash retries**
+- Graph pressure #2: `failed_tool_summary.bash_tool_error=2`
+- Add pre-retry checks for failing shell commands
+- Touches retry logic somewhere in src/
+
+**Task 03: `state summary` cold-start diagnostic paths**
+- Low-priority but easy: apply the same treatment from Day 107 session 1
+- Touches `src/commands_state.rs`
+
+Let me do a quick search to understand where RunStarted/RunCompleted events are emitted and where retry logic lives, so I can write accurate task files.
+
+Actually, re-reading the planning instructions more carefully: "Do not run cargo build, cargo test, clippy, broad source scans, or GitHub log archaeology before session_plan/task_01.md exists." — but I can still search for specific symbols. Let me search for RunStarted and RunCompleted to understand the lifecycle.
+
+And for the obsolete seed task, I need to write `session_plan/task_01_obsolete.md` explaining the contradiction.
+
+Let me first write the obsolete notice, then search for the lifecycle and retry code to scope the tasks accurately.
+────────────────────────────────────────────────────────────────────────────────
+
+The seed `task_01.md` is for work **already completed** in Day 107 session 1 (the assessment confirms `state why last-failure` cold-start is working). Per the planning instruction, I need to mark it obsolete and replace it with evidence-backed tasks.
+
+Let me search for the relevant code patterns to scope the new tasks accurately.
+  + # task_01.md — OBSOLETE (seed task already completed)
+  + 
+  + The harness seeded this task from pre-assessment state evidence. Fresh assessment
+  + contradicts the stated problem:
+  + 
+  + - **Seed task claims:** `state why last-failure` returns empty/"no state event found" on cold start
+  + - **Assessment evidence:** Day 107 session 1 (02:32) already fixed this: "Improved cold-start `state why last-failure` to show alternative diagnostic paths instead of 'no failures recorded'"
+  + - **Verification:** `yyds state why last-failure` → OK, cold-start path now shows diagnostic guidance
+  + 
+  + This task is replaced by fresh evidence-backed tasks in task_01.md, task_02.md, task_03.md.
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (10 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (10 lines) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me search for RunStarted/RunCompleted event emission to scope the lifecycle task, and for retry logic for the bash retries task.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RunStarted' in src (*.rs)  ▶ search 'RunCompleted' in src (*.rs)  ▶ search 'retry' in src/prompt_retry.rs (*.rs) ✓ (12ms)
+ ✓ (40ms)
+ ✓ (69ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the lifecycle more precisely. Let me look at where RunStarted and RunCompleted are emitted in `src/state.rs`, and also where in `src/lib.rs` the run lifecycle is managed.
+
+Key findings:
+- RunStarted emitted at line 302 in `state.rs`
+- RunCompleted emitted at lines 354, 371 in `state.rs`
+- There's `exit_with_state` and `stash_diagnostic_error` — these look like hooks for error exits
+- The lifecycle gaps suggest RunStarted is emitted but RunCompleted isn't always emitted on timeout/API-error paths
+
+Let me look at the specific code around RunStarted (line 302) and RunCompleted (lines 354, 371) to understand the lifecycle more.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.7s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:290..390  ▶ read src/state.rs:50..130 ✓ (11ms)
+ ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand:
+
+1. `init_global` (line 296) emits `RunStarted` and sets the `GLOBAL_RECORDER`
+2. `RunCompletionGuard` (line 333) — a guard that calls `mark_run_completed("completed")` on drop
+3. `mark_run_completed` (line 352) emits `RunCompleted` with status "completed"
+4. `mark_run_completed_with_error` (line 367) emits `RunCompleted` with status "error"
+
+The guard pattern is the key — `RunCompletionGuard::completed_on_drop()` creates a guard that on drop calls `mark_run_completed("completed")`. But this only handles normal completion. For abnormal exits (timeout, API error, panic), the guard might not fire, or the status might be wrong.
+
+Let me search for where `RunCompletionGuard` is used and where `exit_with_state` is defined.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.2s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RunCompletionGuard' in src (*.rs)  ▶ search 'exit_with_state' in src (*.rs) ✓ (23ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Look at line 1049: `let _run_completion = state::RunCompletionGuard::completed_on_drop();` — this is where the guard is created. And `exit_with_state` at line 985. Let me read both of these sections.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:980..1060 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the lifecycle:
+
+1. `init_global()` at line 1008 emits `RunStarted`
+2. If init fails, `exit_with_state(1)` is called which emits `RunCompleted` with error and exits
+3. If init succeeds, a `RunCompletionGuard` is created at line 1049 — this will call `mark_run_completed("completed")` when dropped
+4. `exit_with_state` also emits `RunCompleted` — so on explicit exit paths, it works
+5. The guard handles the "normal drop" case
+
+The problem is: what happens in timeout and API-error exits? The guard drops and calls `mark_run_completed("completed")` — but the run actually failed! The guard always reports "completed" status regardless of the actual outcome.
+
+The fix should make the guard track whether an error occurred during the run. When `mark_run_completed_with_error` is called, it should signal the guard to report "error" instead of "completed".
+
+Actually, let me re-read the trajectory more carefully:
+- `state_incomplete/open_after_SessionStarted=1` — this means RunStarted was emitted but RunCompleted was NOT emitted
+- `model_unmatched/completion_without_run_start=1` — model completion without matching run start
+
+The "open_after_SessionStarted" problem means RunCompleted was never emitted. This could happen if:
+1. The process is killed (timeout, GH Actions cancel) — the drop may not run
+2. `std::process::exit` bypasses drop — but `exit_with_state` handles this by calling mark_run_completed BEFORE exit
+
+Actually, `std::process::exit` does NOT run destructors. But `exit_with_state` calls `mark_run_completed` before calling `exit`, so that should work for explicit exit paths.
+
+The real gap is likely: when the process is killed externally (timeout, GH Actions cancel), the `RunCompletionGuard` drop never runs because the process is terminated. 
+
+For the "completion_without_run_start" case — this is a model completion event that has no matching RunStarted. This could happen in sub-agents or side conversations that record events without their own RunStarted/RunCompleted lifecycle.
+
+Hmm, let me think about what concrete change to make. The log feedback says: "emit RunCompleted events for every started run, including timeout and API-error exits."
+
+For API-error exits, the guard would drop normally with "completed" status. The fix could be:
+1. Make the guard check whether any error was recorded during the run
+2. If so, emit "error" instead of "completed"
+
+For timeout/kill exits, we can't do much — the process is dead. But we could add a SIGTERM handler.
+
+Actually, let me look at how the harness handles this in `scripts/evolve.sh` — maybe the harness side is where the fix should live.
+
+Wait, actually this is a planning task. I should scope the task accurately. The key question is: what files to touch and what change to make.
+
+Let me look at what `mark_run_completed_with_error` does — it calls `store_run_error` and then `record(RunCompleted, ...)`. But the `RunCompletionGuard` drop also calls `mark_run_completed("completed")` later — resulting in TWO RunCompleted events for error exits (one from exit_with_state, one from guard drop). That might actually be the source of the gap — double RunCompleted for explicit exits, but only one (possibly wrong) for the guard drop in normal exits.
+
+Actually wait, `exit_with_state` calls `std::process::exit(code)` which terminates the process immediately — the guard drop NEVER runs in that case. So for error exits via `exit_with_state`, only one RunCompleted (from exit_with_state) is emitted. For normal exits where `run_cli()` returns normally, the guard drop emits one RunCompleted.
+
+So the gap is: when does RunStarted get emitted but RunCompleted does NOT get emitted?
+
+The possible scenarios:
+1. Process is killed externally (SIGTERM, SIGKILL, timeout) — neither exit_with_state nor guard drop can run
+2. A panic that's not caught by the panic hook — the panic hook at line 1051 should catch it
+
+Actually let me re-read: `install_panic_hook` is at line 1051, AFTER the guard is created. If a panic happens before that, the guard drop should run (stack unwinding). If a panic happens after, the panic hook fires and presumably we abort.
+
+Let me check what `install_panic_hook` does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn install_panic_hook' in src (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the panic hook.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:30..60 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The panic hook only records `FailureObserved` — it does NOT record `RunCompleted`. The `prev_hook` is called which typically aborts. So on panic:
+1. Panic hook fires → records `FailureObserved`
+2. Prev hook runs → typically aborts the process
+3. `RunCompletionGuard` drop does NOT run (abort doesn't unwind)
+
+Wait, actually: does Rust's panic hook abort or unwind? The default hook prints the panic and then... let me think. The default panic hook prints the message and backtrace, and then the process aborts (by default in Rust, panic = abort unless `panic = "unwind"` in Cargo.toml). Let me check.
+
+Actually in Rust, the default behavior is unwind. The panic hook is called, then the stack unwinds. During unwinding, `Drop` implementations run. So the `RunCompletionGuard` should drop and emit `RunCompleted`.
+
+But then the prev_hook is called which might override behavior. The default hook just prints the panic info and then the unwind continues. So the guard should drop.
+
+Hmm, but there's a subtlety: `std::panic::set_hook` replaces the hook. The hook runs before unwinding. If the hook panics, it aborts. But in the yyds hook, after recording `FailureObserved`, it calls `prev_hook(info)` which is the *previous* hook. That previous hook is the default one which prints and allows unwinding.
+
+So on panic:
+1. yyds panic hook fires → records `FailureObserved` → calls prev_hook
+2. Prev hook prints panic info → returns
+3. Stack unwinds → `RunCompletionGuard` drops → `mark_run_completed("completed")` is called
+
+But wait — the run ended in panic! It should be "error", not "completed". This is a bug: the guard always reports "completed" regardless of what happened.
+
+So the fix is:
+1. Make `RunCompletionGuard` track whether an error occurred (e.g., via a `Cell<bool>` that gets set by `mark_run_completed_with_error`)
+2. On drop, if error was recorded, call `mark_run_completed("error")` instead of `mark_run_completed("completed")`
+
+But there's another problem: `exit_with_state` calls `mark_run_completed_with_error` AND THEN `std::process::exit`. The exit terminates the process without running destructors. So the guard's drop never fires in that path — which means we'd get one RunCompleted from `exit_with_state`, and that's fine.
+
+For the panic path, the guard drops and calls `mark_run_completed("completed")` — but it should call `mark_run_completed("error")` if a panic occurred.
+
+Let me think about what concrete change to make:
+
+**Change 1**: Add a `thread_local!` `Cell<bool>` that tracks whether the run encountered an error. Set it in `mark_run_completed_with_error`. Check it in `RunCompletionGuard::drop` — if true, report "error" instead of "completed".
+
+**Change 2**: In the panic hook, set the error flag AND call `mark_run_completed_with_error` before letting the previous hook run.
+
+Wait, but if the panic hook calls `mark_run_completed_with_error` and then the guard also drops... that's double RunCompleted. Let me think more carefully.
+
+Actually, there are three scenarios:
+
+**Scenario A: Normal exit** — `run_cli()` returns normally → guard drops → `mark_run_completed("completed")` ✓
+
+**Scenario B: Explicit error exit via `exit_with_state(code)`** — `mark_run_completed_with_error(...)` called → `std::process::exit(code)` → process terminates, guard does NOT drop. This produces one RunCompleted with "error" ✓
+
+**Scenario C: Panic** — panic hook fires → guard drops during unwinding → `mark_run_completed("completed")` — but this should be "error" ✗
+
+**Scenario D: External kill (SIGTERM, timeout)** — no code runs → no RunCompleted ever ✗ (hard to fix)
+
+For the concrete task, let me focus on Scenario C (panic → wrong status) which is the most fixable.
+
+The fix:
+1. Add a `thread_local!` `Cell<bool>` `RUN_HAD_ERROR` 
+2. In `mark_run_completed_with_error`, set it to true
+3. In `RunCompletionGuard::drop`, check it — if true, call `mark_run_completed("error")`; if false, call `mark_run_completed("completed")`
+4. In the panic hook, set the error flag too (so the guard picks it up)
+
+But wait — scenario B: if `exit_with_state` calls `mark_run_completed_with_error` (which records RunCompleted+error AND sets the flag), then `std::process::exit` runs. The guard doesn't drop. So the flag is set but never consumed — no harm.
+
+Scenario C: panic hook fires, should set the flag. Then guard drops, checks flag, sees true, calls `mark_run_completed("error")`. One RunCompleted with "error" — correct.
+
+But actually, the panic hook already records `FailureObserved`. Should I also have it record `RunCompleted`? No — the guard will handle that.
+
+OK, let me also think about the signal/termination case. We could install a SIGTERM handler. But that's complex and might not work reliably inside the process. The harness-side fix (adding RunCompleted in scripts) might be more appropriate.
+
+Let me scope the task now:
+
+**Task 01: Fix RunCompleted status on panic exits**
+- Files: `src/state.rs` (the guard, the error flag, panic hook update)
+- Change: Add `RUN_HAD_ERROR` flag, check it in guard drop, set it in panic hook
+
+**Task 02: Bound bash retries**
+- Graph pressure #2: `failed_tool_summary.bash_tool_error=2`
+- Need to understand where bash retries happen
+- Files: likely `src/prompt_retry.rs` or `src/tools.rs`
+
+**Task 03: `state summary` cold-start diagnostics**
+- Apply same treatment as `state why last-failure`
+- Files: `src/commands_state.rs`
+
+Let me now get more info on the retry logic for Task 02.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me understand the retry logic for Task 02, and look at the `state summary` handler for Task 03.
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'bash' in src/prompt_retry.rs (*.rs)  ▶ search 'fn handle_state_summary\b|"summary"' in src/commands_state.rs (*.rs) ✓ (25ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the state summary handler differently.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search '"summary"' in src/commands_state.rs (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Too many. Let me search for the state subcommand routing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search '"summary" =>' in src/commands_state.rs (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the state subcommand dispatch.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_state_subcommand' in src/commands_state.rs (*.rs) ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the handle_state_subcommand function to find how "summary" is handled.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:27..177 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — `handle_state_summary` at line 91 is called when `state why` is called without an explicit ID (or with `--summary` flag). The function is named `handle_state_summary`. Let me find it.
+
+Also, I notice at line 88-89, the `id_candidate` filter has a bug: `!a.chars().all(|c| c.is_ascii_digit())` — this means strings that are ALL digits are filtered OUT. But the intent seems to be to filter out numeric `--limit` arguments and `--` flags. Actually reading more carefully, the logic is: if args[3] exists AND doesn't start with `--` AND isn't all digits, it's treated as an ID. Otherwise, show summary. This seems right — numeric args would be the `--limit` value after the `--limit` flag was consumed earlier.
+
+Let me find `handle_state_summary`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_state_summary' in src/commands_state.rs (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:878..978 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture. Let me also look at `build_state_summary` to see what it does currently. Let me also look at the `handle_why` function around the cold-start fix from session 1 to understand the pattern used.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_state_summary' in src/commands_state.rs (*.rs) ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function to understand what it does now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2311..2411 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK now I have enough understanding. Let me plan three tasks:
+
+**Task 01: Fix RunCompleted status on panic exits / add lifecycle completeness**
+- The `RunCompletionGuard` always reports "completed" on drop, even for panic exits
+- Add `RUN_HAD_ERROR` thread-local flag, set in `mark_run_completed_with_error` and panic hook
+- Guard checks flag on drop: if set, reports "error" instead of "completed"
+- Files: `src/state.rs` only (guard, flag, panic hook update)
+- This directly addresses graph pressure #1 (lifecycle gaps)
+
+**Task 02: `state summary` cold-start diagnostic paths**
+- Current `state summary` just says "empty" when no events
+- Apply same diagnostic treatment as `state why last-failure` fix: show alternative diagnostic paths
+- Files: `src/commands_state.rs` only
+- This addresses the assessment's friction point #3
+- Small, low risk
+
+**Task 03: Pre-retry bash safety checks**
+- Add pre-retry inspection in the retry loop: if the failing tool was `bash` and the output contains certain error patterns, guide the agent away from unbounded retries
+- Files: `src/prompt_retry.rs` (the retry prompt builder)
+- Addresses graph pressure #2
+
+Actually wait, Task 03 "bound bash retries" — let me think about what this actually means. The graph pressure says "prefer bounded commands with explicit paths and inspect exit output before retrying." This is more of a prompt/guidance change — adding text to the retry prompt that tells the agent to:
+1. Check the exit code of failed bash commands
+2. Use explicit paths
+3. Don't retry unbounded commands (like `rm -rf`)
+
+Let me look at `build_retry_prompt` in `src/prompt_retry.rs` to see how retry prompts are constructed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_retry_prompt' in src/prompt_retry.rs (*.rs) ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function to understand the retry prompt building.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:17..97 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `tool_recovery_hint` function to see what bash-related hints already exist.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:96..176 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have all the information I need to write the three task files. Let me also check if there's anything in the `tool_recovery_hint` for bash that specifically addresses the "bound" concern — the trajectory says "prefer bounded commands with explicit paths and inspect exit output before retrying."
+
+The current bash hint at attempt 1 says: "The shell command failed. Check if the command exists, try a simpler version, or use a different approach."
+
+The attempt 2+ hint says: "Try a simpler command: break the command into smaller steps, check if the binary exists with `which <cmd>`, or try an alternative tool..."
+
+Neither of these specifically mentions:
+1. Checking the exit code/output of the failed command
+2. Using explicit/absolute paths
+3. Avoiding unbounded/recursive commands (like `rm -rf`)
+
+So Task 02 (or 03) can improve the bash recovery hints in `tool_recovery_hint` to include these.
+
+But wait — the graph pressure specifically says "failed_tool_summary.bash_tool_error=2" — there were 2 bash tool errors. The suggestion is to "prefer bounded commands with explicit paths and inspect exit output before retrying."
+
+Let me plan the final task list:
+
+**Task 01: Close RunCompleted lifecycle gap on panic exits**
+- Files: `src/state.rs`
+- Add RUN_HAD_ERROR flag, wire into guard drop and panic hook
+- Directly addresses graph pressure #1
+
+**Task 02: Improve bash retry hints with bounded/safety guidance**  
+- Files: `src/prompt_retry.rs`
+- Enhance `tool_recovery_hint` for bash to suggest checking exit codes, using explicit paths, avoiding unbounded commands
+- Addresses graph pressure #2
+
+**Task 03: `state summary` cold-start diagnostic paths**
+- Files: `src/commands_state.rs`
+- Apply same treatment as `state why last-failure` — when no events exist, show diagnostic guidance
+- Addresses assessment friction #3
+
+Let me write all three task files now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough understanding. Let me write the three task files. The seed `task_01.md` is obsolete (work already done in Day 107 session 1), so I'm replacing it with fresh evidence-backed tasks.
+  - Title: Improve cold-start state failure diagnostics
+  - Files: src/commands_state.rs, src/state.rs
+  + Title: Close RunCompleted lifecycle gap — emit correct status on panic exits
+  + Files: src/state.rs
+    Issue: none
+  - Origin: harness-seed
+  + Origin: planner
+    
+    Objective:
+  - Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence.
+  + Ensure every RunStarted event gets a matching RunCompleted event with the correct status ("error" for panics, not "completed"). The `RunCompletionGuard` currently always reports "completed" on drop, even after a panic. This leaves lifecycle gaps where runs appear to succeed despite crashes.
+    
+    Why this matters:
+  - The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions. That leaves yyds unable to explain the earliest failures that block evolution.
+  + The trajectory shows `state_incomplete/open_after_SessionStarted=1` and the log feedback corrected lesson says "emit RunCompleted events for every started run, including timeout and API-error exits." Graph pressure #1 identifies this as the top lifecycle gap. The guard drop on panic currently records "completed" — masking real failures in state/dashboard.
+    
+    Success Criteria:
+  - - Cold-start `why last-failure` output gives actionable next evidence to inspect.
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (66 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (66 lines) ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task_02 for bash retry improvements.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Improve bash retry hints — bounded commands, exit inspection, explicit paths
+  + Files: src/prompt_retry.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Enhance the `tool_recovery_hint` function's bash-specific guidance so retry prompts tell the agent to: (1) inspect the command's exit code and error output, (2) prefer explicit absolute paths, and (3) avoid unbounded or recursive commands. This reduces retry churn from bash failures that could be diagnosed without retrying.
+  + 
+  + Why this matters:
+  + Graph pressure #2: `failed_tool_summary.bash_tool_error=2` with the suggestion "prefer bounded commands with explicit paths and inspect exit output before retrying." The current bash recovery hints are generic ("check if command exists, try simpler version") and don't guide the agent toward the specific failure-analysis steps that prevent repeated identical failures.
+  + 
+  + Success Criteria:
+  + - Bash retry hint at attempt 1 includes a suggestion to inspect exit code and error output
+  + - Bash retry hint at attempt 2+ includes guidance to use explicit paths and avoid unbounded commands
+  + - Existing hints for other tools are unchanged
+  + - build_retry_prompt and build_auto_retry_prompt continue to work correctly
+  + 
+  + Verification:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (59 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (59 lines) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task_03 for `state summary` cold-start diagnostics.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Cold-start `state summary` — show diagnostic paths when state is empty
+  + Files: src/commands_state.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + When `yyds state summary` (or `state why --summary`) is run with an empty state log, show helpful diagnostic paths instead of just "State: empty (no events recorded yet)". Mirror the pattern from the Day 107 session 1 fix for `state why last-failure`, which now shows alternative diagnostic commands.
+  + 
+  + Why this matters:
+  + The assessment notes that `state summary` still shows raw usage text on cold start. The `state why last-failure` fix in Day 107 session 1 demonstrated the pattern: when there's no direct answer, show the user what ELSE they can check. Applying this to `state summary` closes a small usability gap and makes the tool more welcoming to fresh-state sessions.
+  + 
+  + Success Criteria:
+  + - Cold-start `state summary` output shows at least 2-3 alternative diagnostic suggestions
+  + - Existing behavior for non-empty state is unchanged
+  + - Suggestions are realistic (point to commands that actually exist)
+  + 
+  + Verification:
+  + - cargo test commands_state
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_03.md (59 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_03.md (59 lines) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to write the `issue_responses.md`. There are no trusted owner issues (ISSUES_TODAY.md says "No trusted issues today"), so this will be brief.
+────────────────────────────────────────────────────────────────────────────────
+
+Now write the issue responses file.
+  + # Issue Responses — Day 107
+  + 
+  + No trusted owner issues today.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (3 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (3 lines) ✓ (11ms)
+
+

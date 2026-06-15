@@ -1,0 +1,836 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the test failures:
+
+1. `run_completion_guard_reports_completed_on_normal_exit` - The test is looking for "RunCompleted" in the events but finding "RunStarted" instead. This suggests the guard isn't emitting RunCompleted properly.
+
+2. `run_completion_guard_reports_error_on_panic` - The test panics with "test lifecycle error 107" and then panics again looking for "FailureObserved" but finding "RunStarted". This suggests the panic hook isn't recording FailureObserved properly (probably the hook was overwritten).
+
+Let me look at the current state of `src/state.rs` to understand what's going on.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'run_completion_guard_reports_completed_on_normal_exit' (*.rs)  ▶ search 'RUN_HAD_ERROR' (*.rs) ✓ (14ms)
+ ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant sections of the state.rs file to understand the implementation and the tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.1s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1..71  ▶ read src/state.rs:330..390  ▶ read src/state.rs:6580..6680 ✓ (63ms)
+ ✓ (51ms)
+ ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The test at line 6598 creates a `RunCompletionGuard` with `completed_on_drop()`, but:
+
+1. `completed_on_drop()` sets status to `"completed"` but does NOT emit `RunStarted`. The test expects `RunStarted` to be present in the events, but the guard only emits `RunCompleted` on drop (via `mark_run_completed`). The `RunStarted` event is likely emitted by `init_global`... let me check.
+
+Actually wait, the test at line 6604 checks for `RunStarted` and line 6608 checks for `RunCompleted`. It seems the test expects both. But looking at the actual output:
+```
+should contain RunCompleted: {"id":"event_8652d1d384a24d229200b469b1f545c8",..."kind":"RunStarted"...}
+```
+
+So the assert at line 6603-6605 passes (RunStarted is found), but then line 6607-6609 FAILS because RunCompleted is NOT found. The raw events only contain RunStarted.
+
+This means the guard's Drop is not emitting RunCompleted. Let me look at how `record` works and whether the global recorder is properly set up.
+
+Let me read the test for `run_completion_guard_reports_error_on_panic` too.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6530..6610  ▶ search 'fn init_global' in src/state.rs (*.rs) ✓ (27ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `init_global` function to understand why `RunStarted` is emitted but `RunCompleted` is not.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:296..336  ▶ search 'fn record\b' in src/state.rs (*.rs) ✓ (35ms)
+ ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the `record` function at line 322 tries to get `GLOBAL_RECORDER` and if it's `None`, silently returns. That's the issue!
+
+In the test `run_completion_guard_reports_completed_on_normal_exit`:
+1. `init_global` is called, which creates a `StateRecorder`, emits `RunStarted`, and stores the recorder in `GLOBAL_RECORDER`.
+2. A `RunCompletionGuard` is created and dropped.
+3. On drop, the guard calls `mark_run_completed(status)` which calls `record(EventType::RunCompleted, ...)`.
+4. `record` looks up `GLOBAL_RECORDER` — but wait, it should be set because init_global succeeded.
+
+Wait, but the test output shows that RunStarted IS emitted. So the recorder works for RunStarted. But RunCompleted is NOT emitted.
+
+Let me check if `GLOBAL_RECORDER` is somehow being cleared between init and drop. Let me look at GLOBAL_RECORDER.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'GLOBAL_RECORDER' in src/state.rs (*.rs) ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `GLOBAL_RECORDER` is a `OnceLock<StateRecorder>`. `OnceLock::set` can only be called once. Since `init_global` sets it and then the test passes RunStarted check, the recorder is definitely set.
+
+Wait, but I see `let _ = GLOBAL_RECORDER.set(recorder);` — the result is discarded. If `set` returns `Err` (because it was already set), the result is just dropped. But in this test, init_global is called only once...
+
+Hmm wait, let me look at the test again more carefully. The test says:
+
+```
+should contain RunCompleted: {"id":"event_8652d1d384a24d229200b469b1f545c8",..."kind":"RunStarted"...}
+```
+
+So the `raw` content in the error message only shows a RunStarted event, not a RunCompleted. This means the guard drop didn't emit RunCompleted.
+
+But the guard's drop calls `mark_run_completed(status)` which calls `record(...)`. The `record` function should work because we already saw RunStarted was emitted.
+
+Wait - could the issue be that `RunCompletionGuard::drop` is NOT being called? No, that can't be since the guard goes out of scope.
+
+Let me re-read the `RunCompletionGuard` more carefully:
+
+```rust
+pub struct RunCompletionGuard {
+    status: &'static str,
+}
+
+impl RunCompletionGuard {
+    pub fn completed_on_drop() -> Self {
+        Self {
+            status: "completed",
+        }
+    }
+}
+
+impl Drop for RunCompletionGuard {
+    fn drop(&mut self) {
+        let status = if RUN_HAD_ERROR.with(|c| c.get()) {
+            "error"
+        } else {
+            self.status
+        };
+        mark_run_completed(status);
+    }
+}
+```
+
+Wait, `mark_run_completed` is at line 359-365. Let me look again...
+
+Actually, I wonder if there's a problem with `RUN_HAD_ERROR`. When the test `run_completion_guard_reports_completed_on_normal_exit` runs, maybe `RUN_HAD_ERROR` is `true` from a previous test (since thread-locals persist across tests in the same thread). Let me check if that's the case.
+
+Actually, looking at the test panic error for `run_completion_guard_reports_completed_on_normal_exit`:
+
+```
+should contain RunCompleted: {"id":"event_8652d1d384a24d229200b469b1f545c8",..."kind":"RunStarted"...}
+```
+
+There's only ONE event (RunStarted). If `RUN_HAD_ERROR` was `true`, `mark_run_completed("error")` would still be called (it just uses "error" status instead of "completed"). So the RunCompleted event should appear regardless.
+
+But it doesn't appear at all. So the guard's drop is either:
+1. Not being called, or
+2. `mark_run_completed` is silently failing
+
+Wait, let me look at `mark_run_completed` more carefully:
+
+```rust
+pub fn mark_run_completed(status: &str) {
+    record(
+        EventType::RunCompleted,
+        Actor::Harness,
+        run_completed_payload(status, None, None),
+    );
+}
+```
+
+And `record`:
+```rust
+pub fn record(event_type: EventType, actor: Actor, payload: Value) {
+    let Some(recorder) = GLOBAL_RECORDER.get() else {
+        return;
+    };
+    if let Err(e) = recorder.append(event_type, actor, payload) {
+        if recorder.fail_soft {
+            eprintln!("warning: failed to record state event: {e}");
+        } else {
+            panic!("failed to record state event: {e}");
+        }
+    }
+}
+```
+
+Hmm, so if `GLOBAL_RECORDER` is set and `record` is called, it should either:
+- Silently succeed (event appended)
+- Print a warning (fail_soft)
+- Panic
+
+None of these would cause RunCompleted to silently not appear but RunStarted to appear.
+
+Unless... `GLOBAL_RECORDER.get()` returns `None` at drop time? But that's a `OnceLock`, once set it stays set.
+
+Wait, I need to look at the actual `StateRecorder` type. Let me check its `append` method to see if there's a condition where it succeeds silently but doesn't write.
+
+Actually, wait. Let me re-read the error output more carefully:
+
+```
+---- state::tests::run_completion_guard_reports_completed_on_normal_exit stdout ----
+thread 'state::tests::run_completion_guard_reports_completed_on_normal_exit' (20575) panicked at src/state.rs:6607:9:
+should contain RunCompleted: {"id":"event_8652d1d384a24d229200b469b1f545c8","schema_version":1,"ts_ms":1781514494756,"actor":{"kind":"system","id":"harness"},"kind":"RunStarted",...
+```
+
+So the assertion at line 6603-6605 (`raw.contains("RunStarted")`) PASSES (it doesn't panic), and then the assertion at line 6607-6609 (`raw.contains("RunCompleted")`) FAILS. The raw JSONL file only has RunStarted.
+
+But wait — maybe the issue is simpler. Maybe `mark_run_completed` is calling a DIFFERENT function? Let me check if there are multiple `mark_run_completed` functions or if there's something wrong with the `run_completed_payload` function.
+
+Let me also look at the second test failure more carefully:
+
+```
+---- state::tests::run_completion_guard_reports_error_on_panic stdout ----
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (20578) panicked at src/state.rs:6553:13:
+test lifecycle error 107
+```
+
+So the test panics at line 6553: `panic!("test lifecycle error 107");` — that's expected, since it's inside `catch_unwind`.
+
+Then:
+```
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (20578) panicked at src/state.rs:6564:9:
+should contain FailureObserved: {"id":"event_2fde35bde5174f399e482f9b7ebc025a",..."kind":"RunStarted"...}
+```
+
+So the panic hook should have emitted FailureObserved, but it didn't. Only RunStarted is in the file.
+
+This means the panic hook's `record` call also failed silently. 
+
+Wait — when inside a `catch_unwind`, does the panic hook run? Yes, the panic hook runs during unwinding. But `catch_unwind` catches the panic and the code continues after it. So after `catch_unwind`, the code reads the events file.
+
+But the issue is: the panic hook calls `record(EventType::FailureObserved, ...)`. And `record` calls `GLOBAL_RECORDER.get()`. If `GLOBAL_RECORDER` is `None`, it silently returns.
+
+But `GLOBAL_RECORDER` was set by `init_global` which succeeded (RunStarted is in the file).
+
+Hmm, wait. Let me look at `OnceLock` more carefully. Is there a subtlety with `OnceLock` and panics?
+
+Actually, let me look at the GLOBAL_RECORDER declaration again:
+```rust
+static GLOBAL_RECORDER: OnceLock<StateRecorder> = OnceLock::new();
+```
+
+`OnceLock::set` consumes the value and sets it. But if `set` is called when it's already set, it returns `Err(value)`. Looking at line 307:
+```rust
+let _ = GLOBAL_RECORDER.set(recorder);
+```
+
+The `_` discards the error. But in the test, `init_global` is only called once, so this should work fine.
+
+Wait, I just realized something. Let me check: is the `StateRecorder` being dropped when `init_global` returns `Ok(())`? No, because it's moved into the `OnceLock`.
+
+Let me look at the `StateRecorder` struct and its `append` method.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct StateRecorder' in src/state.rs (*.rs)  ▶ search 'fn append' in src/state.rs (*.rs) ✓ (32ms)
+ ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the StateRecorder struct and its append method to understand why RunCompleted/FailureObserved might not be emitted.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:253..303 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the StateRecorder looks fine. The `append` method is straightforward. Let me now look at the actual error message more carefully.
+
+In the first test failure:
+```
+should contain RunCompleted: {"id":"event_8652d1d384a24d229200b469b1f545c8","schema_version":1,"ts_ms":1781514494756,"actor":{"kind":"system","id":"harness"},"kind":"RunStarted","payload":...
+```
+
+So the raw file contains only the RunStarted event. The RunCompleted event was never written.
+
+In the second test failure:
+```
+should contain FailureObserved: {"id":"event_2fde35bde5174f399e482f9b7ebc025a",..."kind":"RunStarted"...}
+```
+
+Same pattern - only RunStarted, no FailureObserved and no RunCompleted.
+
+So the problem is that `record()` is silently returning `None` from `GLOBAL_RECORDER.get()`.
+
+Wait... is `OnceLock` `Sync`? Let me think... `OnceLock` is both `Send` and `Sync` when `T` is `Send` and `Sync`. `StateRecorder` should be both.
+
+But wait — `init_global` calls `GLOBAL_RECORDER.set(recorder)` and discards the result with `let _ = `. If `set` fails (because the OnceLock was already set), the recorder is returned as `Err(recorder)` and dropped.
+
+Is it possible that `GLOBAL_RECORDER` is already set from a previous test? Tests run in the same process... but `OnceLock` is process-global, so if a previous test called `init_global`, the OnceLock would already be set, and a subsequent call would fail!
+
+But `OnceLock::set` only sets it once. If it's already set, the second call returns `Err(value)` and the new value is returned (and dropped). The old value stays.
+
+But in the test, `init_global` is called with a NEW tempdir and NEW config. If GLOBAL_RECORDER is already set from a previous test, then `GLOBAL_RECORDER.set(recorder)` would fail, the NEW recorder would be dropped, and the OLD recorder (pointing to a different tempdir) would be used.
+
+But then `record()` would write to the OLD tempdir, not the new one. And the test reads from the NEW tempdir. So RunStarted wouldn't appear in the new tempdir either!
+
+But RunStarted DOES appear. So either:
+1. GLOBAL_RECORDER is NOT already set (init_global succeeds)
+2. Or something else is going on
+
+Actually wait — in the test, `init_global` is called and returns `Ok(())`. Let me look at the code path:
+
+```rust
+pub fn init_global(config: StateConfig, startup_payload: Value) -> Result<(), String> {
+    if !config.enabled {
+        return Ok(());
+    }
+    let fail_soft = config.fail_soft;
+    let recorder = StateRecorder::new(config);
+    let init_result = recorder.append(EventType::RunStarted, Actor::Harness, startup_payload);
+    match init_result {
+        Ok(_) => {
+            let _ = GLOBAL_RECORDER.set(recorder);  // <-- THIS COULD FAIL
+            Ok(())
+        }
+        Err(e) if fail_soft => {
+            eprintln!("warning: state recorder disabled after init failure: {e}");
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+```
+
+If `GLOBAL_RECORDER.set(recorder)` fails (because it was already set from a previous test), the result is discarded with `let _ = `. The function still returns `Ok(())`. 
+
+So: if GLOBAL_RECORDER was already set from a previous test:
+1. `init_global` creates a new recorder
+2. Records RunStarted to the NEW tempdir ✓ (RunStarted appears in new file)
+3. Tries to set GLOBAL_RECORDER — fails silently (already set)
+4. Returns Ok(())
+5. The NEW recorder is dropped
+6. Guard's drop calls `record()` → uses OLD recorder → writes to OLD tempdir
+7. Test reads from NEW tempdir → only sees RunStarted from step 2
+
+This is exactly the symptom! The GLOBAL_RECORDER `OnceLock` persists across tests, and the second `init_global` silently fails to replace it.
+
+Wait, but tests run in different threads or at different times. Actually, Rust tests run sequentially by default (or with --test-threads=1). But the GLOBAL_RECORDER is a static, so it persists across tests.
+
+Hmm, but `OnceLock` can only be set once for the entire process lifetime. So indeed, after the first test sets it, all subsequent tests that call `init_global` will fail to set it, and the old recorder will be used.
+
+But wait — the test in question does work partially: RunStarted is in the file. So `init_global`'s `recorder.append` wrote RunStarted to the new file. Then `GLOBAL_RECORDER.set(recorder)` failed silently, the new recorder was dropped, and the old recorder (from a previous test) is still in GLOBAL_RECORDER. 
+
+So when `record()` is called later (from guard drop or panic hook), it uses the OLD recorder which writes to the OLD tempdir.
+
+The FIX should be to not use `OnceLock` and instead use something resettable, OR to reset GLOBAL_RECORDER between tests. But that's a bigger change.
+
+Actually, wait. Let me re-read the problem statement. The task description says: "Add a thread-local flag RUN_HAD_ERROR: Cell<bool>". But the test failures are about the GLOBAL_RECORDER being set once and never replaced.
+
+Actually, I think this was ALREADY a pre-existing problem. The tests might have been written as part of this task but they don't work because the test infrastructure has this OnceLock issue. Or... maybe this worked before because there was no `GLOBAL_RECORDER.set` failure before the current changes?
+
+Let me look at what changes were made to `state.rs`. Let me check git status/diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/state.rs ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the changes are:
+1. Added `RUN_HAD_ERROR` thread-local
+2. Added `RUN_HAD_ERROR.with(|c| c.set(true))` in `install_panic_hook`
+3. Modified `Drop for RunCompletionGuard` to check `RUN_HAD_ERROR`
+4. Added `RUN_HAD_ERROR.with(|c| c.set(true))` in `mark_run_completed_with_error`
+5. Added two new tests at the end
+
+The issue is clear: the tests were added but they fail because `GLOBAL_RECORDER` is a `OnceLock` that can only be set once per process lifetime. The first test that calls `init_global` sets it, and subsequent tests can't set it again. The new tests at the end of the file will always fail because other tests before them have already set GLOBAL_RECORDER.
+
+Wait, but the tests use different tempdirs and read from different event files. The problem is:
+1. First test calls `init_global` → creates recorder A, writes RunStarted to tempdir-1, tries to set GLOBAL_RECORDER → succeeds
+2. Second test calls `init_global` → creates recorder B, writes RunStarted to tempdir-2, tries to set GLOBAL_RECORDER → FAILS (already set), recorder B dropped
+3. Second test's guard drops → calls `record()` → uses recorder A → writes to tempdir-1 (not tempdir-2)
+4. Second test reads tempdir-2 → only sees RunStarted from step 2
+
+But wait, the actual error shows that the FIRST of the two new tests (`run_completion_guard_reports_error_on_panic`) also fails. Let me check: which test runs first?
+
+The tests are added at the end of the test module. The run order could be either one first. Both fail similarly.
+
+But wait, are there other tests in the module that call `init_global`? Let me check.
+
+Actually, the key question is: is there a way to reset `GLOBAL_RECORDER`? Since it's a `OnceLock`, it can't be reset.
+
+But `OnceLock` has `get_or_init` — no, that's for `LazyLock`.
+
+The real fix should be to either:
+1. Use a `Mutex<Option<StateRecorder>>` or `RwLock<Option<StateRecorder>>` instead of `OnceLock`
+2. Or add a test-only function to reset the global recorder
+
+But the task description specifically says to use `OnceLock`. Hmm, actually no — the task doesn't mention `OnceLock`. The `OnceLock` is pre-existing.
+
+Wait, I need to look at this differently. Maybe these tests were SUPPOSED to work because no previous test calls `init_global` with `enabled: true`. Let me check...
+
+Actually, let me search for other tests that call `init_global`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'init_global' in src/state.rs (*.rs) ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see where line 6468 is (the first test that calls init_global).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6457..6497 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the problem clearly. The test `panic_hook_records_to_state` at line 6458 calls `init_global` first. This sets `GLOBAL_RECORDER` OnceLock. After that test, `GLOBAL_RECORDER` is permanently set. 
+
+Then when the new tests at lines 6537 and 6583 call `init_global`, `GLOBAL_RECORDER.set(recorder)` fails (already set), the new recorder is dropped, and `record()` calls go to the OLD recorder (which writes to the old tempdir).
+
+But wait, the old tempdir is destroyed after the first test finishes. So `record()` calls from the new tests would fail because the old tempdir no longer exists. But `record()` handles errors via `fail_soft` and just prints a warning.
+
+However, in the actual test output, RunStarted IS present in the new tests' events files. That's because `init_global`'s `recorder.append(EventType::RunStarted, ...)` writes directly to the new events_path BEFORE trying to set the global. So:
+
+1. `panic_hook_records_to_state` test: init_global → creates recorder A → writes RunStarted to tempdir-1 → sets GLOBAL_RECORDER = recorder A → test passes → tempdir-1 is deleted
+2. `run_completion_guard_reports_error_on_panic` test: init_global → creates recorder B → writes RunStarted to tempdir-2 → tries to set GLOBAL_RECORDER → FAILS → recorder B dropped → GLOBAL_RECORDER still = recorder A (pointing to deleted tempdir-1)
+3. Guard drops → calls `record()` → uses recorder A → tries to write to deleted tempdir-1 → fails silently (fail_soft prints warning)
+
+So the fix needs to handle the fact that GLOBAL_RECORDER is a OnceLock that can only be set once.
+
+Looking at this problem, there are several approaches:
+1. Replace `OnceLock` with `Mutex<Option<StateRecorder>>` — but that changes the production code
+2. Add a test-only `reset_global_recorder` function — but OnceLock can't be reset
+3. Use `std::sync::Mutex<Option<StateRecorder>>` with a `LazyLock` or `OnceLock<Mutex<Option<StateRecorder>>>`
+4. Make the tests not depend on GLOBAL_RECORDER being freshly set — but they do
+
+Actually, the simplest fix that doesn't change the production behavior: the tests should NOT call `init_global`. Instead, they should create a StateRecorder directly and test the guard behavior without the global.
+
+But the tests need the `GLOBAL_RECORDER` to be set for `record()` to work. And `record()` is what the guard calls internally.
+
+Actually, let me think about this differently. The `panic_hook_records_to_state` test at line 6458 already tests the same scenario — it calls `init_global`, `install_panic_hook`, then `catch_unwind(|| panic!(...))`. And it passes! It reads FailureObserved from the events file.
+
+Why does that test pass but the new tests fail? Because `panic_hook_records_to_state` is the FIRST test that calls `init_global`. The OnceLock is empty, so `set` succeeds, and the recorder is properly stored.
+
+The new tests are added AFTER this test, so they run AFTER the OnceLock is already set.
+
+The fix could be: use `Mutex<Option<StateRecorder>>` instead of `OnceLock<StateRecorder>`. Let me check what the impact is...
+
+Actually, wait. `OnceLock` has a method `get_mut` but that requires `&mut self`. For a static, you can't get `&mut`.
+
+Let me think about alternatives:
+- `std::sync::Mutex<Option<StateRecorder>>` — requires locking on every `record()` call. But `record` is infrequent, so this should be fine.
+- `std::sync::RwLock<Option<StateRecorder>>` — allows concurrent reads but write to set once.
+
+Actually, looking at the existing code more carefully, `OnceLock` was chosen because it's set once and then read-only. But the tests need to reset it.
+
+The simplest approach: change `OnceLock<StateRecorder>` to `Mutex<Option<StateRecorder>>` and update the code accordingly.
+
+OR, even simpler: keep `OnceLock` but add a test-helper that resets it. Since `OnceLock` can't be reset in stable Rust, we'd need unsafe. But we could use a different pattern for tests.
+
+Actually, the simplest fix might be: the tests should just not use the global at all. They can create a `StateRecorder` directly, call methods on it, and read back from its events file. They don't need GLOBAL_RECORDER.
+
+But the guard's `Drop` calls `mark_run_completed` which calls `record()` which uses GLOBAL_RECORDER. So the guard needs GLOBAL_RECORDER.
+
+OK, the real fix is to change GLOBAL_RECORDER from `OnceLock` to `Mutex<Option<StateRecorder>>`. Let me do that.
+
+Wait, but `OnceLock` is used in production as well. Let me check all uses of GLOBAL_RECORDER.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:80..100 ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the full picture. The core issue is that `GLOBAL_RECORDER` is a `OnceLock` which is set once per process lifetime. Multiple tests calling `init_global` breaks.
+
+The right fix is to change `OnceLock<StateRecorder>` to `Mutex<Option<StateRecorder>>`. This requires:
+1. Change the type
+2. Update `init_global` to use `lock()` instead of `set()`
+3. Update `is_initialized` to use `lock()`
+4. Update `record` to use `lock()`
+
+The `Mutex` is needed because `StateRecorder` might not be `Sync` (well it holds `PathBuf` and `String`, which are `Sync`). But once set, it's just read. `Mutex` has minimal overhead for this case.
+
+Let me also check if `StateRecorder` is `Send + Sync`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 | head -30 ✓ (7.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, it compiles. Now let me plan the fix.
+
+The issue is that `GLOBAL_RECORDER` is a `OnceLock<StateRecorder>`. Once set by the first test that calls `init_global`, it can never be changed. Subsequent tests can't properly initialize a new recorder.
+
+The fix: change `OnceLock<StateRecorder>` to `Mutex<Option<StateRecorder>>`.
+
+Changes needed:
+1. Line 84: Change type declaration
+2. Line 307: Change `let _ = GLOBAL_RECORDER.set(recorder);` to `*GLOBAL_RECORDER.lock().unwrap() = Some(recorder);`
+3. Line 319: Update `is_initialized` — `GLOBAL_RECORDER.lock().unwrap().is_some()`
+4. Lines 323-324: Update `record` — `let Some(recorder) = GLOBAL_RECORDER.lock().unwrap().as_ref()`
+
+Wait, but `record` takes a reference to the recorder (which is `&self`). If we lock and get a reference, the lock is held for the duration of `append`. That should be fine — it's fast.
+
+But actually, we need to be careful: `record` is called from the panic hook too. If a panic happens while the mutex is locked, we get a poisoned mutex. The code already has `lock_or_recover` pattern in `sync_util.rs`.
+
+Hmm let me check if there's a `lock_or_recover` utility.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'lock_or_recover' (*.rs) ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, there's `lock_or_recover` in `sync_util.rs`. Let me check it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/sync_util.rs:21..41 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear plan:
+
+1. Change `GLOBAL_RECORDER` from `OnceLock<StateRecorder>` to `Mutex<Option<StateRecorder>>`
+2. Add `use std::sync::Mutex;` (it may already be imported)
+3. Update `init_global` to use `lock_or_recover`
+4. Update `is_initialized` 
+5. Update `record`
+
+But wait, `state.rs` might not import `lock_or_recover` or `Mutex`. Let me check the imports.
+
+Looking at line 15: `use std::sync::{LazyLock, Once, OnceLock};` — I need to add `Mutex` here. And replace `OnceLock` with `Mutex`.
+
+And I need to import `lock_or_recover` from `sync_util`. But I need to be careful about circular imports if `state` is a lib crate module.
+
+Actually, let me check if `sync_util` is part of the same crate.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && head -5 src/sync_util.rs src/s… ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+They're both in the same crate. But there could be circular dependency issues. `sync_util` is a simple utility that doesn't depend on anything else in the crate. `state` is a larger module. Using `lock_or_recover` from `sync_util` in `state` should be fine.
+
+Actually, I can just use `std::sync::Mutex` directly without the `lock_or_recover` helper. Or I can keep it simple and just use `.lock().unwrap()` since StateRecorder operations are infrequent.
+
+Wait, but the concern is about poisoned mutexes. If `record` panics while holding the lock (which shouldn't happen since it's append-only), the mutex could be poisoned. The `lock_or_recover` helper handles this gracefully.
+
+But actually, `record` itself doesn't panic unless `fail_soft` is false. And even then, the panic happens after `recorder.append` returns, so the mutex guard would be dropped first.
+
+Let me think about this more simply. The `record` function:
+```rust
+pub fn record(event_type: EventType, actor: Actor, payload: Value) {
+    let Some(recorder) = GLOBAL_RECORDER.get() else {
+        return;
+    };
+    if let Err(e) = recorder.append(event_type, actor, payload) {
+        if recorder.fail_soft {
+            eprintln!("warning: failed to record state event: {e}");
+        } else {
+            panic!("failed to record state event: {e}");
+        }
+    }
+}
+```
+
+With `Mutex<Option<StateRecorder>>`, this becomes:
+```rust
+pub fn record(event_type: EventType, actor: Actor, payload: Value) {
+    let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(recorder) = guard.as_ref() else {
+        return;
+    };
+    if let Err(e) = recorder.append(event_type, actor, payload) {
+        if recorder.fail_soft {
+            eprintln!("warning: failed to record state event: {e}");
+        } else {
+            panic!("failed to record state event: {e}");
+        }
+    }
+}
+```
+
+This is clean. The lock is held while `append` runs, which is fast (file write). The guard is dropped after the if-let.
+
+For `init_global`:
+```rust
+pub fn init_global(config: StateConfig, startup_payload: Value) -> Result<(), String> {
+    if !config.enabled {
+        return Ok(());
+    }
+    let fail_soft = config.fail_soft;
+    let recorder = StateRecorder::new(config);
+    let init_result = recorder.append(EventType::RunStarted, Actor::Harness, startup_payload);
+    match init_result {
+        Ok(_) => {
+            *GLOBAL_RECORDER.lock().unwrap() = Some(recorder);
+            Ok(())
+        }
+        Err(e) if fail_soft => {
+            eprintln!("warning: state recorder disabled after init failure: {e}");
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+```
+
+For `is_initialized`:
+```rust
+pub fn is_initialized() -> bool {
+    GLOBAL_RECORDER.lock().unwrap().is_some()
+}
+```
+
+Wait, actually I realize there's a subtlety. If `record` panics while holding the lock (which can happen if `fail_soft` is false), the mutex gets poisoned. The next `record` call would also panic (because `unwrap` on poisoned mutex panics). But `fail_soft` is typically `true` in production.
+
+But I should use `lock_or_recover` to be safe. Let me also make sure we don't import `OnceLock` anymore if it's unused.
+
+Let me check other uses of `OnceLock` in the file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'OnceLock' in src/state.rs (*.rs) ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`OnceLock` is only used for `GLOBAL_RECORDER`. After the change, I can remove it from the import.
+
+But wait — is there a simpler approach? Instead of changing the global type, can I just fix the tests?
+
+The tests create a new `init_global` each time. The problem is `OnceLock::set` only works once. If I make the tests NOT depend on `init_global` calling `GLOBAL_RECORDER.set`, they could work.
+
+But the tests NEED `GLOBAL_RECORDER` to be set for the guard's `Drop` to work. The guard calls `mark_run_completed` → `record` → `GLOBAL_RECORDER.get()`.
+
+Unless I restructure the tests to test `RunCompletionGuard` differently, without going through the global...
+
+Actually wait. Let me re-examine the existing test `panic_hook_records_to_state` at line 6458. It calls `init_global` and then `install_panic_hook`. When the panic happens inside `catch_unwind`, the panic hook's `record()` writes to the global recorder. This test PASSES. Why?
+
+Because it's the FIRST test that calls `init_global`. The `OnceLock` is empty, `set` succeeds, and the recorder is stored.
+
+The two new tests at lines 6537 and 6583 are AFTER this test. They call `init_global`, but `GLOBAL_RECORDER.set()` fails silently (returns Err). The new recorder is dropped. When the guard drops, it calls `record()` which uses the OLD recorder pointing to the deleted tempdir.
+
+So the fix could be:
+1. Move the new tests BEFORE `panic_hook_records_to_state`, so they run first and get a fresh OnceLock
+2. Or fix the OnceLock issue
+
+Option 1 is simpler but fragile — if someone adds another `init_global` test before them, they break again.
+
+Option 2 (Mutex<Option<>>) is the proper fix and makes the state module testable.
+
+Let me go with Option 2: change `OnceLock` to `Mutex<Option<>>`.
+
+Actually, wait. I just realized there's an even simpler option. I can use `std::sync::OnceLock::get_or_init`... no, that doesn't help because once it's set it can't be changed.
+
+Or I can use `std::cell::RefCell` with `thread_local!`... no, because `record` is called from panic hooks on potentially different threads.
+
+OK, `Mutex<Option<StateRecorder>>` is the right approach. Let me implement it.
+
+Actually, let me reconsider. Is there a way to use `unsafe` to reset `OnceLock`? Not really — `OnceLock` has no reset method in stable Rust.
+
+What about using `std::sync::RwLock<Option<StateRecorder>>`? That allows concurrent reads. But `record` is called infrequently, so `Mutex` is fine.
+
+Let me just do the `Mutex<Option<>>` change. It's clean and simple.
+
+But I need to import `lock_or_recover` from `sync_util` or inline the poison-recovery logic.
+
+Actually, let me just use `.lock().unwrap_or_else(|e| e.into_inner())` directly since the `sync_util` import might cause issues (circular deps or just clutter). I'll check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:10..26 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement the fix. I'll:
+
+1. Change `OnceLock` to `Mutex` in imports (add `Mutex`, remove `OnceLock`)
+2. Change `static GLOBAL_RECORDER: OnceLock<StateRecorder>` to `static GLOBAL_RECORDER: Mutex<Option<StateRecorder>>`
+3. Update `init_global` to use `lock().unwrap()` 
+4. Update `is_initialized`
+5. Update `record`
+
+Let me also check if `OnceLock` is used elsewhere in the file to know if I should remove it from imports:
+- Line 15: `use std::sync::{LazyLock, Once, OnceLock};`
+- Line 84: `static GLOBAL_RECORDER: OnceLock<StateRecorder> = OnceLock::new();`
+
+That's it. `LazyLock` and `Once` might be used elsewhere. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'LazyLock' in src/state.rs (*.rs)  ▶ search '\bOnce\b' in src/state.rs (*.rs) ✓ (27ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`LazyLock` is used extensively and `Once` is also used (for `PANIC_HOOK_INSTALLED`). I just need to replace `OnceLock` with `Mutex` in the import.
+
+Let me now make the edits.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+Now I understand the root cause. `GLOBAL_RECORDER` is a `OnceLock<StateRecorder>` — it can only be set once per process lifetime. The first test that calls `init_global` sets it, and subsequent tests can't replace it. Their `init_global` silently fails to set the global, so the guard's `record()` calls go to the old (deleted) tempdir's recorder.
+
+Fix: change `OnceLock<StateRecorder>` to `Mutex<Option<StateRecorder>>`, which allows tests to reset the global.
+  - use std::sync::{LazyLock, Once, OnceLock};
+  + use std::sync::{LazyLock, Mutex, Once};
+  ✓ Auto-approved: edit: src/state.rs (1 → 1 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (1 → 1 lines)
+  - use std::sync::{LazyLock, Once, OnceLock};
+  + use std::sync::{LazyLock, Mutex, Once};
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now change the GLOBAL_RECORDER declaration.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - static GLOBAL_RECORDER: OnceLock<StateRecorder> = OnceLock::new();
+  + static GLOBAL_RECORDER: Mutex<Option<StateRecorder>> = Mutex::new(None);
+  ✓ Auto-approved: edit: src/state.rs (1 → 1 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (1 → 1 lines)
+  - static GLOBAL_RECORDER: OnceLock<StateRecorder> = OnceLock::new();
+  + static GLOBAL_RECORDER: Mutex<Option<StateRecorder>> = Mutex::new(None);
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `init_global` at line 298-316.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:296..321 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `init_global`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+        match init_result {
+            Ok(_) => {
+  -             let _ = GLOBAL_RECORDER.set(recorder);
+  +             *GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = Some(recorder);
+                Ok(())
+            }
+  ✓ Auto-approved: edit: src/state.rs (5 → 5 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (5 → 5 lines)
+        match init_result {
+            Ok(_) => {
+  -             let _ = GLOBAL_RECORDER.set(recorder);
+  +             *GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = Some(recorder);
+                Ok(())
+            }
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `is_initialized`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+    pub fn is_initialized() -> bool {
+  -     GLOBAL_RECORDER.get().is_some()
+  +     GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+  ✓ Auto-approved: edit: src/state.rs (3 → 3 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (3 → 3 lines)
+    pub fn is_initialized() -> bool {
+  -     GLOBAL_RECORDER.get().is_some()
+  +     GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `record`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:321..336 ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+    pub fn record(event_type: EventType, actor: Actor, payload: Value) {
+  -     let Some(recorder) = GLOBAL_RECORDER.get() else {
+  +     let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+  +     let Some(recorder) = guard.as_ref() else {
+            return;
+        };
+        if let Err(e) = recorder.append(event_type, actor, payload) {
+  ✓ Auto-approved: edit: src/state.rs (12 → 13 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (12 → 13 lines)
+    pub fn record(event_type: EventType, actor: Actor, payload: Value) {
+  -     let Some(recorder) = GLOBAL_RECORDER.get() else {
+  +     let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+  +     let Some(recorder) = guard.as_ref() else {
+            return;
+        };
+        if let Err(e) = recorder.append(event_type, actor, payload) {
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the changes compile and the tests pass:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me build and run the failing tests:
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (15.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It compiles. Now run the specific tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::run_c… ✓ (28.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests pass now. Let me also run the panic_hook_records_to_state test and then run the full test suite to make sure nothing else broke.
+────────────────────────────────────────────────────────────────────────────────
+
+Both tests pass. Let me run the pre-existing `panic_hook_records_to_state` test to make sure it still works, then run `cargo fmt` and the broader tests:
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::panic… ✓ (173ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run cargo fmt and the full test suite to verify nothing else is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check shows the `is_initialized` line needs wrapping. Let me run `cargo fmt` to auto-fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now run the full test suite:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1…

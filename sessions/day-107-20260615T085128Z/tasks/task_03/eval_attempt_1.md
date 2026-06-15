@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: `build_state_summary` now returns 4 diagnostic paths (state doctor, crashes, init, tail) when events are empty — exactly matching the task spec. A dedicated test (`state_summary_empty_suggests_diagnostic_paths`) verifies all suggestions and their descriptions appear. Callers at lines 851 and 885 already print the result as-is, so multi-line output works correctly. Build and tests pass.

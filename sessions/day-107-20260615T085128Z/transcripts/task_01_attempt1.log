@@ -1,0 +1,573 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task clearly:
+
+1. I need to fix `RunCompletionGuard` in `src/state.rs` so that it correctly reports "error" status on panic exits, instead of always reporting "completed".
+2. This is a lifecycle gap where runs appear to succeed despite crashes.
+
+Let me start by reading the evolve skill and the relevant source file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/state.rs ✓ (41ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the important parts of state.rs more carefully — specifically the `RunCompletionGuard` and `mark_run_completed` functions. The file is very long (6528 lines), so let me search for the relevant sections.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+Let me find the key sections — `RunCompletionGuard`, `mark_run_completed`, and `mark_run_completed_with_error`.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RunCompletionGuard' in src/state.rs  ▶ search 'fn mark_run_completed' in src/state.rs  ▶ search 'fn exit_with_state' in src/state.rs ✓ (37ms)
+ ✓ (37ms)
+ ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read those critical sections.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.0s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:334..394  ▶ search 'exit_with_state' in src/state.rs ✓ (25ms)
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also look at the `record_run_started` function and how `RunCompletionGuard` is used in the codebase (to understand how it's created).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+Let me see how `RunCompletionGuard` is used and where runs are started:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'completed_on_drop' in src/  ▶ search 'fn record_run_started' in src/state.rs ✓ (10ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for record_run_started differently — the function might be named differently.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RunStarted' in src/  ▶ read src/lib.rs:1040..1070 ✓ (12ms)
+ ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue clearly:
+
+1. `RunCompletionGuard` is created with `completed_on_drop()` at line 1049, with status "completed"
+2. `install_panic_hook()` is called at line 1051 — **after** the guard is created
+3. On `Drop`, `RunCompletionGuard` always calls `mark_run_completed(self.status)` which is `"completed"` — regardless of panic
+
+The fix plan from the task:
+1. Add a thread-local `RUN_HAD_ERROR: Cell<bool>` 
+2. In `mark_run_completed_with_error`, set `RUN_HAD_ERROR` to true
+3. In `RunCompletionGuard::drop`, check `RUN_HAD_ERROR`: if true, call `mark_run_completed("error")`
+4. In `install_panic_hook`, set `RUN_HAD_ERROR` to true
+
+But wait — there's a subtlety. `mark_run_completed_with_error` calls `record(...)` directly AND sets `store_run_error`. If we also set `RUN_HAD_ERROR = true` in `mark_run_completed_with_error`, then when the guard drops, it would try to emit a second `RunCompleted` event. The task says "No double RunCompleted events."
+
+Let me think about this more carefully:
+- Normal path: guard created → work happens → guard drops → `mark_run_completed("completed")` ✓
+- `exit_with_state` path: `mark_run_completed_with_error(msg)` is called → `std::process::exit()` → guard never drops ✓
+- Panic path: panic → hook fires, sets RUN_HAD_ERROR=true → unwinding → guard drops → should call `mark_run_completed("error")`
+
+The key issue: in the panic path, the guard WILL drop during unwinding. In the exit_with_state path, the process exits before the guard drops.
+
+So the fix is:
+1. Add `RUN_HAD_ERROR` thread-local
+2. In `install_panic_hook`, set `RUN_HAD_ERROR` to true
+3. In `RunCompletionGuard::drop`, check `RUN_HAD_ERROR` — if true, emit "error"
+
+But wait — should I set `RUN_HAD_ERROR` in `mark_run_completed_with_error`? No — because `mark_run_completed_with_error` already emits the RunCompleted event directly. But the guard will also drop eventually (during process exit unwinding). Actually, with `std::process::exit()`, destructors don't run. So the guard won't drop. That's fine.
+
+So the simple fix:
+1. Add thread-local `RUN_HAD_ERROR`
+2. In panic hook, set it
+3. In guard drop, check it
+
+Let me also think about a test. The task says to write a test first.
+
+For testing, I can test:
+- That the guard with RUN_HAD_ERROR=true results in "error" status
+- This can be done without actually panicking by testing the drop behavior directly
+
+Let me look at the existing tests to understand the patterns.
+
+Now let me implement this. Let me first check where the tests are in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 14.2s (2 ✓)
+
+Now I have a clear picture. Let me look at the test section to understand the test patterns:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/state.rs ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the tests section to understand test patterns, then implement the fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3084..3284 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding of the code. Let me also quickly check the test patterns for how they test panic hooks or guard behavior. Let me look at the test for the panic hook specifically.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check existing tests around the panic hook and RunCompletionGuard:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'test.*panic_hook|test.*run_completion|test.*RunCompletion' in src/state.rs ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for tests of the guard or panic functionality differently. Also let me look at the test around line 6470 area where the `run_completed_payload` tests are.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6440..6500 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the information I need. Let me plan the implementation:
+
+1. Add a thread-local `RUN_HAD_ERROR: Cell<bool>` after the existing thread-locals.
+2. In `install_panic_hook`, set `RUN_HAD_ERROR` to true.
+3. In `RunCompletionGuard::drop`, check `RUN_HAD_ERROR` — if true, emit "error" instead of self.status.
+4. Write a test.
+
+But wait — there's an important subtlety. The `panic_hook_records_to_state` test catches a panic with `catch_unwind`. When a panic is caught, the panic hook still fires but the panic doesn't unwind through the guard's scope. So the thread-local would be set, but the guard wouldn't drop.
+
+Actually no — let me re-read. The test calls `panic!("test panic message 42")` inside `catch_unwind`. The panic hook fires, but then the panic is caught and doesn't propagate. The guard in a real scenario would be in the stack above the panic, and during unwinding, the guard's drop would be called. In the test, since the panic is caught, the guard doesn't unwind.
+
+For our test, we should test that:
+1. Setting `RUN_HAD_ERROR` to true causes the guard to emit "error" status
+2. Not setting it causes "completed" status
+
+We can test this directly by:
+- Creating a temp state
+- Creating a guard
+- Setting RUN_HAD_ERROR (which we need to expose for testing)
+- Dropping the guard
+- Verifying the RunCompleted event has status "error"
+
+Let me also think about whether setting `RUN_HAD_ERROR` in `mark_run_completed_with_error` is needed. The task says:
+> 2. In `mark_run_completed_with_error`, set `RUN_HAD_ERROR` to true BEFORE recording the RunCompleted event
+
+But the task also says the guard never drops after `exit_with_state`. So setting RUN_HAD_ERROR in `mark_run_completed_with_error` is harmless — if exit_with_state is called, the guard never drops. But it's also not strictly necessary. Let me follow the task spec exactly since it says to do it.
+
+Actually wait — looking more carefully at the task spec:
+
+> 2. In `mark_run_completed_with_error`, set `RUN_HAD_ERROR` to true BEFORE recording the RunCompleted event (so the guard can see it, though in the exit_with_state path the guard never drops).
+
+OK, the task explicitly says to do this. It's a safety net in case the guard does somehow drop. Let me follow it.
+
+Now, for the test, I need to be able to set `RUN_HAD_ERROR` from the test. The thread-local is private. I could either:
+1. Add a public test-only function
+2. Write the test inside the module
+3. Use `std::panic::catch_unwind` with a guard on the stack
+
+Actually, option 3 is the cleanest and most realistic test. Let me think about this:
+
+```rust
+#[test]
+fn run_completion_guard_reports_error_on_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let events_path = dir.path().join("events.jsonl");
+    let config = StateConfig {
+        enabled: true,
+        fail_soft: true,
+        events_path: events_path.clone(),
+        store_path: None,
+    };
+    init_global(config, json!({})).unwrap();
+    install_panic_hook();
+    
+    let result = std::panic::catch_unwind(|| {
+        let _guard = RunCompletionGuard::completed_on_drop();
+        panic!("test error");
+    });
+    
+    assert!(result.is_err());
+    let raw = std::fs::read_to_string(&events_path).unwrap();
+    assert!(raw.contains("\"status\":\"error\""), "should have error status: {raw}");
+    assert!(raw.contains("RunStarted"), "should also have RunStarted if init created one...");
+}
+```
+
+Hmm, but `init_global` also calls `record(EventType::RunStarted, ...)` from the tests I see. Let me check. Looking at line 302: `let init_result = recorder.append(EventType::RunStarted, Actor::Harness, startup_payload);` — yes, init_global records a RunStarted event.
+
+So the test would work: init creates RunStarted, panic hook fires (reports FailureObserved), guard drops (reports RunCompleted with error status).
+
+But wait — actually in a `catch_unwind` the panic hook fires but the guard should NOT drop. Because `catch_unwind` catches the panic at its boundary and prevents unwinding past it. The guard is inside the catch_unwind closure. So the guard DOES drop when the closure exits (either normally or via panic being caught and converted to Err).
+
+Actually, let me reconsider. `catch_unwind` catches the panic and returns `Err`. The stack frames inside the closure are unwound normally, but the unwinding stops at the `catch_unwind` boundary. So destructors inside the closure DO run. The guard's Drop impl WILL be called. Good.
+
+Let me implement this. The test should work.
+
+Actually, wait. Let me re-read the existing `panic_hook_records_to_state` test. It creates state, installs hook, then uses `catch_unwind` around a panic. It doesn't create a `RunCompletionGuard`. Our new test should:
+1. Create state (init)
+2. Install panic hook  
+3. catch_unwind with both a guard and a panic inside
+4. Verify RunCompleted has status "error"
+
+But there's a subtlety: `init_global` creates a RunStarted event. When the guard drops, it creates a RunCompleted event. Both use the global recorder. That should be fine.
+
+Let me also consider: should `mark_run_completed_with_error` also set `RUN_HAD_ERROR`? The task says yes. This is a no-op for the `exit_with_state` path (guard doesn't drop). But it's a defense-in-depth measure.
+
+However, there's a problem: if `mark_run_completed_with_error` is called AND then the process doesn't exit for some reason, the guard would drop and emit a second RunCompleted. The task says "No double RunCompleted events."
+
+I think the safest approach: DON'T set RUN_HAD_ERROR in `mark_run_completed_with_error`. Only set it in the panic hook. Because `mark_run_completed_with_error` already emits its own RunCompleted event. Adding a second one via the guard drop would be a double emission.
+
+Wait, let me re-read the task:
+> 2. In `mark_run_completed_with_error`, set `RUN_HAD_ERROR` to true BEFORE recording the RunCompleted event (so the guard can see it, though in the exit_with_state path the guard never drops).
+
+The task explicitly says to do this. The justification is "though in the exit_with_state path the guard never drops." So the assumption is that after `mark_run_completed_with_error`, `std::process::exit` is called immediately and the guard never drops. This is safe.
+
+But what about the guard's Drop? If for some reason `exit_with_state` doesn't exit (e.g., someone calls `mark_run_completed_with_error` without following it with exit), we'd get a double RunCompleted. The task says this is fine because that's not the normal path.
+
+OK, I'll follow the task spec exactly. Let me now implement:
+
+1. Add thread-local `RUN_HAD_ERROR`
+2. Set it in `install_panic_hook`
+3. Set it in `mark_run_completed_with_error`
+4. Check it in `RunCompletionGuard::drop`
+5. Write a test
+
+Let me make the edits.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, I now have a complete understanding of the code. Let me implement the fix. Here's my plan:
+
+1. Add `RUN_HAD_ERROR` thread-local
+2. Set it in `install_panic_hook` 
+3. Set it in `mark_run_completed_with_error`
+4. Check it in `RunCompletionGuard::drop`
+5. Write a test
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (12ms)
+  ▶ todo ✓ (11ms)
+  ▶ todo ✓ (12ms)
+  ▶ todo ✓ (12ms)
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (11ms)
+  ▶ todo ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task spec says "Write a test first if possible". So let me start with the test, then make the code changes. Actually, I should make the code changes first since the test needs the behavior change to exist. But the evolve skill says to write test first. Let me think...
+
+Actually, the evolve skill says "Write or update a focused test first when the behavior is testable." I can write the test first and it should FAIL, confirming the gap, then implement the fix and see the test pass. That's good TDD practice.
+
+Let me start by writing the test. The test needs to:
+1. Initialize global state
+2. Install panic hook
+3. Create a guard inside catch_unwind
+4. Panic
+5. Verify RunCompleted has status "error"
+
+Let me write it.
+────────────────────────────────────────────────────────────────────────────────
+  7 tools completed in 4.7s (7 ✓)
+
+Starting with the test first (TDD — it should fail, confirming the gap):
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the end of the tests module to see where to insert the new test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6510..6550 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the test. I'll insert it before the closing `}` of the test module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            store_run_error("second error");
+            LAST_RUN_ERROR.with(|cell| {
+                assert_eq!(cell.take(), Some("second error".to_string()));
+  +         });
+  +     }
+  + 
+  +     #[test]
+  +     fn run_completion_guard_reports_error_on_panic() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  +         };
+  +         init_global(config, json!({})).unwrap();
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (18 → 99 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (18 → 99 lines)
+            store_run_error("second error");
+            LAST_RUN_ERROR.with(|cell| {
+                assert_eq!(cell.take(), Some("second error".to_string()));
+  +         });
+  +     }
+  + 
+  +     #[test]
+  +     fn run_completion_guard_reports_error_on_panic() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  +         };
+  +         init_global(config, json!({})).unwrap();
+  + 
+  +         install_panic_hook();
+  + 
+  ... (67 more lines)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, test written. Now let me run cargo test to see it fail first (confirming the gap):
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the test fails first (proving the gap):
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test run_completion_guar… ✓ (30.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test fails as expected — the RunCompleted event has `"status":"completed"` even after a panic. This confirms the gap. Now let me implement the fix.
+
+1. Add `RUN_HAD_ERROR` thread-local
+2. Set it in `install_panic_hook`
+3. Set it in `mark_run_completed_with_error`
+4. Check it in `RunCompletionGuard::drop`
+────────────────────────────────────────────────────────────────────────────────
+
+Test confirms the gap: `"status":"completed"` after panic. Now implementing the fix — starting with the thread-local:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.3s (2 ✓)
+
+
+    thread_local! {
+        static LAST_RUN_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+        static LAST_DIAGNOSTIC_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+  +     static RUN_HAD_ERROR: Cell<bool> = const { Cell::new(false) };
+    }
+  ✓ Auto-approved: edit: src/state.rs (4 → 5 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (4 → 5 lines)
+    thread_local! {
+        static LAST_RUN_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+        static LAST_DIAGNOSTIC_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+  +     static RUN_HAD_ERROR: Cell<bool> = const { Cell::new(false) };
+    }
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now set RUN_HAD_ERROR in the panic hook.
+────────────────────────────────────────────────────────────────────────────────
+
+Now set `RUN_HAD_ERROR` in the panic hook:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (12ms)
+  ▶ todo ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to insert `RUN_HAD_ERROR.with(|c| c.set(true));` right before the `record(...)` call in the panic hook, or right after setting the payload. The task says to add it. Let me add it right before the `record` call.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.0s (2 ✓)
+
+
+                // fail-soft: the global recorder might not be initialized yet
+  +             RUN_HAD_ERROR.with(|c| c.set(true));
+                record(EventType::FailureObserved, Actor::Harness, payload);
+  ✓ Auto-approved: edit: src/state.rs (2 → 3 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (2 → 3 lines)
+                // fail-soft: the global recorder might not be initialized yet
+  +             RUN_HAD_ERROR.with(|c| c.set(true));
+                record(EventType::FailureObserved, Actor::Harness, payload);
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now set RUN_HAD_ERROR in mark_run_completed_with_error.
+────────────────────────────────────────────────────────────────────────────────
+
+Now set `RUN_HAD_ERROR` in `mark_run_completed_with_error`:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+    pub fn mark_run_completed_with_error(msg: &str) {
+  +     RUN_HAD_ERROR.with(|c| c.set(true));
+        store_run_error(msg);
+  ✓ Auto-approved: edit: src/state.rs (2 → 3 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (2 → 3 lines)
+    pub fn mark_run_completed_with_error(msg: &str) {
+  +     RUN_HAD_ERROR.with(|c| c.set(true));
+        store_run_error(msg);
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update RunCompletionGuard::drop to check RUN_HAD_ERROR.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `RunCompletionGuard::drop`:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the current Drop impl to make the surgical edit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:346..356 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me make the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+    impl Drop for RunCompletionGuard {
+        fn drop(&mut self) {
+  -         mark_run_completed(self.status);
+  +         let status = if RUN_HAD_ERROR.with(|c| c.get()) {
+  +             "error"
+  +         } else {
+  +             self.status
+  +         };
+  +         mark_run_completed(status);
+        }
+    }
+  ✓ Auto-approved: edit: src/state.rs (5 → 10 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (5 → 10 lines)
+    impl Drop for RunCompletionGuard {
+        fn drop(&mut self) {
+  -         mark_run_completed(self.status);
+  +         let status = if RUN_HAD_ERROR.with(|c| c.get()) {
+  +             "error"
+  +         } else {
+  +             self.status
+  +         };
+  +         mark_run_completed(status);
+        }
+    }
+ ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All four code changes are done. Now let me verify by running the test.
+────────────────────────────────────────────────────────────────────────────────
+
+All four code changes done. Let me run the test:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run the specific tests first, then the broader suite.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test run_completion_guar… ✓ (30.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The second test passed (normal exit still "completed"), but the first test fails. The issue is that `FailureObserved` is not in the raw output. That's strange — looking at the error, only `RunStarted` is there. The `FailureObserved` and `RunCompleted` aren't being recorded...
+
+Oh wait — the test uses `catch_unwind`, and inside it we create state and install the panic hook. The panic hook calls `record(...)`, but `record` uses `GLOBAL_RECORDER`. The issue might be that the panic hook is firing inside `catch_unwind` but the state file isn't being flushed.
+
+Actually, looking more carefully at the output: the raw only contains the RunStarted event. No FailureObserved, no RunCompleted. But in the previous run (before my code changes), the FailureObserved DID appear. Let me check if I broke something.
+
+Wait — actually, looking at the error message, the assertion that fails is `should contain FailureObserved`, not `should contain RunCompleted`. And the raw output only shows `RunStarted`. So the panic hook's `record()` call isn't landing.
+
+Hmm, but this worked in the previous test run (before my code changes). Let me re-check what I changed. I added `RUN_HAD_ERROR.with(|c| c.set(true));` before `record(...)`. That shouldn't break anything. But wait, the `RUN_HAD_ERROR` thread-local uses `const { Cell::new(false) }`. Is that causing an issue?
+
+Actually, let me look at this more carefully. The previous test run showed:
+```
+{"id":"event_f65d58657f86...","kind":"RunStarted"...}
+{"id":"event_986555baa44a...","kind":"FailureObserved"...}
+{"id":"event_9609cb88eed1...","kind":"RunCompleted"...}
+```
+
+So before my change, FailureObserved WAS being recorded. Now it's not. My code change in the panic hook is minimal — just adding one line before `record`. Let me re-read the current panic hook code.
+
+Actually wait, I bet the issue is `const { Cell::new(false) }` — that syntax might not be supported in the Rust version being used. Let me check.
+
+Let me look at the compilation output — the test compiled and ran (no compile errors). So the syntax is fine. The issue must be something else.
+
+Let me re-run the test with more verbose output to see what's happening.
+────────────────────────────────────────────────────────────────────────────────
+
+The failure is that `FailureObserved` isn't appearing. Let me look at the current panic hook code to make sure it's correct:
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:30..60 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code looks correct. But the test output only shows RunStarted — no FailureObserved and no RunCompleted. This means the panic hook's `record()` call isn't landing, AND the guard's drop isn't landing either.
+
+Wait — actually, looking at the test output more carefully, it says:
+```
+thread 'state::tests::run_completion_guard_reports_error_on_panic' (15331) panicked at src/state.rs:6564:9:
+should contain FailureObserved
+```
+
+Line 6564 is where the `should contain FailureObserved` assertion is. Before it gets to that assertion, the panic has already fired at line 6553 (`panic!("test lifecycle error 107")`). So the panic happens, the catch_unwind catches it, then the assertions run. But the raw events only show RunStarted.
+
+Wait, but in the PREVIOUS test run (before my code changes), the FailureObserved WAS there! Let me check if maybe the issue is that the test is running on a different thread now and the GLOBAL_RECORDER is not initialized...
+
+Actually, the issue might be simpler. Let me look at the test method name. The test `panic_hook_records_to_state` exists and ALSO calls `catch_unwind` with a panic. If that test runs first and leaves state dirty... but tests use `tempfile::tempdir()`, so that shouldn't be an issue.
+
+Let me re-read the test output more carefully. The previous run:
+```
+running 1 test
+test state::tests::run_completion_guard_reports_error_on_panic ... FAILED
+```
+And the output showed three events including FailureObserved.
+
+Now:
+```
+running 2 tests
+test state::tests::run_completion_guard_reports_completed_on_normal_exit ... ok
+test state::tests::run_completion_guard_reports_error_on_panic ... FAILED
+```
+
+The normal exit test passed, and the error test... shows only RunStarted. That's very strange.
+
+Could it be a race condition with the global recorder? The `init_global` call in the error test might be interacting with something from the normal test...
+
+Actually wait — both tests call `init_global`. But `GLOBAL_RECORDER` is a `OnceLock`. The second call to `init_global` should fail because the lock is already set. Let me check...
+
+Actually, `OnceLock` doesn't work like that. `OnceLock::set()` sets the value if it hasn't been set. But `OnceLock::get()` returns the set value. Looking at the `init_global` function:
+
+Let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn init_global' in src/state.rs ✓ (13ms)
+
+

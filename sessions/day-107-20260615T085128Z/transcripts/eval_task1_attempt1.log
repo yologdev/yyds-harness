@@ -1,0 +1,173 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me evaluate this task. The task is about fixing a lifecycle gap in `src/state.rs` where `RunCompletionGuard` always reports "completed" on drop even after panics. Let me look at the current state of `src/state.rs` to see if the changes were actually made.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/state.rs  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD -- src/state.rs ✓ (34ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at more of the diff to see the full picture, especially the test additions and the changes to `GLOBAL_RECORDER`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+Let me see the full diff and the key sections more carefully.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD -- src/state.rs …  ▶ read src/state.rs:340..380  ▶ read src/state.rs:370..400 ✓ (14ms)
+ ✓ (11ms)
+ ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the test additions and the rest of the diff to see the full test code.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.6s (3 ✓)
+
+Let me see the test additions at the bottom:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6537.. ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check the rest of the diff more fully — I should look at the `GLOBAL_RECORDER` changes across the rest of the file to make sure those were done correctly.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the remaining `GLOBAL_RECORDER` usages — the diff showed `OnceLock` → `Mutex<Option<>>` change, which was NOT part of the original task description. Let me verify this is consistent:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'GLOBAL_RECORDER' src/…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'GLOBAL_RECORDER' src/… ✓ (19ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full context of lines 319-327 and around line 326:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:316..336 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check if `OnceLock` used elsewhere was removed properly. Let me search for any remaining `OnceLock` references in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'OnceLock' src/state.r… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No remaining `OnceLock` references — good. Now let me run the specific state tests to verify they pass (the task said "cargo test state" and "cargo test -- --test-threads=1" passed). Let me quickly run just the state tests to confirm.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the state tests specifically to confirm they pass:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state -- --test-thr… ✓ (8.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 271 tests pass, including the state tests. Let me now check the new tests specifically:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test run_completion_guar… ✓ (184ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both new tests pass. Now let me verify the implementation matches every success criterion from the task:
+
+1. **On normal exit, RunCompleted status is "completed" (unchanged)** — Verified by test `run_completion_guard_reports_completed_on_normal_exit`. The `Drop` impl checks `RUN_HAD_ERROR` and falls back to `self.status` which is `"completed"`.
+
+2. **On panic, RunCompleted status is "error" with error detail** — Verified by test `run_completion_guard_reports_error_on_panic`. The panic hook sets `RUN_HAD_ERROR = true`, then the guard's drop checks it and uses "error".
+
+3. **On explicit exit_with_state, behavior unchanged (already reports correct status)** — `mark_run_completed_with_error` sets `RUN_HAD_ERROR = true` before recording, and since `exit_with_state` exits the process, the guard never drops. The task says this path "already reports correct status", so the added `RUN_HAD_ERROR` set is just defensive consistency.
+
+4. **No double RunCompleted events** — The `mark_run_completed_with_error` calls `record(EventType::RunCompleted, ...)` directly (not through `mark_run_completed`), and the guard's drop checks `RUN_HAD_ERROR`. For `exit_with_state`, the guard never drops because `std::process::exit` is called. There's a potential issue though: if `mark_run_completed_with_error` is called from `exit_with_state`, it sets `RUN_HAD_ERROR = true` and records RunCompleted, then process exits. Guard never drops. Fine. If some code calls `mark_run_completed_with_error` without exiting, and a guard is still alive, the guard would drop and see `RUN_HAD_ERROR = true` and emit a second RunCompleted. But looking at the actual usage — `mark_run_completed_with_error` is called from `exit_with_state` which calls `std::process::exit(1)` — so the guard never drops. This is fine.
+
+Wait, let me check if there's an issue with the thread-local being set in `mark_run_completed_with_error` and then the guard seeing it. Let me look at `exit_with_state`:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check `exit_with_state` to make sure the guard-drop path isn't triggered:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'exit_with_state' in src/state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`exit_with_state` is not in `state.rs`. Let me search for it in the broader codebase.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -Rn 'exit_with_state' src… ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check `exit_with_state` in lib.rs to confirm it calls `mark_run_completed_with_error` and then `std::process::exit`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:985..1015 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `exit_with_state`:
+- When code != 0: calls `mark_run_completed_with_error()` → sets `RUN_HAD_ERROR = true`, records the RunCompleted event with status "error", then calls `std::process::exit(code)` — process terminates, guard never drops. No double RunCompleted.
+- When code == 0: calls `mark_run_completed("completed")` → records RunCompleted with status "completed", then `std::process::exit(0)`. Guard never drops. No double RunCompleted.
+
+This is correct. The `RUN_HAD_ERROR` flag being set in `mark_run_completed_with_error` is harmless because the process exits and the guard never drops.
+
+Now, one concern: is there a scenario where `GLOBAL_RECORDER` was `OnceLock` and changed to `Mutex<Option<>>`? This was NOT in the task description. The task description only mentioned:
+1. Thread-local `RUN_HAD_ERROR: Cell<bool>`
+2. Set in `mark_run_completed_with_error`
+3. Check in `RunCompletionGuard::drop`
+4. Set in `install_panic_hook`
+
+The `OnceLock` → `Mutex<Option<>>` change is an extra change. Let me think about why this was done and whether it's problematic.
+
+Looking at the original: `static GLOBAL_RECORDER: OnceLock<StateRecorder> = OnceLock::new();`
+
+The `OnceLock` pattern is set-once, read-many. With the thread-local `RUN_HAD_ERROR`, the tests need to call `init_global` multiple times (since each test creates a new temp dir). `OnceLock` can only be set once per process — so tests that call `init_global` multiple times would fail with `OnceLock`.
+
+Wait, but the existing tests must have worked before this change. Let me check if there was already a mechanism for resetting state in tests. Looking at the test code:
+
+```rust
+init_global(config, json!({})).unwrap();
+```
+
+With `OnceLock`, calling `init_global` a second time in the same process would fail because `OnceLock::set` returns `Err` if already set.
+
+But wait — `#[cfg(test)]` tests run in the same process. So with `OnceLock`, multiple tests calling `init_global` would fail on the second call.
+
+Let me check if there was some existing test mechanism to handle this... Looking at the diff, the change from `OnceLock` to `Mutex<Option<>>` enables re-initialization in tests. That's a reasonable change to support the new tests.
+
+But this is a *side effect* not mentioned in the task description. The task didn't mention changing the global recorder type. This is an extra change that was apparently needed because the existing `OnceLock` prevented re-initialization in tests.
+
+Let me check: was the build/test status reported in the task as PASS? Yes: "Build: PASS, Tests: PASS". So the changes compile and pass tests.
+
+The question is: does this extra change introduce any issues? Let me think...
+
+1. `Mutex<Option<StateRecorder>>` — locking on every `record()` call. This could be a performance concern for state recording, which was previously lock-free (OnceLock reads are lock-free after initialization). But `record()` already used `OnceLock::get()` which is a relaxed atomic read — switching to `Mutex::lock()` adds contention on every event write. However, state recording is append-only and relatively infrequent (not in a hot loop), so the performance impact should be minimal.
+
+2. Thread safety: `Mutex<Option<>>` is fine. The `unwrap_or_else(|e| e.into_inner())` pattern handles poisoned mutexes, which matches the project's convention (see CLAUDE.md: `lock_or_recover` for poisoned Mutex).
+
+3. The change also affects `is_initialized()` — now it locks, reads, unlocks. Fine.
+
+This extra change is a reasonable enabler for the tests and doesn't break the core task requirements. I should note it but not fail for it.
+
+Now let me verify the full criteria:
+
+1. ✅ On normal exit, RunCompleted status is "completed" (unchanged) — Drop impl checks `RUN_HAD_ERROR`, falls back to `self.status` which is "completed". Test confirms.
+
+2. ✅ On panic, RunCompleted status is "error" with error detail — Panic hook sets `RUN_HAD_ERROR = true`, Drop impl uses "error". Test confirms.
+
+3. ✅ On explicit exit_with_state, behavior unchanged — `mark_run_completed_with_error` records RunCompleted("error") and process exits. Guard never drops. Same for code=0 path.
+
+4. ✅ No double RunCompleted events — `exit_with_state` calls `std::process::exit()` after recording, preventing guard drop. Panic path: hook sets flag, then guard drops and records, then panic continues unwinding. Only one RunCompleted.
+
+The implementation matches the task description. The extra `OnceLock` → `Mutex<Option<>>` change is a necessary enabler for testability and doesn't break anything.
+
+Let me write the verdict.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the evidence I need. Let me write the verdict.
+  + Verdict: PASS
+  + Reason: All 4 success criteria satisfied — `RUN_HAD_ERROR` thread-local set in panic hook and `mark_run_completed_with_error`, checked in `RunCompletionGuard::drop` to emit "error" on panic vs "completed" on normal exit. Two new targeted tests pass (panic→"error", normal→"completed"). The `OnceLock→Mutex<Option<>>` change is an unlisted enabler for test re-initialization but introduces no correctness issues.
+  ✓ Auto-approved: write: session_plan/eval_task_1.md (2 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/eval_task_1.md (2 lines) ✓ (4ms)

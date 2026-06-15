@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: All 4 success criteria satisfied — `RUN_HAD_ERROR` thread-local set in panic hook and `mark_run_completed_with_error`, checked in `RunCompletionGuard::drop` to emit "error" on panic vs "completed" on normal exit. Two new targeted tests pass (panic→"error", normal→"completed"). The `OnceLock→Mutex<Option<>>` change is an unlisted enabler for test re-initialization but introduces no correctness issues.
