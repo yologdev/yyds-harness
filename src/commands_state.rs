@@ -914,15 +914,47 @@ fn handle_patches(args: &[String]) {
 fn handle_why(id: &str, show_summary: bool, limit: usize) {
     let path = default_events_path();
     let Ok(events) = read_tail_events(&path, limit) else {
+        let diagnostic = crate::state::take_diagnostic_error();
+
         eprintln!(
             "{YELLOW}  No state events file found at {}{RESET}",
             path.display()
         );
+
+        if let Some(ref diag) = diagnostic {
+            eprintln!(
+                "{YELLOW}  A startup diagnostic error was captured:{RESET}"
+            );
+            eprintln!("{DIM}    {diag}{RESET}");
+            eprintln!();
+        }
+
         eprintln!(
             "{YELLOW}  This is a cold start: no evolution sessions have recorded state yet.{RESET}"
         );
-        eprintln!("{DIM}  To enable state recording, run: yoyo state init{RESET}");
-        eprintln!("{DIM}  Once sessions complete, run: yoyo state why last-failure{RESET}");
+
+        if id == "last-failure" {
+            eprintln!("{DIM}  No completed failed sessions exist.{RESET}");
+            eprintln!();
+            eprintln!("{DIM}  Next evidence to inspect:{RESET}");
+            eprintln!(
+                "{DIM}    yyds state crashes --limit 10    (crash and session evidence){RESET}"
+            );
+            eprintln!(
+                "{DIM}    yyds state doctor                 (state health check){RESET}"
+            );
+            eprintln!(
+                "{DIM}    yyds state init                   (initialize state recording){RESET}"
+            );
+            eprintln!(
+                "{DIM}    yyds state tail --limit 5          (recent state events, after init){RESET}"
+            );
+        } else {
+            eprintln!("{DIM}  To enable state recording, run: yyds state init{RESET}");
+            eprintln!(
+                "{DIM}  Once sessions complete, run: yyds state why last-failure{RESET}"
+            );
+        }
         return;
     };
     if show_summary {
@@ -968,6 +1000,22 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
                     }
                     eprintln!(
                         "{DIM}  Run: yyds state trace <run-id> for details, or yyds state crashes for crash analysis.{RESET}"
+                    );
+                }
+
+                // Also check for stashed diagnostic errors from this process.
+                // These are startup errors that prevented a session from
+                // recording, e.g. auth failure, config parse error, network
+                // timeout — captured before the state event file was written.
+                let diagnostic = crate::state::take_diagnostic_error();
+                if let Some(ref diag) = diagnostic {
+                    eprintln!();
+                    eprintln!(
+                        "{YELLOW}  A startup diagnostic error was captured by this process:{RESET}"
+                    );
+                    eprintln!("{DIM}    {diag}{RESET}");
+                    eprintln!(
+                        "{DIM}  This error may explain why no completed session exists.{RESET}"
                     );
                 }
             }
