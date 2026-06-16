@@ -97,3 +97,9 @@ Each event is one stanza. See `skills/skill-evolve/SKILL.md` for the schema.
 - type: NO-OP
 - parent-event: evt-0005
 - note: agent completed without a diff or journal event; harness recorded this cycle so the counter reset is auditable
+
+## 2026-06-16T18:13:59Z evt-0011 NO-OP
+- ts: 2026-06-16T18:13:59Z
+- type: NO-OP
+- parent-event: evt-0005
+- note: agent completed without a diff or journal event; harness recorded this cycle so the counter reset is auditable
