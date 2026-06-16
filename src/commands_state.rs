@@ -779,10 +779,14 @@ fn handle_failures(args: &[String]) {
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(12);
     let path = default_events_path();
-    let Ok(events) = read_events(&path) else {
+    let Ok(events) = read_tail_events(&path, 0) else {
         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
         return;
     };
+    if events.is_empty() {
+        eprintln!("{YELLOW}  no parseable events found at {}{RESET}", path.display());
+        return;
+    }
     match build_recent_failure_report(&events, limit) {
         Ok(report) => println!("{report}"),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
@@ -798,10 +802,14 @@ fn handle_cache(args: &[String]) {
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(12);
     let path = default_events_path();
-    let Ok(events) = read_events(&path) else {
+    let Ok(events) = read_tail_events(&path, 0) else {
         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
         return;
     };
+    if events.is_empty() {
+        eprintln!("{YELLOW}  no parseable events found at {}{RESET}", path.display());
+        return;
+    }
     match build_cache_recent_report(&events, limit) {
         Ok(report) => println!("{report}"),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
@@ -1016,6 +1024,21 @@ pub(crate) fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
     crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
 }
 
+/// Lenient event reader: parses all lines as JSON, skipping malformed ones.
+/// Only returns an error if the file genuinely can't be read (missing, perms).
+fn read_events_lenient(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    let events: Vec<Value> = raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let normalized = crate::state::compatibility_event_json_line(line).ok()?;
+            serde_json::from_str::<Value>(&normalized).ok()
+        })
+        .collect();
+    Ok(events)
+}
+
 fn read_limited_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
     let mut events = read_events(path)?;
     if limit > 0 && events.len() > limit {
@@ -1027,9 +1050,10 @@ fn read_limited_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io:
 
 /// Read only the last `limit` events from the state log.
 /// Returns fewer than `limit` events if the log is smaller.
+/// When `limit == 0`, reads all events with lenient parsing (skips malformed lines).
 fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
     if limit == 0 {
-        return read_events(path);
+        return read_events_lenient(path);
     }
     let raw_lines = read_tail(path, limit)?;
     let mut events = Vec::with_capacity(raw_lines.len());
