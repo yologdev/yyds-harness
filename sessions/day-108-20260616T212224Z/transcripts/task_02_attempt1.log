@@ -1,0 +1,608 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. I need to:
+
+1. Understand the bug: `state failures tools` returns "no parseable events" when events exist
+2. The root cause is likely in `read_events_lenient` vs `read_events` in `src/commands_state.rs`
+3. Fix it and verify
+
+Let me start by reading the evolve skill and then investigating the code.
+
+First, let me look at the relevant functions in `src/commands_state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ search 'fn read_events_lenient' in src/commands_state.rs  ▶ search 'fn read_events' in src/commands_state.rs ✓ (318ms)
+ ✓ (327ms)
+ ✓ (309ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read both `read_events` and `read_events_lenient` functions to understand the difference.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.4s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1170..1230  ▶ search 'fn handle_tool_failures' in src/commands_state.rs  ▶ search 'fn handle_failures' in src/commands_state.rs ✓ (194ms)
+ ✓ (599ms)
+ ✓ (531ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the `handle_tool_failures` and `handle_failures` functions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.6s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:782..902 ✓ (116ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the `compatibility_event_json_line` function that's called in `read_events_lenient`. This is likely where the issue is.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at the `compatibility_event_json_line` function in `src/state` module:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn compatibility_event_json_line' in src  ▶ search 'fn read_compatibility_events' in src ✓ (322ms)
+ ✓ (325ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3145..3205 ✓ (120ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `read_events` function uses `read_compatibility_events` which calls `compatibility_event_json_line` which calls `parse_state_event_line`. 
+
+The `read_events_lenient` function calls `compatibility_event_json_line(line).ok()` — if the normalization fails, it falls back to `serde_json::from_str::<Value>(line).ok()` (raw JSON parse).
+
+So the question is: does `parse_state_event_line` sometimes fail on valid state event lines?
+
+Let me look at `parse_state_event_line` to see what could cause it to fail.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn parse_state_event_line' in src/state.rs ✓ (152ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `parse_state_event_line`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:819..899 ✓ (110ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the rest of this function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:898..928 ✓ (100ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the problem. Let me look at the `read_events_lenient` function more carefully:
+
+```rust
+fn read_events_lenient(path: &Path) -> Result<(Vec<Value>, usize), std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    let mut events = Vec::new();
+    let mut skipped = 0;
+
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let parsed = crate::state::compatibility_event_json_line(line)
+            .ok()
+            .and_then(|normalized| serde_json::from_str::<Value>(&normalized).ok())
+            .or_else(|| serde_json::from_str::<Value>(line).ok());
+        match parsed {
+            Some(value) => events.push(value),
+            None => skipped += 1,
+        }
+    }
+
+    Ok((events, skipped))
+}
+```
+
+The function:
+1. Reads the file to string
+2. For each non-empty line, tries `compatibility_event_json_line` first (which normalizes), then falls back to raw JSON parse
+3. If neither works, increments skipped
+
+Now `read_events`:
+```rust
+pub(crate) fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+    crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
+}
+```
+
+And `read_compatibility_events`:
+```rust
+pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
+    raw.lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(idx, line)| {
+            let normalized = compatibility_event_json_line(line)
+                .map_err(|e| format!("parse event line {}: {e}", idx + 1))?;
+            serde_json::from_str::<Value>(&normalized)
+                .map_err(|e| format!("decode compatibility event line {}: {e}", idx + 1))
+        })
+        .collect()
+}
+```
+
+The key difference: `read_events` / `read_compatibility_events` will fail entirely if any line fails to parse. `read_events_lenient` skips lines that fail.
+
+Now, `read_tail` (used by `state tail`):
+```rust
+fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error>
+```
+
+Let me check if `read_tail` exists and what it does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail' in src/commands_state.rs ✓ (232ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `read_tail`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1158..1178 ✓ (96ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `read_tail` just returns raw string lines without JSON parsing. That's why `state tail` always works — it doesn't parse at all.
+
+Now I need to figure out why `read_events_lenient` could return empty events when there are parseable events. Let me think about possible causes:
+
+1. `compatibility_event_json_line` could fail on some valid event format
+2. The raw JSON fallback `serde_json::from_str::<Value>(line).ok()` should catch most cases though
+
+Wait — let me look at `compatibility_event_json_line` more carefully. It calls `parse_state_event_line`, which expects certain fields like `event_id` and `event_type` (or `kind`). If an event doesn't have those fields, it fails.
+
+But then the lenient reader falls back to raw JSON parsing... so if the line is valid JSON, it should still work.
+
+Actually, wait. Let me re-read `read_events_lenient`:
+
+```rust
+for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+    let parsed = crate::state::compatibility_event_json_line(line)
+        .ok()
+        .and_then(|normalized| serde_json::from_str::<Value>(&normalized).ok())
+        .or_else(|| serde_json::from_str::<Value>(line).ok());
+    match parsed {
+        Some(value) => events.push(value),
+        None => skipped += 1,
+    }
+}
+```
+
+This seems like it should work for any valid JSON line. The fallback is `serde_json::from_str::<Value>(line).ok()` which would parse any valid JSON.
+
+But wait — maybe the issue is that `read_events_lenient` reads the **entire file** into memory with `read_to_string`, while `read_events` uses the same approach but with `read_compatibility_events`. They both read the whole file...
+
+Hmm, let me think about this differently. What if the events file contains lines that are valid JSON but `read_events_lenient` still doesn't parse them? Thatshouldn't happen because of the fallback.
+
+Unless... the file is very large and `read_to_string` consumes too much memory? No, that would cause different issues.
+
+Let me check if there's something happening with the `lines()` iterator. Could there be an issue where the file has Windows-style line endings (`\r\n`) that cause issues?
+
+Actually, let me look at this more carefully. What if the state events file uses a different path than what `state tail` uses? Let me check `default_events_path()` and what `state tail` uses.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the `default_events_path` function and what `state tail` uses:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn default_events_path' in src/commands_state.rs  ▶ search 'handle_tail' in src/commands_state.rs ✓ (372ms)
+ ✓ (765ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:11..51  ▶ read src/commands_state.rs:449..479 ✓ (507ms)
+ ✓ (691ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `handle_tail` uses `read_tail` which returns raw lines - no JSON parsing at all. `handle_trace` uses `read_events` (which uses `read_compatibility_events`). Both use the same `default_events_path()`.
+
+Now, both `handle_failures` and `handle_tool_failures` use `read_events_lenient`. If `handle_trace` works but `handle_failures` doesn't, the problem is in `read_events_lenient` vs `read_events`.
+
+Let me look at the difference again:
+
+`read_events_lenient`:
+```rust
+fn read_events_lenient(path: &Path) -> Result<(Vec<Value>, usize), std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    let mut events = Vec::new();
+    let mut skipped = 0;
+
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let parsed = crate::state::compatibility_event_json_line(line)
+            .ok()
+            .and_then(|normalized| serde_json::from_str::<Value>(&normalized).ok())
+            .or_else(|| serde_json::from_str::<Value>(line).ok());
+        match parsed {
+            Some(value) => events.push(value),
+            None => skipped += 1,
+        }
+    }
+
+    Ok((events, skipped))
+}
+```
+
+`read_events` → `read_compatibility_events`:
+```rust
+pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
+    raw.lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(idx, line)| {
+            let normalized = compatibility_event_json_line(line)
+                .map_err(|e| format!("parse event line {}: {e}", idx + 1))?;
+            serde_json::from_str::<Value>(&normalized)
+                .map_err(|e| format!("decode compatibility event line {}: {e}", idx + 1))
+        })
+        .collect()
+}
+```
+
+Both use `compatibility_event_json_line` → `parse_state_event_line`. 
+
+Wait! I see a key difference. In `read_events_lenient`, the normalization output is re-parsed with `serde_json::from_str::<Value>(&normalized).ok()`. If this fails but the raw JSON parse also fails... but why would `serde_json::from_str::<Value>(&normalized)` fail if `compatibility_event_json_line` succeeded? That would be a bug in `compatibility_event_value` producing invalid JSON, which seems unlikely.
+
+Actually wait, let me re-read the chain:
+1. `compatibility_event_json_line(line)` - normalizes the event
+2. `.and_then(|normalized| serde_json::from_str::<Value>(&normalized).ok())` - parses the normalized JSON
+
+Both should work. If `compatibility_event_json_line` returns Ok, the JSON string should be valid.
+
+But what if `compatibility_event_json_line` fails? Then `.ok()` turns it to `None`, and we fall through to `.or_else(|| serde_json::from_str::<Value>(line).ok())` which tries the raw line.
+
+So if a line is valid JSON, it should always be parsed by the fallback. The only case where both fail is if:
+1. The line isn't valid JSON at all (can't be parsed by serde_json)
+2. OR the line is valid JSON but `compatibility_event_json_line` fails AND the raw parse also fails
+
+Actually, wait. There's one more subtle issue. The `read_events_lenient` function reads the file with `std::fs::read_to_string(path)`. Could there be an issue with the file being a symlink or something? No, that wouldn't affect parsing.
+
+Let me actually check if there's an issue where `.yoyo/state/events.jsonl` exists but is empty or has content that doesn't match expectations.
+
+Actually, let me approach this differently. Let me look at what the state events file actually contains.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.9s (2 ✓)
+
+Let me check if the events file exists and has content:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la .yoyo/state/events.jsonl 2>/dev/null; wc -l .yoyo/state/events.jsonl 2>/d… ✓ (209ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! The first line is: `{"id":"event_cf5a7cce07d943f8a76180eeb965cf28",...}` - this is a legacy format event with `id` and `kind` instead of `event_id` and `event_type`.
+
+But the second line from `head` is actually the `payload` of line 2's `PatchEvaluated` event, which is a tab-separated line. Wait, let me look at this more carefully. The head -3 output is showing a mix of things...
+
+Actually, looking at the output again:
+- Line 1: Starts with `{"id":"event_cf5a7cce07d943f8a76180eeb965cf28",...}` - a SessionStarted event with legacy format
+- Then there's a tab-separated line starting with `session\t2026-06-08T00:46:21...` - that's NOT JSON! 
+
+Wait, after `head -3`, the output shows more than 3 lines because some lines are very long and wrap. Let me check what the file actually contains.
+
+The second "line" starting with `session\t2026-06-08T00:46:21.9381281Z Let me run the failing test to see the actual error:"` is clearly NOT JSON. This is part of the payload of the first JSON line - it's a tab-separated evidence string that's value is inside the payload of the SessionStarted event.
+
+Actually no - looking more carefully, `head -3` is showing 3 lines but the second and third are very long with wrapping text. The first line is the SessionStarted event, the second line is the PatchEvaluated event, and the third is another PatchEvaluated event.
+
+Wait actually I think the lines might include newlines in their JSON? Let me re-examine...
+
+Actually, looking at the `head -3` output more carefully:
+- Line 1: starts with `{"id":"event_cf5a7cce07d943f8a76180eeb965cf28",...}` - valid JSON, legacy format
+- Line 2: starts with ` session\t2026-06-08T00:46:21...` - this is NOT valid JSON! It looks like tab-separated data.
+- Line 3: starts with `{"actor": "harness", "event_id": "evt-log-feedback-ad877b2275a911f2",...}` - valid JSON
+
+So line 2 is NOT valid JSON. It's tab-separated data that got into the events.jsonl file.
+
+Now, the first line uses the legacy format (`id` not `event_id`, `kind` not `event_type`). Let me check if `read_events_lenient` handles this correctly.
+
+Looking at `parse_state_event_line`:
+```rust
+fn parse_state_event_line(line: &str) -> Result<StateEvent, String> {
+    let value: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+    if value.get("event_id").is_some()
+        && value.get("actor").map(|actor| actor.is_string()).unwrap_or(false)
+    {
+        return serde_json::from_value(value).map_err(|e| e.to_string());
+    }
+    // ... legacy path
+}
+```
+
+For a SessionStarted event with `id` and `kind` (not `event_id` and `event_type`):
+- First check: `value.get("event_id").is_some()` - for the first event, this has `id` not `event_id`, so this is None and the quick path is skipped.
+- Then it goes to the legacy path which uses `yoyo_meta.get("event_type")` to find the event type.
+
+But wait, does the SessionStarted event have `_yoyo` in its payload? Let me check the first line...
+
+The first line starts with: `{"id":"event_cf5a7cce07d943f8a76180eeb965cf28","schema_version":1,"ts_ms":1781645735959,"actor":{"kind":"system","id":"harness"},"kind":"SessionStarted","payload":{"_yoyo":{...}},...}`
+
+This has `kind` (not `event_type`) and `_yoyo` in the payload with `event_type: SessionStarted`. So the legacy path should work for this.
+
+But wait, there's a check: `value.get("actor").map(|actor| actor.is_string())` — the actor is `{"kind":"system","id":"harness"}` which is an Object, not a String. So `actor.is_string()` returns false, and the quick path is skipped. Good, that means it goes to the legacy path.
+
+So for the SessionStarted event, `compatibility_event_json_line` should work since it can parse the legacy format.
+
+For the third line `{"actor": "harness", "event_id": "evt-log-feedback-ad877b2275a911f2", ...}`:
+- `value.get("event_id").is_some()` → true (has "event_id")
+- `value.get("actor").map(|actor| actor.is_string())` → true (actor is "harness" which is a string)
+- So it takes the quick path: `serde_json::from_value(value)` which deserializes directly into StateEvent.
+
+This should work.
+
+But what about line 2 (the tab-separated line)? It's not valid JSON at all, so both `compatibility_event_json_line` and the raw fallback will fail. That line gets skipped. But the other lines should still be parseable...
+
+Wait, but lines 2+ are about 21135 total lines in the file. And many of them could be non-JSON tab-separated lines. But the JSON lines should still parse.
+
+Hmm, let me actually try running the command to reproduce the issue.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me try to reproduce the issue:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state failures to… ✓ (4.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! It says 21138 events parsed and 2 unparseable lines skipped, and "no tool failures found". So the `read_events_lenient` is actually working fine here — it parsed 21138 events!
+
+But the task says it returns "no parseable events". Let me also check `state tail` to verify it works:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state tail --limi… ✓ (324ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `state failures tools` actually works! It parsed 21138 events and found "no tool failures found". The `read_events_lenient` is working fine.
+
+But the task says the assessment self-test showed `"state failures tools" returned 'no parseable events found at .yoyo/state/events.jsonl'`. 
+
+Hmm, this could be:
+1. A transient issue that's now fixed by some other change
+2. An issue that only manifests under specific conditions
+
+Wait, let me re-read the task description more carefully. It says "Assessment self-test: `state failures tools` returned 'no parseable events found at .yoyo/state/events.jsonl' despite `state tail` working". 
+
+But in my test, `state failures tools` works fine — it parsed 21138 events. Maybe the issue was in a different run or a different environment.
+
+But the file is 21135 lines and 2 were skipped — wait, it says 21138 events parsed but there are 21135 lines. That's odd — it says more events than lines... unless some lines contain multiple events? No, that can't be right with line-based JSONL. Unless the file grew between my `wc -l` and the `cargo run` command (which is possible since the harness is running).
+
+Let me check if there are any tool-failure events in the file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -c '"event_type":"ToolCal… ✓ (197ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are no `ToolCallFailed` events. So the command correctly reports "no tool failures found". The output seems correct.
+
+But wait — the task says it's a bug. Let me re-read the task: "Assessment self-test: `state failures tools` returned 'no parseable events found at .yoyo/state/events.jsonl' despite `state tail` working"
+
+This is a reported bug from the Day 108 15:25 session. Maybe the issue was already fixed? Or maybe the issue was specific to a state where the file had zero events? Let me check if there could be a scenario where the file exists but `read_events_lenient` returns zero events.
+
+Actually wait, I think I should look more carefully. The error message was "no parseable events found at .yoyo/state/events.jsonl". Let me search for this exact message in the code to confirm what triggers it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'no parseable events found' in src/commands_state.rs ✓ (125ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The error "no parseable events found" appears when `events.is_empty()` and `skipped > 0` or `skipped == 0`. This happens in `handle_failures`, `handle_tool_failures`, and `handle_cache`.
+
+Now, given my test shows it works correctly now (21K events parsed), maybe this was already fixed or maybe the assessment was testing against a different/empty events file.
+
+But wait, the task is a real plan from the planner. Let me look at this more suspiciously. The `read_events_lenient` function was probably just recently added (Day 108 15:25 session). Maybe the bug was already in the code and was already fixed? Or maybe the issue only manifests under specific conditions?
+
+Let me check when `read_events_lenient` was introduced. It says it's for handling corrupted lines gracefully. Let me also look at the git log.
+
+Actually, let me take a different approach. Let me look at `read_events_lenient` more carefully. The function parses each line:
+1. Tries `compatibility_event_json_line` → gives normalized JSON → parse that as Value
+2. Falls back to raw JSON parse
+
+What if `compatibility_event_json_line` succeeds but produces invalid JSON? That seems unlikely but possible.
+
+Actually, I think the real issue might be more subtle. Let me look at `read_events_lenient` vs `read_events`. The `read_events` function uses `read_compatibility_events` which is the STRICT version — it errors if any line fails to parse. But when it succeeds, it returns all events.
+
+The lenient version successfully parses lines. But what about a state where the file exists but all lines fail to parse? That would be unusual but possible if the file is corrupted or uses a completely different format.
+
+Let me check if there's a state-specific events path that could differ.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state failures --… ✓ (3.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both `state failures tools` and `state failures --recent` are working correctly. The `read_events_lenient` function is parsing events fine.
+
+Given the evidence, it seems like the bug may have already been fixed, or the assessment was testing against a condition that no longer applies. But the task says I need to fix it.
+
+Let me look at this from a different angle. The task says: "The discrepancy suggests `read_events_lenient` may reject lines that exist and are valid JSON." But my testing shows it works. 
+
+Could the issue be state-specific? Maybe the events file was in a different location when the assessment ran? Or maybe there was a config file pointing to a different path?
+
+Actually, let me look at the `default_events_path()` function. It checks a config file. If the config file has a `state_events` key pointing elsewhere, then `state tail` and `state failures` would use the same path because they both call `default_events_path()`.
+
+Wait, but `handle_tail` calls `read_tail` which reads `raw.lines()` — raw lines without parsing. If the file exists and has content, `read_tail` will return those lines. But `read_events_lenient` needs to parse them as JSON.
+
+Could the issue be that in some environments, the events file contains non-JSON lines (like the tab-separated lines we saw) and ALL lines are non-JSON? That seems unlikely.
+
+Actually, I just realized: maybe the bug is that `read_events_lenient` can fail silently on ALL lines when ALL of them fail the compatibility check AND the raw JSON parse. For instance, if the events are stored in a format that `compatibility_event_json_line` fails on and the raw JSON parse also fails.
+
+But look at the first line format: `{"id":"event_cf5a7cce07d943f8a76180eeb965cf28",...}` — this IS valid JSON and `compatibility_event_json_line` should handle it via the legacy path.
+
+Let me trace through the logic more carefully for this legacy format:
+
+1. `serde_json::from_str(line)` → succeeds, gives a Value
+2. `value.get("event_id").is_some()` → false (it has "id", not "event_id")
+3. Goes to legacy path
+4. `yoyo_meta = payload.get("_yoyo")` → gets the _yoyo object
+5. `event_id = value.get("event_id").or_else(|| value.get("id"))` → gets "id" = "event_cf5a7cce07d943f8a76180eeb965cf28"
+6. `event_type_value = value.get("event_type").or_else(|| value.get("kind"))` → gets "kind" = "SessionStarted"
+7. Everything else should parse fine
+
+So this should work. But wait — what about lines that are valid JSON but don't have "event_id" OR "id"? That would fail at step 5 with "missing event id" error.
+
+Or lines without "event_type" OR "kind" OR "_yoyo.event_type"? That would fail at step 6.
+
+Let me check if there are events in the file that might fail these checks. The tab-separated line we saw in head -3 was clearly not JSON. But what about JSON lines that don't follow the expected format?
+
+Actually, I think the real bug might be more subtle. Let me look at the `compatibility_event_json_line` function and the `parse_state_event_line` function more carefully, specifically at the quick path:
+
+```rust
+if value.get("event_id").is_some()
+    && value
+        .get("actor")
+        .map(|actor| actor.is_string())
+        .unwrap_or(false)
+{
+    return serde_json::from_value(value).map_err(|e| e.to_string());
+}
+```
+
+Check: `value.get("actor").map(|actor| actor.is_string()).unwrap_or(false)` — this checks if actor is a JSON string. But in many events, actor could be the string "harness", "agent", etc. 
+
+For the event `{"actor": "harness", "event_id": "evt-log-feedback-ad877b2275a911f2", ...}`:
+- actor is a string "harness" → true
+- event_id exists → true
+- Takes the quick path: `serde_json::from_value(value)` 
+
+Now `serde_json::from_value(value)` tries to deserialize to `StateEvent`. Let me check if StateEvent has a serde Deserialize implementation that matches the field names.
+
+The event has: `actor`, `event_id`, `event_type`, `parent_event_ids`, `payload`, `run_id`, `schema_version`, `session_id`, `timestamp_ms`, `trace_id`.
+
+And `StateEvent` probably has fields like `event_id`, `event_type`, etc. Let me check.
+
+Actually, the quick path for the PatchEvaluated event with actor="harness" should work fine since it has all the standard fields. And the legacy path should work for the SessionStarted event.
+
+So... the code appears to work correctly now. The task says it was broken in the assessment, but it's working when I test it.
+
+However, looking at the task more carefully: this is a freshly-added feature from "the Day 108 15:25 session". Maybe the original assessment was from BEFORE the current session's events existed? In that case, the events file had the legacy format but `read_events_lenient` was recently added and might not have handled the legacy format correctly initially...
+
+Or wait — maybe the issue is that the `read_events_lenient` function was introduced with a bug and later fixed. Let me check the git log for this function.
+
+Actually, let me just check if the current code works with the edge case. Let me write a test.
+
+But hold on — the task says: "Write a test first if possible". The evolve skill says "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+So I should either:
+1. Write a regression test that proves `read_events_lenient` handles various event formats correctly
+2. Write session_plan/task_02_obsolete.md explaining the evidence
+
+Given that my testing shows the code works, I should write a regression test. This is the "smallest scoped verification improvement that proves it stays satisfied."
+
+Let me look at existing tests for `commands_state.rs`:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check if there are existing tests for the state reading functions and understand the test structure:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search '#\[test\]' in src/commands_state.rs  ▶ search '#\[cfg(test)\]' in src/commands_state.rs ✓ (320ms)
+ ✓ (441ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No tests in commands_state.rs. Let me check if there are integration tests:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -l 'read_events_lenient\|… ✓ (219ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what tests exist for state reading:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'read_events_lenient\|… ✓ (207ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are tests that use `read_events_lenient` at line 14247. Let me look at that test.
+
+But first, let me understand the state better. The code currently works — `state failures tools` correctly parses events. The task reports a bug that seems to not be reproducible. 
+
+Given the evolve skill rules: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+I should write a regression test that proves `read_events_lenient` handles legacy format events, new format events, and mixed format files correctly. This would prevent the bug from regressing.
+
+Let me look at the test structure around line 14247:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14200..14280 ✓ (210ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the test framework. There's a test `lenient_event_reader_falls_back_to_raw_json_and_counts_skips` that tests the legacy format `{"id":"raw-1","kind":"RunStarted",...}` and a non-JSON line.
+
+But this test only tests the legacy format path. It doesn't test:
+1. Standard format events (with `event_id` and `event_type`)
+2. Mixed format files (both legacy and standard)
+3. The specific scenario where all events are parseable
+
+Let me check if there's a test gap. Looking at the task's claim: "`state failures tools` returned 'no parseable events found at .yoyo/state/events.jsonl' despite `state tail` working"
+
+The fact that my tests show it works now suggests either:
+1. The bug was in a different part of the code (perhaps `read_events_lenient` was recently modified)
+2. The bug was transient/environmental
+3. The bug is already fixed
+
+Since the task says to add a regression test, I should add one that specifically validates `read_events_lenient` handles the standard format events correctly (the format used by `state tail`). This way, if the bug reappears, the test will catch it.
+
+Let me also look at the `build_tool_failures_report` function to make sure it actually filters correctly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_tool_failures_report' in src/commands_state.rs ✓ (138ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at this function to make sure it correctly identifies tool failures:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1945..2025 ✓ (157ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue! `build_tool_failures_report` filters for `event_type == "ToolCallCompleted"`. But when `read_events_lenient` falls back to raw JSON parsing, it doesn't normalize the event. So a legacy event would have `"kind": "ToolCallCompleted"` instead of `"event_type": "ToolCallCompleted"`.
+
+Wait, let me look at the `event_string` helper:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_string' in src/commands_state.rs ✓ (120ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14100..14115 ✓ (146ms)
+
+
