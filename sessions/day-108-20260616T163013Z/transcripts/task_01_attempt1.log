@@ -1,0 +1,418 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task is to add a `state failures tools` subcommand that filters ToolCallCompleted events with error/failure payloads. Let me start by understanding the current codebase structure.
+
+Let me:
+1. Read the evolve skill first
+2. Read the relevant source files (commands_state.rs and state.rs)
+3. Understand the current `handle_failures` function pattern
+4. Implement the change
+
+Let me start by reading the evolve skill and then the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs (100 lines) ✓ (70ms)
+ ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `handle_failures` function to understand its current implementation pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_failures' in src/commands_state.rs ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the handle_failures function and surrounding code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:773..893 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the `read_events_lenient` function and the `flag_value` function. Let me also look at how other subcommands like `handle_cache` pattern works. Let me also look at what `build_recent_failure_report` returns.
+
+I need to find:
+1. `read_events_lenient` - to understand the event format
+2. `flag_value` - for flag parsing
+3. The event payload format to understand what "ToolCallCompleted" events look like
+
+Let me also look at how the state dispatch works for the `state` subcommand to understand the arg layout.
+
+Looking at the code, `handle_failures(&args[3..])` is called from `handle_state_subcommand`. So `args[0]` is the program name, `args[1]` is "state", `args[2]` is "failures", and `args[3..]` are the remaining args passed to `handle_failures`.
+
+So within `handle_failures`, `args[0]` would be the first argument after "failures" (e.g., "tools", "--recent", etc.).
+
+The plan is:
+1. In `handle_failures`, check if `args.first()` is `"tools"` 
+2. If so, dispatch to a new `build_tool_failures_report` function
+3. The new handler filters for `ToolCallCompleted` events with error/failure payloads
+4. Display tool name, error/failure type, run_id, and timestamp
+
+Let me first understand what a ToolCallCompleted event looks like. Let me search for ToolCallCompleted in the codebase.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ToolCallCompleted' in src/commands_state.rs  ▶ search 'fn read_events_lenient' in src/commands_state.rs  ▶ search 'fn build_recent_failure_report' in src/commands_state.rs ✓ (68ms)
+ ✓ (68ms)
+ ✓ (85ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant functions to understand the patterns.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.6s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1122..1162  ▶ read src/commands_state.rs:1844..1924  ▶ search 'fn flag_value' in src/commands_state.rs ✓ (92ms)
+ ✓ (123ms)
+ ✓ (148ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the ToolCallCompleted event format. Let me search for how ToolCallCompleted events are recorded in the state system, to understand the payload structure.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.5s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ToolCallCompleted 21156' in src/commands_state.rs  ▶ search 'is_failure_event_type' in src/commands_state.rs ✓ (46ms)
+ ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the is_failure_event_type function and understand what event types exist. Also let me look for ToolCallCompleted in state.rs to understand the event type definition.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13800..13830  ▶ search 'ToolCallCompleted' in src/state.rs ✓ (45ms)
+ ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that `ToolCallCompleted` is not in the `is_failure_event_type` list. The current failure report only looks for `FailureObserved`, `JsonOutputFailure`, and `ToolSchemaFailure` events. 
+
+My task is to add a `state failures tools` subcommand that specifically filters for `ToolCallCompleted` events with error/failure payloads — different from the current failure classification.
+
+Let me look at what a ToolCallCompleted event payload looks like. Let me check around line 3407, 3688, and 3857 in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.0s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3400..3430  ▶ read src/state.rs:3680..3710  ▶ read src/state.rs:3840..3890 ✓ (147ms)
+ ✓ (150ms)
+ ✓ (334ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the ToolCallCompleted event payload structure. Based on the tests:
+- It has `tool_name`, `status` (e.g., "ok"), and `is_error` fields
+- It can also have `tool_call_id`, `args`, `result_preview`
+
+For my tool failures subcommand, I need to filter ToolCallCompleted events where:
+- `is_error` is true
+- OR `status` is "failed" / "error"
+- OR payload contains "error" field
+
+Now let me look at how failed ToolCallCompleted events actually look in the real state log. Let me also check how the events are recorded in state.rs for actual tool completions.
+
+Let me look at the event_string helper to understand how to extract fields from events.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.2s (3 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_string' in src/commands_state.rs ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13937..13962  ▶ search 'fn format_failure_event_value' in src/commands_state.rs ✓ (47ms)
+ ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have enough understanding. Let me also check the format module for color constants like RED, GREEN, YELLOW, BOLD, RESET, DIM used in this file.
+
+Let me now look at how payload fields are accessed in the existing code. I see the pattern is `event.get("payload").and_then(|p| p.get("field"))`.
+
+Let me also check what `format_failure_event_value` looks like and how `classify_failure_event` works to understand the patterns better.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1758..1788 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `format_event_value` to see the standard event formatting:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn format_event_value' in src/commands_state.rs ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check the format module for the color constants:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1546..1571  ▶ search 'pub const BOLD' in src/format/mod.rs ✓ (46ms)
+ ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what color constants are available. I see RED, YELLOW, GREEN, RESET, DIM, BOLD used in the file. Let me check how they're imported.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'BOLD' in src/format/mod.rs ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I have enough context. Let me now implement the solution. Here's my plan:
+
+1. Modify `handle_failures` to check for `"tools"` as the first argument and dispatch to a new function `build_tool_failures_report`
+2. Write the `build_tool_failures_report` function that:
+   - Reads events via `read_events_lenient`
+   - Filters for `ToolCallCompleted` events where the payload indicates failure (is_error: true, status: "failed"/"error", or contains "error" field)
+   - Formats each row with: timestamp, tool name, error/failure summary, run_id
+   - Respects `--limit N` (default 10)
+   - Falls back gracefully when no failures found
+
+Let me also look at how the `merge` function works for the event_type grouping (line 359 shows merge for ToolCallCompleted).
+
+Actually wait, let me re-read the task more carefully:
+
+> Add a `yyds state failures tools [--limit N]` subcommand that filters ToolCallCompleted state events with error/failure payloads
+
+So the subcommand is `state failures tools`, which means `args[0]` in `handle_failures` would be `"tools"`.
+
+> The new subcommand path is `state failures tools` (not `state failures --tools`)
+
+OK let me implement this.
+
+> Each row should show: timestamp (ISO), tool name, error/failure summary (first 80 chars of error field), and run_id.
+
+Let me look at how timestamps are formatted in the codebase. Let me check `format_timestamp_ms`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn format_timestamp_ms' in src/commands_state.rs ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function and also understand the `event_timestamp` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1480..1495 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have all the context I need. Let me write the implementation. Let me plan the edits:
+
+1. Modify `handle_failures` to check for `"tools"` subcommand
+2. Add `build_tool_failures_report` function
+
+Let me now implement this. Let me look at the exact area around `handle_failures` to make the surgical edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough context. Let me implement the change. First, let me set up my todo list, then make the edits.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (22ms)
+  ▶ todo ✓ (22ms)
+  ▶ todo ✓ (49ms)
+  ▶ todo ✓ (47ms)
+  ▶ todo ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement. First, I'll modify `handle_failures` to add the "tools" subcommand dispatch.
+
+The current handle_failures checks if args is empty or first arg is not "--recent" and prints usage. I need to add a check for "tools" as a valid first argument.
+
+Let me also look at the exact lines more carefully to make the edit precise.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.4s (5 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the edit. First, modify `handle_failures` to dispatch to tools:
+────────────────────────────────────────────────────────────────────────────────
+
+
+    fn handle_failures(args: &[String]) {
+  +     if args.first().map(|arg| arg.as_str()) == Some("tools") {
+  +         handle_tool_failures(&args[1..]);
+  +         return;
+  +     }
+        if !args.is_empty() && args.first().map(|arg| arg.as_str()) != Some("--recent") {
+            eprintln!("{YELLOW}  Usage: yoyo state failures --recent [--limit N]{RESET}");
+  +         eprintln!("{YELLOW}         yoyo state failures tools [--limit N]{RESET}");
+            return;
+        }
+  ✓ Auto-approved: edit: src/commands_state.rs (5 → 10 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (5 → 10 lines)
+    fn handle_failures(args: &[String]) {
+  +     if args.first().map(|arg| arg.as_str()) == Some("tools") {
+  +         handle_tool_failures(&args[1..]);
+  +         return;
+  +     }
+        if !args.is_empty() && args.first().map(|arg| arg.as_str()) != Some("--recent") {
+            eprintln!("{YELLOW}  Usage: yoyo state failures --recent [--limit N]{RESET}");
+  +         eprintln!("{YELLOW}         yoyo state failures tools [--limit N]{RESET}");
+            return;
+        }
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the `handle_tool_failures` function. Let me add it right after `handle_failures`. Let me see what's right after it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:815..820 ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me re-read the current state of handle_failures to see where I'll add the new function.
+
+The modified code should now look like:
+```
+fn handle_failures(args: &[String]) {
+    if args.first().map(|arg| arg.as_str()) == Some("tools") {
+        handle_tool_failures(&args[1..]);
+        return;
+    }
+    if !args.is_empty() && args.first().map(|arg| arg.as_str()) != Some("--recent") {
+        eprintln!("{YELLOW}  Usage: yoyo state failures --recent [--limit N]{RESET}");
+        eprintln!("{YELLOW}         yoyo state failures tools [--limit N]{RESET}");
+        return;
+    }
+    ...
+}
+```
+
+And I need to add `handle_tool_failures` between `handle_failures` and `handle_cache`. Let me find where handle_failures ends and handle_cache begins.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:819..824 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can add the new function between line 820 (end of handle_failures) and line 822 (start of handle_cache). Let me add:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + }
+  + 
+  + fn handle_tool_failures(args: &[String]) {
+  +     let limit = flag_value(args, "--limit")
+  +         .and_then(|raw| raw.parse::<usize>().ok())
+  +         .unwrap_or(10);
+  +     let path = default_events_path();
+  +     let (events, skipped) = match read_events_lenient(&path) {
+  +         Ok(result) => result,
+  +         Err(_) => {
+  +             eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  +             return;
+  +         }
+  +     };
+  +     if events.is_empty() {
+  +         if skipped > 0 {
+  +             eprintln!(
+  +                 "{YELLOW}  no parseable events found at {} ({} lines skipped){RESET}",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (3 → 43 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (3 → 43 lines)
+  + }
+  + 
+  + fn handle_tool_failures(args: &[String]) {
+  +     let limit = flag_value(args, "--limit")
+  +         .and_then(|raw| raw.parse::<usize>().ok())
+  +         .unwrap_or(10);
+  +     let path = default_events_path();
+  +     let (events, skipped) = match read_events_lenient(&path) {
+  +         Ok(result) => result,
+  +         Err(_) => {
+  +             eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  +             return;
+  +         }
+  +     };
+  +     if events.is_empty() {
+  +         if skipped > 0 {
+  +             eprintln!(
+  +                 "{YELLOW}  no parseable events found at {} ({} lines skipped){RESET}",
+  +                 path.display(),
+  +                 skipped
+  ... (23 more lines)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to add the `build_tool_failures_report` function. Let me place it near the other `build_*_report` functions like `build_recent_failure_report`. Let me add it after `build_recent_failure_report`. 
+
+Let me check what's after `build_recent_failure_report` to find the right insertion point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1893..1898 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where `build_recent_failure_report` ends:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'Ok(out.trim_end' in src/commands_state.rs ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the end of `build_recent_failure_report` specifically around line 1886:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1887..1902 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, line 1887 is just `}` — this is the end of something else. Let me check what function starts at line 1889... Actually, line 1889 is `fn build_recent_failure_report`. But earlier I read the same function at line 1844. Let me look at what's between the end of the first one and the start of the second one. 
+
+Oh wait, I think the line numbers shifted because I added lines. The `build_recent_failure_report` at 1844 (old line numbers) is now at a different line. Let me re-read the area around the function I found before to see where it ends now.
+
+Actually, let me just search for where it ends:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_recent_failure_report' in src/commands_state.rs ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The function starts at line 1889. Let me find where it ends by looking for `classify_failure_event` which is directly after it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn classify_failure_event' in src/commands_state.rs ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `build_recent_failure_report` is from line 1889 to around 1935. Let me read the end of it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1930..1936 ✓ (23ms)
+
+

@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: All 118 lines of the diff in src/commands_state.rs correctly implement the `state failures tools` subcommand: handle_failures dispatches to handle_tool_failures when args[0]=="tools", default limit is 10 with --limit override, ToolCallCompleted events are filtered by error/status/success indicators, output includes tool name/timestamp/error summary(80-char-safe)/run_id, graceful fallback prints "no tool failures found", and existing `state failures --recent` behavior was verified unchanged via CLI.

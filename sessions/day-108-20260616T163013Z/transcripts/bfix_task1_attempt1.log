@@ -1,0 +1,301 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the error. The build is failing because `build_tool_failures_report` function doesn't exist. The compiler suggests a similar function `build_graph_failures_report` exists. Let me look at the code to understand what happened.
+
+The task was to add a `state failures tools` subcommand. Let me first look at the relevant section in `commands_state.rs` around line 856 and the `handle_failures` function to understand what was implemented and what's missing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/commands_state.rs:830..910 ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code calls `build_tool_failures_report(&events, limit)` but this function doesn't exist. I need to either:
+1. Find where `handle_failures` dispatches to this code, and understand what function should be called instead, or
+2. Create the `build_tool_failures_report` function.
+
+Let me look at the `handle_failures` function to see the dispatch logic.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_failures' in src/commands_state.rs ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `handle_failures` function and see how it dispatches.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:773..863 ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the problem. The `handle_tool_failures` function at line 822 calls `build_tool_failures_report(&events, limit)` at line 856, but this function doesn't exist. I need to create it.
+
+Let me look at how similar report functions are implemented, like `build_recent_failure_report` and `build_cache_recent_report`, to follow the same pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_recent_failure_report' in src/commands_state.rs  ▶ search 'fn build_cache_recent_report' in src/commands_state.rs ✓ (47ms)
+ ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `build_recent_failure_report` to understand the pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1889..1949 ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the pattern. Let me also check what helpers are available - like `event_string`, `format_failure_event_value`, `is_failure_event_type`, etc. And I need to understand the event structure, particularly for `ToolCallCompleted` events.
+
+Let me look at how `ToolCallCompleted` events are structured by searching for them in the codebase.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at the existing event helper patterns and how ToolCallCompleted events look:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ToolCallCompleted' in src/commands_state.rs  ▶ search 'fn event_string' in src/commands_state.rs ✓ (48ms)
+ ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `event_string` and the `read_events_lenient` function to understand what `Value` type it returns (serde_json::Value). Let me also look at line 21201 where ToolCallCompleted is used to understand the payload structure.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13982..14012  ▶ read src/commands_state.rs:21170..21250 ✓ (73ms)
+ ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how `read_events_lenient` works to understand what `Value` type it returns, and look at the existing failure report patterns more closely. I also need to understand how ToolCallCompleted events look when they have errors.
+
+Let me look at `read_events_lenient`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_events_lenient' in src/commands_state.rs ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So it returns `Vec<Value>` where `Value` is `serde_json::Value`. Each event is a raw JSON line parsed. Let me check how the events look in the JSON file. The `read_events_lenient` reads a JSONL file where each line is a JSON object with fields like `event_type`, `timestamp_ms`, `payload`, etc.
+
+For the `build_tool_failures_report` function, I need to:
+1. Filter events where `event_type` is `"ToolCallCompleted"`
+2. Check the payload for error/failure indicators (e.g., `"error"` field, `"status": "failed"`, `"success": false`)
+3. Format each matching event with: timestamp, tool name, error summary, run_id
+
+Let me look at how the other report builders do this. Let me also check for patterns near the `handle_tool_failures` function for the report builder... It was supposed to be added but wasn't. I need to create it.
+
+Let me find a good place to insert it. It should be near `build_recent_failure_report`. Let me check what's around line 1934 (end of that function).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1930..1990 ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check the `format_failure_event_value` function and the color constants to understand how things are formatted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn format_failure_event_value' in src/commands_state.rs ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the color constants used in this file and also look at how `format_timestamp_ms` works:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1803..1833  ▶ search 'const BOLD' in src/commands_state.rs ✓ (47ms)
+ ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the color constants differently:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'BOLD.*=.*\\x1b' in src/commands_state.rs  ▶ search 'let BOLD' in src/commands_state.rs ✓ (47ms)
+ ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search differently - perhaps these are imported from `format` module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search '{YELLOW}' in src/commands_state.rs  ▶ read src/commands_state.rs (20 lines) ✓ (23ms)
+ ✓ (97ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `BOLD`, `YELLOW`, `RED`, `GREEN`, `RESET`, `DIM` come from `crate::format::*`. Let me look at `format/mod.rs` for those constants:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub const BOLD' in src/format/mod.rs  ▶ search 'pub const YELLOW' in src/format/mod.rs ✓ (46ms)
+ ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'YELLOW' in src/format/mod.rs ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `YELLOW` is imported from `crate::format::*`. Let me also check for `BOLD`, `RED`, `GREEN`, `DIM`, `RESET`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/format/mod.rs:190..220 ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have all the information I need. Let me also check `format_timestamp_ms` to understand how timestamps are formatted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn format_timestamp_ms' in src/commands_state.rs ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1525..1550 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have everything I need. Let me create the `build_tool_failures_report` function. I'll place it right after `build_recent_failure_report` at line 1934 (before `classify_failure_event`).
+
+The function should:
+1. Filter events where `event_type` is `"ToolCallCompleted"` 
+2. Check the payload for error/failure indicators: `"error"` field, `"status": "failed"`, `"success": false`
+3. Format each event with: timestamp, tool name, error summary, run_id
+4. Return error "no tool failures found" if none found
+
+Let me also check what `read_events_lenient` returns more closely - it returns `Vec<Value>` which are raw JSON values parsed from each line. These are the raw event JSON objects, not `StateEvent` structs.
+
+Looking at the raw JSON, the expected fields would be:
+- `event_type`: "ToolCallCompleted"
+- `timestamp_ms`: number
+- `payload.tool_name`: string
+- `payload.error`: string (if error)
+- `payload.status`: string (e.g., "failed", "ok")
+- `payload.success`: boolean
+- `run_id`: string
+
+Now let me write the function.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the structure. I need to add the missing `build_tool_failures_report` function. Let me insert it right after `build_recent_failure_report`:
+  +     Ok(out.trim_end().to_string())
+  + }
+  + 
+  + fn build_tool_failures_report(events: &[Value], limit: usize) -> Result<String, String> {
+  +     let failures: Vec<&Value> = events
+  +         .iter()
+  +         .rev()
+  +         .filter(|event| {
+  +             event_string(event, "event_type")
+  +                 .map(|t| t == "ToolCallCompleted")
+  +                 .unwrap_or(false)
+  +         })
+  +         .filter(|event| {
+  +             let payload = event.get("payload").unwrap_or(&Value::Null);
+  +             // Match payloads that indicate a tool failure
+  +             payload.get("error").is_some()
+  +                 || payload
+  +                     .get("status")
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (4 → 77 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (4 → 77 lines)
+  +     Ok(out.trim_end().to_string())
+  + }
+  + 
+  + fn build_tool_failures_report(events: &[Value], limit: usize) -> Result<String, String> {
+  +     let failures: Vec<&Value> = events
+  +         .iter()
+  +         .rev()
+  +         .filter(|event| {
+  +             event_string(event, "event_type")
+  +                 .map(|t| t == "ToolCallCompleted")
+  +                 .unwrap_or(false)
+  +         })
+  +         .filter(|event| {
+  +             let payload = event.get("payload").unwrap_or(&Value::Null);
+  +             // Match payloads that indicate a tool failure
+  +             payload.get("error").is_some()
+  +                 || payload
+  +                     .get("status")
+  +                     .and_then(|v| v.as_str())
+  +                     .map(|s| s == "failed" || s == "error")
+  ... (56 more lines)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the build:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify it compiles:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (7.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`cargo check` passes. Let me also run `cargo fmt --check`:
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Let me also run `cargo fmt --check`:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passes. Now let me run the narrowest test that exercises this module — `cargo test --bin yyds -- --test-threads=1`:
+────────────────────────────────────────────────────────────────────────────────
+
+Format check passes. Now run the unit tests:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- --tes… ✓ (16.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All gates pass. Let me verify the function is also correctly wired up by looking at the `handle_failures` flow one more time to make sure the dispatch is correct.
+────────────────────────────────────────────────────────────────────────────────
+
+All gates pass. Let me also verify the function is properly inserted and the surrounding code looks correct:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1930..2010 ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+The fix is clean. Here's a summary:
+
+**Problem**: The `state failures tools` subcommand (in `handle_tool_failures` at line 856) called `build_tool_failures_report()`, but that function was never written — only the dispatch plumbing was added.
+
+**Fix**: Added the missing `build_tool_failures_report` function (lines 1936–2007) right after `build_recent_failure_report`. It:
+
+• Filters events for `ToolCallCompleted` type
+• Detects failures via three payload signals: `error` field present, `status: "failed"/"error"`, or `success: false`
+• Formats each row with timestamp (ISO), tool name (bold), error summary (red, truncated to 80 chars at char boundary), and run_id (dimmed)
+• Returns `"no tool failures found"` when no matching events exist
+• Default limit of 10 from the caller, overridable via `--limit N`
+
+**Verification**: `cargo check` ✓, `cargo fmt --check` ✓, `cargo test --bin yyds` ✓
+
+
