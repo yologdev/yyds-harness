@@ -1,0 +1,668 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully:
+
+1. The issue is that `yyds state failures --recent` uses `read_events()` which is strict about JSON parsing and fails on the first malformed line
+2. Other commands like `handle_why` use `read_tail_events()` which is lenient
+3. The fix should make `handle_failures` use lenient parsing
+
+Let me start by reading the evolve skill and the relevant code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs:770..850 ✓ (914ms)
+ ✓ (431ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the relevant functions: `read_events()`, `read_tail_events()`, `read_compatibility_events()`, and `default_events_path()`. I also need to see `handle_why` for comparison.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+Now let me find all the relevant parsing functions and `handle_why`:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_events' in src/commands_state.rs  ▶ search 'fn read_tail_events' in src/commands_state.rs  ▶ search 'fn read_compatibility_events' in src/commands_state.rs  ▶ search 'fn handle_why' in src/commands_state.rs ✓ (596ms)
+ ✓ (569ms)
+ ✓ (570ms)
+ ✓ (557ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.7s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:864..914  ▶ read src/commands_state.rs:1010..1140 ✓ (887ms)
+ ✓ (577ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue clearly:
+
+1. `read_events(path)` at line 1015-1017 calls `crate::state::read_compatibility_events(path).map_err(std::io::Error::other)` — this is strict and fails on the first bad JSON line.
+
+2. `read_tail_events` at line 1030-1042: when `limit == 0`, it calls `read_events(path)` (strict), but when `limit > 0`, it uses `read_tail` (reads last `limit` lines) and then parses them leniently with `if let Ok(value)`.
+
+3. `handle_failures` at line 773-790: calls `read_events(&path)` — strict, so any bad JSON line in the entire file causes it to fail.
+
+4. `handle_why` at line 864-877: calls `read_tail_events(&path, limit)` with a `limit` parameter. When limit > 0, it's lenient.
+
+Now let me also check `read_compatibility_events` in `src/state.rs`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.6s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_compatibility_events' in src/state.rs  ▶ search 'fn read_tail' in src/commands_state.rs ✓ (650ms)
+ ✓ (450ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3156..3196  ▶ read src/commands_state.rs:1003..1023 ✓ (1.1s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture:
+
+1. `read_compatibility_events` (src/state.rs:3156-3169): Uses `.map_err()` on each line → STRICT. Fails on first malformed line.
+
+2. `read_events` (src/commands_state.rs:1015-1017): Wraps `read_compatibility_events` → STRICT.
+
+3. `read_tail_events` (src/commands_state.rs:1030-1042): When `limit == 0`, calls `read_events` (STRICT). When `limit > 0`, reads last N lines via `read_tail` and parses with `if let Ok(value)` → LENIENT.
+
+4. `handle_failures` (line 773-790): Uses `read_events` → STRICT → fails on bad JSON.
+
+5. `handle_cache` (line 792-809): Uses `read_events` → STRICT → same issue.
+
+6. `handle_evals` (line 811-832): Uses `read_events` → STRICT → same issue.
+
+7. `handle_patches` (line 834): Uses `read_events` → STRICT → same issue.
+
+8. `handle_why` (line 864): Uses `read_tail_events` → when limit > 0, LENIENT.
+
+The task specifically asks to fix `handle_failures`. The recommended approach (Option A) is:
+- Make `read_tail_events` lenient even when `limit == 0`
+- Use it from `handle_failures`
+
+Actually, let me think about this more carefully. The task says:
+
+> Option A (recommended): Replace `read_events(&path)` with `read_tail_events(&path, 0)`. When limit=0, `read_tail_events` falls through to `read_events()` — so we also need to make `read_tail_events` lenient even in the full-scan path.
+
+> The fix: when limit==0, use a lenient full-file parse that skips bad lines rather than calling the strict `read_events()`. Extract the lenient parsing into a helper that both the limit>0 and limit==0 paths use.
+
+So I should:
+
+1. Create a helper function that reads a file and parses each non-empty line as JSON, silently skipping malformed lines
+2. Use that helper in both the `limit == 0` and `limit > 0` paths of `read_tail_events`
+3. Change `handle_failures` to call `read_tail_events(&path, 0)` (or directly use the lenient helper)
+
+Wait, actually looking more carefully at the task:
+
+> For `handle_failures` specifically, read the last N events using the lenient parser (with N derived from the --limit flag, defaulting to 12). If no events parse, report "no parseable events found" rather than "no state log found."
+
+So the approach should be:
+1. Make `read_tail_events` lenient for the `limit == 0` path too
+2. Change `handle_failures` to use `read_tail_events(&path, 0)` with a limit of 0 (to scan all events, not just tail), or use the lenient parser and then take the last `limit` events
+
+Actually, let me re-read the task more carefully...
+
+The task says to implement Option A. Let me plan:
+
+1. Create a helper function `read_events_lenient(path)` that:
+   - Reads the file as text
+   - Returns Err if file doesn't exist (genuine "no state log" case)
+   - Parses each non-empty line as JSON, skipping malformed lines
+   - Returns the successfully parsed events
+
+2. Modify `read_tail_events`:
+   - When `limit == 0`, use the lenient helper to read all events
+   - When `limit > 0`, use the lenient helper for the tail (or keep existing `read_tail` + lenient parse)
+
+3. Change `handle_failures` to use `read_tail_events(&path, 0)` to read all events leniently, and then take the last N
+
+Wait, actually `handle_failures` currently reads ALL events, then `build_recent_failure_report` takes the last N. Let me check that function.
+
+Actually, let me also look at what tests exist. But first, let me trace through the exact behavior more carefully.
+
+Current `handle_failures`:
+```rust
+fn handle_failures(args: &[String]) {
+    // ... parse args
+    let limit = ...; // defaults to 12
+    let path = default_events_path();
+    let Ok(events) = read_events(&path) else {  // STRICT - fails on bad JSON
+        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+        return;
+    };
+    match build_recent_failure_report(&events, limit) {
+        ...
+    }
+}
+```
+
+So currently it reads ALL events with strict parsing. The fix should:
+1. Make `read_tail_events` lenient for `limit == 0` too
+2. Call `read_tail_events(&path, 0)` to get all events leniently
+3. Then `build_recent_failure_report` takes the last N
+
+But wait, `read_tail_events` with `limit=0` would read all events, which for a 26MB file (21,292 events) might be slow. But `handle_failures` already reads all events with `read_events()`, so it's the same behavior.
+
+Actually, the task says: "read the last N events using the lenient parser (with N derived from the --limit flag, defaulting to 12)."
+
+So maybe the approach should be to pass the limit to `read_tail_events` directly? Like `read_tail_events(&path, limit)`. But `read_tail_events` with `limit > 0` only reads the last N LINES, not necessarily the last N JSON events (some lines might be invalid). Hmm.
+
+Actually, looking at `read_tail_events` more carefully:
+```rust
+fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+    if limit == 0 {
+        return read_events(path);
+    }
+    let raw_lines = read_tail(path, limit)?;
+    let mut events = Vec::with_capacity(raw_lines.len());
+    for line in &raw_lines {
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            events.push(value);
+        }
+    }
+    Ok(events)
+}
+```
+
+So `read_tail_events(path, 12)` reads the last 12 LINES (raw text lines), not last 12 parsed events. But since `handle_why` passes `limit` and it's fine for diagnostic purposes, it's probably good enough.
+
+For `handle_failures`, the task says to use the lenient parser. The simplest approach:
+
+1. Add a helper `read_events_lenient(path)` that reads the file and returns all successfully-parsed events (skipping bad lines)
+2. Modify `read_tail_events` to use this helper for the `limit == 0` case
+3. Change `handle_failures` to use the lenient path
+
+Let me now also check `build_recent_failure_report` to understand how it uses `events`:
+
+Actually, let me also look at what tests exist for this code.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 24.8s (2 ✓)
+
+Let me check `build_recent_failure_report` and also look at the existing tests:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_recent_failure_report' in src/commands_state.rs  ▶ search 'fn build_cache_recent_report' in src/commands_state.rs ✓ (313ms)
+ ✓ (213ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `build_recent_failure_report` to see how it uses the events.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1720..1780 ✓ (129ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I understand the full picture. Let me plan the implementation:
+
+1. Create a helper function `read_events_lenient` that reads the file and parses each non-empty line as JSON, skipping bad lines, using `compatibility_event_json_line` for normalization.
+
+2. Modify `read_tail_events` to use the lenient helper for both `limit == 0` and `limit > 0` paths.
+
+3. Change `handle_failures` to use the lenient path (via `read_tail_events`).
+
+4. Also need to look at where `compatibility_event_json_line` is - it's in `state.rs`.
+
+Let me also think about how `handle_cache` and `handle_evals` use `read_events`. The task only mentions `handle_failures`, but since `handle_cache` and `handle_evals` have the same bug pattern, should I fix them too? The task says to focus on `handle_failures` only. But fixing `read_tail_events` to be lenient for `limit == 0` would fix all callers of `read_tail_events` that pass limit=0.
+
+Actually, wait. The task says:
+
+> The fix: when limit==0, use a lenient full-file parse that skips bad lines rather than calling the strict `read_events()`. Extract the lenient parsing into a helper that both the limit>0 and limit==0 paths use. The helper should:
+> 1. Read the file as text (fail if file genuinely missing — that's the real "no state log" case)
+> 2. Parse each non-empty line as JSON, skipping malformed lines
+> 3. Return the successfully parsed events
+> 
+> Then call this helper from `handle_failures` instead of `read_events()`.
+
+So the plan is:
+
+1. Create a lenient helper `read_events_lenient(path)` that:
+   - Reads the file (returns `io::Error` if file doesn't exist)
+   - For each non-empty line, tries to normalize via `compatibility_event_json_line` and parse as JSON
+   - Silently skips lines that fail at either step
+   - Returns `Vec<Value>` of successfully parsed events
+
+2. Modify `read_tail_events` to use this helper for the `limit == 0` case
+
+3. Modify `handle_failures` to call `read_tail_events(&path, 0)` (which will now use the lenient path even for limit=0)
+
+Actually, re-reading the task more carefully:
+
+> For `handle_failures` specifically, read the last N events using the lenient parser (with N derived from the --limit flag, defaulting to 12). If no events parse, report "no parseable events found" rather than "no state log found."
+
+So maybe `handle_failures` should use `read_tail_events(&path, limit)` directly? But `read_tail_events` with `limit > 0` only reads the last N LINES, not the last N events. The function signature says "Read only the last `limit` events from the state log." and at line 1029: "Returns fewer than `limit` events if the log is smaller."
+
+Actually, looking at `read_tail_events` again:
+```rust
+fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+    if limit == 0 {
+        return read_events(path);
+    }
+    let raw_lines = read_tail(path, limit)?;  // reads last `limit` LINES
+    let mut events = Vec::with_capacity(raw_lines.len());
+    for line in &raw_lines {
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            events.push(value);
+        }
+    }
+    Ok(events)
+}
+```
+
+It reads last `limit` lines, which may be fewer than `limit` events if some lines are blank or invalid. The doc comment says "Read only the last `limit` events" but it actually reads last `limit` lines. The function is a bit misleading but it's what `handle_why` uses and it works.
+
+For `handle_failures`, the current code reads ALL events and then `build_recent_failure_report` takes the last `limit`. The task says to keep using limit for tail reading.
+
+Let me now implement. Here's my plan:
+
+1. Add `read_events_lenient` as a helper that reads all events leniently
+2. Modify `read_tail_events` to use `read_events_lenient` for `limit == 0` and keep the existing tail behavior for `limit > 0`
+3. Modify `handle_failures` to use `read_tail_events(&path, 0)` — which now uses lenient parser
+4. Also fix `handle_cache` the same way since it has the exact same bug
+
+Actually, I should also handle the case where `handle_failures` gets limit=0 - it should read all events leniently and scan them all.
+
+Let me check: should I also fix the `read_tail_events` limit>0 path to use `compatibility_event_json_line` for normalization? Currently it does raw `serde_json::from_str::<Value>(line)` without normalization. But since the task says to use lenient parsing for the full-scan path only, and `handle_why` already works, I'll keep the tail path as-is.
+
+Let me now write the implementation.
+
+Actually, let me think about the helper more carefully. `read_compatibility_events` does two things:
+1. Normalize lines via `compatibility_event_json_line`
+2. Parse as JSON
+
+The lenient version should do the same but skip on failure.
+
+```rust
+fn read_events_lenient(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    let events: Vec<Value> = raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let normalized = crate::state::compatibility_event_json_line(line).ok()?;
+            serde_json::from_str::<Value>(&normalized).ok()
+        })
+        .collect();
+    Ok(events)
+}
+```
+
+But wait, `compatibility_event_json_line` - is it public? Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn compatibility_event_json_line' in src/state.rs ✓ (148ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It's public. Good. And the error type is `String`, not `io::Error`. Let me read it briefly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3150..3158 ✓ (185ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also check if `compatibility_event_json_line` is already exported from `state` module. Since it's `pub`, it should be accessible as `crate::state::compatibility_event_json_line`.
+
+Now let me plan the implementation:
+
+1. Add `read_events_lenient` helper in `commands_state.rs`
+2. Modify `read_tail_events` to use the lenient helper for `limit == 0`
+3. Modify `handle_failures` to use `read_tail_events(&path, 0)`
+4. Modify `handle_cache` similarly (same bug pattern)
+5. Add a test
+
+Let me also look for existing tests to understand the test patterns:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check for existing tests of these functions:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_failures' in src/commands_state.rs  ▶ search 'read_tail_events' in src/commands_state.rs ✓ (228ms)
+ ✓ (542ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the test module to see if there are tests for this area.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search '#\[cfg(test)\]' in src/commands_state.rs ✓ (161ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No tests in `commands_state.rs`. Let me check if there are tests in the integration tests or in `state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'read_tail_events|read_events_lenient|handle_failures' in tests  ▶ search '#\[cfg\(test\)\]' in src/state.rs ✓ (577ms)
+ ✓ (514ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, there are no existing tests for these parsing functions. Let me now implement the fix.
+
+Plan:
+1. Add a lenient helper `read_events_lenient`
+2. Modify `read_tail_events` to use the lenient helper for `limit == 0`
+3. Modify `handle_failures` to use lenient parsing
+4. Modify `handle_cache` (same bug pattern)
+5. Write a test for `read_events_lenient`
+
+Let me now look at `read_tail_events` line 965 context to see the third caller:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:960..975 ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - `handle_state_summary` at line 965 uses `read_tail_events(&path, limit)` which is already lenient for limit > 0. Then at line 971 it calls `read_events(&path)` for the full count, which may fail. But that's a separate issue.
+
+Now let me implement the fix. I'll:
+
+1. Add `read_events_lenient` helper function
+2. Modify `read_tail_events` to use it for `limit == 0`
+3. Fix `handle_failures` and `handle_cache`
+
+Let me now write the code.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement. I'll:
+
+1. Add a lenient `read_events_lenient` helper
+2. Modify `read_tail_events` to use it for `limit == 0`
+3. Fix `handle_failures` and `handle_cache`
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (164ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the helper and modify the functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (163ms)
+  ▶ todo ✓ (176ms)
+  ▶ todo ✓ (116ms)
+  ▶ todo ✓ (107ms)
+  ▶ todo ✓ (160ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement step 1: add `read_events_lenient` helper. I'll add it right before `read_events` at line 1015.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.2s (5 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (129ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the `read_events_lenient` function right before `read_events`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+    pub(crate) fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+        crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
+  + }
+  + 
+  + /// Lenient event reader: parses all lines as JSON, skipping malformed ones.
+  + /// Only returns an error if the file genuinely can't be read (missing, perms).
+  + fn read_events_lenient(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+  +     let raw = std::fs::read_to_string(path)?;
+  +     let events: Vec<Value> = raw
+  +         .lines()
+  +         .filter(|line| !line.trim().is_empty())
+  +         .filter_map(|line| {
+  +             let normalized = crate::state::compatibility_event_json_line(line).ok()?;
+  +             serde_json::from_str::<Value>(&normalized).ok()
+  +         })
+  +         .collect();
+  +     Ok(events)
+    }
+  ✓ Auto-approved: edit: src/commands_state.rs (3 → 18 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (3 → 18 lines)
+    pub(crate) fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+        crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
+  + }
+  + 
+  + /// Lenient event reader: parses all lines as JSON, skipping malformed ones.
+  + /// Only returns an error if the file genuinely can't be read (missing, perms).
+  + fn read_events_lenient(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+  +     let raw = std::fs::read_to_string(path)?;
+  +     let events: Vec<Value> = raw
+  +         .lines()
+  +         .filter(|line| !line.trim().is_empty())
+  +         .filter_map(|line| {
+  +             let normalized = crate::state::compatibility_event_json_line(line).ok()?;
+  +             serde_json::from_str::<Value>(&normalized).ok()
+  +         })
+  +         .collect();
+  +     Ok(events)
+    }
+ ✓ (105ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now modify `read_tail_events` to use `read_events_lenient` for `limit == 0`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (493ms)
+  ▶ todo ✓ (187ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the current `read_tail_events` to make a surgical edit:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1042..1062 ✓ (153ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now modify `read_tail_events` to use the lenient parser for `limit == 0`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+    /// Read only the last `limit` events from the state log.
+    /// Returns fewer than `limit` events if the log is smaller.
+  + /// When `limit == 0`, reads all events with lenient parsing (skips malformed lines).
+    fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+        if limit == 0 {
+  -         return read_events(path);
+  +         return read_events_lenient(path);
+        }
+        let raw_lines = read_tail(path, limit)?;
+        let mut events = Vec::with_capacity(raw_lines.len());
+  ✓ Auto-approved: edit: src/commands_state.rs (15 → 16 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (15 → 16 lines)
+    /// Read only the last `limit` events from the state log.
+    /// Returns fewer than `limit` events if the log is smaller.
+  + /// When `limit == 0`, reads all events with lenient parsing (skips malformed lines).
+    fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+        if limit == 0 {
+  -         return read_events(path);
+  +         return read_events_lenient(path);
+        }
+        let raw_lines = read_tail(path, limit)?;
+        let mut events = Vec::with_capacity(raw_lines.len());
+ ✓ (112ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now fix `handle_failures` and `handle_cache`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (116ms)
+  ▶ todo ✓ (101ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me fix `handle_failures`. I need to:
+
+1. Use `read_tail_events(&path, 0)` (or `read_events_lenient`) instead of `read_events`
+2. Handle the case where parsing succeeds but yields 0 events
+
+Let me read the current handle_failures:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:773..793 ✓ (106ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to modify `handle_failures` to:
+1. Use lenient parsing
+2. Distinguish between "file genuinely missing" and "file exists but no valid events parsed"
+
+Since `read_events_lenient` returns `io::Error` only when the file can't be read, I can use it. And then check if the resulting events vector is empty.
+
+The task says: "If no events parse, report 'no parseable events found' rather than 'no state log found.'"
+
+So:
+```rust
+let Ok(events) = read_events_lenient(&path) else {
+    eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+    return;
+};
+if events.is_empty() {
+    eprintln!("{YELLOW}  no parseable events found at {}{RESET}", path.display());
+    return;
+}
+```
+
+But wait, I should keep using `read_tail_events(&path, 0)` instead of directly calling `read_events_lenient`, since `read_tail_events` now uses lenient parsing for limit==0. This keeps the code consistent.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(12);
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  +     let Ok(events) = read_tail_events(&path, 0) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        };
+  +     if events.is_empty() {
+  +         eprintln!("{YELLOW}  no parseable events found at {}{RESET}", path.display());
+  +         return;
+  +     }
+        match build_recent_failure_report(&events, limit) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  ✓ Auto-approved: edit: src/commands_state.rs (18 → 22 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (18 → 22 lines)
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(12);
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  +     let Ok(events) = read_tail_events(&path, 0) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        };
+  +     if events.is_empty() {
+  +         eprintln!("{YELLOW}  no parseable events found at {}{RESET}", path.display());
+  +         return;
+  +     }
+        match build_recent_failure_report(&events, limit) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+ ✓ (118ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now fix `handle_cache` similarly. Let me find and read it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (120ms)
+  ▶ todo ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the current `handle_cache`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:796..816 ✓ (108ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Same fix for `handle_cache`. Also, I should check `handle_evals` — it also uses the strict `read_events`. But the task only specifically names `handle_failures` and mentions `handle_cache` has the same pattern. Let me stay focused on what the task says: fix `handle_failures` and fix `handle_cache` since it's the same bug.
+
+Actually re-reading the task: "Files: src/commands_state.rs" - it's within scope. The task is about making the state failures command work. `handle_cache` is the same bug pattern, so fixing it is within scope. `handle_evals` also uses `read_events` but the task doesn't mention it. I should fix `handle_cache` but leave `handle_evals` for another task.
+
+Actually the task also mentions `handle_why` uses `read_tail_events` and works. So `handle_evals` also uses `read_events` and has the same bug. But the task scope says `handle_failures`. Let me fix `handle_cache` since it's the identical pattern and is a companion to `handle_failures`, but leave `handle_evals` alone (it also uses `read_events` at line 815).
+
+Wait actually, `handle_evals` at line 813 calls `read_events(&path)`. That also has the same bug. Let me fix it too — it's clearly the same bug pattern and is within the same file. But the task says to focus on `handle_failures`. Let me fix only the ones the task mentions: `handle_failures` and `handle_cache` (same pattern, next function).
+
+OK, let me fix `handle_cache`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(12);
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  +     let Ok(events) = read_tail_events(&path, 0) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        };
+  +     if events.is_empty() {
+  +         eprintln!("{YELLOW}  no parseable events found at {}{RESET}", path.display());
+  +         return;
+  +     }
+        match build_cache_recent_report(&events, limit) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  ✓ Auto-approved: edit: src/commands_state.rs (18 → 22 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (18 → 22 lines)
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(12);
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  +     let Ok(events) = read_tail_events(&path, 0) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        };
+  +     if events.is_empty() {
+  +         eprintln!("{YELLOW}  no parseable events found at {}{RESET}", path.display());
+  +         return;
+  +     }
+        match build_cache_recent_report(&events, limit) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+ ✓ (104ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also fix `handle_evals` since it has the same bug. But actually, let me check if `build_eval_report` is designed to work with the full events list... Let me focus on verifying the build first.
+
+Actually wait, let me now also check `handle_state_summary` at line 971 — it calls `read_events(&path)` for getting the full count, which would also fail. But that's a secondary issue.
+
+Let me now write tests and check if the code compiles.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (220ms)
+  ▶ todo ✓ (308ms)
+  2 tools completed in 807ms (2 ✓)
+
+

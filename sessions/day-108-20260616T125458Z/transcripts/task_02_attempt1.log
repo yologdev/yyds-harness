@@ -1,0 +1,330 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task:
+
+1. The objective is to deduplicate run IDs in `find_incomplete_runs()` in `src/commands_state.rs`
+2. The task provides the exact code change needed - use `BTreeMap` instead of `Vec` to deduplicate
+3. I need to read the evolve skill first, then implement the change
+
+Let me start by reading the evolve skill and the current code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ search 'fn find_incomplete_runs' in src/commands_state.rs ✓ (444ms)
+ ✓ (258ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the current `find_incomplete_runs` function to compare with the proposed implementation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:950..1010 ✓ (434ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the current implementation. It uses `Vec<(String, u64)>` with `filter_map` and collects into a vec. If the same run_id appears multiple times (from different sessions), it would appear multiple times in the result.
+
+The fix is to use `BTreeMap<String, u64>` instead of `Vec<(String, u64)>` to deduplicate by run_id. Let me check if `BTreeMap` is already imported.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'use std::collections::' in src/commands_state.rs ✓ (101ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`BTreeMap` is already imported. Now I need to:
+
+1. Change `Vec<(String, u64)>` to `BTreeMap<String, u64>` with deduplication logic
+2. The task suggests using `.entry()` to keep the most recent (largest) timestamp
+
+Let me look at the exact code block to make a surgical edit. The current code:
+
+```rust
+fn find_incomplete_runs(events: &[Value]) -> Vec<(String, u64)> {
+    let completed: BTreeSet<&str> = events
+        .iter()
+        .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+        .filter_map(|e| event_string(e, "run_id"))
+        .collect();
+    let mut incomplete: Vec<(String, u64)> = events
+        .iter()
+        .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
+        .filter_map(|e| {
+            let run_id = event_string(e, "run_id")?;
+            if completed.contains(run_id) {
+                return None;
+            }
+            Some((run_id.to_string(), event_timestamp(e)))
+        })
+        .collect();
+    // Most recent first
+    incomplete.sort_by_key(|item| std::cmp::Reverse(item.1));
+    incomplete
+}
+```
+
+Need to change to:
+
+```rust
+fn find_incomplete_runs(events: &[Value]) -> Vec<(String, u64)> {
+    let completed: BTreeSet<&str> = events
+        .iter()
+        .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+        .filter_map(|e| event_string(e, "run_id"))
+        .collect();
+    let mut incomplete: BTreeMap<String, u64> = BTreeMap::new();
+    for e in events {
+        let event_type = event_string(e, "event_type");
+        if event_type == Some("RunStarted") {
+            if let Some(run_id) = event_string(e, "run_id") {
+                if !completed.contains(run_id.as_str()) {
+                    let ts = e.get("timestamp_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                    // Keep the most recent (largest) timestamp for each run_id
+                    incomplete
+                        .entry(run_id)
+                        .and_modify(|existing| {
+                            if ts > *existing {
+                                *existing = ts;
+                            }
+                        })
+                        .or_insert(ts);
+                }
+            }
+        }
+    }
+    let mut result: Vec<(String, u64)> = incomplete.into_iter().collect();
+    result.sort_by(|a, b| b.1.cmp(&a.1));
+    result
+}
+```
+
+Wait, let me check how `event_timestamp` is defined since the current code uses that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_timestamp\b' in src/commands_state.rs ✓ (215ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `event_timestamp` without word boundary.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'event_timestamp' in src/commands_state.rs ✓ (104ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the `event_timestamp` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13847..13857 ✓ (102ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The `event_timestamp` function is a helper that extracts `timestamp_ms` or `ts_ms` and unwraps to 0. This is a more robust version than the inline `e.get("timestamp_ms").and_then(|v| v.as_u64()).unwrap_or(0)`. Let me use `event_timestamp` in the new implementation for consistency.
+
+Now let me make the edit. I'll use `edit_file` to replace the function body.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me make the surgical edit to deduplicate run IDs using `BTreeMap`.
+            .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+            .filter_map(|e| event_string(e, "run_id"))
+            .collect();
+  -     let mut incomplete: Vec<(String, u64)> = events
+  -         .iter()
+  -         .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
+  -         .filter_map(|e| {
+  -             let run_id = event_string(e, "run_id")?;
+  -             if completed.contains(run_id) {
+  -                 return None;
+  +     let mut incomplete: BTreeMap<String, u64> = BTreeMap::new();
+  +     for e in events {
+  +         let event_type = event_string(e, "event_type");
+  +         if event_type == Some("RunStarted") {
+  +             if let Some(run_id) = event_string(e, "run_id") {
+  +                 if !completed.contains(run_id.as_str()) {
+  +                     let ts = event_timestamp(e);
+  +                     // Keep the most recent (largest) timestamp for each run_id
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (21 → 30 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (21 → 30 lines)
+            .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+            .filter_map(|e| event_string(e, "run_id"))
+            .collect();
+  -     let mut incomplete: Vec<(String, u64)> = events
+  -         .iter()
+  -         .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
+  -         .filter_map(|e| {
+  -             let run_id = event_string(e, "run_id")?;
+  -             if completed.contains(run_id) {
+  -                 return None;
+  +     let mut incomplete: BTreeMap<String, u64> = BTreeMap::new();
+  +     for e in events {
+  +         let event_type = event_string(e, "event_type");
+  +         if event_type == Some("RunStarted") {
+  +             if let Some(run_id) = event_string(e, "run_id") {
+  +                 if !completed.contains(run_id.as_str()) {
+  +                     let ts = event_timestamp(e);
+  +                     // Keep the most recent (largest) timestamp for each run_id
+  +                     incomplete
+  +                         .entry(run_id)
+  ... (20 more lines)
+ ✓ (419ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit was applied. Now let me verify the change looks correct, then run cargo fmt and cargo build.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the edit and run the checks:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:952..987 ✓ (101ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edit looks correct. Now let me run `cargo fmt -- --check` and then `cargo build`.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, the edit is clean. Now let me run format check and build:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (827ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passed. Now cargo build.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (5.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Two errors:
+1. `run_id.as_str()` uses unstable feature `str_as_str` - I need to use `run_id.as_str()` differently. Actually `run_id` is a `String` (from `event_string`). Let me check what `event_string` returns.
+
+2. The `BTreeMap` key is `String` but `run_id` (from `event_string`) is... Let me check.
+
+Actually wait, `event_string` returns `Option<&str>` based on the existing code at line 958: `let completed: BTreeSet<&str> = events.iter().filter_map(|e| event_string(e, "run_id")).collect()`. So `event_string` returns `Option<&str>`.
+
+So `run_id` is `&str`. The issue is:
+- `completed: BTreeSet<&str>` — contains `&str`
+- `run_id` is `&str`
+- `completed.contains(run_id)` should work when `run_id` is `&str`
+
+But the error says `run_id.as_str()` — so `run_id` here is already a `String`? Let me re-read. Actually wait, the error is on line 965. Let me look again.
+
+The code says:
+```rust
+if let Some(run_id) = event_string(e, "run_id") {
+```
+
+`event_string` returns `Option<&str>`, so `run_id` is `&str`. `BTreeSet<&str>::contains` takes `&str`... wait, but the error says `run_id.as_str()` is the unstable feature. So maybe I wrote something else? Let me check.
+
+Actually, looking at the error: `error[E0658]: use of unstable library feature 'str_as_str'` at line 965: `!completed.contains(run_id.as_str())`.
+
+Wait, I wrote `run_id.as_str()`? Let me look at the code I wrote. Hmm, actually no - I wrote `run_id.as_str()` on the `contains` call. But `run_id` from `event_string` is `&str`, so `run_id.as_str()` would be calling `str::as_str()` which is unstable. I need to just use `run_id` directly since `BTreeSet<&str>::contains` takes `impl Borrow<str>` or `&str`.
+
+For the second error, the `BTreeMap` entry needs `String` as key but `run_id` is `&str`. I need `.entry(run_id.to_string())`.
+
+Let me fix both issues:
+1. Change `run_id.as_str()` to just `run_id` (since `run_id` is already `&str`)
+2. Change `.entry(run_id)` to `.entry(run_id.to_string())`
+────────────────────────────────────────────────────────────────────────────────
+
+Two compile errors to fix. `run_id` from `event_string` is `&str`, so `.as_str()` is wrong and `.entry()` needs `.to_string()`:
+  -                 if !completed.contains(run_id.as_str()) {
+  +                 if !completed.contains(run_id) {
+                        let ts = event_timestamp(e);
+                        // Keep the most recent (largest) timestamp for each run_id
+                        incomplete
+  -                         .entry(run_id)
+  +                         .entry(run_id.to_string())
+  ✓ Auto-approved: edit: src/commands_state.rs (5 → 5 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (5 → 5 lines)
+  -                 if !completed.contains(run_id.as_str()) {
+  +                 if !completed.contains(run_id) {
+                        let ts = event_timestamp(e);
+                        // Keep the most recent (largest) timestamp for each run_id
+                        incomplete
+  -                         .entry(run_id)
+  +                         .entry(run_id.to_string())
+ ✓ (184ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me rebuild.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (10.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now let me run the focused tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now run the focused test:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib commands_stat… ✓ (20.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 166 tests pass. Now let me check the git diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All 166 tests pass. Let me check the diff and commit:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (369ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, only `src/commands_state.rs` is changed. Let me also verify the final state of the changed function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff -- src/commands_state… ✓ (214ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is clean. The change:
+1. Changed from `Vec<(String, u64)>` with `filter_map` to `BTreeMap<String, u64>` with a for loop
+2. Uses `.entry()` with `.and_modify()` to keep the most recent (largest) timestamp when the same run_id appears multiple times
+3. Sorts by timestamp descending before returning
+
+Now let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Diff is clean. Now commit:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (322ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed. Let me summarize what was done:
+
+- Changed `find_incomplete_runs` in `src/commands_state.rs` to use `BTreeMap<String, u64>` instead of `Vec<(String, u64)>`
+- The map deduplicates by run_id, and `.and_modify()` keeps the most recent (largest) timestamp when the same run_id appears in multiple sessions
+- Sorts results by timestamp descending before returning
+
+Verification:
+- `cargo fmt -- --check`: passed
+- `cargo build`: passed
+- `cargo test --lib commands_state`: passed (166 tests)
+- `git diff --name-only`: only `src/commands_state.rs`
+
+TASK_TERMINAL_EVIDENCE: changed
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**What changed:** `find_incomplete_runs()` in `src/commands_state.rs` (line 954)
+
+**Change:** Switched from a `Vec<(String, u64)>` accumulator to a `BTreeMap<String, u64>`. The map deduplicates by `run_id` — when the same incomplete run appears in multiple session state records, `.and_modify()` keeps only the most recent (largest) timestamp. Results are sorted by timestamp descending before returning, preserving the same sort order the caller expects.
+
+**Verification:**
+• `cargo fmt -- --check` — passed
+• `cargo build` — passed
+• `cargo test --lib commands_state` — 166 tests passed, 0 failed
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

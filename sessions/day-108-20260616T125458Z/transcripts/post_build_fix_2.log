@@ -1,0 +1,141 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test `state::tests::run_completion_guard_reports_error_on_panic` is failing. Let me look at the error output. The test panicked at `src/state.rs:6695:9` with message `should contain RunCompleted`. Let me read the relevant code.
+
+The test is expecting `RunCompleted` but the panic happened before the test assertion, specifically at line 6695. Let me look at the source around that line.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:6670..6730 ✓ (90ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the full test to understand the issue. The test starts earlier - let me see from the beginning of the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn run_completion_guard_reports_error_on_panic' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (157ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full test from line 6654.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:6654..6714 ✓ (98ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test output shows that `RunStarted` and `FailureObserved` are both present, but `RunCompleted` is NOT in the output. Let me look at how `RunCompletionGuard::completed_on_drop()` works and how it records `RunCompleted`.
+
+The issue is that `RunCompleted` is not being appended to the events file. Let me look at the `RunCompletionGuard` implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn completed_on_drop' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (212ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the implementation around line 457.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:440..520 ✓ (186ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `record` function to see if there's a filter or something preventing the `RunCompleted` event from being recorded:
+
+Actually, looking at the test output more carefully:
+
+```
+should contain RunCompleted: {"id":"event_d4c5563dae7b43158200fa9d77457d6e","schema_version":1,"ts_ms":1781616141841,"actor":{"kind":"system","id":"harness"},"kind":"RunStarted",...}
+{"id":"event_07d8c537662644659ebdc93417db3d01","schema_version":1,"ts_ms":1781616142041,"actor":{"kind":"system","id":"harness"},"kind":"FailureObserved",...}
+```
+
+So the raw events only contain `RunStarted` and `FailureObserved`. `RunCompleted` is NOT being written when the guard drops.
+
+Let me look at how the `record` function works. Maybe `RunCompleted` is being filtered out, or maybe there's an issue with the recorder at the point the drop happens.
+
+Let me look at the `record` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:414..454 ✓ (117ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `record` function locks `GLOBAL_RECORDER` and tries to get the recorder. If the recorder is `None`, it returns silently. The `RunCompletionGuard` drop calls `mark_run_completed` which calls `record`.
+
+I see the problem now. Let me look more carefully at the test. The test initializes with `init_global`, then sets `RUN_HAD_ERROR`, records `FailureObserved`, creates a `RunCompletionGuard`, and the guard drops at the `}`.
+
+When the guard drops, it calls `mark_run_completed("error")`, which calls `record(EventType::RunCompleted, ...)`.
+
+The `record` function locks `GLOBAL_RECORDER`. If the recorder is gone (e.g., cleaned up by another test), it will silently return None.
+
+But wait, the test is setting up its own `init_global`, so it should have its own recorder. Let me think again...
+
+Actually, the issue might be about `init_global` being called once - there's a `Once` guard. Let me look at `init_global`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn init_global' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (89ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `init_global` function and how it handles the Once guard.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:395..425 ✓ (217ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see! `init_global` doesn't have a `Once` guard in this function itself - it directly creates a new recorder and puts it in `GLOBAL_RECORDER`. But the issue is that when the `RunCompletionGuard` drops, it calls `mark_run_completed` which calls `record`. And `record` reads from `GLOBAL_RECORDER` which might have been overwritten by another test.
+
+But wait, the test that's failing - `run_completion_guard_reports_error_on_panic` - sets up its own `init_global`. Looking at the output, the events file only has `RunStarted` and `FailureObserved`, not `RunCompleted`. 
+
+The guard drop happens at line 6683. At that point, `GLOBAL_RECORDER` SHOULD still have the recorder. But maybe there's a race condition or some other test interfering.
+
+Let me look more carefully at the `close_orphaned_run_if_needed` function and anything else that could be going on. Actually, wait - let me look at the actual error output more carefully:
+
+```
+should contain RunCompleted: {"id":"event_d4c5563dae7b43158200fa9d77457d6e","schema_version":1,"ts_ms":1781616141841,"actor":{"kind":"system","id":"harness"},"kind":"RunStarted",...}
+{"id":"event_07d8c537662644659ebdc93417db3d01","schema_version":1,"ts_ms":1781616142041,"actor":{"kind":"system","id":"harness"},"kind":"FailureObserved",...}
+```
+
+Two events. The `RunCompleted` is not being written. 
+
+Let me check if there's something in the `StateRecorder::append` that could prevent `RunCompleted` from being appended. Maybe there's a deduplication check or something.
+
+Actually, let me look at the `append_event_with_projection` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn append_event_with_projection' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (746ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the append flow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:580..630 ✓ (88ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! The `append_with_yoagent_state_store` function spawns a **new thread** for each append, creates a new tokio runtime, and writes the event. This is async - it spawns a thread and joins it.
+
+The problem could be that there's a race condition. When `RunCompletionGuard` drops, it calls `mark_run_completed` which calls `record` which calls `recorder.append` which spawns a thread. The `append` joins the thread, waiting for completion. But the test output shows only `RunStarted` and `FailureObserved`.
+
+Wait, the `RunStarted` is from `init_global` which calls `recorder.append` directly. The `FailureObserved` is from `record(...)`. Both of those are in the output. But `RunCompleted` is not.
+
+Wait, let me look more carefully at the `StateRecorder::append`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'impl StateRecorder' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (169ms)
+
+
