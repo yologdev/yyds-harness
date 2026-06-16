@@ -784,7 +784,10 @@ fn handle_failures(args: &[String]) {
         return;
     };
     if events.is_empty() {
-        eprintln!("{YELLOW}  no parseable events found at {}{RESET}", path.display());
+        eprintln!(
+            "{YELLOW}  no parseable events found at {}{RESET}",
+            path.display()
+        );
         return;
     }
     match build_recent_failure_report(&events, limit) {
@@ -807,7 +810,10 @@ fn handle_cache(args: &[String]) {
         return;
     };
     if events.is_empty() {
-        eprintln!("{YELLOW}  no parseable events found at {}{RESET}", path.display());
+        eprintln!(
+            "{YELLOW}  no parseable events found at {}{RESET}",
+            path.display()
+        );
         return;
     }
     match build_cache_recent_report(&events, limit) {
