@@ -385,7 +385,7 @@ PY
 agent_log_has_terminal_evidence() {
     local log_file="$1"
     [ -s "$log_file" ] || return 1
-    grep -Eq 'TASK_TERMINAL_EVIDENCE:[[:space:]]*(changed|obsolete|blocked)' "$log_file" 2>/dev/null
+    tail -80 "$log_file" 2>/dev/null | grep -Eq '^[[:space:]]*TASK_TERMINAL_EVIDENCE:[[:space:]]*(changed|obsolete|blocked)[[:space:]]*$'
 }
 
 task_has_progress_since_base() {
