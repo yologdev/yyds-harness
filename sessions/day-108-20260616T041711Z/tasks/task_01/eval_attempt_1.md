@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The implementation adds incomplete run IDs and timestamps to the `run_completed_count == 0 && run_started` branch when `id == "last-failure"`, filters RunStarted events whose run_id is absent from RunCompleted events, caps at 5 entries, uses existing helpers (`event_string`, `event_timestamp_ms`, `format_timestamp_ms`), preserves all existing guidance for other branches, and includes passing tests for single incomplete run, multiple runs capped at 5, and custom ID preserving generic behavior. Build and tests pass.
