@@ -957,20 +957,29 @@ fn find_incomplete_runs(events: &[Value]) -> Vec<(String, u64)> {
         .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
         .filter_map(|e| event_string(e, "run_id"))
         .collect();
-    let mut incomplete: Vec<(String, u64)> = events
-        .iter()
-        .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
-        .filter_map(|e| {
-            let run_id = event_string(e, "run_id")?;
-            if completed.contains(run_id) {
-                return None;
+    let mut incomplete: BTreeMap<String, u64> = BTreeMap::new();
+    for e in events {
+        let event_type = event_string(e, "event_type");
+        if event_type == Some("RunStarted") {
+            if let Some(run_id) = event_string(e, "run_id") {
+                if !completed.contains(run_id) {
+                    let ts = event_timestamp(e);
+                    // Keep the most recent (largest) timestamp for each run_id
+                    incomplete
+                        .entry(run_id.to_string())
+                        .and_modify(|existing| {
+                            if ts > *existing {
+                                *existing = ts;
+                            }
+                        })
+                        .or_insert(ts);
+                }
             }
-            Some((run_id.to_string(), event_timestamp(e)))
-        })
-        .collect();
-    // Most recent first
-    incomplete.sort_by_key(|item| std::cmp::Reverse(item.1));
-    incomplete
+        }
+    }
+    let mut result: Vec<(String, u64)> = incomplete.into_iter().collect();
+    result.sort_by(|a, b| b.1.cmp(&a.1));
+    result
 }
 
 fn handle_state_summary(args: &[String], limit: usize) {
