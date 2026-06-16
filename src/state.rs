@@ -298,11 +298,120 @@ impl StateRecorder {
     }
 }
 
+/// Before starting a new run, check for and close any orphaned run from a
+/// previous session that did not have its RunCompleted event recorded
+/// (e.g., due to SIGKILL, SIGTERM, timeout, or CI cancellation).
+///
+/// Scans the last 20 events in the state file for a dangling RunStarted
+/// that has no matching RunCompleted. If found, emits RunCompleted("error")
+/// with the orphaned run's run_id.
+fn close_orphaned_run_if_needed(
+    events_path: &Path,
+    store_path: Option<&Path>,
+) -> Result<(), String> {
+    if !events_path.is_file() {
+        return Ok(());
+    }
+
+    // Read only the last ~20 events
+    let raw = std::fs::read_to_string(events_path)
+        .map_err(|e| format!("read state events for orphan check: {e}"))?;
+    if raw.trim().is_empty() {
+        return Ok(());
+    }
+
+    let events: Vec<Value> = raw
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| {
+            let normalized = compatibility_event_json_line(line).ok()?;
+            serde_json::from_str::<Value>(&normalized).ok()
+        })
+        .collect();
+
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    // Examine only the tail of recent events (last 20, O(1) vs total state)
+    let tail_start = if events.len() > 20 {
+        events.len() - 20
+    } else {
+        0
+    };
+    let tail = &events[tail_start..];
+
+    // Find the most recent RunStarted or RunCompleted in the tail
+    let mut orphan_run_id: Option<String> = None;
+    for event in tail.iter().rev() {
+        let event_type = event
+            .get("event_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if event_type == "RunCompleted" {
+            // Most recent lifecycle event is a RunCompleted — run is closed
+            return Ok(());
+        }
+        if event_type == "RunStarted" {
+            let rid = event
+                .get("run_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if rid.is_empty() {
+                return Ok(());
+            }
+            // Verify no RunCompleted exists for this run_id in the tail
+            let has_completed = tail.iter().any(|e| {
+                let et = e.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+                let r = e.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
+                et == "RunCompleted" && r == rid
+            });
+            if has_completed {
+                return Ok(());
+            }
+            orphan_run_id = Some(rid.clone());
+            break;
+        }
+    }
+
+    if let Some(ref rid) = orphan_run_id {
+        // Emit retroactive RunCompleted for the orphaned run
+        let event = StateEvent {
+            event_id: format!("evt-orphan-{}", now_ms()),
+            event_type: EventType::RunCompleted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: now_ms(),
+            actor: Actor::Harness,
+            run_id: Some(rid.clone()),
+            session_id: None,
+            trace_id: format!("trace-orphan-{}", rid),
+            parent_event_ids: Vec::new(),
+            payload: run_completed_payload(
+                "error",
+                Some("previous run did not complete (orphaned)"),
+                None,
+            ),
+        };
+        append_event_with_projection(events_path, store_path, &event)?;
+    }
+
+    Ok(())
+}
+
 pub fn init_global(config: StateConfig, startup_payload: Value) -> Result<(), String> {
     if !config.enabled {
         return Ok(());
     }
     let fail_soft = config.fail_soft;
+
+    // Close any orphaned run from a previous session before starting the new one.
+    // Fail-soft: an orphan-closure error should not prevent startup.
+    if let Err(e) = close_orphaned_run_if_needed(&config.events_path, config.store_path.as_deref())
+    {
+        eprintln!("warning: could not close orphaned run: {e}");
+    }
+
     let recorder = StateRecorder::new(config);
     let init_result = recorder.append(EventType::RunStarted, Actor::Harness, startup_payload);
     match init_result {
@@ -6630,6 +6739,157 @@ mod tests {
         assert!(
             raw.contains("\"status\":\"completed\""),
             "RunCompleted should have completed status on normal exit: {raw}"
+        );
+    }
+
+    #[test]
+    fn init_global_closes_orphaned_run_from_previous_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+
+        // Pre-populate a state file with an orphaned RunStarted (no RunCompleted)
+        // — simulating a previous run that terminated abnormally.
+        let orphan_run_id = "run-orphan-42";
+        let orphan_event = StateEvent {
+            event_id: "evt-orphan-start".into(),
+            event_type: EventType::RunStarted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 1,
+            actor: Actor::Harness,
+            run_id: Some(orphan_run_id.into()),
+            session_id: None,
+            trace_id: "trace-orphan".into(),
+            parent_event_ids: Vec::new(),
+            payload: json!({"started": true}),
+        };
+        append_event(&events_path, &orphan_event).unwrap();
+
+        // Also add a ModelCallStarted to show that other events don't
+        // interfere with orphan detection.
+        let mid_event = StateEvent {
+            event_id: "evt-mid-call".into(),
+            event_type: EventType::ModelCallStarted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 2,
+            actor: Actor::Yoyo,
+            run_id: Some(orphan_run_id.into()),
+            session_id: None,
+            trace_id: "trace-orphan".into(),
+            parent_event_ids: Vec::new(),
+            payload: json!({"model": "deepseek-v4"}),
+        };
+        append_event(&events_path, &mid_event).unwrap();
+
+        let raw_before = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw_before.contains("RunStarted"),
+            "pre-populated file should have RunStarted"
+        );
+        assert!(
+            !raw_before.contains("RunCompleted"),
+            "pre-populated file should NOT have RunCompleted yet"
+        );
+
+        // Now start a new session — init_global should detect the orphaned run
+        // and close it before starting the new run.
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({"session": "new"})).unwrap();
+
+        let raw_after = std::fs::read_to_string(&events_path).unwrap();
+
+        // The file should now contain:
+        // 1. The original orphan RunStarted
+        // 2. A RunCompleted("error") for the orphaned run
+        // 3. The mid-session events (ModelCallStarted)
+        // 4. A new RunStarted for the current session
+        let run_completed_count = raw_after
+            .lines()
+            .filter(|line| line.contains("\"kind\":\"RunCompleted\""))
+            .count();
+        assert_eq!(
+            run_completed_count, 1,
+            "should have exactly one RunCompleted (the retroactive closure): {raw_after}"
+        );
+
+        // The retroactive RunCompleted must use the orphaned run_id
+        assert!(
+            raw_after.contains(&format!("\"run_id\":\"{orphan_run_id}\"")),
+            "retroactive RunCompleted should reference orphan run_id '{orphan_run_id}': {raw_after}"
+        );
+
+        // The retroactive RunCompleted must have error status
+        assert!(
+            raw_after.contains("\"status\":\"error\""),
+            "orphan closure should report error status: {raw_after}"
+        );
+
+        // There should be exactly two RunStarted events (orphan + new)
+        let run_started_count = raw_after
+            .lines()
+            .filter(|line| line.contains("\"kind\":\"RunStarted\""))
+            .count();
+        assert_eq!(
+            run_started_count, 2,
+            "should have exactly two RunStarted events (orphan + new): {raw_after}"
+        );
+    }
+
+    #[test]
+    fn init_global_does_not_double_close_when_last_event_is_run_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+
+        // Pre-populate with a properly closed run: RunStarted + RunCompleted
+        let run_id = "run-closed-1";
+        let started = StateEvent {
+            event_id: "evt-start".into(),
+            event_type: EventType::RunStarted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 1,
+            actor: Actor::Harness,
+            run_id: Some(run_id.into()),
+            session_id: None,
+            trace_id: "trace-closed".into(),
+            parent_event_ids: Vec::new(),
+            payload: json!({"started": true}),
+        };
+        append_event(&events_path, &started).unwrap();
+
+        let completed = StateEvent {
+            event_id: "evt-end".into(),
+            event_type: EventType::RunCompleted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 2,
+            actor: Actor::Harness,
+            run_id: Some(run_id.into()),
+            session_id: None,
+            trace_id: "trace-closed".into(),
+            parent_event_ids: Vec::new(),
+            payload: run_completed_payload("completed", None, None),
+        };
+        append_event(&events_path, &completed).unwrap();
+
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({"session": "new"})).unwrap();
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        let run_completed_count = raw
+            .lines()
+            .filter(|line| line.contains("\"kind\":\"RunCompleted\""))
+            .count();
+        assert_eq!(
+            run_completed_count, 1,
+            "should have exactly one RunCompleted (the original, already-closed): {raw}"
         );
     }
 }
