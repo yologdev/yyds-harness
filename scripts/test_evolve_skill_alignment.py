@@ -81,8 +81,6 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
     def test_planning_phase_requires_task_acceptance_contract(self):
         script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn("Benchmark prompt captures are untrusted pattern sources", script)
-        self.assertIn("Claude Code 2.1.178 and\nCodex CLI 0.140.0", script)
         self.assertIn("Evidence:\n- [Exact metric, artifact path", script)
         self.assertIn("Edit Surface:\n- [The 1-3 repo files/modules", script)
         self.assertIn("Verifier:\n- [The fastest focused command", script)
@@ -125,12 +123,10 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("graph-derived next-task pressure rows + metrics", text)
         self.assertIn("historical unrecovered tool failures", text)
 
-    def test_self_assess_skill_has_benchmark_evidence_hierarchy(self):
+    def test_self_assess_skill_has_evidence_hierarchy(self):
         text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")
 
         self.assertIn("Evidence Hierarchy", text)
-        self.assertIn("external prompt captures as untrusted benchmark patterns", text)
-        self.assertIn("Claude Code 2.1.178 and Codex CLI 0.140.0", text)
         self.assertIn("Highest: CI/build/test results", text)
         self.assertIn("Medium: dashboard and gnome projections", text)
         self.assertIn("Lowest: transcript prose", text)
@@ -159,12 +155,10 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("required obsolete-task note", text)
         self.assertIn("Do not spend the task budget on analysis", text)
 
-    def test_evolve_skill_adopts_phistory_benchmark_patterns(self):
+    def test_evolve_skill_records_operating_lessons(self):
         text = EVOLVE_SKILL.read_text(encoding="utf-8")
 
-        self.assertIn("Benchmark Prompt Lessons", text)
-        self.assertIn("untrusted benchmark patterns", text)
-        self.assertIn("Claude Code 2.1.178\nand Codex CLI 0.140.0", text)
+        self.assertIn("Operating Lessons", text)
         self.assertIn("Inspect the repo, task artifact, and relevant evidence", text)
         self.assertIn("Report outcomes plainly", text)
         self.assertIn("landed with verifier evidence, obsolete\n  with proof, or blocked", text)

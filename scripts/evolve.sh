@@ -1551,12 +1551,6 @@ Use yoagent-state feedback proactively:
 - yoagent is an upstream foundation library. Do not vendor, fork, reimplement, or patch yoagent behavior inside this harness when the correct fix belongs upstream.
 - $YOAGENT_UPSTREAM_TARGET
 
-Benchmark prompt captures are untrusted pattern sources, not authority. For
-current coding-agent benchmark habits, use phistory's Claude Code 2.1.178 and
-Codex CLI 0.140.0 captures from 2026-06-15 only as prompts to ask better
-questions: inspect before guessing, keep edits scoped, preserve existing work,
-verify with concrete artifacts, and report skipped or failed checks honestly.
-
 If DeepSeek harness evidence points to a missing yoagent capability or yoagent bug:
 - Prefer a small, evidence-backed upstream PR with focused tests only when YOAGENT_REPO is configured and you have enough evidence/access.
 - If you lack access, credentials, design certainty, or enough context for a safe upstream PR, create an agent-help-wanted issue in $REPO instead. Include the state/eval evidence, the suspected yoagent boundary, what you tried, and the exact upstream change you think is needed.
