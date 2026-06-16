@@ -336,6 +336,11 @@ fn handle_doctor() {
         format!("{YELLOW}  Health:    ⚠ Warnings — see above{RESET}")
     };
     println!("{health_line}");
+
+    // --- Stale data warnings ---
+    for warning in stale_data_warnings(total_events, events_size, store_size) {
+        println!("{warning}");
+    }
 }
 
 /// Group raw JSON event type strings into display categories.
@@ -407,6 +412,29 @@ fn human_bytes(bytes: u64) -> String {
     } else {
         format!("{}B", bytes)
     }
+}
+
+const STALE_DATA_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Return actionable recommendations when state files exist but contain no
+/// events — stale data from prior runs that can be cleaned up.
+fn stale_data_warnings(total_events: usize, events_size: u64, store_size: u64) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if total_events == 0 {
+        if events_size >= STALE_DATA_THRESHOLD_BYTES {
+            warnings.push(format!(
+                "{YELLOW}  Stale event data from prior runs detected ({}). Run `yyds state retention --prune` to clean up.{RESET}",
+                human_bytes(events_size)
+            ));
+        }
+        if store_size >= STALE_DATA_THRESHOLD_BYTES {
+            warnings.push(format!(
+                "{YELLOW}  Stale SQLite store from prior runs detected ({}). Run `yyds state retention --prune` to clean up.{RESET}",
+                human_bytes(store_size)
+            ));
+        }
+    }
+    warnings
 }
 
 fn handle_tail(limit: usize, json: bool) {
