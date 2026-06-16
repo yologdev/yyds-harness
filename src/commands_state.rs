@@ -2682,7 +2682,7 @@ fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
                     .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
                     .filter(|e| {
                         let rid = event_string(e, "run_id");
-                        rid.map_or(true, |r| !completed_ids.contains(r))
+                        rid.is_none_or(|r| !completed_ids.contains(r))
                     })
                     .take(5)
                     .collect();
