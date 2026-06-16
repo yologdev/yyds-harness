@@ -779,16 +779,34 @@ fn handle_failures(args: &[String]) {
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(12);
     let path = default_events_path();
-    let Ok(events) = read_tail_events(&path, 0) else {
-        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
-        return;
+    let (events, skipped) = match read_events_lenient(&path) {
+        Ok(result) => result,
+        Err(_) => {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        }
     };
     if events.is_empty() {
-        eprintln!(
-            "{YELLOW}  no parseable events found at {}{RESET}",
-            path.display()
-        );
+        if skipped > 0 {
+            eprintln!(
+                "{YELLOW}  no parseable events found at {} ({} lines skipped){RESET}",
+                path.display(),
+                skipped
+            );
+        } else {
+            eprintln!(
+                "{YELLOW}  no parseable events found at {}{RESET}",
+                path.display()
+            );
+        }
         return;
+    }
+    if skipped > 0 {
+        eprintln!(
+            "{DIM}  note: {} events parsed, {} unparseable lines skipped{RESET}",
+            events.len(),
+            skipped
+        );
     }
     match build_recent_failure_report(&events, limit) {
         Ok(report) => println!("{report}"),
@@ -805,16 +823,34 @@ fn handle_cache(args: &[String]) {
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(12);
     let path = default_events_path();
-    let Ok(events) = read_tail_events(&path, 0) else {
-        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
-        return;
+    let (events, skipped) = match read_events_lenient(&path) {
+        Ok(result) => result,
+        Err(_) => {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        }
     };
     if events.is_empty() {
-        eprintln!(
-            "{YELLOW}  no parseable events found at {}{RESET}",
-            path.display()
-        );
+        if skipped > 0 {
+            eprintln!(
+                "{YELLOW}  no parseable events found at {} ({} lines skipped){RESET}",
+                path.display(),
+                skipped
+            );
+        } else {
+            eprintln!(
+                "{YELLOW}  no parseable events found at {}{RESET}",
+                path.display()
+            );
+        }
         return;
+    }
+    if skipped > 0 {
+        eprintln!(
+            "{DIM}  note: {} events parsed, {} unparseable lines skipped{RESET}",
+            events.len(),
+            skipped
+        );
     }
     match build_cache_recent_report(&events, limit) {
         Ok(report) => println!("{report}"),
@@ -1039,19 +1075,25 @@ pub(crate) fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
     crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
 }
 
-/// Lenient event reader: parses all lines as JSON, skipping malformed ones.
+/// Lenient event reader: parses all lines, skipping unparseable ones.
 /// Only returns an error if the file genuinely can't be read (missing, perms).
-fn read_events_lenient(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+fn read_events_lenient(path: &Path) -> Result<(Vec<Value>, usize), std::io::Error> {
     let raw = std::fs::read_to_string(path)?;
-    let events: Vec<Value> = raw
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| {
-            let normalized = crate::state::compatibility_event_json_line(line).ok()?;
-            serde_json::from_str::<Value>(&normalized).ok()
-        })
-        .collect();
-    Ok(events)
+    let mut events = Vec::new();
+    let mut skipped = 0;
+
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let parsed = crate::state::compatibility_event_json_line(line)
+            .ok()
+            .and_then(|normalized| serde_json::from_str::<Value>(&normalized).ok())
+            .or_else(|| serde_json::from_str::<Value>(line).ok());
+        match parsed {
+            Some(value) => events.push(value),
+            None => skipped += 1,
+        }
+    }
+
+    Ok((events, skipped))
 }
 
 fn read_limited_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
@@ -1068,7 +1110,8 @@ fn read_limited_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io:
 /// When `limit == 0`, reads all events with lenient parsing (skips malformed lines).
 fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
     if limit == 0 {
-        return read_events_lenient(path);
+        let (events, _skipped) = read_events_lenient(path)?;
+        return Ok(events);
     }
     let raw_lines = read_tail(path, limit)?;
     let mut events = Vec::with_capacity(raw_lines.len());
@@ -13980,6 +14023,28 @@ mod tests {
             .unwrap()
             .join("\n");
         std::fs::write(path, format!("{raw}\n")).unwrap();
+    }
+
+    #[test]
+    fn lenient_event_reader_falls_back_to_raw_json_and_counts_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"id":"raw-1","kind":"RunStarted","payload":{"task":"raw event"}}"#,
+                "\n",
+                "not json\n",
+            ),
+        )
+        .unwrap();
+
+        let (events, skipped) = read_events_lenient(&path).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["id"], "raw-1");
+        assert_eq!(events[0]["kind"], "RunStarted");
+        assert_eq!(skipped, 1);
     }
 
     #[test]
