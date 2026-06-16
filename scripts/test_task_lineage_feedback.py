@@ -285,6 +285,26 @@ class TaskLineageFeedback(unittest.TestCase):
             evolve.index('cp -R "$SESSION_STAGING/." "$AUDIT_PUSH_WT/$SESSION_DIR/"'),
         )
 
+    def test_evolve_source_syncs_before_final_audit_evidence(self):
+        evolve = Path(__file__).with_name("evolve.sh").read_text(encoding="utf-8")
+
+        self.assertIn("Synchronizing source branch before evidence capture", evolve)
+        self.assertIn("--apply-commit-linkage", evolve)
+        self.assertIn("YOYO_OUT_FINAL_SOURCE_SHA", evolve)
+        self.assertLess(
+            evolve.index("Synchronizing source branch before evidence capture"),
+            evolve.index("scripts/summarize_state_gnomes.py"),
+        )
+        self.assertLess(
+            evolve.index("Synchronizing source branch before evidence capture"),
+            evolve.index('cp -R "$SESSION_STAGING/." "$AUDIT_PUSH_WT/$SESSION_DIR/"'),
+        )
+        self.assertLess(
+            evolve.index("--apply-commit-linkage"),
+            evolve.index("scripts/summarize_state_gnomes.py"),
+        )
+        self.assertNotIn('git pull --rebase || echo "  Pull --rebase failed (will attempt push anyway)"', evolve)
+
     def test_evolve_provider_guard_rejects_assessment_prose(self):
         evolve = Path(__file__).with_name("evolve.sh").read_text(encoding="utf-8")
         match = re.search(r"grep -Eiq '([^']+)' \"\$log_file\"", evolve)
@@ -1215,7 +1235,16 @@ class TaskLineageFeedback(unittest.TestCase):
                 {
                     "planner": {"task_count": 1, "selected_task_count": 1},
                     "selected_tasks": [
-                        {"task_id": "task_01", "origin": "harness-seed"},
+                        {
+                            "task_id": "task_01",
+                            "origin": "harness-seed",
+                            "quality": {
+                                "assessment_alignment": {
+                                    "contradicted_by_assessment": True,
+                                    "evidence": ["fresh assessment contradicts the seed"],
+                                }
+                            },
+                        },
                     ],
                 },
             )
@@ -1301,6 +1330,69 @@ class TaskLineageFeedback(unittest.TestCase):
 
             metrics = assessment["metrics"]
             self.assertEqual(metrics["task_seed_contradiction_count"], 0)
+            self.assertFalse(
+                any(lesson["kind"] == "task_seed_contradiction" for lesson in assessment["top_lessons"])
+            )
+
+    def test_log_feedback_suppresses_text_only_seed_contradiction_when_manifest_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 0,
+                    "build_ok": True,
+                    "test_ok": True,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "origin": "harness-seed",
+                            "quality": {
+                                "assessment_alignment": {
+                                    "contradicted_by_assessment": False,
+                                    "evidence": [],
+                                }
+                            },
+                        },
+                    ],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Task blocked by agent; no implementation landed",
+                    "source_files": [],
+                    "commit_shas": [],
+                },
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text=(
+                    "The seed task_01.md has a factual error: the assessment clearly shows "
+                    "deepseek cache-report returning metrics.\n"
+                ),
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["task_manifest_seed_contradiction_count"], 0)
+            self.assertEqual(metrics["task_seed_contradiction_count"], 0)
+            self.assertEqual(metrics["task_seed_text_only_contradiction_count"], 1)
             self.assertFalse(
                 any(lesson["kind"] == "task_seed_contradiction" for lesson in assessment["top_lessons"])
             )

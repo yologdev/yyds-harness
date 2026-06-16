@@ -283,6 +283,82 @@ def build_link_payload(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def load_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def apply_commit_linkage(audit_dir: Path, linkage: dict[str, Any]) -> dict[str, Any]:
+    tasks = linkage.get("tasks") if isinstance(linkage.get("tasks"), list) else []
+    refreshed: list[dict[str, Any]] = []
+    for linked_task in tasks:
+        if not isinstance(linked_task, dict):
+            continue
+        tid = str(linked_task.get("task_id") or "")
+        if not tid:
+            continue
+        outcome_path = audit_dir / "tasks" / tid / "outcome.json"
+        outcome = load_json(outcome_path)
+        if not outcome:
+            continue
+        linked_commits = (
+            linked_task.get("linked_commits")
+            if isinstance(linked_task.get("linked_commits"), list)
+            else []
+        )
+        linked_commit_shas = [
+            str(sha)
+            for sha in (linked_task.get("linked_commit_shas") or [])
+            if isinstance(sha, str) and sha
+        ]
+        if not linked_commit_shas:
+            continue
+        prior_commit_shas = [
+            str(sha)
+            for sha in (outcome.get("commit_shas") or [])
+            if isinstance(sha, str) and sha
+        ]
+        source_files = compact(
+            [
+                str(path)
+                for commit in linked_commits
+                if isinstance(commit, dict)
+                for path in (commit.get("source_files") or [])
+            ]
+        )
+        touched_files = compact(
+            [
+                str(path)
+                for commit in linked_commits
+                if isinstance(commit, dict)
+                for path in (commit.get("files") or [])
+            ]
+        )
+        outcome["pre_source_sync_commit_shas"] = prior_commit_shas
+        outcome["commit_shas"] = linked_commit_shas
+        outcome["commits"] = linked_commits
+        outcome["head_commit"] = linked_commit_shas[-1]
+        outcome["source_files"] = source_files
+        outcome["touched_files"] = touched_files
+        outcome["lineage_refreshed_after_source_sync"] = True
+        outcome["lineage_refresh_head_commit"] = linkage.get("head_commit")
+        outcome_path.write_text(
+            json.dumps(outcome, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        refreshed.append(
+            {
+                "task_id": tid,
+                "pre_source_sync_commit_shas": prior_commit_shas,
+                "commit_shas": linked_commit_shas,
+            }
+        )
+    return {"refreshed_task_count": len(refreshed), "tasks": refreshed}
+
+
 def run_self_tests() -> int:
     import tempfile
 
@@ -339,6 +415,25 @@ def run_self_tests() -> int:
         (repo / "events.jsonl").write_text(json.dumps(append) + "\n", encoding="utf-8")
         link_payload = build_link_payload(link_args)
         assert link_payload["tasks"][0]["linked_commit_shas"]
+        outcome_path = repo / "audit/tasks/task_01/outcome.json"
+        outcome_path.parent.mkdir(parents=True)
+        outcome_path.write_text(
+            json.dumps(
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "commit_shas": ["deadbeef"],
+                    "source_files": ["src/old.rs"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        refresh = apply_commit_linkage(repo / "audit", link_payload)
+        refreshed = json.loads(outcome_path.read_text(encoding="utf-8"))
+        assert refresh["refreshed_task_count"] == 1
+        assert refreshed["commit_shas"] == link_payload["tasks"][0]["linked_commit_shas"]
+        assert refreshed["pre_source_sync_commit_shas"] == ["deadbeef"]
+        assert refreshed["lineage_refreshed_after_source_sync"] is True
     print("task_lineage self-tests passed")
     return 0
 
@@ -356,10 +451,24 @@ def main() -> int:
     parser.add_argument("--reason", default="")
     parser.add_argument("--link-commits", action="store_true")
     parser.add_argument("--events", type=Path)
+    parser.add_argument("--apply-commit-linkage", action="store_true")
+    parser.add_argument("--audit-dir", type=Path)
+    parser.add_argument("--linkage-file", type=Path)
     parser.add_argument("--test", action="store_true")
     args = parser.parse_args()
     if args.test:
         return run_self_tests()
+    if args.apply_commit_linkage:
+        if args.audit_dir is None or args.linkage_file is None:
+            parser.error("--audit-dir and --linkage-file are required with --apply-commit-linkage")
+        json.dump(
+            apply_commit_linkage(args.audit_dir, load_json(args.linkage_file)),
+            sys.stdout,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        sys.stdout.write("\n")
+        return 0
     if args.link_commits:
         if args.events is None or not args.base:
             parser.error("--events and --base are required with --link-commits")

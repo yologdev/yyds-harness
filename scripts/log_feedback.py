@@ -1508,6 +1508,13 @@ def suppress_resolved_seed_replacement(metrics: dict[str, Any]) -> int:
     manifest_seed_contradictions = int(metrics.get("task_manifest_seed_contradiction_count") or 0)
     if manifest_seed_contradictions > 0:
         return seed_contradictions
+    if metrics.get("task_manifest_available") and (
+        int(metrics.get("selected_task_count") or 0) > 0
+        or int(metrics.get("task_artifact_count") or 0) > 0
+    ):
+        metrics["task_seed_text_only_contradiction_count"] = seed_contradictions
+        metrics["task_seed_contradiction_count"] = 0
+        return 0
     selected = int(metrics.get("selected_task_count") or 0)
     strict_verified = int(metrics.get("task_strict_verified_count") or 0)
     succeeded = int(metrics.get("tasks_succeeded") or 0)

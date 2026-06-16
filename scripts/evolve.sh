@@ -3152,12 +3152,6 @@ if ! git diff --cached --quiet; then
 else
     echo "  No uncommitted changes remaining."
 fi
-TASK_COMMIT_LINKS=$(python3 scripts/task_lineage.py \
-    --repo-root . \
-    --link-commits \
-    --events "$SESSION_STATE_EVENTS" \
-    --base "$SESSION_START_SHA" 2>/dev/null || echo '{}')
-record_state_event "TaskLineageLinked" "$TASK_COMMIT_LINKS"
 
 # Update DAY_COUNT (separate commit — immune to task reverts)
 echo "$DAY" > DAY_COUNT
@@ -3181,6 +3175,38 @@ git add .skill_evolve_counter
 if ! git diff --cached --quiet; then
     git commit -m "Day $DAY: bump skill-evolve counter ($((skill_counter + 1)))" || true
 fi
+
+# Sync the source branch before writing final audit evidence. If a queued run
+# rebases here, task commits get rewritten; the task lineage refresh below must
+# see the current post-rebase SHAs before summaries/readiness are generated.
+echo ""
+echo "→ Synchronizing source branch before evidence capture..."
+refresh_gh_token
+SESSION_SOURCE_PUSH_OK=0
+if run_optional_with_timeout 120 git pull --rebase; then
+    if git push; then
+        SESSION_SOURCE_PUSH_OK=1
+    else
+        echo "  Push failed (maybe no remote or auth issue)"
+    fi
+else
+    echo "  Pull --rebase failed (will continue with local evidence)"
+fi
+SESSION_FINAL_SOURCE_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+TASK_COMMIT_LINKS_FILE="$SESSION_STAGING/task_commit_linkage.json"
+TASK_COMMIT_LINKS=$(python3 scripts/task_lineage.py \
+    --repo-root . \
+    --link-commits \
+    --events "$SESSION_STATE_EVENTS" \
+    --base "$SESSION_START_SHA" 2>/dev/null || echo '{}')
+printf '%s\n' "$TASK_COMMIT_LINKS" > "$TASK_COMMIT_LINKS_FILE"
+if ! python3 scripts/task_lineage.py \
+    --apply-commit-linkage \
+    --audit-dir "$SESSION_STAGING" \
+    --linkage-file "$TASK_COMMIT_LINKS_FILE" >/dev/null 2>&1; then
+    echo "  WARNING: task outcome commit refresh failed — continuing with linkage event" >&2
+fi
+record_state_event "TaskLineageLinked" "$TASK_COMMIT_LINKS"
 
 # ── Step 7c2: Write outcome.json + push session evidence to audit-log branch ──
 # Three streams pushed: audit.jsonl (per-tool-call), outcome.json (session summary),
@@ -3230,6 +3256,8 @@ if [ -d "$SESSION_STAGING" ]; then
         YOYO_OUT_REVERTED="${SESSION_REVERTED:-false}" \
         YOYO_OUT_SOURCE_SHA="$SESSION_SOURCE_SHA" \
         YOYO_OUT_SOURCE_REF="$SESSION_SOURCE_REF" \
+        YOYO_OUT_FINAL_SOURCE_SHA="$SESSION_FINAL_SOURCE_SHA" \
+        YOYO_OUT_SOURCE_PUSH_OK="$SESSION_SOURCE_PUSH_OK" \
         YOYO_OUT_GITHUB_SHA="${GITHUB_SHA:-}" \
         YOYO_OUT_GITHUB_REF="${GITHUB_REF:-}" \
         YOYO_OUT_GITHUB_REF_NAME="${GITHUB_REF_NAME:-}" \
@@ -3245,6 +3273,8 @@ out = {
     "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
     "source_sha": os.environ.get("YOYO_OUT_SOURCE_SHA", ""),
     "source_ref": os.environ.get("YOYO_OUT_SOURCE_REF", ""),
+    "final_source_sha": os.environ.get("YOYO_OUT_FINAL_SOURCE_SHA", ""),
+    "source_push_ok": os.environ.get("YOYO_OUT_SOURCE_PUSH_OK", "0") == "1",
     "github_sha": os.environ.get("YOYO_OUT_GITHUB_SHA", ""),
     "github_ref": os.environ.get("YOYO_OUT_GITHUB_REF", ""),
     "github_ref_name": os.environ.get("YOYO_OUT_GITHUB_REF_NAME", ""),
@@ -3344,12 +3374,10 @@ TAG_NAME="day${DAY}-$(echo "$SESSION_TIME" | tr ':' '-')"
 git tag "$TAG_NAME" -m "Day $DAY evolution ($SESSION_TIME)" 2>/dev/null || true
 echo "  Tagged: $TAG_NAME"
 
-# ── Step 8: Push ──
+# ── Step 8: Push tags ──
 echo ""
-echo "→ Pushing..."
+echo "→ Pushing tags..."
 refresh_gh_token
-git pull --rebase || echo "  Pull --rebase failed (will attempt push anyway)"
-git push || echo "  Push failed (maybe no remote or auth issue)"
 git push --tags || echo "  Tag push failed (non-fatal)"
 
 echo ""
