@@ -1973,7 +1973,7 @@ fn build_tool_failures_report(events: &[Value], limit: usize) -> Result<String, 
         let ts = event
             .get("timestamp_ms")
             .and_then(|v| v.as_i64())
-            .map_or_else(|| "unknown".to_string(), |t| format_timestamp_ms(t));
+            .map_or_else(|| "unknown".to_string(), format_timestamp_ms);
         let tool_name = event
             .get("payload")
             .and_then(|p| p.get("tool_name"))
