@@ -1,0 +1,670 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to fix `yyds state failures --recent` so it returns actual failure reports instead of "no parseable events found" when the state log contains valid events.
+
+Let me first read the evolve skill, then understand the code, and implement the fix.
+
+Let me plan:
+1. Read `skills/evolve/SKILL.md` for the canonical implementation contract
+2. Read `src/commands_state.rs` around the relevant functions
+3. Read `src/state.rs` around `read_events_lenient` and `compatibility_event_json_line`/`parse_state_event_line`
+4. Understand the issue
+5. Write a test
+6. Implement the fix
+7. Verify
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the relevant code. I need to understand:
+1. `read_events_lenient` in `src/state.rs`
+2. `handle_failures` in `src/commands_state.rs`
+3. `compatibility_event_json_line` and `parse_state_event_line` 
+
+Let me start by finding the relevant lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (20ms)
+  ▶ todo ✓ (20ms)
+  ▶ todo ✓ (36ms)
+  ▶ todo ✓ (47ms)
+  ▶ todo ✓ (47ms)
+  ▶ todo ✓ (94ms)
+  ▶ todo ✓ (96ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the relevant code sections.
+────────────────────────────────────────────────────────────────────────────────
+  7 tools completed in 4.2s (7 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_events_lenient' in src/state.rs  ▶ search 'fn compatibility_event_json_line' in src/state.rs  ▶ search 'fn parse_state_event_line' in src/state.rs  ▶ search 'fn handle_failures' in src/commands_state.rs  ▶ search 'read_tail_events' in src/commands_state.rs ✓ (132ms)
+ ✓ (173ms)
+ ✓ (201ms)
+ ✓ (275ms)
+ ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`read_events_lenient` doesn't exist yet as a function - it's referenced in the task description. Let me read the relevant code sections to understand the current state.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 4.5s (5 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:773..833  ▶ read src/commands_state.rs:1060..1100  ▶ read src/state.rs:819..919  ▶ read src/state.rs:3140..3200 ✓ (316ms)
+ ✓ (323ms)
+ ✓ (300ms)
+ ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to find `read_events_lenient`. It's called from `read_tail_events` at line 1071 but the search didn't find it. Let me search more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.8s (4 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'read_events_lenient' in src/commands_state.rs  ▶ search 'read_events_lenient' in src/state.rs ✓ (42ms)
+ ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`read_events_lenient` is in `src/commands_state.rs`, not `src/state.rs`. Let me read it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1040..1070 ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the architecture:
+
+1. `read_events_lenient` (line 1044) reads the whole file, then for each line calls `compatibility_event_json_line` which calls `parse_state_event_line`. If parsing fails, the line is silently skipped. The result is a `Vec<Value>`.
+
+2. `read_tail_events` with `limit == 0` delegates to `read_events_lenient`.
+
+3. `handle_failures` (line 773) calls `read_tail_events(&path, 0)` and if events is empty, reports "no parseable events found."
+
+The problem: `parse_state_event_line` requires `event_id`, `event_type`, and other fields. If the events in the JSONL file have different field names (or are raw events), they all get silently skipped and the result is an empty Vec.
+
+Now, the task says:
+- Add a skip counter to `read_events_lenient` so it returns both parsed events and a skip count
+- Update `handle_failures` to report the skip count
+
+Let me also check `build_recent_failure_report` to understand the full pipeline.
+
+Let me also look at what actual events look like in the state log to understand why they might be getting rejected. Let me check if there's a live events.jsonl file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ head -5 .yoyo/state/events.jsonl 2>/dev/null || echo "no events.jsonl found"  ▶ search 'build_recent_failure_report' in src/commands_state.rs ✓ (62ms)
+ ✓ (71ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No events.jsonl file in the repo. That's fine. Let me now read the `build_recent_failure_report` function to understand the full pipeline.
+
+Now, let me plan my implementation:
+
+1. Change `read_events_lenient` to return `(Vec<Value>, usize)` where the second element is the skip count (number of non-empty lines that couldn't be parsed).
+2. Update `read_tail_events` to handle the new return type when `limit == 0`.
+3. Update `handle_failures` to report skip count when there are skipped lines.
+4. Write a test.
+
+Let me also look at `handle_cache` that also uses `read_tail_events` with `limit == 0` - it has the same issue.
+
+Let me also see if there's a function called from `handle_evals` - it uses `read_events` not `read_tail_events`.
+
+Wait, let me re-read the task. It says `read_events_lenient` (line 1044) reads the entire file, runs each line through `compatibility_event_json_line`... So the fix should add skip-count diagnostics.
+
+The task says:
+- "add a skip counter to `read_events_lenient` (return `(Vec<Value>, usize)` or add skip diagnostics to the call site)"
+- "If `parse_state_event_line` is rejecting lines that should be valid, also fix that specific rejection — but start with diagnostics first so the root cause is visible."
+
+Since there's no live events.jsonl to test against, I'll focus on the diagnostic improvement: make `read_events_lenient` return the skip count and have `handle_failures` report it.
+
+Let me now look at the tests for commands_state to understand where to add tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.3s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1759..1839  ▶ search 'fn test_' in src/commands_state.rs ✓ (45ms)
+ ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for test functions more carefully - there might be `#[test]` annotations or module tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '#\[test\]' src/commands_state.rs | head -15 ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are tests in the file. Let me also look at `handle_cache` and `handle_evals` to see how they use `read_tail_events`, since they also need updates. Wait, let me look at the other callers:
+
+- `handle_failures` at line 782: `read_tail_events(&path, 0)` - uses limit == 0 path
+- `handle_cache` at line 808: `read_tail_events(&path, 0)` - uses limit == 0 path
+- Other callers?
+
+Let me check other callers of `read_tail_events`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'read_tail_events' src/commands_state.rs ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me get the full list:
+- 782: handle_failures
+- 808: handle_cache
+- 1069: definition
+- plus maybe 2 more ("3 more similar lines" in the output)
+
+Let me check all callers precisely.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n -B2 'read_tail_events' src/commands_state.rs ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there are 4 callers:
+1. `handle_failures` (line 782) - limit=0
+2. `handle_cache` (line 808) - limit=0
+3. `handle_why` (line 880) - limit > 0
+4. `handle_tail` or similar (line 988) - limit > 0
+
+For callers 3 and 4 with `limit > 0`, `read_tail_events` uses `read_tail` + `serde_json::from_str` — not the lenient path. So only 1 and 2 are affected.
+
+Now, my plan:
+
+1. Change `read_events_lenient` to return `(Vec<Value>, usize)` — events and skip count.
+2. Update `read_tail_events` for the `limit == 0` case to propagate the skip count.
+3. Update `handle_failures` and `handle_cache` to use the skip count and report it.
+4. Write tests.
+
+Wait, the task says "The fix should be minimal: add a skip counter to `read_events_lenient` (return `(Vec<Value>, usize)` or add skip diagnostics to the call site)."
+
+Let me think about the cleanest approach. The simplest approach: have `read_events_lenient` return `(Vec<Value>, usize)` and have `read_tail_events` also return `(Vec<Value>, usize)` for the limit==0 case. But that changes the return type... 
+
+Actually, looking more carefully at the issue: the main problem is that `compatibility_event_json_line` calls `parse_state_event_line`, which requires `event_id`, `event_type`, etc. Raw events (like those from `record_cache_metrics` or `record_session_started`) may not have these fields.
+
+Let me check what raw events look like. Let me look at how events are written to the events.jsonl.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn append_event\|fn record_session_started\|fn record_cache_metrics\|ev… ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `append_event` function and a few recording functions to see what format events are written in.
+
+Actually, let me take a more practical approach. Let me look at what `compatibility_event_json_line` does and why it might reject lines. The key issue from the task description:
+
+"The `compatibility_event_json_line` function in `src/state.rs` (line 3150) calls `parse_state_event_line` which requires `event_id`, `event_type`, etc. If the events.jsonl contains raw events without these exact fields, they'll be skipped."
+
+So the approach should be:
+1. First, make the diagnostics visible: add skip count to `read_events_lenient`.
+2. Second, consider making `read_events_lenient` fall back to raw `serde_json::from_str` if `compatibility_event_json_line` fails.
+
+Actually, let me re-read the task more carefully:
+
+> If `parse_state_event_line` is rejecting lines that should be valid, also fix that specific rejection — but start with diagnostics first so the root cause is visible.
+
+So the approach is:
+1. Add skip count diagnostics — this is the primary fix.
+2. Optionally fix rejection if we can determine the cause.
+
+Let me first do the skip count change, then see if there's an obvious reason lines would be rejected.
+
+Let me look at `append_event` to see what format events are written in.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:576..616  ▶ read src/state.rs:523..563 ✓ (63ms)
+ ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how `record` works and what `to_yoagent_state_event` produces.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn to_yoagent_state_event' in src/state.rs ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3096..3146 ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see. The events are written via `yoagent_state::EventStore` which writes `yoagent_state::Event` structs. These events have fields like `id`, `kind`, `actor`, `ts_ms`, `payload`, `causation_id`, `correlation_id`.
+
+Then `parse_state_event_line` tries to parse these and needs `event_id`, `event_type` etc. It maps:
+- `event_id` ← `event_id` or `id`
+- `event_type` ← `event_type` or `kind` or `payload._yoyo.event_type`
+- `timestamp_ms` ← `timestamp_ms` or `ts_ms`
+
+So `parse_state_event_line` should actually parse yoagent_state events correctly since it looks for `id` and `kind` as fallbacks.
+
+But wait - the issue says "no parseable events found." The problem might be something else entirely. Let me look more carefully at how yoagent_state writes events vs how they're read.
+
+Actually, let me think about this differently. The actual issue is that `read_events_lenient` silently skips lines that `compatibility_event_json_line` can't parse. The fix the task asks for is to add skip-count diagnostics.
+
+Let me also consider whether `read_events_lenient` should fall back to raw JSON parsing when `compatibility_event_json_line` fails. This would make it truly "lenient" - if the compatibility parser can't handle a line, just parse it as raw JSON and keep it.
+
+Let me now implement:
+
+1. Change `read_events_lenient` to return `(Vec<Value>, usize)` - events and skip count.
+2. In the function, track how many non-empty lines are skipped.
+3. Update `read_tail_events` for `limit == 0` to return events and skip count.
+4. Update `handle_failures` and `handle_cache` to use the skip count.
+5. Write a test.
+
+Actually wait - changing the return type of `read_tail_events` will also affect callers with `limit > 0`. Let me think about this more carefully.
+
+The simplest approach: have `read_events_lenient` return `(Vec<Value>, usize)`, then in `read_tail_events`, when `limit == 0`, return just the events (ignoring the skip count for the return value), but have `handle_failures` call `read_events_lenient` directly instead of going through `read_tail_events`.
+
+Actually even simpler: keep `read_tail_events` returning `Vec<Value>`, but in `handle_failures`, call `read_events_lenient` directly so we get the skip count. Or we could change `read_events_lenient` just to log the skip count.
+
+Let me think... The task says:
+- "add a skip counter to `read_events_lenient` (return `(Vec<Value>, usize)` or add skip diagnostics to the call site)"
+- "When some lines are unparseable, the command still processes the valid ones and reports skip count."
+
+The cleanest approach for minimal change:
+1. Change `read_events_lenient` to return `Result<(Vec<Value>, usize), std::io::Error>`.
+2. In `read_tail_events` limit==0 case, destructure and return just the events.
+3. Have `handle_failures` (and `handle_cache`) call `read_events_lenient` directly to get the skip count, then report it if non-zero.
+
+Let me implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (20ms)
+  ▶ todo ✓ (20ms)
+  ▶ todo ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the test structure to see where to add tests.
+
+Let me also check how `read_events` is defined since I need to understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.3s (3 ✓)
+
+Now let me look at existing tests to understand how to write mine, and also check `read_events`:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_events(' in src/commands_state.rs  ▶ read src/commands_state.rs:13985..14045 ✓ (20ms)
+ ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `event` helper function to understand how tests construct events.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn event(' src/commands_state.rs | head -5 ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have all the information I need. Let me also look at the test for `build_recent_failure_report` to understand test patterns better.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14110..14160  ▶ read src/commands_state.rs:13954..13994 ✓ (64ms)
+ ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the test structure. The `event` helper creates events in the compatibility format that `compatibility_event_json_line` produces (with `event_id`, `event_type`, etc.). And `write_jsonl` writes them as JSON lines.
+
+The issue is that yoagent_state writes events with `id`, `kind`, `ts_ms`, etc. - NOT `event_id`, `event_type`, `timestamp_ms`. So when `compatibility_event_json_line` → `parse_state_event_line` tries to parse those raw events, it should still work because `parse_state_event_line` checks `event_id || id` and `event_type || kind || payload._yoyo.event_type`.
+
+But wait - let me check: when `yoagent_state::EventStore` writes events, does it include `_yoyo` metadata in the payload? Let me trace through the write path more carefully.
+
+Actually, looking at `to_yoagent_state_event` (line 3096), it creates a `yoagent_state::Event` with `_yoyo` metadata in the payload. Then `append_with_yoagent_state_store` at line 605 calls `yoagent_state::EventStore` to append it.
+
+The `yoagent_state::Event` struct has fields like `id`, `kind`, `actor`, `ts_ms`, `payload`, `causation_id`, `correlation_id`. When serialized by yoagent_state, these would be written as JSON with those field names.
+
+So when `parse_state_event_line` reads these, it should:
+- `event_id` ← not found, fallback to `id` ← "evt-xxx"
+- `event_type` ← not found, fallback to `kind` ← "RunStarted" etc., or `payload._yoyo.event_type`
+- This should work!
+
+Wait, but the `parse_event_type_label` function might reject some event types. Let me check it.
+
+Actually, let me take a step back. Let me verify my understanding by looking at how yoagent_state formats events. But actually I'm overthinking this - the task says to add skip-count diagnostics. Let me just do that, and also make the lenient reader truly lenient by falling back to raw JSON parsing when `compatibility_event_json_line` fails.
+
+Let me implement the changes now:
+
+1. `read_events_lenient`: Return `(Vec<Value>, usize)` where the usize is skip count. Also, for lines that fail `compatibility_event_json_line`, try raw `serde_json::from_str::<Value>` as a fallback (since `parse_state_event_line` requires specific fields that may be missing).
+
+2. `read_tail_events`: For limit==0, adapt to new return type.
+
+3. `handle_failures`: Call `read_events_lenient` directly, report skip count.
+
+4. `handle_cache`: Same.
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.2s (2 ✓)
+
+Now I have a clear understanding. Let me implement the fix. I'll:
+
+1. Make `read_events_lenient` return `(Vec<Value>, usize)` for parsed + skipped counts, and fall back to raw JSON if compatibility parsing fails
+2. Update `read_tail_events` to adapt
+3. Update `handle_failures` and `handle_cache` to report skip counts
+4. Write a test
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1066..1071 ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement the changes. First, let me modify `read_events_lenient`:
+
+Current:
+```rust
+fn read_events_lenient(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    let events: Vec<Value> = raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let normalized = crate::state::compatibility_event_json_line(line).ok()?;
+            serde_json::from_str::<Value>(&normalized).ok()
+        })
+        .collect();
+    Ok(events)
+}
+```
+
+New:
+```rust
+fn read_events_lenient(path: &Path) -> Result<(Vec<Value>, usize), std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    let mut events = Vec::new();
+    let mut skipped = 0usize;
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        // Try compatibility parsing first (normalizes field names).
+        if let Some(event) = crate::state::compatibility_event_json_line(line)
+            .ok()
+            .and_then(|normalized| serde_json::from_str::<Value>(&normalized).ok())
+        {
+            events.push(event);
+            continue;
+        }
+        // Fall back to raw JSON parsing for events that don't match
+        // the compatibility schema (e.g., raw yoagent_state events).
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            events.push(value);
+            continue;
+        }
+        skipped += 1;
+    }
+    Ok((events, skipped))
+}
+```
+
+Then update `read_tail_events`:
+```rust
+fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+    if limit == 0 {
+        let (events, _skipped) = read_events_lenient(path)?;
+        return Ok(events);
+    }
+    ...
+}
+```
+
+Then update `handle_failures` to call `read_events_lenient` directly:
+```rust
+fn handle_failures(args: &[String]) {
+    ...
+    let path = default_events_path();
+    let (events, skipped) = match read_events_lenient(&path) {
+        Ok(result) => result,
+        Err(_) => {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        }
+    };
+    if events.is_empty() {
+        if skipped > 0 {
+            eprintln!(
+                "{YELLOW}  no parseable events found at {} ({} lines skipped){RESET}",
+                path.display(), skipped
+            );
+        } else {
+            eprintln!(
+                "{YELLOW}  no parseable events found at {}{RESET}",
+                path.display()
+            );
+        }
+        return;
+    }
+    if skipped > 0 {
+        eprintln!(
+            "{DIM}  note: {} events parsed, {} unparseable lines skipped{RESET}",
+            events.len(), skipped
+        );
+    }
+    match build_recent_failure_report(&events, limit) {
+        ...
+    }
+}
+```
+
+Let me now implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - /// Lenient event reader: parses all lines as JSON, skipping malformed ones.
+  + /// Lenient event reader: parses all lines, skipping unparseable ones.
+  + /// Returns (events, skipped_count). Tries compatibility normalization first;
+  + /// falls back to raw JSON parsing for lines that don't match the compatibility
+  + /// schema (e.g., raw yoagent_state events with `id`/`kind` instead of
+  + /// `event_id`/`event_type`).
+    /// Only returns an error if the file genuinely can't be read (missing, perms).
+  - fn read_events_lenient(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+  + fn read_events_lenient(path: &Path) -> Result<(Vec<Value>, usize), std::io::Error> {
+        let raw = std::fs::read_to_string(path)?;
+  -     let events: Vec<Value> = raw
+  -         .lines()
+  -         .filter(|line| !line.trim().is_empty())
+  -         .filter_map(|line| {
+  -             let normalized = crate::state::compatibility_event_json_line(line).ok()?;
+  -             serde_json::from_str::<Value>(&normalized).ok()
+  -         })
+  -         .collect();
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (14 → 32 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (14 → 32 lines)
+  - /// Lenient event reader: parses all lines as JSON, skipping malformed ones.
+  + /// Lenient event reader: parses all lines, skipping unparseable ones.
+  + /// Returns (events, skipped_count). Tries compatibility normalization first;
+  + /// falls back to raw JSON parsing for lines that don't match the compatibility
+  + /// schema (e.g., raw yoagent_state events with `id`/`kind` instead of
+  + /// `event_id`/`event_type`).
+    /// Only returns an error if the file genuinely can't be read (missing, perms).
+  - fn read_events_lenient(path: &Path) -> Result<Vec<Value>, std::io::Error> {
+  + fn read_events_lenient(path: &Path) -> Result<(Vec<Value>, usize), std::io::Error> {
+        let raw = std::fs::read_to_string(path)?;
+  -     let events: Vec<Value> = raw
+  -         .lines()
+  -         .filter(|line| !line.trim().is_empty())
+  -         .filter_map(|line| {
+  -             let normalized = crate::state::compatibility_event_json_line(line).ok()?;
+  -             serde_json::from_str::<Value>(&normalized).ok()
+  -         })
+  -         .collect();
+  -     Ok(events)
+  +     let mut events = Vec::new();
+  ... (23 more lines)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now update `read_tail_events` to adapt to the new return type.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `read_tail_events`:
+    /// When `limit == 0`, reads all events with lenient parsing (skips malformed lines).
+    fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+        if limit == 0 {
+  -         return read_events_lenient(path);
+  +         let (events, _skipped) = read_events_lenient(path)?;
+  +         return Ok(events);
+        }
+  ✓ Auto-approved: edit: src/commands_state.rs (7 → 8 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (7 → 8 lines)
+    /// When `limit == 0`, reads all events with lenient parsing (skips malformed lines).
+    fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+        if limit == 0 {
+  -         return read_events_lenient(path);
+  +         let (events, _skipped) = read_events_lenient(path)?;
+  +         return Ok(events);
+        }
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `handle_failures` to call `read_events_lenient` directly and report skip counts.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `handle_failures` to use skip diagnostics:
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(12);
+        let path = default_events_path();
+  -     let Ok(events) = read_tail_events(&path, 0) else {
+  -         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  -         return;
+  +     let (events, skipped) = match read_events_lenient(&path) {
+  +         Ok(result) => result,
+  +         Err(_) => {
+  +             eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  +             return;
+  +         }
+        };
+        if events.is_empty() {
+  +         if skipped > 0 {
+  +             eprintln!(
+  +                 "{YELLOW}  no parseable events found at {} ({} lines skipped){RESET}",
+  +                 path.display(),
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (25 → 43 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (25 → 43 lines)
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(12);
+        let path = default_events_path();
+  -     let Ok(events) = read_tail_events(&path, 0) else {
+  -         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  -         return;
+  +     let (events, skipped) = match read_events_lenient(&path) {
+  +         Ok(result) => result,
+  +         Err(_) => {
+  +             eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  +             return;
+  +         }
+        };
+        if events.is_empty() {
+  +         if skipped > 0 {
+  +             eprintln!(
+  +                 "{YELLOW}  no parseable events found at {} ({} lines skipped){RESET}",
+  +                 path.display(),
+  +                 skipped
+  +             );
+  ... (20 more lines)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now do the same for `handle_cache`:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `handle_cache` similarly:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:799..829 ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full handle_cache to see the current state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:817..842 ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me update `handle_cache` similarly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(12);
+        let path = default_events_path();
+  -     let Ok(events) = read_tail_events(&path, 0) else {
+  -         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  -         return;
+  +     let (events, skipped) = match read_events_lenient(&path) {
+  +         Ok(result) => result,
+  +         Err(_) => {
+  +             eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  +             return;
+  +         }
+        };
+        if events.is_empty() {
+  +         if skipped > 0 {
+  +             eprintln!(
+  +                 "{YELLOW}  no parseable events found at {} ({} lines skipped){RESET}",
+  +                 path.display(),
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (25 → 43 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (25 → 43 lines)
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(12);
+        let path = default_events_path();
+  -     let Ok(events) = read_tail_events(&path, 0) else {
+  -         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  -         return;
+  +     let (events, skipped) = match read_events_lenient(&path) {
+  +         Ok(result) => result,
+  +         Err(_) => {
+  +             eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  +             return;
+  +         }
+        };
+        if events.is_empty() {
+  +         if skipped > 0 {
+  +             eprintln!(
+  +                 "{YELLOW}  no parseable events found at {} ({} lines skipped){RESET}",
+  +                 path.display(),
+  +                 skipped
+  +             );
+  ... (20 more lines)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check what `{DIM}` is and whether it's imported.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'DIM\|RESET\|YELLOW' src/commands_state.rs | head -15 ✓ (39ms)
+
+

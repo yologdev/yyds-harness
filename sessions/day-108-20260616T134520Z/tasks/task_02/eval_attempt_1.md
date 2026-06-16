@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: All success criteria met — exit-code + bounded-command hint appended on non-zero exit (line 644-647), clean output on exit 0, new unit test `test_streaming_bash_exit_zero_no_prefix` added, existing tests updated, and retry classification in prompt_retry.rs works with the format (confirmed by passing `test_build_retry_prompt_with_bash_tool`). All 36 streaming bash tests and the prompt_retry test pass.

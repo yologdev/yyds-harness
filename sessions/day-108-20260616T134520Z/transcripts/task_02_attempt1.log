@@ -1,0 +1,603 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill to understand the contract, then look at the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/tools.rs:90..170  ▶ read src/prompt_retry.rs:1115..1155 ✓ (157ms)
+ ✓ (211ms)
+ ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the code structure better. I need to:
+
+1. Find the StreamingBashTool's execute method (around line 107 is the constructor, not execute)
+2. Find where exit_code is captured from subprocess
+3. Look at how bash error retry classification works in prompt_retry.rs
+
+Let me search for the execute method in tools.rs and the exit code handling.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn execute' in src/tools.rs  ▶ search 'exit_code' in src/tools.rs  ▶ search 'exit_status' in src/tools.rs ✓ (66ms)
+ ✓ (67ms)
+ ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The StreamingBashTool already has exit_code handling. Let me read the execute method and the surrounding context to understand what it currently does and what needs to be changed.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.7s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:570..690 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the current code. At line 644:
+```rust
+let formatted = format!("Exit code: {exit_code}\n{output}");
+```
+
+The current format is: "Exit code: {exit_code}\n{output}" — it always shows exit code even when exit_code is 0. The task says to surface the exit code "when `exit_code != 0`" and add a bounded-command hint.
+
+Now let me check the retry classification in prompt_retry.rs to understand the current behavior.
+
+Let me also check what test exists for `test_streaming_bash_captures_exit_code`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1960..2010  ▶ read src/prompt_retry.rs:1050..1130 ✓ (69ms)
+ ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the `build_retry_prompt` function to understand how it works and how it classifies bash errors.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_retry_prompt' in src/prompt_retry.rs ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the build_retry_prompt function and the surrounding code to understand how it handles bash errors.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:1..121 ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to see the bash tool recovery hints.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:120..180 ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me summarize:
+
+### Current State:
+
+1. **`src/tools.rs` line 644**: The StreamingBashTool already formats output with `Exit code: {exit_code}\n{output}` — this always shows the exit code, even when it's 0. The task wants exit code displayed only when non-zero AND a bounded-command hint added.
+
+2. **`src/prompt_retry.rs` lines 124-140**: The bash recovery hints already exist and are quite good — they mention checking exit code, trying bounded commands, explicit paths, etc. The retry classification at line 1126 checks for "bash error:" which works because `build_retry_prompt` and `build_auto_retry_prompt` use the tool name (e.g. "bash") in the error message format.
+
+### What needs to change:
+
+1. **`src/tools.rs` line 644**: Change from always showing exit code to only showing it when non-zero, and add a bounded-command hint when exit code is non-zero.
+
+2. **Verify retry classification works**: The `build_retry_prompt` function at line 1126 already checks for "bash error:" — this is in the retry prompt format (line 34: `[Previous attempt failed — {name} error: {summary}. {hint}]`). This is separate from what the tool output itself says. The task says to verify it works with the new format. Since the tool output doesn't directly feed into the retry prompt's error classification (the error comes from the tool error, not the formatted output), the existing pattern should still work. But let me verify how the error gets propagated.
+
+Let me look at how bash errors are propagated to the retry system. Actually, in the function `build_retry_prompt`, the `tool_name` parameter is "bash" and the error is `last_error` (the tool error string). The tool output formatting (which is what I'm changing) is the text content returned to the agent. The retry prompt is built from the *error* that the tool returns, not from the *output* returned on success. So the classification at line 1126 isn't affected by changes to line 644 since:
+
+- When bash succeeds (exit 0), we get formatted text with "Exit code: 0\n..." — this is a success, not an error
+- When bash fails with non-zero, the tool still returns Ok, just with a non-zero exit code and `success: false` in the details.
+
+Wait, let me re-read the execute method. When the command exits with non-zero, the method still returns `Ok(TR { ... })` — it doesn't return an error. The error info is embedded in the content and details. So the retry prompt wouldn't automatically detect bash failures from non-zero exit codes because the tool itself doesn't "fail" — it succeeds as a tool but returns a non-zero exit code in the output.
+
+The retry classification is only triggered when the tool *actually* fails (returns `Err`), not when it returns `Ok` with a non-zero exit code. So the task's statement about "The retry classification in prompt_retry.rs already detects 'bash error:' at line 1126" — let me look at this more carefully.
+
+Actually, looking at line 1126, that's in a *test*: `test_build_retry_prompt_with_bash_tool` which calls `build_retry_prompt("run tests", &err, Some("bash"))` where `err` is `Some("command not found".to_string())`. This tests that when there IS a bash error, the retry prompt includes "bash error:" which it does via the format string `[Previous attempt failed — {name} error: {summary}. ...]`.
+
+So the retry classification works by checking if the error (from the tool's `Err` return) gets classified as a bash error. This is separate from the tool output formatting.
+
+The task says:
+- "The retry classification in `prompt_retry.rs` already detects 'bash error:' at line 1126 — verify it works with the new format."
+
+Since I'm not changing how errors work (just changing the tool output format), the retry classification should still work. The test at line 1126 tests `build_retry_prompt` which is about retry prompt construction, not tool output parsing.
+
+### Plan:
+
+1. **Change `src/tools.rs` line 644**: Instead of always prepending `Exit code: {exit_code}\n`, only do it when non-zero, and add a bounded-command hint.
+
+2. **Add unit test** for the exit-code formatting when non-zero (verifying the hint is present).
+
+3. **Verify existing tests pass**.
+
+Let me also check if tests reference the "Exit code: 0" format since I'm changing it. Line 2006 references "Exit code: 0\n" in a comment. And line 642-644 always formats with exit code. If I change to only show exit code when non-zero, then for exit code 0, the output would just be `output` (no "Exit code: 0\n" prefix). That could break the test at line 2003-2009.
+
+Wait, let me re-read the task:
+- "StreamingBashTool result includes a clear exit-code line when `exit_code != 0`"
+
+So when exit_code IS 0, we don't show it. The current behavior shows it always. I can change:
+```rust
+let formatted = if exit_code != 0 {
+    format!("Exit code: {exit_code}. Tip: use explicit paths (./script.sh, not script.sh) and -- to separate flags from positional args.\n{output}")
+} else {
+    output
+};
+```
+
+But wait, I need to be careful about the test at line 2003. Let me re-check it.
+
+The test at 2006 says: `// Total text = "Exit code: 0\n" + accumulated (which was truncated to ~100 bytes)`. If I remove the "Exit code: 0\n" prefix, the total text would be shorter. The test checks `text.contains("truncated") || text.len() < 500` — this should still pass since the text would just be shorter.
+
+Let me also look at test at line 1963 (`assert_eq!(result.details["exit_code"], 0)`) — this checks details, not content text, so it's fine.
+
+Let me now also look at the test at 1968 where exit code is 42 — I should verify that the content text now includes the exit code line and the hint.
+
+OK, let me proceed with the implementation.
+
+### Implementation Plan:
+
+1. **`src/tools.rs` line 644**: Change the formatted output to only include exit code line when non-zero, and add a bounded-command hint.
+
+2. **`src/tools.rs`**: Add a test for the exit-code + hint formatting for non-zero exit.
+
+3. **`src/prompt_retry.rs`**: Only verification needed — existing test covers the pattern.
+
+Let me also check: does the current test at 2008 (`text.contains("truncated") || text.len() < 500`) need updating? With exit code 0 removed from the prefix, the text would be `output` (the accumulated, truncated output). This should still satisfy the test condition.
+
+Let me now implement the change.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me also check the test around line 2006 that mentions the "Exit code: 0" prefix to understand if my change there will affect it.
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1993..2013 ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also check line 2088 and 2118 where exit_code is also checked.
+
+Actually, those are far away. Let me just proceed with the implementation. 
+
+The changes I need to make:
+
+1. In `src/tools.rs` around line 644: Change the formatting to only show exit code when non-zero, and add a bounded-command hint.
+
+2. Update the test at `test_streaming_bash_captures_exit_code` (line 1968) to also verify the content text includes the exit code line and hint.
+
+3. Update the comment at line 2006.
+
+4. Add a new unit test for the exit-code formatting.
+
+Let me now implement.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding of the code. Let me implement the changes.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (25ms)
+  ▶ todo ✓ (24ms)
+  ▶ todo ✓ (48ms)
+  ▶ todo ✓ (92ms)
+  ▶ todo ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with the implementation. First, I'll make the surgical edit to the execute method in tools.rs to change the formatting to only show exit code when non-zero and include the hint.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.0s (5 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the surgical edit. I need to change line 644 from:
+```rust
+let formatted = format!("Exit code: {exit_code}\n{output}");
+```
+to:
+```rust
+let formatted = if exit_code != 0 {
+    format!("Exit code: {exit_code}. Tip: use explicit paths (./script.sh, not script.sh) and -- to separate flags from positional args.\n{output}")
+} else {
+    output
+};
+```
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         let formatted = format!("Exit code: {exit_code}\n{output}");
+  +         let formatted = if exit_code != 0 {
+  +             format!(
+  +                 "Exit code: {exit_code}. Tip: use explicit paths (./script.sh, not script.sh) and -- to separate flags from positional args.\n{output}"
+  +             )
+  +         } else {
+  +             output
+  +         };
+  ✓ Auto-approved: edit: src/tools.rs (1 → 7 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (1 → 7 lines)
+  -         let formatted = format!("Exit code: {exit_code}\n{output}");
+  +         let formatted = if exit_code != 0 {
+  +             format!(
+  +                 "Exit code: {exit_code}. Tip: use explicit paths (./script.sh, not script.sh) and -- to separate flags from positional args.\n{output}"
+  +             )
+  +         } else {
+  +             output
+  +         };
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the comment at line 2006 that references "Exit code: 0\n".
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the comment that references the old format in the truncation test:
+                    // The accumulated output should have been truncated
+  -                 // Total text = "Exit code: 0\n" + accumulated (which was truncated to ~100 bytes)
+  +                 // When exit code is 0, the text is just the accumulated output (no exit-code prefix)
+  ✓ Auto-approved: edit: src/tools.rs (2 → 2 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (2 → 2 lines)
+                    // The accumulated output should have been truncated
+  -                 // Total text = "Exit code: 0\n" + accumulated (which was truncated to ~100 bytes)
+  +                 // When exit code is 0, the text is just the accumulated output (no exit-code prefix)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me update the existing test `test_streaming_bash_captures_exit_code` to also check that the content text includes the exit code line and hint. Currently it only checks `details`. Let me also check line 1960-1974 to see if there's already a content check.
+
+I saw:
+```rust
+    #[tokio::test]
+    async fn test_streaming_bash_captures_exit_code() {
+        let tool = StreamingBashTool::default();
+        let ctx = test_tool_context(None);
+        let params = serde_json::json!({"command": "exit 42"});
+        let result = tool.execute(params, ctx).await.unwrap();
+        assert_eq!(result.details["exit_code"], 42);
+        assert_eq!(result.details["success"], false);
+    }
+```
+
+I should now also assert that the content text includes the exit code and the hint. Let me edit this test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the test `test_streaming_bash_captures_exit_code` to also verify the content text:
+            let result = tool.execute(params, ctx).await.unwrap();
+            assert_eq!(result.details["exit_code"], 42);
+            assert_eq!(result.details["success"], false);
+  +         // Verify the content text includes the exit code and bounded-command hint
+  +         match &result.content[0] {
+  +             yoagent::types::Content::Text { text } => {
+  +                 assert!(
+  +                     text.starts_with("Exit code: 42."),
+  +                     "non-zero exit should include exit-code line in content: {text}"
+  +                 );
+  +                 assert!(
+  +                     text.contains("Tip:"),
+  +                     "non-zero exit should include a recovery tip: {text}"
+  +                 );
+  +                 assert!(
+  +                     text.contains("explicit paths"),
+  +                     "tip should mention explicit paths: {text}"
+  +                 );
+  +             }
+  +             _ => panic!("Expected text content"),
+  ... (2 more lines)
+  ✓ Auto-approved: edit: src/tools.rs (9 → 27 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (9 → 27 lines)
+            let result = tool.execute(params, ctx).await.unwrap();
+            assert_eq!(result.details["exit_code"], 42);
+            assert_eq!(result.details["success"], false);
+  +         // Verify the content text includes the exit code and bounded-command hint
+  +         match &result.content[0] {
+  +             yoagent::types::Content::Text { text } => {
+  +                 assert!(
+  +                     text.starts_with("Exit code: 42."),
+  +                     "non-zero exit should include exit-code line in content: {text}"
+  +                 );
+  +                 assert!(
+  +                     text.contains("Tip:"),
+  +                     "non-zero exit should include a recovery tip: {text}"
+  +                 );
+  +                 assert!(
+  +                     text.contains("explicit paths"),
+  +                     "tip should mention explicit paths: {text}"
+  +                 );
+  +             }
+  +             _ => panic!("Expected text content"),
+  ... (2 more lines)
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also add a new unit test specifically for the exit-code formatting for exit 0 (no exit-code line). Actually, I can add it right after the exit 42 test, verifying that exit 0 produces content without the exit-code line and without the tip.
+
+Let me also think about whether I need to add a test to verify that the existing test `test_streaming_bash_executes_simple_command` still passes. Looking at line 1963: `assert_eq!(result.details["exit_code"], 0)` — this checks details, not content text. But for exit 0, the formatted text will now just be the output without the "Exit code: 0\n" prefix. Let me check that test.
+
+Actually let me read lines 1940-1975 to see what tests are around.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also check the test for exit 0 to understand what the content looks like:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1930..1980 ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that line 1965 checks `assert!(text.contains("Exit code: 0"));` — this will FAIL with my change since exit 0 no longer prepends the exit-code line. I need to update this test.
+
+The test expects that for exit 0, the text does NOT contain "Exit code: 0" anymore. Instead it should just contain "hello world" without the exit-code prefix.
+
+Let me update the test.
+────────────────────────────────────────────────────────────────────────────────
+
+I see the test at line 1965 checks for "Exit code: 0" — this will fail with my change. Let me update it:
+            match &result.content[0] {
+                yoagent::types::Content::Text { text } => {
+                    assert!(text.contains("hello world"));
+  -                 assert!(text.contains("Exit code: 0"));
+  +                 // Exit code 0: no exit-code line or tip in content (success output is clean)
+  +                 assert!(
+  +                     !text.contains("Exit code:"),
+  +                     "successful command should not show exit-code line: {text}"
+  +                 );
+                }
+                _ => panic!("Expected text content"),
+            }
+  ✓ Auto-approved: edit: src/tools.rs (16 → 20 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (16 → 20 lines)
+            match &result.content[0] {
+                yoagent::types::Content::Text { text } => {
+                    assert!(text.contains("hello world"));
+  -                 assert!(text.contains("Exit code: 0"));
+  +                 // Exit code 0: no exit-code line or tip in content (success output is clean)
+  +                 assert!(
+  +                     !text.contains("Exit code:"),
+  +                     "successful command should not show exit-code line: {text}"
+  +                 );
+                }
+                _ => panic!("Expected text content"),
+            }
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check for other tests that might reference the exit code text format. Let me look at line 2088 and 2118 which were mentioned in the earlier search results.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the other tests that reference exit_code to see if any need updating:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:2080..2140 ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The tests at 2088 (details check only) and 2116 (details check only) are fine — they don't check the content text for exit-code formatting. Good.
+
+Now let me also verify the retry classification in prompt_retry.rs. Let me re-read the test at line 1122 to make sure it still works.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the retry classification test still works with our changes. The `build_retry_prompt` function works independently of the tool output format — it constructs retry prompts from the tool *error*, not the tool output. Let me confirm:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:1121..1151 ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This test is independent of our changes — it tests `build_retry_prompt` which constructs retry prompts from tool errors (not tool output). The function takes a tool_name "bash" and error string, and the format is `[Previous attempt failed — {name} error: {summary}. {hint}]`. The test checks for "bash error:" which comes from the format string, not from our tool output. So this is fine.
+
+Now let me also check the test at line 2116 more carefully — that test checks `result.details["exit_code"]` and "alpha" in progress lines. Let me also scroll to check lines around 2120-2130 to see if any test checks content text for exit 0.
+
+I already saw that test at 2091-2101 just checks `text.contains("err_output")` without checking exit-code formatting. And test at 2104-2132 also only checks details and progress lines. 
+
+So my changes should be complete. Let me now run cargo fmt and the focused tests.
+
+Actually, let me also add a specific test for exit 0 to ensure the content is clean (no exit-code prefix). I can add a test right after the exit 42 test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (22ms)
+  ▶ todo ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add a specific test for exit 0 formatting (no exit-code line or tip). I'll add it after the exit 42 test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+Let me add a new test for exit 0 formatting. I'll add it right after the exit 42 test:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1973..2013 ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add a test for exit 0 formatting right after the exit 42 test (after line 2003).
+────────────────────────────────────────────────────────────────────────────────
+
+  +     }
+  + 
+  +     /// When a bash command succeeds (exit 0), the content should not include
+  +     /// an exit-code line or tip — the output is clean by default. The exit
+  +     /// code is still available in the `details` field for programmatic use.
+  +     #[tokio::test]
+  +     async fn test_streaming_bash_exit_zero_no_prefix() {
+  +         let tool = StreamingBashTool::default();
+  +         let ctx = test_tool_context(None);
+  +         let params = serde_json::json!({"command": "echo success"});
+  +         let result = tool.execute(params, ctx).await.unwrap();
+  +         assert_eq!(result.details["exit_code"], 0);
+  +         assert_eq!(result.details["success"], true);
+  +         match &result.content[0] {
+  +             yoagent::types::Content::Text { text } => {
+  +                 assert!(
+  +                     text.starts_with("success"),
+  +                     "exit 0 should not have exit-code prefix: {text}"
+  +                 );
+  +                 assert!(
+  ... (13 more lines)
+  ✓ Auto-approved: edit: src/tools.rs (3 → 33 lines)
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (3 → 33 lines)
+  +     }
+  + 
+  +     /// When a bash command succeeds (exit 0), the content should not include
+  +     /// an exit-code line or tip — the output is clean by default. The exit
+  +     /// code is still available in the `details` field for programmatic use.
+  +     #[tokio::test]
+  +     async fn test_streaming_bash_exit_zero_no_prefix() {
+  +         let tool = StreamingBashTool::default();
+  +         let ctx = test_tool_context(None);
+  +         let params = serde_json::json!({"command": "echo success"});
+  +         let result = tool.execute(params, ctx).await.unwrap();
+  +         assert_eq!(result.details["exit_code"], 0);
+  +         assert_eq!(result.details["success"], true);
+  +         match &result.content[0] {
+  +             yoagent::types::Content::Text { text } => {
+  +                 assert!(
+  +                     text.starts_with("success"),
+  +                     "exit 0 should not have exit-code prefix: {text}"
+  +                 );
+  +                 assert!(
+  ... (13 more lines)
+ ✗ (44ms)
+    │ old_text matches 44 locations in src/tools.rs. Include more surrounding context to make the match unique.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edit failed because the pattern `    }\n\n    #[tokio::test]` matches too many locations. Let me include more surrounding context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +             _ => panic!("Expected text content"),
+  +         }
+  +     }
+  + 
+  +     /// When a bash command succeeds (exit 0), the content should not include
+  +     /// an exit-code line or tip — the output is clean by default. The exit
+  +     /// code is still available in the `details` field for programmatic use.
+  +     #[tokio::test]
+  +     async fn test_streaming_bash_exit_zero_no_prefix() {
+  +         let tool = StreamingBashTool::default();
+  +         let ctx = test_tool_context(None);
+  +         let params = serde_json::json!({"command": "echo success"});
+  +         let result = tool.execute(params, ctx).await.unwrap();
+  +         assert_eq!(result.details["exit_code"], 0);
+  +         assert_eq!(result.details["success"], true);
+  +         match &result.content[0] {
+  +             yoagent::types::Content::Text { text } => {
+  +                 assert!(
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/tools.rs (6 → 36 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (6 → 36 lines)
+  +             _ => panic!("Expected text content"),
+  +         }
+  +     }
+  + 
+  +     /// When a bash command succeeds (exit 0), the content should not include
+  +     /// an exit-code line or tip — the output is clean by default. The exit
+  +     /// code is still available in the `details` field for programmatic use.
+  +     #[tokio::test]
+  +     async fn test_streaming_bash_exit_zero_no_prefix() {
+  +         let tool = StreamingBashTool::default();
+  +         let ctx = test_tool_context(None);
+  +         let params = serde_json::json!({"command": "echo success"});
+  +         let result = tool.execute(params, ctx).await.unwrap();
+  +         assert_eq!(result.details["exit_code"], 0);
+  +         assert_eq!(result.details["success"], true);
+  +         match &result.content[0] {
+  +             yoagent::types::Content::Text { text } => {
+  +                 assert!(
+  +                     text.starts_with("success"),
+  +                     "exit 0 should not have exit-code prefix: {text}"
+  ... (13 more lines)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run cargo fmt first, then the focused tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (25ms)
+  ▶ todo ✓ (21ms)
+  ▶ todo ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Run cargo fmt first, then focused tests.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.6s (3 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Fmt check passed. Now run the focused tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test tools:: -- --test-t… ✓ (34.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Two more tests that check for "Exit code: 0". Let me fix them.
+────────────────────────────────────────────────────────────────────────────────
+
+Two more tests reference the old "Exit code: 0" pattern. Let me fix them:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1915..1945  ▶ read src/tools.rs:2210..2240 ✓ (65ms)
+ ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to fix these two tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+            match text {
+                yoagent::types::Content::Text { text } => {
+                    assert!(text.contains("approved"));
+  -                 assert!(text.contains("Exit code: 0"));
+  +                 // Exit code 0: no exit-code line in content
+  +                 assert!(!text.contains("Exit code:"));
+                }
+                _ => panic!("Expected text content"),
+            }
+  ✓ Auto-approved: edit: src/tools.rs (11 → 12 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (11 → 12 lines)
+            match text {
+                yoagent::types::Content::Text { text } => {
+                    assert!(text.contains("approved"));
+  -                 assert!(text.contains("Exit code: 0"));
+  +                 // Exit code 0: no exit-code line in content
+  +                 assert!(!text.contains("Exit code:"));
+                }
+                _ => panic!("Expected text content"),
+            }
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now fix the second test at line 2218.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            match &result.content[0] {
+                yoagent::types::Content::Text { text } => {
+  -                 assert!(text.contains("Exit code: 0"));
+  +                 // Exit code 0: no exit-code line in content
+  +                 assert!(!text.contains("Exit code:"));
+                    assert!(text.contains("line1"));
+  ✓ Auto-approved: edit: src/tools.rs (4 → 5 lines)
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (4 → 5 lines)
+            match &result.content[0] {
+                yoagent::types::Content::Text { text } => {
+  -                 assert!(text.contains("Exit code: 0"));
+  +                 // Exit code 0: no exit-code line in content
+  +                 assert!(!text.contains("Exit code:"));
+                    assert!(text.contains("line1"));
+ ✓ (22ms)
+
+

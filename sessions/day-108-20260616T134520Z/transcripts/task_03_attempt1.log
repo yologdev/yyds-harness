@@ -1,0 +1,198 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task: I need to de-flake the `empty_piped_stdin_exits_quickly` integration test by removing or replacing the wall-clock timeout assertion. Let me start by reading the evolve skill, then the test file to understand the current code.
+
+The task says:
+- Option A (preferred): Remove the timing assertion entirely
+- Option B: Raise timeout to 120s
+- Option C: Use wait_timeout crate
+
+I'll go with Option A since it's preferred. Let me first read the evolve skill and the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (60 lines)  ▶ read tests/integration.rs:1480..1520 ✓ (63ms)
+ ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the test. Let me also check the sibling test at line 1081 to understand it, and also check if `Instant` is imported and used elsewhere.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+Let me also check the sibling test and imports:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read tests/integration.rs:1050..1090  ▶ search 'use std::time::Instant' in tests/integration.rs ✓ (43ms)
+ ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see:
+
+1. `empty_piped_stdin_exits_quickly` (line 1486): checks both exit code AND wall-clock time (<40s)
+2. `empty_piped_stdin_exits_with_nonzero_code` (line 1081): checks only exit code
+3. `Instant` is imported at line 10
+
+The task says Option A (preferred): Remove the timing assertion entirely.
+
+Let me also check if `Instant` is used elsewhere in the file, because if I remove the timing assertion, I might be able to remove the import too.
+
+Let me search for other uses of `Instant` in the integration test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+Let me check if `Instant` is used elsewhere in this file:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'Instant' in tests/integration.rs ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`Instant` is used at line 2014 as well. So I can't remove the import. Let me see what line 2014 is about.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read tests/integration.rs:2010..2035 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `Instant` is used elsewhere, so I keep the import.
+
+Now my plan is simple: 
+- Option A (preferred): Remove the timing assertion from `empty_piped_stdin_exits_quickly`. Keep the exit-code check. Add a comment explaining why.
+
+The test will still be valuable - it still catches the case where the binary hangs forever (because `output()` has no time limit and CI will eventually kill it). If the process hangs forever, `output()` never returns, and CI's job timeout catches it.
+
+Let me make the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. I'll go with **Option A**: remove the timing assertion, keep the exit-code check, and add a comment explaining why.
+    #[test]
+    fn empty_piped_stdin_exits_quickly() {
+  -     // Empty piped input with a fake API key should fail fast, not hang
+  -     let start = Instant::now();
+  +     // Empty piped input with a fake API key should fail fast, not hang.
+  +     //
+  +     // We do NOT assert on wall-clock time here: CI runner load variance makes
+  +     // sub-second-expected-exits flaky under timing assertions (this test had
+  +     // 4+ historical panics, even at a 40s budget). The exit-code check below
+  +     // verifies the process terminates; genuine hangs (process never exits) are
+  +     // caught by CI's own job timeout.
+        let output = yoyo_cmd()
+            .env("ANTHROPIC_API_KEY", "sk-ant-fake-for-test")
+            .stdin(Stdio::piped())
+            .output()
+            .expect("failed to run yoyo");
+    
+  -     let elapsed = start.elapsed();
+  ... (3 more lines)
+  ✓ Auto-approved: edit: tests/integration.rs (21 → 20 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit tests/integration.rs (21 → 20 lines)
+    #[test]
+    fn empty_piped_stdin_exits_quickly() {
+  -     // Empty piped input with a fake API key should fail fast, not hang
+  -     let start = Instant::now();
+  +     // Empty piped input with a fake API key should fail fast, not hang.
+  +     //
+  +     // We do NOT assert on wall-clock time here: CI runner load variance makes
+  +     // sub-second-expected-exits flaky under timing assertions (this test had
+  +     // 4+ historical panics, even at a 40s budget). The exit-code check below
+  +     // verifies the process terminates; genuine hangs (process never exits) are
+  +     // caught by CI's own job timeout.
+        let output = yoyo_cmd()
+            .env("ANTHROPIC_API_KEY", "sk-ant-fake-for-test")
+            .stdin(Stdio::piped())
+            .output()
+            .expect("failed to run yoyo");
+    
+  -     let elapsed = start.elapsed();
+        assert!(
+            !output.status.success(),
+  ... (8 more lines)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify the edit looks correct, then run the focused test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the edit and run the focused test:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read tests/integration.rs:1485..1510 ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit looks correct. Now run the focused tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now run the focused verification:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check && cargo … ✓ (27.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests pass. Now let me also run the integration test suite as specified in the verification steps:
+
+Actually, the evolve skill says: "Run focused verification after changes: cargo fmt -- --check, then cargo build or the smallest cargo test/clippy command directly tied to the changed task surface. Do not run full cargo test or full clippy inside the implementation turn; the harness runs global gates after the task."
+
+So running `cargo test --test integration -- --test-threads=1` would be the full integration suite. The task says to run it, but the evolve skill says don't run full test suites inside the implementation turn. Let me follow the evolve skill and not run the full suite.
+
+I've verified: cargo fmt passed, the two empty_piped_stdin tests passed. That's sufficient for the focused verification.
+
+Now let me check git diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Both tests pass, fmt is clean. Now check the diff and commit:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, only `tests/integration.rs` changed. Let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The commit succeeded despite the backtick escape issue in the bash shell. The commit message got truncated because the backticks in the commit message were interpreted by bash. But the commit happened. Let me check the commit message.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log -1 --format='%s' ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The commit message got munged because backticks in the bash command were interpreted by the shell. The `empty_piped_stdin_exits_quickly` part got swallowed. Let me fix the commit message.
+────────────────────────────────────────────────────────────────────────────────
+
+The backticks got interpreted by bash. Let me fix the commit message:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git commit --amend -m 'Day 108… ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Done. Let me summarize what changed:
+
+- Modified `tests/integration.rs`, function `empty_piped_stdin_exits_quickly` (line 1486)
+- Removed the wall-clock timing assertion (`elapsed.as_secs_f64() < 40.0`) 
+- Removed the `Instant::now()` / `elapsed()` measurement code
+- Kept the exit-code assertion (`!output.status.success()`)
+- Added a comment explaining why timing was removed (CI load variance, 4+ historical panics, genuine hangs caught by CI job timeout)
+- The sibling test `empty_piped_stdin_exits_with_nonzero_code` was not modified
+
+Verification: `cargo fmt -- --check` passed, both `empty_piped_stdin_exits_quickly` and `empty_piped_stdin_exits_with_nonzero_code` pass.
+────────────────────────────────────────────────────────────────────────────────
+
+**Summary of changes:**
+
+• **File:** `tests/integration.rs` (1 file changed, 7 insertions, 8 deletions)
+• **Change:** Removed the wall-clock timing assertion from `empty_piped_stdin_exits_quickly`
+  • Removed `Instant::now()` / `start.elapsed()` timing measurement
+  • Removed `elapsed.as_secs_f64() < 40.0` assertion
+  • Kept the exit-code check (`!output.status.success()`)
+  • Added a comment explaining why: CI runner load variance makes wall-clock assertions unreliable for fast exits; genuine hangs are caught by CI's job timeout
+• **Not modified:** `empty_piped_stdin_exits_with_nonzero_code` (already stable)
+
+**Verification:**
+• `cargo fmt -- --check` — passed
+• `cargo test empty_piped_stdin -- --test-threads=1` — both tests pass (2 passed, 0 failed)
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
