@@ -17004,7 +17004,7 @@ mod tests {
         for i in 1..=7 {
             let run_id = format!("run-{i}");
             let ts = 10 * i;
-            let mut ev = json!({
+            let ev = json!({
                 "event_id": format!("evt-start-{i}"),
                 "event_type": "RunStarted",
                 "schema_version": 1,
