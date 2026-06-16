@@ -1,0 +1,129 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task and the diff:
+
+1. **Task**: Improve cold-start state failure diagnostics by making `yyds state why last-failure` useful when there are no completed failed sessions yet.
+
+2. **Success Criteria**:
+   - Cold-start `why last-failure` output gives actionable next evidence to inspect.
+   - Existing behavior for completed failed sessions remains unchanged.
+   - Output distinguishes no history from missing diagnostics and from active/incomplete runs.
+
+3. **The diff** only adds a test (`why_report_cold_start_output_is_actionable_and_distinguishes_states`) that tests a function called `build_why_report`. But I don't see the actual implementation changes to `build_why_report` in the diff. The diff only shows the test being added.
+
+Wait, let me re-read the diff more carefully. The diff shows only test code being added. The implementation of `build_why_report` that would make this test pass... is not shown. But build and tests PASS. So either the implementation was already in place, or it was added in a part not shown in the diff, or the diff is truncated.
+
+Actually, looking at the diff header: `@@ -17342,6 +17342,84 @@ mod tests {` - this is around line 17342 in a 24278-line file. The diff only shows the test being added. But for the tests to pass, the `build_why_report` function must already exist and handle these cases.
+
+Let me check if `build_why_report` exists and what it does. The test references it, and the build/tests pass, so it must exist. But was it modified as part of this task? Let me look at the actual state of the code.
+
+The task says "Files: src/commands_state.rs, src/state.rs" - let me check what changes were made to `build_why_report` in these files. The diff shown only includes the test addition. Since build and tests pass, the implementation must already handle these cases, or the implementation changes are not visible in this diff.
+
+Let me check the current state of `build_why_report` to see if it handles the cold-start cases.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'fn build_why_report' (*.rs)  ▶ search 'no sessions have completed' (*.rs) ✓ (67ms)
+ ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The implementation exists at line 2905 and includes the "no sessions have completed" message at line 2931. Let me read the `build_why_report` function to see if the implementation matches what the tests expect.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2905..3025 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the implementation. The `build_why_report` function handles three cold-start states:
+
+1. **No history** (line 2930): `events.is_empty() || (run_completed_count == 0 && !run_started)` - "State recording is active but no sessions have completed yet."
+2. **In progress** (line 2938): `run_completed_count == 0 && run_started` - "A session is currently in progress."
+3. **No failures** (line 2971): `failure_count == 0` - "N successful session(s) recorded. No failure data to diagnose."
+
+Now let me verify the test's assertions match:
+
+**State 1 (no_history):**
+- Test expects `err1.contains("no sessions have completed")` → matches line 2931
+- Test expects `err1.contains("state tail")` → matches line 2936 "Try 'yoyo state tail --limit 5'"
+
+**State 2 (in_progress):**
+- Test expects `err2.contains("in progress")` → matches line 2939 "A session is currently in progress."
+- Test expects `err2.contains("run-cold-1")` → should be emitted in incomplete run listing (lines 2959-2968)
+- Test expects `err2.contains("state tail")` → matches line 2969
+
+**State 3 (no_failures):**
+- Test expects `err3.contains("successful")` → matches line 2973
+- Test expects `err3.contains("state crashes")` → matches line 2978-2979
+- Test expects `err3.contains("state why last-crash")` → matches line 2979
+
+And all three outputs must be distinct.
+
+The implementation looks complete and the tests pass (build and tests both PASS per the task description).
+
+Now let me check the task success criteria:
+
+1. ✅ Cold-start `why last-failure` output gives actionable next evidence to inspect - the implementation suggests `state tail --limit 5`, `state crashes --limit 10`, and `state why last-crash`.
+2. ✅ Existing behavior for completed failed sessions remains unchanged - the `find_target_event` path (line 2906) is the original behavior; unchanged.
+3. ✅ Output distinguishes no history from missing diagnostics and from active/incomplete runs - three distinct branches.
+
+The test also verifies the outputs are distinct via `assert_ne!`.
+
+One thing I should check: does the test use a helper function `event()` that exists? Let me verify quickly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event(' in src/commands_state.rs (*.rs) ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `event` helper exists. Now let me verify a few more things:
+
+1. Does `is_failure_event_type` exist?
+2. Does `build_state_summary` exist?
+
+These are referenced in the implementation. Since tests pass, they exist. But let me also check if there are any changes I'm missing — maybe there's more to the diff than just the test.
+
+Let me check what the full git diff actually is, since the task description might have a truncated diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat HEAD~1 2>/dev/… ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only `src/commands_state.rs` was modified with 78 insertions. The diff in the task description shows 78 lines of test code being added (lines 17342 to 17384+78=17420, subtract 17342... actually the diff shows `+84` lines which is close to 78 — let me check).
+
+Wait, the search I ran earlier already found the implementation code at line 2905 with the cold-start messages. So the implementation was already in place — the test was added to verify it.
+
+Let me verify: was the implementation code already there before this commit, or was it added as part of this commit? The diff only shows test additions. But the implementation clearly exists and is being tested.
+
+Actually wait, the diff in the task shows `@@ -17342,6 +17342,84 @@ mod tests {` — this is within the test module. So the diff ONLY adds tests. The implementation of `build_why_report` (at line ~2905) was already present and was not modified in this commit.
+
+But that's fine! The task says "Make cold-start diagnostics useful" — and looking at the implementation, it already handles all three states. The test was added to prove it works. The task is really about ensuring the behavior exists and is verified.
+
+Actually, wait. Let me reconsider. The task says build and tests PASS. The diff only shows test additions. This means the implementation was already in place — perhaps from a previous commit or the planner set it up before this evaluator step. The evaluator's job is to verify that the implementation matches the task description and that tests pass.
+
+The implementation (lines 2905-2988) clearly handles:
+1. No history → actionable next step
+2. In-progress run → shows run ID, suggests state tail
+3. No failures → suggests state crashes and state why last-crash
+
+The test verifies all three states produce distinct, actionable output.
+
+Build: PASS, Tests: PASS.
+
+This is a PASS. The implementation matches the task description, the tests verify the success criteria, and the build/tests pass.
+
+Let me write the verdict.
+────────────────────────────────────────────────────────────────────────────────
+
+The implementation at lines 2905–2988 of `src/commands_state.rs` already handles three cold-start states (no history, in-progress, no failures) with actionable next-step guidance. The diff adds a focused test (`why_report_cold_start_output_is_actionable_and_distinguishes_states`) that verifies all three states produce distinct, actionable output — exactly matching the three success criteria. Build and tests pass.
+  + Verdict: PASS
+  + Reason: Implementation distinguishes three cold-start states with actionable next evidence (state tail, state crashes, state why last-crash); the new test verifies all three produce distinct output; build and tests pass.
+  ✓ Auto-approved: write: session_plan/eval_task_1.md (2 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/eval_task_1.md (2 lines) ✓ (32ms)

@@ -1,0 +1,624 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and understanding the task, then examining the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ todo ✓ (32ms)
+ ✓ (96ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the task's listed files and understand the current state of things.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (32ms)
+  ▶ read src/commands_state.rs (100 lines)  ▶ search 'last-failure' in src  ▶ search 'why last-failure' in src ✓ (144ms)
+ ✓ (207ms)
+ ✓ (208ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the specific area around `last-failure` in `commands_state.rs` to understand the current behavior.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.9s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:970..1050  ▶ search 'no state event found' in src ✓ (65ms)
+ ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the broader context of the cold-start handling - specifically the function that handles `why` and the `find_incomplete_runs` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:900..1000  ▶ search 'fn find_incomplete_runs' in src/commands_state.rs ✓ (64ms)
+ ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the current cold-start behavior. Let me understand the full picture. The task says:
+
+When `yyds state why last-failure` returns `no state event found` during fresh-state sessions, we need to improve the diagnostics so that it gives actionable next evidence.
+
+Looking at the current code, there are TWO cold-start paths:
+1. `read_tail_events` fails (file doesn't exist) → lines 960-997: The cold start handling already gives some diagnostics including the diagnostic error, incomplete runs, and next steps.
+2. `build_why_report` fails with "no state event found" → lines 1003-1049: Already has fallback for incomplete runs and diagnostic errors.
+
+But wait - the assessment says `state why last-failure` returns only `no state event found` during fresh-state sessions. Let me re-read the code flow more carefully.
+
+When the events file exists but has no failure events, `build_why_report` returns an error "no state event found for 'last-failure'". The fallback at line 1017 scans for incomplete runs. But what if there are no incomplete runs either? Then it just prints the error and the next-actions for incomplete runs, but NOT the cold-start-style next steps.
+
+Actually wait, re-reading the code: at line 1003-1049, the fallback code only fires when `build_why_report` fails. It checks for incomplete runs and diagnostic errors. But the current code at line 1006-1012 prints the error message first, THEN the fallback info at lines 1015-1060 or so.
+
+Let me see the rest of the fallback code.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.9s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1049..1109  ▶ search 'fn find_incomplete_runs' in src/commands_state.rs ✓ (64ms)
+ ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `build_why_report` to understand what happens when it fails for `last-failure`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the full flow to understand all the cases.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2905..2985 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see more of the build_why_report and understand the full error handling code:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2984..3024 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the code. Let me also check `src/state.rs` for the `take_diagnostic_error` function and any other relevant functions:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn take_diagnostic_error' in src  ▶ search 'diagnostic' in src/state.rs ✓ (32ms)
+ ✓ (98ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the current state of the cold-start handling. Let me read the `handle_why` function more carefully:
+
+1. **Path 1 (no events file):** `read_tail_events` fails → cold start message at lines 961-997. Already has good diagnostics including diagnostic error, next steps for `last-failure`, and standard messages for other IDs.
+
+2. **Path 2 (events file exists, no failure event):** `build_why_report` fails at line 2906 → returns error with summary and guidance. Then in `handle_why` at line 1003-1061, the error is printed, and if `id == "last-failure"`, it checks for incomplete runs and diagnostic errors.
+
+The assessment says: `state why last-failure` returns only `no state event found` during fresh-state sessions. That leaves yyds unable to explain the earliest failures that block evolution.
+
+Let me now look at the test cases to understand what's being tested:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.6s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'last-failure' in src/commands_state.rs ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test around line 17245:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17200..17320 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good picture of the current state:
+
+1. **Cold start (no events file):** `handle_why` at lines 960-997 handles this. It gives:
+   - A message about no events file
+   - Optional diagnostic error
+   - "This is a cold start" message
+   - For `last-failure`: "No completed failed sessions exist" + next-actions (crashes, doctor, init, tail)
+   - For other IDs: "run yyds state init" + "run yyds state why last-failure"
+
+2. **Events file exists but no failure:** `build_why_report` returns an error at lines 2905-2989. Then `handle_why` at lines 1003-1061 prints the error and checks for incomplete runs + diagnostic errors.
+
+The issue from the assessment is: "state why last-failure returns only no state event found during fresh-state sessions." 
+
+But looking at the code, it seems like there IS already decent cold-start handling in both paths. Let me check what the `find_target_event` function does for `last-failure`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn find_target_event' in src/commands_state.rs ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13904..13964 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me trace through the evaluation in the assessment:
+
+The task says: "The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions."
+
+Let me think about what "fresh-state sessions" means in the context of the harness. A fresh-state session is one where:
+1. The state events file exists (possibly because `yyds state init` was run)
+2. But there are no completed evolution sessions yet
+3. Specifically, there are no failure events recorded yet
+
+For the "fresh-state" case, the events file exists but has no failure events. The flow is:
+1. `read_tail_events` succeeds (file exists)
+2. `build_why_report` calls `find_target_event(events, "last-failure")` which finds no failure events → returns `None`
+3. `build_why_report` then builds an error with guidance based on various states
+
+OK so actually looking at the code more carefully, the current code DOES have handling for cold start. But the assessment is saying there's a gap. Let me look at what exactly happens:
+
+- If the events file doesn't exist → the outer `read_tail_events` error is handled (lines 960-997) with good diagnostics
+- If the events file exists but has no events → `build_why_report` returns error with guidance (lines 2930-2937)
+- If the events file exists and has events but no failures → `build_why_report` returns different errors
+
+The assessment says "state why last-failure returns only no state event found during fresh-state sessions. That leaves yyds unable to explain the earliest failures that block evolution."
+
+I think the gap might be in the case where the state file exists but has minimal events (like just RunStarted events from a session that never completed). The current code handles this with "A session is currently in progress." But what about cases where:
+1. The state file exists but has no events that are failure events
+2. The state summary is printed as part of the error
+3. But there's no mention of what to do about diagnostic errors or startup issues
+
+Let me look more carefully at what the assessment is actually saying. The key gap seems to be:
+
+The "cold-start" path (no events file at all) has the best diagnostics. But "fresh-state" sessions where the events file exists but has zero failure events don't get the same level of guidance.
+
+Wait, let me re-read the task more carefully:
+
+> The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions.
+
+"fresh-state sessions" might mean sessions where the harness just started, the state file exists but is empty/trivial, and there are no completed failed sessions.
+
+Let me now look at whether the current code distinguishes between:
+- "no history" (empty events)
+- "missing diagnostics" (diagnostic error available)
+- "active/incomplete runs"
+
+For the `build_why_report` path (file exists), looking at lines 2930-2988:
+
+1. `events.is_empty() || (run_completed_count == 0 && !run_started)` → "State recording is active but no sessions have completed yet."
+2. `run_completed_count == 0 && run_started` → "A session is currently in progress."
+3. `failure_count == 0` → "X successful sessions recorded. No failure data to diagnose."
+4. else → "X failures recorded but not enough to cluster"
+
+These are pretty good! But the task says there's a gap. Let me check if there's a missing distinction: the diagnostic error is only checked in the `handle_why` fallback (lines 1049-1060), not in `build_why_report` itself. And the `take_diagnostic_error()` is only called in `handle_why`, but its output is consumed and then lost.
+
+Actually, wait. Let me re-read the task:
+
+> Cold-start `why last-failure` output gives actionable next evidence to inspect.
+> Output distinguishes no history from missing diagnostics and from active/incomplete runs.
+
+This suggests the current output does NOT distinguish these well enough. Let me check...
+
+Looking at the current code:
+- "no history" = line 2930: "State recording is active but no sessions have completed yet."
+- "missing diagnostics" = the diagnostic error is checked in `handle_why` but NOT in `build_why_report`
+- "active/incomplete runs" = line 2938: "A session is currently in progress."
+
+So the gap IS that `build_why_report` doesn't check for or surface diagnostic errors! The diagnostic error from `take_diagnostic_error()` is only checked in `handle_why` after `build_why_report` returns its error.
+
+But there's a subtlety: the diagnostic error flow uses `take_diagnostic_error()` which consumes the error. If `build_why_report` called it, it would be consumed before `handle_why` could check it.
+
+Also, `build_why_report` is a reporting function that takes `events: &[Value]` - it doesn't have access to the diagnostic error (which is a process-local cell). It would need to either:
+1. Have the diagnostic error passed to it as a parameter
+2. Or the caller (`handle_why`) should augment the output
+
+Let me think about the best approach:
+
+Option A: Modify `build_why_report` to accept an optional diagnostic error string and include it in the output
+Option B: Have `handle_why` augment the `build_why_report` error with diagnostic info before printing
+Option C: Both - improve `build_why_report` AND `handle_why` to better distinguish the states
+
+Actually, looking more carefully at the task objectives:
+
+> Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence.
+
+This is already partially done. The current code:
+- Shows incomplete runs in `handle_why` fallback (lines 1017-1043)
+- Shows diagnostic errors in `handle_why` fallback (lines 1049-1060)  
+- Shows various guidance in `build_why_report` error
+
+But the assessment says the output is just "no state event found." Maybe the issue is that during fresh-state, the events file exists with NO events, so `build_why_report` enters the `events.is_empty()` branch (line 2930), which says "State recording is active but no sessions have completed yet" but doesn't mention diagnostic errors or the specific next steps for TRULY cold-start scenarios.
+
+Or maybe the issue is that the events file doesn't exist at all during fresh-state, and the cold-start path (lines 960-997) doesn't mention some important things.
+
+Let me look at what specifically the task wants:
+
+Success Criteria:
+- Cold-start `why last-failure` output gives actionable next evidence to inspect.
+- Existing behavior for completed failed sessions remains unchanged.
+- Output distinguishes no history from missing diagnostics and from active/incomplete runs.
+
+So the improvement needed is: ensure the output clearly distinguishes between the three states (no history, missing diagnostics, active/incomplete runs) and gives actionable next evidence for each.
+
+Let me now look at what's actually missing. Let me check the `build_why_report` function more carefully for the "no history" case vs. "missing diagnostics" case. The diagnostic error is only surfaced in `handle_why`'s fallback, not in `build_why_report`. But `build_why_report`'s "no sessions completed" message doesn't mention the diagnostic error.
+
+Actually, I think the improvement should be:
+
+1. In `build_why_report`, when there's no failure found, include the diagnostic error info if available. But `build_why_report` doesn't have access to the diagnostic error.
+
+2. Alternatively, improve `handle_why` to: after `build_why_report` returns its error, take the diagnostic error and augment the output with it, AND add missing run/session IDs that could help.
+
+Actually wait, let me reconsider. The `handle_why` already does this at lines 1049-1060! It calls `take_diagnostic_error()` and prints it. So the code already handles the diagnostic error in the fallback.
+
+Hmm, let me think about this differently. What exactly is the gap?
+
+Let me look at the flow for the case where the events file exists but is empty:
+1. `read_tail_events(&path, limit)` succeeds, returns empty Vec
+2. `build_why_report(&events, "last-failure")` fails with error containing "no state event found"
+3. Error printed: "no state event found for 'last-failure'" + state summary + guidance
+4. Fallback in `handle_why`: checks incomplete runs (empty), checks diagnostic error (if any)
+
+This seems reasonable. But the assessment says the output is "only 'no state event found'" - maybe the state summary and guidance are cut off or the test was seeing truncated output?
+
+Or maybe the issue is that in some CI/CD contexts, the events file exists but isn't readable or has corrupted content?
+
+Let me look at another angle: maybe the issue is that `yyds state why last-failure` is called from the eval/CI pipeline and the output format isn't machine-parseable or the guidance isn't clear enough for an agent to act on.
+
+Actually, I think I need to look at this from the perspective of genuine improvement. Let me focus on what the task asks:
+
+> Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence.
+
+The key word is "useful." The current output may technically show all this info, but it might not be well-organized or actionable enough.
+
+Let me look at the full output of `build_why_report` for the "no history" case one more time:
+
+```
+no state event found for 'last-failure'
+
+<state summary>  (shows counts of all event types)
+
+State recording is active but no sessions have completed yet.
+Diagnostics become available after 2–3 completed evolution sessions.
+
+Try 'yoyo state tail --limit 5' to inspect recent events.
+```
+
+Then in `handle_why`, after this error is printed, the fallback checks:
+- Incomplete runs → none → nothing printed
+- Diagnostic error → if any, printed with nice formatting
+- Then the limit message
+
+So the output for a truly cold start with an empty events file and no diagnostic error would be:
+
+```
+  no state event found for 'last-failure'
+
+<state summary - empty>
+
+State recording is active but no sessions have completed yet.
+Diagnostics become available after 2–3 completed evolution sessions.
+
+Try 'yoyo state tail --limit 5' to inspect recent events.
+
+(searched 0 events)
+```
+
+This is actually pretty good. But the assessment says it's not enough. Let me think about what's missing...
+
+Maybe the issue is that in the actual harness CI environment, the session is mid-flight: RunStarted has been recorded but RunCompleted hasn't, and there's a diagnostic error about something. The current code handles this with "A session is currently in progress" message, but perhaps it could be more specific about what to do next.
+
+Or maybe the issue is the opposite: the code IS good now but the assessment was done with an older version of the code, and the task says to further improve it.
+
+Let me look at what specific improvement would add value. The success criteria say:
+
+> Output distinguishes no history from missing diagnostics and from active/incomplete runs.
+
+Looking at the current `build_why_report` error messages:
+
+1. "no history" → "State recording is active but no sessions have completed yet." + run_ids hint
+2. "missing diagnostics" → NOT explicitly called out as distinct from "no history"  
+3. "active/incomplete runs" → "A session is currently in progress." + run IDs
+
+The gap is that case 2 (missing diagnostics - where there IS a diagnostic error but no failure events) is not distinguished from case 1 (no history at all). The diagnostic error is only shown in `handle_why`'s fallback, not integrated into the `build_why_report` output.
+
+But more importantly, I think the issue might be in the flow when a session crashes or fails to start properly. The diagnostic error is stashed via `stash_diagnostic_error`, but it's only consumed once. If the events file exists but doesn't have a RunCompleted event for the current run, the diagnostic error may have already been consumed by a previous `take_diagnostic_error` call.
+
+OK, let me step back and think about what concrete improvement I can make within the scope of the listed files (`src/commands_state.rs` and `src/state.rs`).
+
+The task objectives are:
+1. Make `yyds state why last-failure` useful when there are no completed failed sessions yet
+2. Report nearby startup errors, incomplete runs, or missing diagnostic evidence
+3. Distinguish no history from missing diagnostics and from active/incomplete runs
+
+Here's my plan:
+
+**In `src/commands_state.rs` (`build_why_report`):**
+- Add a clear section header that distinguishes between the three states: "No session history", "Missing diagnostic evidence", "Active/incomplete session"
+- When reporting "no history", include more context about what the user should check (diagnostic errors, init status)
+- When there are no failures but there IS a diagnostic error available, surface it explicitly as "missing diagnostic evidence" rather than just "no history"
+
+**In `src/commands_state.rs` (`handle_why`):**
+- When the `build_why_report` error is printed, improve the fallback to be more explicit about the three states
+- Add run/session IDs when available so the user can trace specific incomplete runs
+
+**In `src/state.rs`:**
+- Maybe add a helper to check if a diagnostic error was recently stashed (without consuming it), or add a function that returns whether one exists
+
+Actually, let me look at what would be the most impactful minimal change. Let me re-examine the `handle_why` function:
+
+The key issue: when `build_why_report` returns an error for `last-failure`, the error message already contains some guidance. But the diagnostic error is checked separately in the fallback. If the diagnostic error exists, it gets printed. But the relationship between the diagnostic error and the "no failure found" message isn't clearly connected.
+
+What if instead of having the diagnostic error as a separate, disconnected section, we integrate it better? Let me think...
+
+Actually, I think the cleanest improvement would be:
+
+1. In `build_why_report`, for the `last-failure` case when no failure event is found, add a more specific classification of WHY there's no failure:
+   - "No sessions have completed yet" (if run_completed_count == 0)
+   - "No failures in completed sessions" (if run_completed_count > 0 but failure_count == 0) 
+   - "Incomplete session detected" (if run_started but !run_completed)
+   
+2. Pass diagnostic_error info into the report so it can say "A startup diagnostic error was captured" as part of the report header, not as a separate fallback.
+
+But wait, the diagnostic error is consumed by `take_diagnostic_error()`. If `build_why_report` takes it, `handle_why` can't use it. Let me think about a better approach...
+
+Better approach:
+- Add a `diagnostic_error: Option<&str>` parameter to `build_why_report` 
+- In `handle_why`, call `take_diagnostic_error()` BEFORE calling `build_why_report` and pass it in
+- This way, `build_why_report` can include the diagnostic error in its output
+
+This would make `build_why_report`'s output for the "no failures" case more complete, including the diagnostic error context.
+
+But actually, `take_diagnostic_error()` is called in `handle_why` currently, not in `build_why_report`. And the code that prints the diagnostic error in `handle_why` (lines 1049-1060) is only reached AFTER the error from `build_why_report` is printed. The diagnostic error is printed as a separate section.
+
+Let me look at this from the user's perspective. What does the current output look like for a fresh-state session with a diagnostic error?
+
+```
+  no state event found for 'last-failure'
+
+<state summary>
+
+State recording is active but no sessions have completed yet.
+Diagnostics become available after 2–3 completed evolution sessions.
+
+Try 'yoyo state tail --limit 5' to inspect recent events.
+
+  A startup diagnostic error was captured by this process:
+    DeepSeek API authentication failed: invalid API key
+  This error may explain why no completed session exists.
+
+(searched X events)
+```
+
+This is actually already quite good! The diagnostic error is shown, next steps are given. 
+
+But the task says the output is "only 'no state event found'". Maybe the issue is that in the actual harness environment, the diagnostic error is NOT being captured properly, and the code needs to capture it better.
+
+Let me look at `stash_diagnostic_error` usage:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'stash_diagnostic_error' in src ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, there are many places where diagnostic errors are stashed. The issue in the assessment might be about a specific scenario where:
+
+1. The state events file doesn't exist (fresh start)
+2. But there IS a diagnostic error stashed
+3. The cold-start path at lines 960-997 does check for diagnostic errors
+
+Actually, let me look at the cold-start path more carefully. At line 961:
+```rust
+let Ok(events) = read_tail_events(&path, limit) else {
+    let diagnostic = crate::state::take_diagnostic_error();
+    ...
+```
+
+So on the cold-start path, the diagnostic error IS taken and displayed. Good.
+
+But then at line 1049 (the fallback after `build_why_report` fails), the diagnostic error is taken AGAIN. But `take_diagnostic_error()` consumes it! So if it was already taken at line 962, it would be `None` at line 1049.
+
+Wait no, these are two different paths:
+- Path 1 (line 961): `read_tail_events` fails → diagnostic error taken and shown
+- Path 2 (line 1003): `read_tail_events` succeeds but `build_why_report` fails → diagnostic error taken at line 1049
+
+So only one `take_diagnostic_error()` call per path. That's fine.
+
+OK, let me now think about what concrete improvement to make. I think the real issue is:
+
+1. The `build_why_report` function doesn't get the diagnostic error info passed to it, so it can't include it in its structured output.
+2. The fallback in `handle_why` does handle diagnostic errors and incomplete runs, but the output structure makes it feel like disconnected sections rather than a coherent diagnosis.
+3. The success criteria asks for distinguishing "no history" from "missing diagnostics" from "active/incomplete runs" - and while the code handles all three, it doesn't clearly label them as such.
+
+Let me make these improvements:
+
+1. **Add a `diagnostic_error: Option<&str>` parameter to `build_why_report`** so it can include diagnostic error info in its structured output.
+
+2. **In `build_why_report`'s error case for `last-failure`**, add a clear header distinguishing the three states:
+   - "No session history" (empty events, no RunStarted)
+   - "Missing diagnostic evidence" (diagnostic error available, no sessions completed)  
+   - "Active/incomplete session" (RunStarted without RunCompleted)
+
+3. **In `handle_why`**, take the diagnostic error before calling `build_why_report` and pass it in.
+
+4. **Add a test** that verifies the three states are distinguished.
+
+Wait, but the `build_why_report` is called from other places too. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_why_report' in src ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`build_why_report` is called from `handle_why` at line 1003 and in many tests. Let me check if there are other callers:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "build_why_report(" sr… ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The only non-test caller is line 1003 in `handle_why`. So I can safely add a `diagnostic_error` parameter to `build_why_report`.
+
+Now let me plan the actual implementation:
+
+1. **Modify `build_why_report` signature** to accept `diagnostic_error: Option<&str>`
+2. **In `build_why_report`'s error case for `last-failure`**, add:
+   - A clear state classification header
+   - Integration of diagnostic error info
+3. **In `handle_why`**, take diagnostic error before calling `build_why_report`
+4. **Add tests** for the three distinct states
+5. **Update all test callers** to pass `None` or appropriate diagnostic_error
+
+Let me now write a test first.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a good understanding of the code. Let me look at the state.rs file for context on diagnostic errors, and then plan my changes.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:65..95  ▶ read src/state.rs:485..535 ✓ (91ms)
+ ✓ (75ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I have a clear picture. Let me also check how `handle_why` is called to understand the args layout:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:78..98 ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have full context. Let me plan the implementation:
+
+**Problem:** `yyds state why last-failure` during fresh-state/cold-start sessions shows `no state event found` without clearly distinguishing between:
+- No history at all (empty events, no sessions)
+- Missing diagnostics (diagnostic error available, no sessions completed)
+- Active/incomplete runs (RunStarted without RunCompleted)
+
+**Current state:** 
+- The cold-start path (no events file) at lines 960-997 already has good diagnostics
+- The `build_why_report` error path (lines 2906-2989) has some guidance but doesn't incorporate the diagnostic error
+- The `handle_why` fallback (lines 1003-1061) adds incomplete runs and diagnostic error info as separate sections
+
+**Plan:**
+1. Add `diagnostic_error: Option<&str>` parameter to `build_why_report`
+2. In `build_why_report`'s error case, add a clear state classification header and include the diagnostic error
+3. In `handle_why`, take diagnostic error before calling `build_why_report` and pass it in
+4. Add tests for the three distinct states
+5. Update all test callers
+
+Let me first write the test, then make the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (32ms)
+  ▶ todo ✓ (32ms)
+  ▶ todo ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at where the existing tests for `build_why_report` are to understand the test pattern, and then add my test. I'll add the test near the existing `why_report_suggests_alternatives_when_no_failure_found` test (around line 17240).
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.4s (3 ✓)
+
+Let me find the right test location and write a test that verifies the three cold-start diagnostic states:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17330..17370 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the test helper functions to understand the test pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event\b' in src/commands_state.rs ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the test event helper function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^fn event(' src/comma… ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the test helper:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn event\b' src/comma… ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the event helper:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14157..14197 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me plan my implementation precisely.
+
+I need to:
+
+1. **Add a test** that verifies `build_why_report` with `diagnostic_error` distinguishes between three states:
+   - No history (empty events, no diagnostic) → mentions "no sessions completed"
+   - Missing diagnostics (empty events, WITH diagnostic error) → mentions diagnostic error
+   - Active/incomplete (RunStarted without RunCompleted) → mentions "in progress"
+
+2. **Modify `build_why_report`** to accept `diagnostic_error: Option<&str>` and include it in the error output for the `last-failure` case.
+
+3. **Update `handle_why`** to take diagnostic error before calling `build_why_report`.
+
+4. **Update all test callers** to pass `None` as diagnostic_error.
+
+Let me now implement these changes. I'll start by adding the test.
+
+Let me think about what the test should look like. I'll add a test called `why_report_distinguishes_cold_start_states` that tests three scenarios:
+
+1. Empty events, no diagnostic error → "no sessions have completed yet"
+2. Empty events, with diagnostic error → mentions the diagnostic error content
+3. Events with RunStarted but no RunCompleted → "in progress"
+
+Wait, scenario 2 is a bit tricky because the diagnostic error is embedded in the output, not accessed from events. I'll need to call `build_why_report` with the new parameter.
+
+Let me now write the test and modifications.
+
+Actually, let me also look at how `handle_why` currently uses `take_diagnostic_error` to understand the full picture:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me write the test first, then implement the changes. Let me find the exact test insertion point:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17340..17350 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement. The plan:
+
+1. Add a test at line 17343 (before the `lineage_report_links` test)
+2. Modify `build_why_report` signature at line 2905
+3. Modify `build_why_report` error handling for `last-failure`
+4. Modify `handle_why` at line 959 to take diagnostic error before calling `build_why_report`
+
+Let me first add the test and modify `build_why_report`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (32ms)
+
+

@@ -1,0 +1,402 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and understanding the task scope, then take concrete action quickly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines) ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the skill and then quickly move to action per the checkpoint instruction.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read skills/evolve/SKILL.md:80..160 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I've read the evolve skill. The checkpoint says the previous attempt was analysis-only and I'm in failure-recovery mode. I need to take concrete action by my third tool turn. Let me check what the task surface looks like - src/commands_state.rs and src/state.rs, find the key functions, and make a focused edit.
+
+Let me quickly check:
+1. Does `state why last-failure` exist? Let me look at the handle_why and build_why_report functions.
+2. Can I make a small, focused edit that improves cold-start diagnostics?
+
+The task says: Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence.
+
+Let me find the relevant functions quickly.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me quickly find the key functions and take concrete action.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn handle_why\|fn bui… ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the handle_why function and build_why_report function more closely to understand the current behavior.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:959..1039 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see the current code already handles the cold-start case well! Let me read the rest:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1038..1088 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also look at the `build_why_report` function to see how it handles the error case for cold-start:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at the `build_why_report` function's `last-failure` error handling:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2905..3005 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current state. The code already has pretty good cold-start diagnostics. Let me re-read the task objective:
+
+> Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence.
+
+Looking at the current code:
+
+1. **`handle_why`** (line 959): When `read_tail_events` fails (no state file):
+   - Shows diagnostic error if present
+   - For `last-failure`: shows "No completed failed sessions exist" + "Next evidence to inspect" with concrete commands
+   - For other IDs: shows "To enable state recording, run: yyds state init"
+
+2. **`build_why_report`** (line 2905): When `find_target_event` fails (event not found):
+   - Empty events / no sessions: "State recording is active but no sessions have completed yet"
+   - In-progress session: "A session is currently in progress" + incomplete run IDs
+   - No failures: "N successful sessions recorded. No failure data to diagnose." + next steps
+   - Some failures but not enough: "N failures recorded but not enough to cluster into patterns"
+   - For `last-failure`: shows additional guidance
+
+3. **`handle_why` fallback** (line 1014): When `build_why_report` returns Err for `last-failure`:
+   - Shows incomplete runs
+   - Shows diagnostic error
+
+This is already quite comprehensive. The task says "Improve cold-start state failure diagnostics" — the diagnostics already exist. Let me check if there's maybe a test gap or an edge case where the diagnostics don't fire properly.
+
+Wait, let me re-read the checkpoint more carefully:
+
+> The previous attempt ended without landed file progress and without TASK_TERMINAL_EVIDENCE. Do not continue broad source archaeology. This is the final implementation attempt for this task. Treat it as failure-recovery mode, not a fresh investigation.
+
+> By your third tool turn in this retry, do exactly one of:
+> - write or edit a focused regression test in the listed task surface,
+> - edit one listed task-scope source file,
+> - write session_plan/task_01_obsolete.md with exact evidence that the task is already satisfied,
+> - write session_plan/task_01_blocked.md with the concrete blocker and missing evidence.
+
+So I have limited turns. Let me check: does the code already satisfy this task? The diagnostics already exist. But the task says the output is "no state event found" — let me check if that's the actual output or if it's been improved since.
+
+Let me look at one critical scenario: when there IS a state events file but NO failed sessions (cold-start with state recording active). The `build_why_report` function would return an error with the special messaging. But what happens when there's NO state events file at all? The `handle_why` function catches that.
+
+Actually, wait. Let me look more carefully at the task statement:
+
+> The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions.
+
+So the scenario is: state recording is active (events file exists), but no completed failed sessions yet. In `build_why_report` (line 2935-2937), for `last-failure` when events are empty or no sessions completed:
+
+```rust
+if id == "last-failure" {
+    err.push_str("\n\nTry 'yoyo state tail --limit 5' to inspect recent events.");
+}
+```
+
+This says "Try inspecting recent events" but doesn't mention `crashes`, `init`, or `doctor` like the no-state-file case does. Let me check if this is the gap.
+
+Actually, looking at lines 2930-2937:
+- When `events.is_empty() || (run_completed_count == 0 && !run_started)`: State recording is active but no sessions → guidance: "Try state tail"
+- When `run_completed_count == 0 && run_started`: Session in progress → guidance with incomplete runs: "Try state tail"
+- When `failure_count == 0`: No failures → guidance: "Try state crashes"
+- When `failure_count > 0`: Not enough to cluster → no special guidance
+
+Also, `build_why_report` doesn't take `diagnostic_error` as a parameter — so when the state file exists but no failures are found, startup diagnostic errors are NOT shown.
+
+That IS the gap: `build_why_report` can't include the diagnostic_error in its output. The `handle_why` fallback at line 1049 does call `take_diagnostic_error()` but only in the fallback path after `build_why_report` returns an error.
+
+So the improvement would be: add `diagnostic_error: Option<&str>` parameter to `build_why_report` so it can include startup diagnostic errors in its error output. This would make the diagnostics more helpful when there's a state file but no failed sessions.
+
+But wait - the evolve skill says:
+> If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test...
+
+I think the code is pretty close to satisfying this already. Let me add a focused regression test that verifies the cold-start diagnostic output includes the key guidance messages. That would be a scoped verification improvement.
+
+Actually, let me also check if there's a quick improvement I can make: add diagnostic error reporting to `build_why_report`'s error messages. Currently, the diagnostic error is only shown in `handle_why`'s fallback path (after `build_why_report` returns `Err`). If `build_why_report` could include the diagnostic in its error output, cold-start diagnostics would be more complete.
+
+Wait, but the evolve skill says to keep changes scoped. Let me think about what the minimum viable change is.
+
+The task says:
+> Success Criteria:
+> - Cold-start `why last-failure` output gives actionable next evidence to inspect.
+> - Existing behavior for completed failed sessions remains unchanged.
+> - Output distinguishes no history from missing diagnostics and from active/incomplete runs.
+
+Looking at the current code:
+1. ✓ Cold-start `why last-failure` output already gives actionable next evidence (lines 979-996 for no state file, lines 1014-1060 for fallback)
+2. ✓ Existing behavior is unchanged
+3. The output DOES distinguish between:
+   - **No history** (lines 975-977: "This is a cold start: no evolution sessions have recorded state yet")
+   - **Missing diagnostics** (lines 969-973: shows diagnostic error if captured)
+   - **Active/incomplete runs** (lines 1018-1043: shows incomplete runs)
+
+So actually, the task is ALREADY satisfied. The previous attempt was probably analysis-only because the code already does this.
+
+Per the evolve skill rule 6: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable."
+
+So I should add a regression test that verifies the cold-start diagnostics work correctly. Let me add a test that:
+1. Verifies `handle_why` with no state file produces the expected diagnostic output
+2. OR verifies `build_why_report` with empty events produces the expected guidance
+
+But `handle_why` writes to stderr/stdout — it's hard to test directly. `build_why_report` returns a Result<String, String>, which I can test. Let me add a test for `build_why_report` that verifies cold-start diagnostics are distinct and actionable.
+
+Actually, wait — there are already tests. Let me look at lines 17219+, 17244+, etc. Let me check what tests exist and whether they cover the cold-start scenarios.
+
+Let me look at the existing test at line 17219:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17219..17339 ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The existing tests at lines 17240-17328 already cover:
+
+1. Empty state (no events) → suggests `state tail --limit 5` ✓
+2. All green (no failures) → suggests `state crashes` and `state why last-crash` ✓
+3. Active incomplete run → mentions "in progress" and shows run ID ✓
+4. Multiple incomplete runs → caps at 5 ✓
+5. Custom ID → keeps generic guidance ✓
+
+These tests already verify the cold-start diagnostic behavior! The task IS already satisfied.
+
+But wait — one nuance: the task says the build_why_report doesn't include diagnostic_error. Let me check: when the state file exists but startup diagnostic errors were captured, does the output distinguish "no history" from "missing diagnostics"?
+
+Yes — `handle_why` at line 1049 calls `take_diagnostic_error()` and shows it when `build_why_report` returns an error. So diagnostics ARE shown in the fallback path.
+
+The only remaining gap I can see: the `build_why_report` error output itself doesn't mention diagnostic errors. If someone calls `build_why_report` programmatically (not through `handle_why`), they wouldn't see diagnostic errors. But that's an internal API concern, not a user-facing issue.
+
+Per the evolve skill rule 6, I should add a regression test that mechanically verifies the cold-start behavior is preserved. Let me add a test that specifically verifies the `handle_why` cold-start path OR verifies that `build_why_report` distinguishes between no-history and in-progress states with actionable guidance.
+
+Actually, testing `handle_why` directly is hard because it uses `read_tail_events` which reads from disk. Let me instead add a test for `build_why_report` that verifies the "no state event found" error message includes actionable next-step commands.
+
+Wait, looking at the existing test `why_report_suggests_alternatives_when_no_failure_found` at line 17240, it already tests ALL of these scenarios! The test is comprehensive.
+
+So the question is: is there ANY remaining gap? Let me re-read the task description one more time:
+
+> The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions.
+
+This might have been an OLD assessment from before these diagnostics were added. Let me check git log to see when the cold-start diagnostics were added...
+
+Actually, I shouldn't do archaeology. Let me focus: what's the smallest scoped change I can make?
+
+Option 1: The code already satisfies the task → write `session_plan/task_01_obsolete.md` with exact evidence.
+Option 2: Add a regression test that's not already covered.
+
+Let me look for a specific gap: does `build_why_report` distinguish between "no history" (empty state) and "in-progress run" clearly in the error message? Let me check:
+
+- Empty events: "State recording is active but no sessions have completed yet."
+- In-progress: "A session is currently in progress."
+
+Yes, these are distinct. The task says:
+> Output distinguishes no history from missing diagnostics and from active/incomplete runs.
+
+Let me check the "partially completed but no failures" case:
+- No failures (some completed): "N successful session(s) recorded. No failure data to diagnose." + suggests `state crashes` and `state why last-crash`.
+
+So all three states are distinguished. The task is already satisfied.
+
+I think the honest path is to write `session_plan/task_01_obsolete.md` explaining that the diagnostics are already in place, with evidence from the existing tests and source code. But the evolve skill says: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test..."
+
+So instead of just writing obsolete, let me add a regression test that strengthens the verification. I can add a test that specifically verifies ALL three cold-start states (no history, in-progress, no-failures) produce DISTINCT actionable guidance — making the existing behavior mechanically verifiable in a single test that the task description's "Success Criteria" can be checked against.
+
+Let me add a focused test that verifies:
+1. Empty events → output contains "state tail" (actionable)
+2. In-progress run → output contains "in progress" AND the run ID (actionable)  
+3. No failures after completed runs → output contains "state crashes" (actionable)
+4. All three produce DIFFERENT outputs (distinguishes the states)
+
+But actually, these are already tested in the existing test. Let me add a more specific test that directly checks the Success Criteria:
+
+> - Cold-start `why last-failure` output gives actionable next evidence to inspect.
+> - Output distinguishes no history from missing diagnostics and from active/incomplete runs.
+
+I can add a test `why_report_cold_start_output_is_actionable` that verifies the error output for each cold-start scenario contains specific actionable commands AND that the three scenarios produce distinct guidance.
+
+Actually, let me just add a focused regression test that directly verifies the three states are semantically distinct with actionable guidance. This is a scoped verification improvement.
+
+Let me find where to insert the test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. The code already has comprehensive cold-start diagnostics. Let me check what tests exist and whether the task criteria are already met.
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17338..17388 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK now I see that the test at line 17343 closes the block. Let me find a good insertion point for a new test. Let me look at the test just after the `why_report_suggests_alternatives_when_no_failure_found` test, around line 17343.
+
+I'll add a focused regression test that verifies the Success Criteria directly: cold-start `why last-failure` output is actionable, and the three states are distinguished.
+
+Let me now write the test. The test should verify:
+
+1. Empty events (no history) → output suggests `state tail --limit 5`
+2. In-progress (RunStarted without RunCompleted) → output says "in progress" and shows run ID
+3. No failures after completed runs → output suggests `state crashes --limit 10`
+4. All three outputs are different from each other (they distinguish the states)
+
+Wait, these are already tested individually. Let me instead add a single consolidated test that covers ALL three cold-start states in one place with assertions that match the Success Criteria exactly. This makes the behavior mechanically verifiable.
+
+Let me insert it right after line 17343, before the `lineage_report_links_patch_events_by_patch_id_and_evidence` test.
+
+Actually, the evolve skill says "by your 5th tool turn" and "by your third tool turn in this retry" — I need to act fast. Let me write the test now.
+────────────────────────────────────────────────────────────────────────────────
+
+The code already satisfies this task. The diagnostics are comprehensive. Per the evolve skill rule 6, I'll add a focused regression test that mechanically verifies the three cold-start states are distinct and actionable. Let me act now (turn 4).
+            // Custom IDs get a generic suggestion, not the last-failure-specific alternatives
+            assert!(err.contains("no state event found for 'evt-nonexistent'"));
+  +     }
+  + 
+  +     #[test]
+  +     fn why_report_cold_start_output_is_actionable_and_distinguishes_states() {
+  +         // Verify Success Criteria: cold-start `why last-failure` output gives
+  +         // actionable next evidence AND distinguishes no-history from in-progress
+  +         // from no-failures states.
+  +         //
+  +         // State 1: No history (empty events file, fresh cold start)
+  +         let no_history: Vec<Value> = vec![];
+  +         let err1 = build_why_report(&no_history, "last-failure").unwrap_err();
+  +         assert!(
+  +             err1.contains("no sessions have completed"),
+  +             "no-history should mention no sessions completed, got: {err1}"
+  +         );
+  +         assert!(
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (3 → 73 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (3 → 73 lines)
+            // Custom IDs get a generic suggestion, not the last-failure-specific alternatives
+            assert!(err.contains("no state event found for 'evt-nonexistent'"));
+  +     }
+  + 
+  +     #[test]
+  +     fn why_report_cold_start_output_is_actionable_and_distinguishes_states() {
+  +         // Verify Success Criteria: cold-start `why last-failure` output gives
+  +         // actionable next evidence AND distinguishes no-history from in-progress
+  +         // from no-failures states.
+  +         //
+  +         // State 1: No history (empty events file, fresh cold start)
+  +         let no_history: Vec<Value> = vec![];
+  +         let err1 = build_why_report(&no_history, "last-failure").unwrap_err();
+  +         assert!(
+  +             err1.contains("no sessions have completed"),
+  +             "no-history should mention no sessions completed, got: {err1}"
+  +         );
+  +         assert!(
+  +             err1.contains("state tail"),
+  +             "no-history should suggest state tail as next action, got: {err1}"
+  ... (53 more lines)
+ ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, edit applied. Now let me run the focused test:
+────────────────────────────────────────────────────────────────────────────────
+
+Good, test added. Now let me run the focused test:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test why_report_cold_sta… ✓ (31.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Test passed. Now let me also run the existing related tests to make sure I didn't break anything:
+────────────────────────────────────────────────────────────────────────────────
+
+Test passes. Let me verify the existing related tests still pass too:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test why_report_suggests… ✓ (130ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Empty — that test was already filtered. Let me check `cargo fmt` and `cargo build`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Formatting issues. Let me fix by running cargo fmt.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run the test again + cargo build:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test why_report_cold_sta… ✓ (31.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Test passes. Let me also run `cargo fmt -- --check` and `cargo build`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && c… ✓ (8.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All checks pass. Now let me verify the diff, commit, and finish.
+────────────────────────────────────────────────────────────────────────────────
+
+All checks pass. Let me verify the diff and commit:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, only `src/commands_state.rs` is changed, which is in the task's Files list. Let me confirm the diff is what I expect:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/commands_state.rs ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Diff looks correct — only a new test added. The task surface is `src/commands_state.rs`, the file is in the task's Files list. Let me commit now.
+────────────────────────────────────────────────────────────────────────────────
+
+Diff is exactly a focused regression test in `src/commands_state.rs` (in the task's Files list). Committing:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed. Now let me summarize:
+
+The task asked to improve cold-start `state why last-failure` diagnostics. Upon inspection, the code already had comprehensive cold-start diagnostics in `handle_why` and `build_why_report` — distinguishing no history, in-progress runs, and no failures with actionable next-step guidance. The previous implementation attempt was analysis-only because the functionality was already in place.
+
+Per the evolve skill rule 6, I added a focused regression test (`why_report_cold_start_output_is_actionable_and_distinguishes_states`) that mechanically verifies all three cold-start states produce distinct, actionable output — matching the task's Success Criteria. This makes the existing behavior mechanically verifiable and prevents regression.
+
+TASK_TERMINAL_EVIDENCE: changed
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**What happened:** The task asked to improve cold-start `state why last-failure` diagnostics. Upon inspection, the code already has comprehensive cold-start diagnostics in `handle_why` and `build_why_report` — distinguishing no history, in-progress runs, and no-failures with actionable next-step commands (`state tail`, `state crashes`, `state why last-crash`, etc.). The previous implementation attempt was analysis-only because the functionality was already in place.
+
+**What changed:** Added a focused regression test `why_report_cold_start_output_is_actionable_and_distinguishes_states` in `src/commands_state.rs` that mechanically verifies:
+1. Empty state → mentions "no sessions have completed" + suggests `state tail`
+2. In-progress run → mentions "in progress" + shows run ID + suggests `state tail`
+3. No failures after completed runs → mentions "successful" + suggests `state crashes` + `state why last-crash`
+4. All three states produce **distinct** outputs
+
+**Verification:** `cargo fmt -- --check` ✓, `cargo check` ✓, `cargo test why_report_cold_start_output_is_actionable -- --test-threads=1` ✓
+
+**File touched:** `src/commands_state.rs` (78 lines added, regression test only)
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
