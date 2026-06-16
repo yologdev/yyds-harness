@@ -2886,7 +2886,7 @@ mod tests {
         };
         let exit_code = result.details.get("exit_code").and_then(|v| v.as_i64());
         assert_eq!(exit_code, Some(1));
-        assert_eq!(exit_code.unwrap() == 0, false);
+        assert!(exit_code.unwrap() != 0);
 
         // Case 3: details has no exit_code (non-bash tool, or empty details)
         let result = ToolResult {
