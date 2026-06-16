@@ -1,0 +1,414 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill, the target file, and understanding the change needed. This is a surgical data-capture improvement to `src/prompt.rs`.
+
+Let me:
+1. Read the evolve skill
+2. Read the relevant section of `src/prompt.rs`
+3. Understand the state.rs CommandCompleted event
+4. Write a test
+5. Make the change
+6. Verify
+7. Commit
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/prompt.rs:855..895 ✓ (17ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the exact code I need to modify at lines 868-877. Now let me understand the `result.details` structure by looking at how it's set in the bash tool. Let me also check the `ToolResult` type and find where `details` is populated for bash commands.
+
+Let me look at:
+1. The `result` variable type in this context (it should be `ToolResult`)
+2. How `details` is set for bash commands (probably in `tools.rs`)
+3. The `state.rs` to understand the event recording
+
+Let me also verify that `result` is available at this scope.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'result.details' (*.rs)  ▶ search 'exit_code' (*.rs) ✓ (14ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can confirm the structure. In `src/tools.rs` line 648, the bash tool sets `details` with `{"exit_code": exit_code, "success": exit_code == 0}`. So `result.details` has the right structure.
+
+Now let me look at how `result` is available in the event handler scope. Let me read a bit more context around the ToolExecutionEnd handler to see how `result` is defined.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:815..875 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full picture. At line 850, `result` is available as `ToolResult` and has `.details` field. I can see the code I need to modify.
+
+Now let me understand the full pattern. Let me also check `src/tools.rs` around line 648 to confirm the details structure.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. I can see the exact code at line 850 where `result` (a `ToolResult`) is available. Now let me also look at the `ToolResult` type to confirm the `.details` field:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'pub details: Option<serde_json' (*.rs) ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the ToolResult struct definition.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct ToolResult' (*.rs) ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+ToolResult is likely from yoagent. Let me check what's imported.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ToolResult' (*.rs) ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+ToolResult is `yoagent::types::ToolResult`. Let me check the yoagent source for its structure. But I can also see from `src/tools.rs:648` that `details` is a field on ToolResult. Let me look at the tools.rs to confirm how it's set.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:630..660 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have confirmation. The `details` field is set to `serde_json::json!({ "exit_code": exit_code, "success": exit_code == 0 })`. But wait - the type is `serde_json::json!()` value, not `Option<serde_json::Value>`. Let me check the actual yoagent ToolResult type to confirm.
+
+Let me check the yoagent types for ToolResult's `details` field type.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -R -F 'details' ~/.cargo/registry/src/*/yoagent-*/src/types/mod.rs ~/.cargo… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No results - maybe the field is named differently. Let me check for the struct definition differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ find ~/.cargo/registry/src/ -path '*/yoagent-*/src/types*' -type f 2>/dev/null |… ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the `ToolResult` struct in the yoagent types file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ToolResult\|pub details' /home/runner/.cargo/registry/src/index.crates.… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `details` field is `serde_json::Value`, not `Option<serde_json::Value>`. The task description says `Option<serde_json::Value>`, but it's actually `serde_json::Value`. That's fine - we can still use `as_ref()` and `get()` on it since it's a Value. 
+
+Actually wait - since `details` is `serde_json::Value` (not `Option`), we don't need `.as_ref()`. We can directly call `.get("exit_code")` and `.and_then(|v| v.as_i64())`.
+
+Let me also look at the full struct:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoagent-0.8.3/src/types.rs:373..393 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. `details` is `serde_json::Value`, not `Option<serde_json::Value>`. The default is... let me check. With `#[serde(default)]`, the default for `serde_json::Value` is `Value::Null`. But in practice, the bash tool always sets it to `json!({ "exit_code": exit_code, "success": exit_code == 0 })`.
+
+Now, since `details` is `serde_json::Value` (not `Option`), I need to adjust the approach slightly:
+
+```rust
+let exit_code = result.details.get("exit_code").and_then(|v| v.as_i64());
+```
+
+This works because if `details` is `Value::Null` or doesn't have `exit_code`, `.get()` returns `None`.
+
+Now let me implement this. The change is surgical - I need to modify lines 868-877 in `src/prompt.rs`.
+
+Let me now write a test first. I need to check what tests exist for this area.
+
+Let me look at the existing tests in prompt.rs for state event recording.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the context I need. Let me write a test first and then make the surgical edit. Let me search for existing tests related to CommandCompleted:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'CommandCompleted' (*.rs) ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the existing test in `context.rs` around line 2179 to see if there's a test for CommandCompleted with exit_code:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/context.rs:2140..2190 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, there are existing tests that use `CommandCompleted` events. Now let me write a focused test that verifies the `exit_code` is captured in the CommandCompleted payload when a bash command runs.
+
+Let me look at how `state::record` works and whether there are existing tests for the state recording path in prompt.rs. Actually, it might be easier to write a test in `src/tools.rs` since the bash tool is what produces the `details` with `exit_code`, and the `prompt.rs` change is about forwarding that into the state event.
+
+Wait, actually, the change is purely about extracting exit_code from `result.details` and adding it to the state event payload. This is hard to unit test directly in `prompt.rs` without a full agent loop. Let me think about the best approach.
+
+Looking at the test patterns in the codebase, I think the best approach is:
+
+1. Write a simpler unit test that verifies the JSON extraction logic works correctly - i.e., given a `ToolResult` with `details: {"exit_code": 0, "success": true}`, the exit_code can be extracted.
+2. Or add a test in `tools.rs` that verifies the `CommandCompleted` event payload includes `exit_code` when a bash tool is used.
+
+Actually, looking at the task instructions more carefully, it says "Write a test first if possible". Let me check what kind of tests exist for state recording. Let me see if there are existing integration-level tests that exercise the prompt loop.
+
+Actually, the most pragmatic test is probably a unit test in `context.rs` or `state.rs` or even in `prompt.rs` that verifies the extraction logic. But looking at how `state::record` works - it's a global state recorder. Let me look at how existing tests use it.
+
+Actually, let me keep this simple. The change is a pure data-forwarding change - if `result.details` has `exit_code`, add it to the `CommandCompleted` payload. The test for the bash tool already verifies that `details` contains `exit_code` (as we saw in `tools.rs` lines 1963-1974). 
+
+For the `prompt.rs` side, I could write a test in `context.rs` that verifies a `CommandCompleted` event with `exit_code` field is parseable by the dashboard. But looking at the codebase pattern, let me focus on:
+
+1. Making the surgical edit to `prompt.rs`
+2. Adding a test that verifies the extraction logic
+
+Wait, I need to think about this differently. Let me check if `prompt.rs` has its own test module:
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '#\[cfg(test)\]' src/prompt.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at that test module to understand the test patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1769..1849 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test module in prompt.rs exists. Now, the challenge is that testing the exit_code extraction in the `AgentEvent::ToolExecutionEnd` handler is difficult without a full agent loop. 
+
+Let me think about the most pragmatic approach:
+
+1. The extraction logic itself is simple: `result.details.get("exit_code").and_then(|v| v.as_i64())`. 
+2. I could write a test that creates a `ToolResult` with `details: json!({"exit_code": 1, "success": false})` and verifies the extraction works.
+
+But more importantly, I need to make the actual code change. Let me focus on:
+1. Making the edit to `src/prompt.rs`
+2. Running `cargo fmt` and `cargo build`
+3. Since this is a simple data-forwarding change, adding a unit test in `prompt.rs` tests module that exercises the extraction logic
+
+Actually, let me look at how tests for state events are done. Let me check `commands_state.rs` for its test approach:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:21085..21135 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I can see the test patterns. Now let me take the practical approach:
+
+1. Make the surgical edit to `src/prompt.rs`
+2. Add a simple test in the test module of `prompt.rs` that verifies the extraction logic works (a pure function test)
+3. Run `cargo fmt`, `cargo build`, `cargo test --lib`
+
+The simplest test approach: extract the exit_code extraction into a small helper function or just test the json logic directly. But actually, the change is so simple and the pattern is already confirmed by tools.rs tests, I think the most valuable test would be one that verifies a `CommandCompleted` state event payload can contain `exit_code` and `success` fields and that downstream code handles them.
+
+Let me just make the code change first, then add a focused test. Let me start with the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. Let me make the surgical edit. The code is at lines 868-877 in `src/prompt.rs`:
+                            if tool_name == "bash" {
+  +                             let exit_code = result
+  +                                 .details
+  +                                 .get("exit_code")
+  +                                 .and_then(|v| v.as_i64());
+  +                             let mut cmd_payload = serde_json::json!({
+  +                                 "tool_call_id": tool_call_id.clone(),
+  +                                 "is_error": is_error,
+  +                                 "result_preview": preview.clone(),
+  +                             });
+  +                             if let Some(ec) = exit_code {
+  +                                 cmd_payload["exit_code"] = serde_json::json!(ec);
+  +                                 cmd_payload["success"] = serde_json::json!(ec == 0);
+  +                             }
+                                crate::state::record(
+                                    crate::state::EventType::CommandCompleted,
+                                    crate::state::Actor::Tool,
+  -                                 serde_json::json!({
+  -                                     "tool_call_id": tool_call_id.clone(),
+  -                                     "is_error": is_error,
+  ... (4 more lines)
+  ✓ Auto-approved: edit: src/prompt.rs (10 → 19 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (10 → 19 lines)
+                            if tool_name == "bash" {
+  +                             let exit_code = result
+  +                                 .details
+  +                                 .get("exit_code")
+  +                                 .and_then(|v| v.as_i64());
+  +                             let mut cmd_payload = serde_json::json!({
+  +                                 "tool_call_id": tool_call_id.clone(),
+  +                                 "is_error": is_error,
+  +                                 "result_preview": preview.clone(),
+  +                             });
+  +                             if let Some(ec) = exit_code {
+  +                                 cmd_payload["exit_code"] = serde_json::json!(ec);
+  +                                 cmd_payload["success"] = serde_json::json!(ec == 0);
+  +                             }
+                                crate::state::record(
+                                    crate::state::EventType::CommandCompleted,
+                                    crate::state::Actor::Tool,
+  -                                 serde_json::json!({
+  -                                     "tool_call_id": tool_call_id.clone(),
+  -                                     "is_error": is_error,
+  ... (4 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, edit applied. Now let me run `cargo fmt` and `cargo build` to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run `cargo fmt` and `cargo build`:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, fmt check passes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (15.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now let me add a test. I'll add a test to the test module in `src/prompt.rs` that verifies the exit_code extraction logic works correctly. The test will create a `ToolResult` with `details` containing `exit_code`, simulate the extraction, and verify the result.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now let me write a test. I'll add it to the test module at the bottom of `src/prompt.rs`:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1848..1868 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the end of the test module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:2840..2890 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I know the test module ends at line 2862. Let me add a test for the exit_code extraction logic. I'll add it before the closing `}` of the test module.
+
+The test should:
+1. Create a `ToolResult` (yoagent type) with `details: json!({"exit_code": 1, "success": false})`
+2. Simulate extracting `exit_code` and `success` from `details` (the same logic)
+3. Verify the extraction works correctly
+4. Also test the case where `details` is `Value::Null` (no exit_code field)
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add a test at the end of the test module:
+            };
+            assert!(outcome.text.contains('🐙'));
+            assert!(outcome.text.contains("日本語"));
+  +     }
+  + 
+  +     #[test]
+  +     fn test_command_completed_exit_code_extraction() {
+  +         // Simulate extracting exit_code from ToolResult.details, matching
+  +         // the logic in the AgentEvent::ToolExecutionEnd handler.
+  +         use yoagent::types::{Content, ToolResult};
+  + 
+  +         // Case 1: details contains exit_code (bash tool normal result)
+  +         let result = ToolResult {
+  +             content: vec![Content::Text {
+  +                 text: "Exit code: 0\noutput".into(),
+  +             }],
+  +             details: serde_json::json!({"exit_code": 0, "success": true}),
+  +         };
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/prompt.rs (13 → 62 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (13 → 62 lines)
+            };
+            assert!(outcome.text.contains('🐙'));
+            assert!(outcome.text.contains("日本語"));
+  +     }
+  + 
+  +     #[test]
+  +     fn test_command_completed_exit_code_extraction() {
+  +         // Simulate extracting exit_code from ToolResult.details, matching
+  +         // the logic in the AgentEvent::ToolExecutionEnd handler.
+  +         use yoagent::types::{Content, ToolResult};
+  + 
+  +         // Case 1: details contains exit_code (bash tool normal result)
+  +         let result = ToolResult {
+  +             content: vec![Content::Text {
+  +                 text: "Exit code: 0\noutput".into(),
+  +             }],
+  +             details: serde_json::json!({"exit_code": 0, "success": true}),
+  +         };
+  +         let exit_code = result.details.get("exit_code").and_then(|v| v.as_i64());
+  +         assert_eq!(exit_code, Some(0));
+  ... (34 more lines)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run cargo fmt, build, and test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check && cargo … ✓ (17.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now run the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- test_comma… ✓ (28.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Test passes. Now let me run a broader test to make sure nothing is broken - specifically the prompt tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- prompt:: 2… ✓ (147ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 57 prompt tests pass. Now let me also verify the state tests aren't broken by running the state tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- state:: 2>… ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All state tests pass too. Let me also run the commands_state tests that specifically test CommandCompleted events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- commands_s… ✓ (163ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also run the context tests related to CommandCompleted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- context::t… ✓ (2.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me verify the git diff to make sure only the intended changes were made:
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Let me verify the diff:
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (11ms)
+
+

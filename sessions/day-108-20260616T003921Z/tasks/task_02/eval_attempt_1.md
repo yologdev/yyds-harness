@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The implementation correctly extracts `exit_code` from `result.details` and adds it (plus a derived `success` field) to `CommandCompleted` state events for bash tool calls, exactly matching the task specification. Fields are omitted when unavailable, preserving backward compatibility. The included unit test covers all four cases (exit 0, exit 1, null details, empty details) and both build and tests pass.

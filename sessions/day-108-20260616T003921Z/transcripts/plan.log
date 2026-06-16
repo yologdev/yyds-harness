@@ -1,0 +1,589 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The user wants me to act as yyds, a planning agent in Phase A2. I need to create task files in `session_plan/` based on the assessment, trajectory, and evidence provided.
+
+Let me analyze what I have:
+
+1. **Assessment** - Very thorough, done by Phase A1. Build passes, tests pass.
+2. **Trajectory** - Shows recent sessions, graph-derived pressures, log feedback
+3. **No open agent-self issues** - Backlog is empty
+4. **No ISSUES_TODAY.md** mentioned - need to check if it exists
+
+Key pressures from trajectory/graph:
+1. **Close yyds state and model lifecycle gaps** (`state_run_incomplete_count=1`) - RunCompleted events not always emitted
+2. **Force analysis-only attempts into action** - retrospective classification needed
+3. **Break recurring log failure fingerprints** - but the flaky test was already fixed in Day 107
+4. **Bound failing shell commands** - bash_tool_error=22 (cumulative)
+5. **Reconcile transcript-only tool failures** - transcript_only_failed_tool_count=4
+
+The #1 pressure is the state lifecycle gap - `state_run_incomplete_count=1`. This is about RunCompleted events not being emitted for all runs. The assessment confirms: "the state database has orphaned run records."
+
+Let me also check for seed task file and ISSUES_TODAY.md.
+
+Let me start by checking if session_plan/task_01.md exists and if ISSUES_TODAY.md exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ ls session_plan  ▶ $ test -f ISSUES_TODAY.md && echo "EXISTS" || echo "NOT_FOUND" ✓ (70ms)
+ ✓ (67ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the existing task_01.md and ISSUES_TODAY.md to understand what's already there.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read ISSUES_TODAY.md ✓ (72ms)
+ ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. **task_01.md** exists but it's stale! The seed task is "Stabilize run completion guard panic test" — but the assessment says this was ALREADY DONE in Day 107 (22:24)! Specifically: "Day 107 (22:24) session stabilized the run_completion_guard panic test — 1/1 strict verified, build OK, tests OK." and "Focus test: `state::tests::run_completion_guard_reports_error_on_panic` → **passes** (stabilized)."
+
+This is a seed contradiction! The seed task asks to fix something that's already been fixed. Per the planning instruction: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+2. **ISSUES_TODAY.md** says "No trusted issues today." So no owner issues to handle.
+
+3. The **graph-derived pressures** from the trajectory are:
+   - #1: Close yyds state and model lifecycle gaps (state_run_incomplete_count=1)
+   - #2: Force analysis-only attempts into action
+   - #3: Break recurring log failure fingerprints (but already fixed)
+   - #4: Bound failing shell commands (bash_tool_error=22)
+   - #5: Reconcile transcript-only tool failures (transcript_only_failed_tool_count=4)
+
+The assessment also notes:
+- commands_state.rs is 23,839 lines - structural debt
+- The state lifecycle gap is the most actionable
+
+So I need to:
+1. Write task_01_obsolete.md explaining the seed contradiction
+2. Create a new task_01.md addressing the #1 graph pressure: state lifecycle completeness
+3. Possibly create task_02.md for another pressure
+4. Create issue_responses.md
+
+For the state lifecycle gap: The assessment says `state why last-failure` detects 1 incomplete run and points to `state crashes`. The trajectory says `state_run_incomplete_count=1` with "Lifecycle causes: state_incomplete/open_after_SessionStarted=1; gaps:..."
+
+This could involve ensuring RunCompleted events are emitted. Let me check what the trajectory/assessment actually says about this gap more specifically.
+
+The assessment says: "1 run started, 0 completed (current session)" — but this is the current session, which IS in progress. The real issue is past sessions having orphaned runs. The trajectory says: "emit RunCompleted events for every started run, including timeout and API-error exits."
+
+This is likely about `src/state.rs` or `src/commands_evolve.rs` or `scripts/evolve.sh`. The assessment mentions the `RunCompletionGuard` in `src/state.rs`. Let me think about what the right task is.
+
+The log feedback corrected lesson says: "state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1 -> emit RunCompleted events for every started run, including timeout and API-error exits"
+
+This is about ensuring that when the harness starts a run, it always emits a RunCompleted event, even on error paths. This likely involves the `RunCompletionGuard` struct in `src/state.rs` and/or the harness code that uses it.
+
+Let me create the plan. I'll:
+
+1. Write `session_plan/task_01_obsolete.md` explaining the seed contradiction
+2. Write new `session_plan/task_01.md` for the state lifecycle gap (#1 graph pressure)
+3. Consider task_02.md for transcript-state reconciliation (#5 graph pressure)
+
+For task_01, the Files line should include `src/state.rs` (where RunCompletionGuard lives). Let me also check if there are related files in commands_evolve or commands_state.
+
+Actually, per the planning instructions, I should do cheap ownership checks like `rg` or `git grep` to verify file ownership.
+
+Let me first create the obsolete file and draft task_01, then do ownership checks.
+
+Let me think about the right scope:
+
+Task 1: **Close state run lifecycle gaps** - Ensure RunCompleted events are emitted for every started run, including timeout and API-error exits. This likely touches `src/state.rs` (RunCompletionGuard), `src/commands_evolve.rs` (harness that uses it), and possibly `scripts/evolve.sh` but shell scripts aren't source files.
+
+Actually, looking more carefully: the trajectory says "state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1". This is about the state event system, which lives in `src/state.rs`. The `RunCompletionGuard` is there. The fix likely involves ensuring the guard is properly used or making it more robust.
+
+Let me check the files with a quick search.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.3s (2 ✓)
+
+The seed task is stale — the assessment confirms Day 107 (22:24) already stabilized the `run_completion_guard` test. This is a seed contradiction. I need to replace it and plan from current graph pressures.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ rg -n "RunCompletionGuard\|mark_run_completed\|run_completed_payload" src/state.…  ▶ $ rg -n "RunCompletionGuard\|mark_run_completed" src/commands_evolve.rs src/comman…  ▶ $ rg -n "fn state_why_last_failure\|open_after_SessionStarted\|incomplete.*run\|ru… ✓ (88ms)
+ ✓ (223ms)
+ ✓ (242ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+rg isn't available. Let me use grep or search.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.2s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RunCompletionGuard' in src  ▶ search 'mark_run_completed' in src ✓ (22ms)
+ ✓ (72ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The RunCompletionGuard and mark_run_completed live in `src/state.rs` and are used in `src/lib.rs`. The incomplete run lifecycle issue is about ensuring RunCompleted events are emitted for every started run.
+
+Let me also check what `state why last-failure` reports and look at the trajectory's specific gap description more carefully.
+
+The trajectory says: "Close yyds state and model lifecycle gaps (state_run_incomplete_count=1): Lifecycle causes: state_incomplete/open_after_SessionStarted=1; gaps:..."
+
+This is a graph pressure item. The corrected lesson says: "state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1 -> emit RunCompleted events for every started run, including timeout and API-error exits"
+
+Now let me also look for the "transcript-only tool failures" topic - that's pressure #5.
+
+Let me now write my plan. I'll:
+
+1. Create `session_plan/task_01_obsolete.md` for the seed contradiction
+2. Create new `session_plan/task_01.md` for state lifecycle completeness
+3. Create `session_plan/task_02.md` for transcript-state reconciliation  
+4. Create `session_plan/issue_responses.md`
+
+For task_01 (state lifecycle):
+- Files: `src/state.rs`, `src/lib.rs` - these are where RunCompletionGuard is defined and used
+- The task is about ensuring RunCompleted is emitted even on error/panic paths
+
+For task_02 (transcript-state gap):
+- This is about tool failures visible in transcripts but absent from state events
+- Files likely: `scripts/evolve.sh` (but that's in the protected list), or `src/state.rs`
+- Actually, the trajectory says "Recent transcripts contained failed tool actions absent from state evidence"
+- This could be about `ToolCallStarted`/`ToolCallCompleted` events not being captured for failures
+- The files would be in `src/state.rs` or `src/tools.rs` or `src/tool_wrappers.rs`
+
+Let me check what ToolFailureTracker does.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.6s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ToolFailureTracker\|tool_failure\|ToolCallCompleted' in src ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for ToolCallCompleted and ToolFailureTracker separately. The search tool uses literal search, so the `\|` OR syntax isn't supported. Let me search individually.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ToolFailureTracker' in src  ▶ search 'ToolCallCompleted' in src  ▶ search 'ToolCallStarted' in src ✓ (45ms)
+ ✓ (97ms)
+ ✓ (67ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. ToolCallStarted and ToolCallCompleted events exist in state.rs and are emitted in prompt.rs. The ToolFailureTracker is in tool_wrappers.rs.
+
+Now let me think about what transcript-only tool failures mean: the transcript shows a tool call that failed, but the state event stream doesn't have a corresponding ToolCallCompleted (or has it with insufficient detail). This could be because:
+1. ToolCallStarted is emitted but ToolCallCompleted is never emitted on error paths
+2. The transcript captures things the state events miss
+
+This is a subtler issue. Let me look at where ToolCallCompleted is emitted in prompt.rs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:785..875 ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. So ToolCallStarted is emitted at line 791-799, and ToolCallCompleted is emitted at line 858-867. Both use `crate::state::record()`. The `is_error` field is captured in ToolCallCompleted.
+
+Now, the transcript-state gap issue could be:
+- If a tool call starts but the agent loop crashes before ToolExecutionEnd, the ToolCallCompleted never fires
+- Or there could be edge cases where the event stream misses some completions
+
+But actually, the trajectory says "transcript-only tool failures" - meaning failures appear in transcripts (bash output logs) but not in state events. This could happen if a bash command fails inside a bash tool call, but the tool call itself completes successfully (is_error=false). The state would show ToolCallCompleted with is_error=false, but the transcript would show the actual command failure.
+
+Hmm, this is getting complex. Let me re-read the trajectory more carefully:
+
+"Reconcile transcript-only tool failures (transcript_only_failed_tool_count=4): Recent transcripts contained failed tool actions absent from state evidence"
+
+And the dashboard says: "transcript_only_failed_tool_count=4: Recent transcripts contained failed tool actions absent from state evidence — state/transcript gap."
+
+This is about the dashboard/analytics scripts detecting tool failures in the transcript that aren't represented in state events. This is a script-level reconciliation issue, not necessarily a code bug in state recording. The fix might be in:
+- `scripts/build_evolution_dashboard.py` - the dashboard
+- `scripts/log_feedback.py` - the feedback analysis
+- Or `src/state.rs` / `src/prompt.rs` if the state recording is genuinely missing events
+
+Actually, thinking about this more carefully - the trajectory says this is "Graph-derived next-task pressure" and one of the pressures. The corrected lesson for the state lifecycle gap (#1) is more actionable and directly from state evidence. Let me focus on that.
+
+For task_01: State lifecycle completeness - ensure RunCompleted for every started run.
+
+For task_02: I could do the transcript-state reconciliation, but it might be complex. Let me think about what's most actionable.
+
+Looking at the trajectory pressures more carefully:
+
+1. **state_run_incomplete_count=1** - This is the most concrete and actionable. The fix is in `src/state.rs` and `src/lib.rs` to ensure RunCompleted events are emitted.
+
+2. **task_analysis_only_attempt_count=1** - Retrospective classification. Less concrete.
+
+3. **recurring_failure_count=2** - Already fixed (flaky test stabilized).
+
+4. **bash_tool_error=22** - This is cumulative operational advice, not a code bug.
+
+5. **transcript_only_failed_tool_count=4** - State/transcript reconciliation gap.
+
+For task_01, I'll focus on the state lifecycle gap. Let me draft a concrete task.
+
+The issue is: when a run starts (RunStarted event emitted), but the process terminates abnormally (panic, timeout, SIGTERM), the RunCompleted event is never emitted. The RunCompletionGuard in state.rs uses Drop to emit RunCompleted on normal exit, but panics might not trigger Drop reliably (depends on panic=unwind vs panic=abort), and there might not be guards on all code paths.
+
+Let me look at the RunCompletionGuard code to understand the current state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:340..400 ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the RunCompletionGuard. It's used in `src/lib.rs` via `let _run_completion = state::RunCompletionGuard::completed_on_drop();` at the start of a run, and it emits RunCompleted on drop.
+
+The issue is that if the process panics with `panic=abort`, the Drop won't run. Or if the guard is never created on some code path. Or if the guard is dropped before the run actually starts (which would emit a premature RunCompleted).
+
+Let me look at how it's used in lib.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1040..1120 ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue more clearly:
+
+At line 1049: `let _run_completion = state::RunCompletionGuard::completed_on_drop();`
+
+This is created AFTER the state recorder is initialized (line 1039-1048) and BEFORE the panic hook is installed (line 1051). The RunStarted event fires inside `StateRecorder::init_global` or `append_event`.
+
+Let me check where RunStarted is emitted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'RunStarted' in src/state.rs ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. RunStarted is emitted during `StateRecorder::init_global` (line 307 in state.rs). The RunCompletionGuard is created after that, so on normal exit (drop), RunCompleted fires.
+
+The issue is that if the process panics or is killed (SIGTERM/SIGKILL), the Drop for RunCompletionGuard might not run. This is especially problematic in CI where processes get killed by timeouts.
+
+The trajectory's log feedback lesson says: "emit RunCompleted events for every started run, including timeout and API-error exits"
+
+The fix options:
+1. Install a panic hook that emits RunCompleted before the panic propagates (but this is fragile and might not work for all panic strategies)
+2. Check on next startup if a previous run's RunStarted has no matching RunCompleted, and retroactively emit one
+3. Make the StateRecorder's Drop emit RunCompleted when it detects an open run
+
+Actually, option 2 is the most reliable. When `StateRecorder::init_global` is called, it could check if the previous run has an open RunStarted without RunCompleted, and if so, emit a RunCompleted("error") for it. This would close the lifecycle gap for the previous run.
+
+Or option 3: when the StateRecorder is dropped (which should happen even on panic, as Drop runs during unwinding), it can check and emit.
+
+Wait, actually the simplest and most reliable approach: add a check in `init_global` that looks for dangling RunStarted events without RunCompleted and emits a RunCompleted for them. This handles all the edge cases because:
+- Clean exit: RunCompletionGuard already handles this
+- Panic: Next startup's init_global closes the gap
+- SIGKILL: Next startup's init_global closes the gap
+- Timeout: Next startup's init_global closes the gap
+
+This is a small, surgical change to `src/state.rs` only.
+
+Let me also check the `state why last-failure` code to understand how it detects incomplete runs, to make sure my fix addresses the right thing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'state_incomplete\|open_after_SessionStarted\|incomplete_run\…' in src/commands_state.rs ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Those terms might be in the Python scripts (dashboard, log_feedback) rather than in the Rust source. The detection is from the trajectory analysis, not necessarily from `state why`. Let me focus on the concrete task.
+
+Now let me draft the task files. I have clear evidence:
+
+1. Seed task_01.md is STALE (already fixed in Day 107)
+2. Top graph pressure: state run lifecycle gap (state_run_incomplete_count=1)
+3. No owner issues
+
+I'll create:
+- `session_plan/task_01_obsolete.md` - explaining the seed contradiction
+- `session_plan/task_01.md` - new task for state lifecycle completeness
+- `session_plan/task_02.md` - transcript-state reconciliation gap
+- `session_plan/issue_responses.md` - noting no issues to respond to
+
+For task_01 (state lifecycle), Files should be: `src/state.rs` - the init_global function and RunCompletionGuard are both there.
+
+For task_02 (transcript-state reconciliation), this is trickier. The gap is that tool failures appear in transcripts but not in state events. Let me think about what this actually means and what file(s) to touch.
+
+Looking at the state recording in prompt.rs lines 850-867, ToolCallCompleted is emitted with `is_error`. If a bash command inside a tool call fails but the tool wrapper returns the result normally, `is_error` would be false even though the command failed. So the transcript shows the command failure, but the state event shows a successful tool call.
+
+However, this is really a deeper analysis issue. The trajectory says "transcript_only_failed_tool_count=4" which is detected by the dashboard scripts analyzing both state events and transcripts. The fix could be:
+1. In `src/tool_wrappers.rs` - make ToolFailureTracker better at detecting command failures within tool calls
+2. In `src/state.rs` or `src/prompt.rs` - add more detailed error state
+
+But this is speculative without understanding exactly what mismatch the dashboard is detecting. Let me look at the dashboard analysis.
+
+Actually, this is getting too deep. Let me focus on task_01 (clearly actionable) and create a lightweight task_02.
+
+For task_02, I think the right approach is to add a `bash_exit_code` field to the CommandCompleted event so the state captures whether the bash command succeeded or failed. Currently, `is_error` in ToolCallCompleted reflects whether the tool call itself failed, not whether the command inside it failed. This would reconcile the gap.
+
+Files: `src/prompt.rs` (where CommandCompleted is emitted), `src/state.rs` (if event type changes needed)
+
+Actually, let me keep task_02 focused and small. Let me just address the #1 pressure (state lifecycle) and optionally #5 (transcript gap).
+
+Let me now write the files.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough evidence. The seed task is stale (already fixed in Day 107), and the #1 graph pressure is state lifecycle completeness. Let me create the plan files.
+  + # Obsolete Seed Task — Seed Contradiction
+  + 
+  + The harness seeded `task_01.md` with "Stabilize run completion guard panic test"
+  + before the Phase A1 assessment ran.
+  + 
+  + ## Contradiction
+  + 
+  + The assessment confirms this work was **already completed** in Day 107 (2026-06-15 22:24):
+  + 
+  + - Commit `0c3ba0e`: "Stabilize run completion guard panic test — replaced real panic path with simulated FailureObserved event injection"
+  + - Assessment self-test: `state::tests::run_completion_guard_reports_error_on_panic` → **passes** (stabilized)
+  + - Day 107 session outcome: 1/1 strict verified, build OK, tests OK
+  + - The trajectory's historical CI fingerprint ("5x run_completion_guard panicked") is marked as historical and no longer reproduces
+  + 
+  + ## Evidence
+  + 
+  + ```
+  + Assessment: "Day 107 (22:24) session stabilized the run_completion_guard
+  + panic test — 1/1 strict verified, build OK, tests OK."
+  + 
+  ... (13 more lines)
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (33 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (33 lines) ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write the real task_01.md for state lifecycle completeness, and task_02.md for transcript-state reconciliation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - Title: Stabilize run completion guard panic test
+  + Title: Close state run lifecycle gaps — emit RunCompleted for orphaned runs
+    Files: src/state.rs
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Origin: planner
+    
+    Objective:
+  - Make the `run_completion_guard_reports_error_on_panic` test deterministic and preserve the panic-path RunCompleted/FailureObserved behavior it verifies.
+  + Ensure every RunStarted event eventually has a matching RunCompleted event in the state database, even when the previous run terminated abnormally (panic, SIGTERM, timeout, CI cancellation). When `StateRecorder::init_global` runs and detects an open RunStarted without a matching RunCompleted from a prior session, it should retroactively emit RunCompleted("error") for that orphaned run before starting the new run.
+    
+    Why this matters:
+  - The assessment found the run-completion guard test failing once and passing on retry. A one-file flaky-test repair is more landable than broad lifecycle cleanup and directly protects the state evidence used by DeepSeek evolution.
+  + The trajectory reports `state_run_incomplete_count=1` as the top-ranked graph pressure. The log feedback lesson says: "state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1 → emit RunCompleted events for every started run, including timeout and API-error exits." The `state why last-failure` command correctly detects incomplete runs but can't close them — the gap persists in the state database. The RunCompletionGuard (Drop-based) handles clean exits but can't catch SIGKILL, SIGTERM, or process aborts. Every orphaned run is a permanent evidence gap that weakens state-driven evolution decisions.
+  + 
+  + This is the top-ranked graph pressure and directly impacts DeepSeek harness evidence quality.
+    
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (41 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (41 lines) ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task_02.md for transcript-state reconciliation.
+
+The trajectory says: "Reconcile transcript-only tool failures (transcript_only_failed_tool_count=4): Recent transcripts contained failed tool actions absent from state evidence."
+
+The dashboard detects this by comparing transcript action lines against state events. The gap is that when a bash command fails inside a tool call (e.g., `cargo test` returns non-zero), the tool call itself completes successfully (ToolCallCompleted with is_error=false), so the state records a successful tool call while the transcript shows a failed command.
+
+The fix is to capture the bash exit code in the CommandCompleted state event. Looking at prompt.rs lines 868-874, CommandCompleted is emitted but currently doesn't include the exit code. If we add `exit_code` to the CommandCompleted payload, the dashboard can distinguish between "tool call failed" and "command inside tool call failed."
+
+Let me check what's currently in the CommandCompleted payload.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:868..898 ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. The CommandCompleted event has `is_error` and `result_preview` but no `exit_code`. The `is_error` field reflects whether the tool call itself threw an error, not whether the bash command inside it failed with a non-zero exit code.
+
+Actually, wait — for the bash tool, `is_error` might actually be true when the bash command fails. Let me check how the bash tool handles non-zero exit codes. Does it set `is_error=true` for non-zero exit codes, or does it return the output normally?
+
+Let me check the bash tool implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn execute\|exit_code\|is_error.*bash\|bash.*is_error' in src/tools.rs ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at where the bash tool returns its result to understand whether non-zero exit codes produce is_error=true.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'StreamingBashTool\|exit_code\|non.zero\|ToolResult' in src/tools.rs ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'exit_code' in src/tools.rs ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 644-648 in tools.rs shows the bash tool captures exit_code and puts it in the result details. Let me read that section to understand what it returns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:630..660 ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the bash tool returns exit_code and success in `details` (which flows through as `result.details`), and the tool's text output starts with "Exit code: {exit_code}\n{output}".
+
+The tool result has `details.exit_code` and `details.success`. When `is_error` is false (the tool didn't throw an exception), the CommandCompleted event still gets recorded with `is_error: false` even if the bash command had a non-zero exit code.
+
+So the transcript-state gap is: non-zero-exit-code bash commands produce:
+- In transcript: "Exit code: 1\n..." showing the failure
+- In state events: ToolCallCompleted with is_error=false, CommandCompleted with is_error=false
+
+The fix: include exit_code in the CommandCompleted state event payload so the dashboard can detect bash command failures even when the tool call itself succeeded.
+
+This is a small change: in prompt.rs lines 872-876, add `exit_code` from the tool result details. The result is available at line 851 as `result` (from `ToolExecutionEnd { tool_call_id, is_error, result, tool_name, .. }`).
+
+Wait, but the `result` is a `ToolResult` which has a `details` field. Let me check what type `result` is in the event handler.
+
+Actually, looking at line 850-867, `result` is the tool result which is likely a string or a ToolResult. The `preview` is `tool_result_preview(&result, 500)` which truncates the text output. The details (including exit_code) might not be directly accessible here.
+
+Let me look at how `result` is typed in the event handler.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:75..125 ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the ToolExecutionEnd event handler more carefully to understand the `result` type.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:850..860 ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `result` in `AgentEvent::ToolExecutionEnd` is likely a `yoagent::ToolResult` which has `.content` (Vec<Content>) and `.details` (Option<Value>). Let me check what `tool_result_preview` does.
+
+Looking at the code, the `result` is passed to `tool_result_preview(&result, 500)` which extracts a preview. But the details (which contain exit_code) might not be directly accessible from the `result` in the event.
+
+Let me search for how `ToolExecutionEnd` is defined in yoagent.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'tool_result_preview' in src ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`tool_result_preview` takes `&ToolResult`. So `result` is a `ToolResult` type. And `ToolResult` has a `.details` field (as seen in the bash tool at line 648: `details: serde_json::json!({ "exit_code": exit_code, "success": exit_code == 0 })`).
+
+So in the ToolExecutionEnd handler, I can access `result.details` to get the exit_code for bash commands. This would allow me to add exit_code to the CommandCompleted state event.
+
+Let me now decide on task_02. I think the transcript-state reconciliation is a meaningful task. Here's the plan:
+
+**Task 02: Capture bash exit_code in CommandCompleted state events**
+
+Files: `src/prompt.rs` (where CommandCompleted is emitted)
+
+The change: in the CommandCompleted event recording (lines 869-877), extract `exit_code` from `result.details` when it's available, and include it in the state payload. This allows the dashboard to detect bash command failures that would otherwise appear as successful tool calls in state events.
+
+This is a ~10-line change in one file. Very surgical.
+
+Let me write task_02.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Capture bash exit_code in CommandCompleted state events to close transcript-state gap
+  + Files: src/prompt.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Add `exit_code` to the `CommandCompleted` state event payload so that bash command failures (non-zero exit codes) are visible in state evidence, not just in transcripts. This closes the gap where the dashboard detects failed bash commands in transcripts that appear as successful tool calls in state events.
+  + 
+  + Why this matters:
+  + The trajectory reports `transcript_only_failed_tool_count=4` as graph pressure: "Recent transcripts contained failed tool actions absent from state evidence — state/transcript gap." The log feedback lesson says: "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks" — but currently state events don't capture exit codes at all, making it impossible for dashboards to distinguish "tool call threw an error" from "tool call succeeded but the bash command inside it failed."
+  + 
+  + Currently, when a bash command exits with code 1, the StreamingBashTool returns the output normally (not as an error), so `is_error` is `false` in both ToolCallCompleted and CommandCompleted. The exit_code lives in `result.details` but is discarded before the state event is recorded. The dashboard has to parse transcripts to find the "Exit code: 1" line — creating the transcript-state gap.
+  + 
+  + Adding `exit_code` (or `details`) to the CommandCompleted payload makes this information available in state events, enabling dashboards and feedback scripts to detect bash command failures directly from state evidence.
+  + 
+  + Success Criteria:
+  + - `CommandCompleted` state events for bash tool calls include `exit_code` when available from the tool result details.
+  + - Existing state event consumers (dashboards, `state why`, eval scripts) are not broken by the new field.
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (74 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (74 lines) ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 108
+  + 
+  + No trusted owner issues today. Nothing to respond to.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (3 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (3 lines) ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the plan is complete:
+
+1. ✅ `session_plan/task_01_obsolete.md` — explains seed contradiction with evidence
+2. ✅ `session_plan/task_01.md` — new task for state run lifecycle completeness (top graph pressure)
+3. ✅ `session_plan/task_02.md` — transcript-state reconciliation (graph pressure #5)
+4. ✅ `session_plan/issue_responses.md` — noting no issues to respond to
+
+Both tasks are:
+- Within 3-file limit (task_01: 1 file, task_02: 1 file)
+- Surgically scoped (~10-30 lines each)
+- Evidence-backed from trajectory pressure
+- Directly improve DeepSeek harness reliability/observability
+
+Let me verify the files are all in session_plan/ directory.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the plan files are all present and well-formed.
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ ls session_plan ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The plan is complete. Let me summarize what was done and why.
+
+The key decision: I replaced the stale seed task (already completed in Day 107) with two evidence-backed tasks from the top trajectory pressure:
+
+1. **Task 01** (graph pressure #1): Close state run lifecycle gaps — add orphaned-run detection in init_global
+2. **Task 02** (graph pressure #5): Capture bash exit_code in CommandCompleted events
+
+I skipped tasks for pressures #2 (analysis-only), #3 (already fixed flaky test), and #4 (bash_tool_error=22 is cumulative operational advice, not a code bug), because those either don't represent new code bugs or are better addressed after the lifecycle/transcript gaps are closed.
+
+The planner output guard is satisfied: by my third turn, task files exist. Let me provide a clean summary.
+────────────────────────────────────────────────────────────────────────────────
+
+Plan complete. Here's what I produced:
+
+## Session Plan — Day 108
+
+### Seed Contradiction Resolved
+The harness seeded `task_01.md` to "Stabilize run completion guard panic test" — but that was **already shipped** in Day 107 (commit `0c3ba0e`). Wrote `task_01_obsolete.md` with the evidence proving the contradiction.
+
+### Task 01: Close state run lifecycle gaps
+• **Pressure**: `state_run_incomplete_count=1` — top-ranked graph pressure
+• **Files**: `src/state.rs` only
+• **Change**: Detect orphaned RunStarted events in `init_global` and retroactively emit `RunCompleted("error")` for them
+• **Why**: RunCompletionGuard handles clean exits but not SIGKILL/timeout/panic — every orphaned run is a permanent evidence gap
+
+### Task 02: Capture bash exit_code in CommandCompleted events
+• **Pressure**: `transcript_only_failed_tool_count=4` — state/transcript reconciliation gap
+• **Files**: `src/prompt.rs` only
+• **Change**: Extract `exit_code` from `result.details` and add it to CommandCompleted state payload
+• **Why**: Failed bash commands currently look successful in state events because `is_error` reflects tool-call errors, not command exit codes
+
+### Issues
+No trusted owner issues today — `issue_responses.md` notes this.
+
+### Deferred Pressures
+• **#2** (analysis-only attempts) — retrospective classification, not a code bug
+• **#3** (recurring CI fingerprints) — already fixed in Day 107
+• **#4** (bash_tool_error=22) — cumulative operational advice, not a new code bug; addressed indirectly by task_02's improved observability
+
+

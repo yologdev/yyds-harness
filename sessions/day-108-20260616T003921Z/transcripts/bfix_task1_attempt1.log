@@ -1,0 +1,377 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the test failure. The test `init_global_closes_orphaned_run_from_previous_session` is failing because it expects exactly 1 RunCompleted event but finds 2. Looking at the output, I can see there are indeed 2 RunCompleted events in the state output - but wait, looking more carefully at the output:
+
+The output shows 4 events:
+1. RunStarted (orphan start)
+2. ModelCallStarted
+3. RunCompleted (the retroactive one)
+4. RunStarted (new session)
+
+So there is only 1 RunCompleted event. The assertion `left: 2` vs `right: 1` suggests the test is counting RunCompleted events and finding 2, but the string representation only shows 1.
+
+Wait, let me re-read: the assertion message says:
+```
+assertion `left == right` failed: should have exactly one RunCompleted (the retroactive closure): {...events...}
+  left: 2
+ right: 1
+```
+
+So `left` is actual count (2) and `right` is expected (1). But looking at the events printed, I only see one RunCompleted. Unless... the `init_global` function is being called and creating a RunCompleted for the *new* run as well somehow? Or the test setup is creating a RunCompleted already?
+
+Let me look at the test code and the `init_global` implementation to understand the issue.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'init_global_closes_orphaned_run_from_previous_session' (*.rs) ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test and the surrounding code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6754..6874 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to look at the `init_global` implementation to understand why it's producing 2 RunCompleted events. The test expects 1, but gets 2. Let me look at the orphan detection logic in `init_global`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me see the orphan detection logic in `init_global`:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'orphaned' in src/state.rs (*.rs) ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `close_orphaned_run_if_needed` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:301..431 ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The `close_orphaned_run_if_needed` function is called, and it emits a RunCompleted for the orphaned run. Then `init_global` proceeds to the `recorder.append(EventType::RunStarted, ...)` which starts a new run.
+
+But wait — the test failure says `left: 2` and `right: 1`, meaning 2 RunCompleted events were found. Let me look more carefully at the output. Let me parse the JSONL output from the test failure message:
+
+Line 1: RunStarted (orphan)
+Line 2: ModelCallStarted  
+Line 3: RunCompleted (retroactive)
+Line 4: RunStarted (new)
+
+That's only 1 RunCompleted. So where's the second one?
+
+Wait, I need to re-read the test output. The assertion message shows the full file content (raw_after), and I only see one "RunCompleted" string in it. But the count says 2...
+
+Actually, let me look more carefully at the RunCompleted payload:
+
+```json
+{"id":"evt-orphan-1781571297861","schema_version":3,"ts_ms":1781571297861,"actor":{"kind":"system","id":"harness"},"kind":"RunCompleted","payload":{"_yoyo":{"actor":"harness","event_type":"RunCompleted","parent_event_ids":[],"run_id":"run-orphan-42","session_id":null,"trace_id":"trace-orphan-run-orphan-42"},"completed_at_ms":1781571297861,"error":"previous run did not complete (orphaned)","status":"error"},"causation_id":null,"correlation_id":"trace-orphan-run-orphan-42"}
+```
+
+I see `"kind":"RunCompleted"` — that's one match.
+And `"event_type":"RunCompleted"` — that's another match!
+
+So the string "RunCompleted" appears twice in a single RunCompleted event — once in `kind` and once in `event_type`. The test counts string matches with `raw_after.matches("RunCompleted").count()`.
+
+The test is using `raw_after.matches("RunCompleted").count()` which counts substring occurrences. In the retroactive RunCompleted event, "RunCompleted" appears both as `"kind":"RunCompleted"` and as `"event_type":"RunCompleted"`. So a single event produces 2 matches for the substring "RunCompleted".
+
+The pre-populated file had no "RunCompleted" at all, so the baseline is clean. After `init_global`, we have exactly 1 RunCompleted event, but it matches the substring "RunCompleted" twice. Hence count = 2.
+
+I need to fix the test to count actual RunCompleted events, not substring matches. I should parse the lines as JSON and count events where `kind` equals "RunCompleted", or where `event_type` equals "RunCompleted".
+
+Let me also check how other tests count these — the second test `init_global_does_not_double_close_when_last_event_is_run_completed` probably has the same issue.
+
+Let me read the rest of that test function to see.
+────────────────────────────────────────────────────────────────────────────────
+
+I see the bug. The test counts `raw_after.matches("RunCompleted")` as substring matches, but a single RunCompleted event contains "RunCompleted" **twice** — once in `"kind":"RunCompleted"` and once in `"event_type":"RunCompleted"`. So 1 event produces a count of 2.
+
+Let me also check the sibling test:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6838..6918 ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests have the same bug. They use `raw.matches("RunCompleted").count()` which counts substring occurrences. Each RunCompleted event has "RunCompleted" appearing twice: once in `kind` and once in `event_type`. So:
+
+- First test: expects 1 event → should get 2 substring matches (expected: 1, got: 2)
+- Second test: expects 2 events (original + new run's) → should get 4 substring matches... but wait, the second test expects 2. Let me re-read.
+
+Wait. The second test says "should have exactly two RunCompleted (original + new run's)". But `init_global` doesn't produce a RunCompleted for the new run — it only produces RunStarted. The RunCompleted for the new run comes from the `RunCompletionGuard` which fires on drop, and that only happens when the process exits.
+
+So the second test also has a mismatch: it says "original + new run's" = 2, but actually `init_global` only produces RunStarted (not RunCompleted). Let me think again...
+
+Actually, the second test pre-populates with 1 RunStarted + 1 RunCompleted (properly closed run). Then `init_global` is called. The orphan check scans the tail, sees RunCompleted as the most recent lifecycle event, and returns early — no orphan closure. Then `init_global` emits a new RunStarted. So the file now has: RunStarted, RunCompleted, RunStarted. That's 1 RunCompleted.
+
+But the test expects `run_completed_count == 2`. And the raw.matches("RunCompleted") for 1 event would give 2 substring matches. So the test currently passes by accident! Let me verify — the test says `raw.matches("RunCompleted").count()` for a single RunCompleted event = 2 (kind + event_type), and it's asserting 2. So the test passes but for the wrong reason.
+
+Actually wait, both tests share the same substring-counting bug. Let me fix both.
+
+The fix: Instead of counting substring matches of "RunCompleted", parse the JSONL lines and count events where the `event_type` field equals `"RunCompleted"`. Or more simply, parse lines as JSON Value and check `event_type`.
+
+Let me write a helper lambda in each test, or better yet, just change the counting approach.
+
+Actually, the simplest fix that's clear and correct: count lines that contain `"event_type":"RunCompleted"` — this is a more specific pattern that should appear exactly once per RunCompleted event. Let me check... looking at the event format:
+
+```json
+{"id":"evt-orphan-1781571297861","schema_version":3,"ts_ms":1781571297861,"actor":{"kind":"system","id":"harness"},"kind":"RunCompleted","payload":{"_yoyo":{"actor":"harness","event_type":"RunCompleted",...},"completed_at_ms":1781571297861,"error":"previous run did not complete (orphaned)","status":"error"},"causation_id":null,"correlation_id":"trace-orphan-run-orphan-42"}
+```
+
+Both `"kind":"RunCompleted"` and `"event_type":"RunCompleted"` appear. So using `"event_type":"RunCompleted"` would give 1 match per event. But `"kind":"RunCompleted"` would also give 1 match per event.
+
+Actually, the cleanest fix is to parse each line as JSON and count events with the right event_type. Let me use an approach that iterates lines and counts properly.
+
+But actually, the simplest correct approach: count lines where `"kind":"RunCompleted"` appears. Each RunCompleted event has exactly one `"kind":"RunCompleted"`. Let me verify by looking at the write format...
+
+Let me look at how events are serialized to the JSONL file.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the serialization format to understand the `kind` field:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn append_event' in src/state.rs (*.rs) ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the append_event function to understand how the JSONL format works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:584..624 ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The format is yoagent_state format. Both `kind` and `event_type` (inside `_yoyo` payload) contain "RunCompleted". The substring count is wrong because each event has "RunCompleted" appearing in both `"kind":"RunCompleted"` and `"event_type":"RunCompleted"`.
+
+The fix is straightforward: instead of counting substring matches, parse each line as JSON and count events where the `kind` field equals `"RunCompleted"`.
+
+Let me fix both tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the issue clearly. Each RunCompleted event in the yoagent_state JSONL format contains `"RunCompleted"` **twice** — in `"kind":"RunCompleted"` and in `"event_type":"RunCompleted"` inside `_yoyo`. So `raw.matches("RunCompleted").count()` double-counts.
+
+The fix: count JSONL lines where `"kind":"RunCompleted"` appears (exactly once per event), or parse lines as JSON and check `event_type`.
+            // 2. A RunCompleted("error") for the orphaned run
+            // 3. The mid-session events (ModelCallStarted)
+            // 4. A new RunStarted for the current session
+  -         let run_completed_count = raw_after.matches("RunCompleted").count();
+  +         let run_completed_count = raw_after
+  +             .lines()
+  +             .filter(|line| line.contains("\"kind\":\"RunCompleted\""))
+  +             .count();
+            assert_eq!(
+                run_completed_count, 1,
+                "should have exactly one RunCompleted (the retroactive closure): {raw_after}"
+  ✓ Auto-approved: edit: src/state.rs (10 → 13 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (10 → 13 lines)
+            // 2. A RunCompleted("error") for the orphaned run
+            // 3. The mid-session events (ModelCallStarted)
+            // 4. A new RunStarted for the current session
+  -         let run_completed_count = raw_after.matches("RunCompleted").count();
+  +         let run_completed_count = raw_after
+  +             .lines()
+  +             .filter(|line| line.contains("\"kind\":\"RunCompleted\""))
+  +             .count();
+            assert_eq!(
+                run_completed_count, 1,
+                "should have exactly one RunCompleted (the retroactive closure): {raw_after}"
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now fix the second test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now fix the second test the same way — it counts 2 but for a single RunCompleted that gives 2 substring matches (accidentally passing for the wrong reason). The proper count for 1 RunCompleted event from pre-populated data should be 1:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6880..6890 ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The second test pre-populates with RunStarted + RunCompleted (properly closed). Then `init_global` runs. The orphan check sees the most recent lifecycle event is RunCompleted, so it returns early. Then `init_global` emits only a new RunStarted. So the file ends up with: RunStarted, RunCompleted, RunStarted — just 1 RunCompleted.
+
+But the test expects 2 because `raw.matches("RunCompleted").count()` for 1 event gives 2 (kind + event_type). This test was passing for the wrong reason.
+
+With the fix, the correct expectation should be 1 (only the original RunCompleted — `init_global` doesn't produce RunCompleted for the new session, that's done by RunCompletionGuard on drop). Let me fix this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            let raw = std::fs::read_to_string(&events_path).unwrap();
+  -         let run_completed_count = raw.matches("RunCompleted").count();
+  +         let run_completed_count = raw
+  +             .lines()
+  +             .filter(|line| line.contains("\"kind\":\"RunCompleted\""))
+  +             .count();
+            assert_eq!(
+  -             run_completed_count, 2,
+  -             "should have exactly two RunCompleted (original + new run's): {raw}"
+  +             run_completed_count, 1,
+  +             "should have exactly one RunCompleted (the original, already-closed): {raw}"
+            );
+  ✓ Auto-approved: edit: src/state.rs (6 → 9 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 9 lines)
+            let raw = std::fs::read_to_string(&events_path).unwrap();
+  -         let run_completed_count = raw.matches("RunCompleted").count();
+  +         let run_completed_count = raw
+  +             .lines()
+  +             .filter(|line| line.contains("\"kind\":\"RunCompleted\""))
+  +             .count();
+            assert_eq!(
+  -             run_completed_count, 2,
+  -             "should have exactly two RunCompleted (original + new run's): {raw}"
+  +             run_completed_count, 1,
+  +             "should have exactly one RunCompleted (the original, already-closed): {raw}"
+            );
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check that the RunStarted counting in the first test doesn't have the same issue. The first test also counts `raw_after.matches("RunStarted")`. Let me check... a RunStarted event also has "RunStarted" in both `kind` and `event_type`. So `raw_after.matches("RunStarted").count()` for 2 RunStarted events would give 4. But the test expects 2...
+
+Wait, let me check the new event format. Looking at the output from the test failure:
+
+```
+{"id":"event_f561e46fca52412696f6012c58586997","schema_version":1,"ts_ms":1781571297867,"actor":{"kind":"system","id":"harness"},"kind":"RunStarted","payload":{"_yoyo":{"actor":"harness","event_type":"RunStarted",...},"session":"new"},...}
+```
+
+The format from yoagent_state uses `"kind":"RunStarted"` and inside `_yoyo` it uses `"event_type":"RunStarted"`. So each event has "RunStarted" twice. With 2 RunStarted events, `raw.matches("RunStarted")` would count 4. But the test expects 2.
+
+Hmm, but the first test's RunStarted count assertion is at line 6831:
+```
+let run_started_count = raw_after.matches("RunStarted").count();
+assert_eq!(run_started_count, 2, ...);
+```
+
+This should fail too... unless the test is currently failing only at the RunCompleted assertion and never reaches the RunStarted assertion. Let me check the test output again:
+
+The test panicked at line 6813 (the RunCompleted assertion) with `left: 2, right: 1`. It never reached the RunStarted assertion. So that one would also fail once the RunCompleted assertion is fixed.
+
+Let me fix the RunStarted count in the first test too.
+────────────────────────────────────────────────────────────────────────────────
+
+The RunStarted count in the first test has the same substring-counting bug — let me fix it too:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6833..6843 ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to fix this too. Each RunStarted event contains "RunStarted" twice (kind + event_type), so 2 events = 4 substring matches, but test expects 2.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            // There should be exactly two RunStarted events (orphan + new)
+  -         let run_started_count = raw_after.matches("RunStarted").count();
+  +         let run_started_count = raw_after
+  +             .lines()
+  +             .filter(|line| line.contains("\"kind\":\"RunStarted\""))
+  +             .count();
+            assert_eq!(
+                run_started_count, 2,
+                "should have exactly two RunStarted events (orphan + new): {raw_after}"
+  ✓ Auto-approved: edit: src/state.rs (6 → 9 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 9 lines)
+            // There should be exactly two RunStarted events (orphan + new)
+  -         let run_started_count = raw_after.matches("RunStarted").count();
+  +         let run_started_count = raw_after
+  +             .lines()
+  +             .filter(|line| line.contains("\"kind\":\"RunStarted\""))
+  +             .count();
+            assert_eq!(
+                run_started_count, 2,
+                "should have exactly two RunStarted events (orphan + new): {raw_after}"
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check if there are any other tests in the file that use `raw.matches("RunCompleted")` or `raw.matches("RunStarted")`.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check for any other tests that might have the same bug:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search '.matches("Run' in src/state.rs (*.rs) ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, no other tests use that pattern. Now let me run the specific tests to verify the fix.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, no more instances. Now run the failing tests:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib state::tests:… ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Need to use the correct cargo test syntax for multiple test names. Each test name needs to be a separate argument to `cargo test`, or they need to be part of the same filter string.
+
+Let me try: `cargo test --lib "state::tests::init_global_closes" -- --test-threads=1`
+
+Or I can use the filter pattern that matches both.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib state::tests:… ✓ (28.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+First test passes. Now the second one.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib state::tests:… ✓ (179ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests pass. Now let me run the required gates: cargo fmt --check and cargo check.
+────────────────────────────────────────────────────────────────────────────────
+
+Both tests pass. Now run the required gates:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are some formatting issues. Let me run `cargo fmt` to auto-fix them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now check fmt and run check again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && c… ✓ (8.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both gates pass. Let me re-run the two tests one more time to confirm they still pass after formatting.
+────────────────────────────────────────────────────────────────────────────────
+
+Both gates pass. Let me re-run the tests to confirm they still pass after `cargo fmt`:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib "state::tests… ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Cargo test doesn't accept multiple TESTNAME arguments. Let me use a partial match that covers both.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib "init_global_… ✓ (28.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests pass. Let me provide a summary.
+────────────────────────────────────────────────────────────────────────────────
+
+Both tests pass. Here's what was wrong and what I fixed:
+
+**Root cause:** The tests used `raw.matches("RunCompleted").count()` (substring match), but each yoagent_state JSONL event contains the event type string **twice** — in `"kind":"RunCompleted"` and in `"event_type":"RunCompleted"` inside `_yoyo`. So 1 event produced a substring count of 2, causing the assertion `1 == 2` to fail.
+
+**Fix (3 locations in `src/state.rs`):**
+
+1. **Line ~6812** — `init_global_closes_orphaned_run_from_previous_session` RunCompleted count: changed from `raw_after.matches("RunCompleted").count()` to counting lines containing `"kind":"RunCompleted"` (1 match per event).
+
+2. **Line ~6834** — Same test's RunStarted count: same fix, changed to counting lines with `"kind":"RunStarted"`.
+
+3. **Line ~6885** — `init_global_does_not_double_close_when_last_event_is_run_completed` RunCompleted count: changed from substring-counting (which accidentally passed because 1 event × 2 matches = expected 2) to exact line counting, with the corrected expected value of 1 (only the original pre-populated RunCompleted — `init_global` doesn't produce a RunCompleted for the new session).
+
+**Verification:** `cargo fmt -- --check` ✓, `cargo check` ✓, both tests pass ✓.
+
+

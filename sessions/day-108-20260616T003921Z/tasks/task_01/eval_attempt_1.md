@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Implementation adds `close_orphaned_run_if_needed()` called from `init_global` before RunStarted, scanning the last 20 events for a dangling RunStarted without matching RunCompleted and emitting a retroactive RunCompleted("error") with the orphaned run_id. RunCompletionGuard is unchanged. All 285 state tests pass including the two new tests (orphan-closure and no-double-close), plus both existing run_completion_guard tests.
