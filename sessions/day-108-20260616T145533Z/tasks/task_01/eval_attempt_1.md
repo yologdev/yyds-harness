@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The implementation adds cold-start diagnostics to `handle_why` by surfacing stashed diagnostic errors (`take_diagnostic_error`) and scanning for incomplete runs (`find_incomplete_runs`) when `build_why_report` finds no failure. The normal path is untouched, and the three states (no events file, events exist but no failure, failure found) produce distinct output with actionable next steps like `yyds state crashes`, `yyds state doctor`, and `yyds state tail`.
