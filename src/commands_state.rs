@@ -771,8 +771,13 @@ fn handle_rollbacks(args: &[String]) {
 }
 
 fn handle_failures(args: &[String]) {
+    if args.first().map(|arg| arg.as_str()) == Some("tools") {
+        handle_tool_failures(&args[1..]);
+        return;
+    }
     if !args.is_empty() && args.first().map(|arg| arg.as_str()) != Some("--recent") {
         eprintln!("{YELLOW}  Usage: yoyo state failures --recent [--limit N]{RESET}");
+        eprintln!("{YELLOW}         yoyo state failures tools [--limit N]{RESET}");
         return;
     }
     let limit = flag_value(args, "--limit")
@@ -809,6 +814,46 @@ fn handle_failures(args: &[String]) {
         );
     }
     match build_recent_failure_report(&events, limit) {
+        Ok(report) => println!("{report}"),
+        Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+    }
+}
+
+fn handle_tool_failures(args: &[String]) {
+    let limit = flag_value(args, "--limit")
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(10);
+    let path = default_events_path();
+    let (events, skipped) = match read_events_lenient(&path) {
+        Ok(result) => result,
+        Err(_) => {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        }
+    };
+    if events.is_empty() {
+        if skipped > 0 {
+            eprintln!(
+                "{YELLOW}  no parseable events found at {} ({} lines skipped){RESET}",
+                path.display(),
+                skipped
+            );
+        } else {
+            eprintln!(
+                "{YELLOW}  no parseable events found at {}{RESET}",
+                path.display()
+            );
+        }
+        return;
+    }
+    if skipped > 0 {
+        eprintln!(
+            "{DIM}  note: {} events parsed, {} unparseable lines skipped{RESET}",
+            events.len(),
+            skipped
+        );
+    }
+    match build_tool_failures_report(&events, limit) {
         Ok(report) => println!("{report}"),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
     }
@@ -1884,6 +1929,79 @@ fn build_recent_failure_report(events: &[Value], limit: usize) -> Result<String,
         out.push_str("  ");
         out.push_str(&row);
         out.push('\n');
+    }
+    Ok(out.trim_end().to_string())
+}
+
+fn build_tool_failures_report(events: &[Value], limit: usize) -> Result<String, String> {
+    let failures: Vec<&Value> = events
+        .iter()
+        .rev()
+        .filter(|event| {
+            event_string(event, "event_type")
+                .map(|t| t == "ToolCallCompleted")
+                .unwrap_or(false)
+        })
+        .filter(|event| {
+            let payload = event.get("payload").unwrap_or(&Value::Null);
+            // Match payloads that indicate a tool failure
+            payload.get("error").is_some()
+                || payload
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s == "failed" || s == "error")
+                    .unwrap_or(false)
+                || payload
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .map(|b| !b)
+                    .unwrap_or(false)
+        })
+        .take(limit)
+        .collect();
+
+    if failures.is_empty() {
+        return Err("no tool failures found".to_string());
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{BOLD}Tool failure events{RESET} (showing {})\n\n",
+        failures.len()
+    ));
+    for event in &failures {
+        let ts = event
+            .get("timestamp_ms")
+            .and_then(|v| v.as_i64())
+            .map_or_else(|| "unknown".to_string(), |t| format_timestamp_ms(t));
+        let tool_name = event
+            .get("payload")
+            .and_then(|p| p.get("tool_name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)");
+        let error_summary = event
+            .get("payload")
+            .and_then(|p| {
+                p.get("error")
+                    .or_else(|| p.get("message"))
+                    .or_else(|| p.get("result_preview"))
+            })
+            .and_then(|v| v.as_str())
+            .unwrap_or("(no error detail)");
+        // Truncate error summary to 80 chars at nearest char boundary
+        let error_summary = if error_summary.len() > 80 {
+            let mut b = 80;
+            while b > 0 && !error_summary.is_char_boundary(b) {
+                b -= 1;
+            }
+            format!("{}...", &error_summary[..b])
+        } else {
+            error_summary.to_string()
+        };
+        let run_id = event_string(event, "run_id").unwrap_or("(unknown)");
+        out.push_str(&format!(
+            "  {DIM}{ts}{RESET}  {BOLD}{tool_name}{RESET}  {RED}{error_summary}{RESET}  {DIM}run={run_id}{RESET}\n"
+        ));
     }
     Ok(out.trim_end().to_string())
 }
