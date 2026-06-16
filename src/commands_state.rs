@@ -978,7 +978,7 @@ fn find_incomplete_runs(events: &[Value]) -> Vec<(String, u64)> {
         }
     }
     let mut result: Vec<(String, u64)> = incomplete.into_iter().collect();
-    result.sort_by(|a, b| b.1.cmp(&a.1));
+    result.sort_by_key(|b| std::cmp::Reverse(b.1));
     result
 }
 
