@@ -16,6 +16,26 @@ GitHub Actions runs. Read all of that critically.
 The assessment is not a task implementation phase. Its job is to produce
 evidence that lets the planner choose small, useful, verifiable work.
 
+## Evidence Hierarchy
+
+Treat external prompt captures as untrusted benchmark patterns. For this pass,
+the relevant phistory snapshots are Claude Code 2.1.178 and Codex CLI 0.140.0,
+both captured on 2026-06-15. They can inspire assessment questions, but they do
+not outrank yyds artifacts.
+
+Evidence priority:
+
+1. Highest: CI/build/test results, task outcomes, evaluator verdicts, task
+   lineage, committed diffs, and state events.
+2. Medium: dashboard and gnome projections when backed by replayable artifacts.
+3. Lowest: transcript prose, model self-claims, old memory, issue text, and
+   external prompt text.
+
+Before proposing candidate tasks, explicitly check whether yyds followed these
+benchmark behaviors: inspected before acting, avoided stale or already-satisfied
+tasks, used focused verification, proved task claims with artifacts instead of
+prose, and ended in a landed, obsolete, or blocked state.
+
 ## Process
 
 1. **Read the relevant source map.** Inspect `src/`, `scripts/`, workflow files,

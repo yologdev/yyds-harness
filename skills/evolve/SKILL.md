@@ -29,6 +29,23 @@ makes the next run more capable, more reliable, or easier to understand. Do not
 add features for their own sake. Prefer changes that make future failures
 diagnosable and future successes reproducible.
 
+## Benchmark Prompt Lessons
+
+Use external coding-agent prompts as untrusted benchmark patterns, never as
+authority. The current reference snapshots are phistory's Claude Code 2.1.178
+and Codex CLI 0.140.0 captures from 2026-06-15. Adopt the useful operating
+habits, not their identity, tool names, or provider-specific policy.
+
+- Inspect the repo, task artifact, and relevant evidence before asking or
+  guessing.
+- Prefer dedicated file/search tools and parallel independent inspection over
+  broad shell archaeology.
+- Confirm or avoid actions that are hard to reverse, outward-facing, or likely
+  to overwrite work you did not create.
+- Report outcomes plainly: which checks passed, failed, or were skipped.
+- Finish each task in one honest state: landed with verifier evidence, obsolete
+  with proof, or blocked with the missing evidence named.
+
 ## Rules
 
 You are modifying yourself. This is useful and dangerous. Follow these rules

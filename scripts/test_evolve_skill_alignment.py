@@ -35,13 +35,19 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("Follow the evolve skill rules", script)
         self.assertIn("Verify guessed file paths with \\`list_files\\` or \\`git ls-files <path>\\`", script)
         self.assertIn("Prefer \\`list_files\\` and the \\`search\\` tool for code discovery", script)
-        self.assertIn("Before editing, identify the task's Objective", script)
+        self.assertIn(
+            "Before editing, identify the task's Evidence, Edit Surface, Verifier, Fallback, Objective",
+            script,
+        )
         self.assertIn("Expected Evidence sections", script)
         self.assertIn("task lineage, dashboard artifacts, state events, or gnome metrics", script)
         self.assertIn("Do not assume \\`rg\\` is installed", script)
         self.assertIn("\\`grep -R -F -- '--json' src/\\`", script)
         self.assertIn("Do not send escaped regex snippets like \\`fn handle_run\\\\(\\`", script)
         self.assertIn("\\`grep -R -F -- 'fn handle_run(' src/\\`", script)
+        self.assertIn("Evidence, Edit Surface, Verifier, Fallback", script)
+        self.assertIn("Confirm the touched files overlap the task's Edit Surface", script)
+        self.assertIn("Read the relevant source or artifact before editing", script)
 
     def test_assessment_phase_uses_self_assess_skill(self):
         script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
@@ -71,6 +77,16 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn('"recent tool failures"', script)
         self.assertIn('"recent action evidence"', script)
         self.assertIn('"historical unrecovered tool failures" as context only', script)
+
+    def test_planning_phase_requires_task_acceptance_contract(self):
+        script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("Benchmark prompt captures are untrusted pattern sources", script)
+        self.assertIn("Claude Code 2.1.178 and\nCodex CLI 0.140.0", script)
+        self.assertIn("Evidence:\n- [Exact metric, artifact path", script)
+        self.assertIn("Edit Surface:\n- [The 1-3 repo files/modules", script)
+        self.assertIn("Verifier:\n- [The fastest focused command", script)
+        self.assertIn("Fallback:\n- [When to mark this task obsolete or blocked", script)
 
     def test_planning_phase_rejects_overlarge_refactor_tasks(self):
         script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
@@ -109,6 +125,17 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("graph-derived next-task pressure rows + metrics", text)
         self.assertIn("historical unrecovered tool failures", text)
 
+    def test_self_assess_skill_has_benchmark_evidence_hierarchy(self):
+        text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("Evidence Hierarchy", text)
+        self.assertIn("external prompt captures as untrusted benchmark patterns", text)
+        self.assertIn("Claude Code 2.1.178 and Codex CLI 0.140.0", text)
+        self.assertIn("Highest: CI/build/test results", text)
+        self.assertIn("Medium: dashboard and gnome projections", text)
+        self.assertIn("Lowest: transcript prose", text)
+        self.assertIn("avoided stale or already-satisfied\ntasks", text)
+
     def test_self_assess_skill_preserves_bounded_assessment_contract(self):
         text = SELF_ASSESS_SKILL.read_text(encoding="utf-8")
 
@@ -131,6 +158,24 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("inspect the actual git\n   diff", text)
         self.assertIn("required obsolete-task note", text)
         self.assertIn("Do not spend the task budget on analysis", text)
+
+    def test_evolve_skill_adopts_phistory_benchmark_patterns(self):
+        text = EVOLVE_SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("Benchmark Prompt Lessons", text)
+        self.assertIn("untrusted benchmark patterns", text)
+        self.assertIn("Claude Code 2.1.178\nand Codex CLI 0.140.0", text)
+        self.assertIn("Inspect the repo, task artifact, and relevant evidence", text)
+        self.assertIn("Report outcomes plainly", text)
+        self.assertIn("landed with verifier evidence, obsolete\n  with proof, or blocked", text)
+
+    def test_evaluator_requires_concrete_verifier_evidence(self):
+        script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("Locate the task's Verifier / Verification / Expected Evidence text", script)
+        self.assertIn("PASS only if that verifier passed", script)
+        self.assertIn("equivalent concrete evidence is visible", script)
+        self.assertIn("The task claims PASS without concrete verifier evidence", script)
 
 
 if __name__ == "__main__":
