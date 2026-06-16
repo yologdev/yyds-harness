@@ -2671,6 +2671,31 @@ fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
                 "Diagnostics and failure data become available after the session completes.",
             );
             if id == "last-failure" {
+                // Show incomplete run IDs and timestamps for actionable diagnostics
+                let completed_ids: std::collections::HashSet<&str> = events
+                    .iter()
+                    .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+                    .filter_map(|e| event_string(e, "run_id"))
+                    .collect();
+                let incomplete_runs: Vec<&Value> = events
+                    .iter()
+                    .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
+                    .filter(|e| {
+                        let rid = event_string(e, "run_id");
+                        rid.map_or(true, |r| !completed_ids.contains(r))
+                    })
+                    .take(5)
+                    .collect();
+                if !incomplete_runs.is_empty() {
+                    err.push_str("\n\nIncomplete run(s):");
+                    for ev in incomplete_runs {
+                        let rid = event_string(ev, "run_id").unwrap_or("?");
+                        let ts = event_timestamp_ms(ev)
+                            .map(format_timestamp_ms)
+                            .unwrap_or_else(|| "unknown".to_string());
+                        err.push_str(&format!("\n  run={rid}  started={ts}"));
+                    }
+                }
                 err.push_str("\n\nTry 'yoyo state tail --limit 5' to follow live events.");
             }
         } else if failure_count == 0 {
@@ -16964,6 +16989,50 @@ mod tests {
         assert!(
             err.contains("in progress"),
             "should mention session is in progress, got: {err}"
+        );
+        assert!(
+            err.contains("run-1"),
+            "should show incomplete run ID, got: {err}"
+        );
+        assert!(
+            err.contains("1970-01-01"),
+            "should show run start timestamp, got: {err}"
+        );
+
+        // Multiple incomplete runs: shows at most 5
+        let mut events_multi: Vec<Value> = vec![];
+        for i in 1..=7 {
+            let run_id = format!("run-{i}");
+            let ts = 10 * i;
+            let mut ev = json!({
+                "event_id": format!("evt-start-{i}"),
+                "event_type": "RunStarted",
+                "schema_version": 1,
+                "timestamp_ms": ts,
+                "actor": "harness",
+                "run_id": &run_id,
+                "session_id": null,
+                "trace_id": "trace-1",
+                "parent_event_ids": [],
+                "payload": json!({"task": "x"}),
+            });
+            events_multi.push(ev);
+        }
+        let err = build_why_report(&events_multi, "last-failure").unwrap_err();
+        assert!(
+            err.contains("in progress"),
+            "should mention session is in progress, got: {err}"
+        );
+        // Should show the first 5 incomplete runs
+        let run_count = err.matches("run-").count();
+        assert!(
+            run_count >= 5,
+            "should show at least 5 incomplete run references, got {run_count}: {err}"
+        );
+        // run-7 should NOT appear (beyond the cap of 5)
+        assert!(
+            !err.contains("run-7"),
+            "should cap at 5 incomplete runs, got: {err}"
         );
 
         // Custom ID (not last-failure) keeps generic guidance
