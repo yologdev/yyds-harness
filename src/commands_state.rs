@@ -922,9 +922,7 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
         );
 
         if let Some(ref diag) = diagnostic {
-            eprintln!(
-                "{YELLOW}  A startup diagnostic error was captured:{RESET}"
-            );
+            eprintln!("{YELLOW}  A startup diagnostic error was captured:{RESET}");
             eprintln!("{DIM}    {diag}{RESET}");
             eprintln!();
         }
@@ -940,9 +938,7 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
             eprintln!(
                 "{DIM}    yyds state crashes --limit 10    (crash and session evidence){RESET}"
             );
-            eprintln!(
-                "{DIM}    yyds state doctor                 (state health check){RESET}"
-            );
+            eprintln!("{DIM}    yyds state doctor                 (state health check){RESET}");
             eprintln!(
                 "{DIM}    yyds state init                   (initialize state recording){RESET}"
             );
@@ -951,9 +947,7 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
             );
         } else {
             eprintln!("{DIM}  To enable state recording, run: yyds state init{RESET}");
-            eprintln!(
-                "{DIM}  Once sessions complete, run: yyds state why last-failure{RESET}"
-            );
+            eprintln!("{DIM}  Once sessions complete, run: yyds state why last-failure{RESET}");
         }
         return;
     };
