@@ -1896,6 +1896,70 @@ OBSOLETE
         continue
     fi
 
+    TASK_PROTECTED_SURFACE=$(TASK_FILE="$TASK_FILE" python3 - <<'PY' 2>/dev/null || true
+import re
+import os
+from pathlib import Path
+
+task = Path(os.environ["TASK_FILE"]).read_text(encoding="utf-8")
+protected = (
+    ".github/workflows/",
+    "IDENTITY.md",
+    "PERSONALITY.md",
+    "scripts/evolve.sh",
+    "scripts/format_issues.py",
+    "scripts/build_site.py",
+    "skills/self-assess/",
+    "skills/evolve/",
+    "skills/communicate/",
+    "skills/research/",
+)
+
+surfaces: list[str] = []
+lines = task.splitlines()
+for idx, line in enumerate(lines):
+    if line.startswith("Files:"):
+        surfaces.extend(part.strip(" `") for part in line.split(":", 1)[1].split(","))
+    if line.startswith("Edit Surface:"):
+        for subline in lines[idx + 1:]:
+            if re.match(r"^[A-Za-z][A-Za-z -]*:", subline):
+                break
+            surfaces.extend(part.strip(" `-") for part in subline.split(","))
+
+matches = []
+for surface in surfaces:
+    if not surface:
+        continue
+    for protected_path in protected:
+        if surface == protected_path.rstrip("/") or surface.startswith(protected_path):
+            matches.append(surface)
+            break
+
+print("\n".join(dict.fromkeys(matches)))
+PY
+)
+    if [ -n "$TASK_PROTECTED_SURFACE" ]; then
+        echo "    BLOCKED: Task $TASK_NUM names protected implementation files before agent launch: $TASK_PROTECTED_SURFACE"
+        if ! PRE_TASK_SHA=$(git rev-parse HEAD 2>&1); then
+            PRE_TASK_SHA=""
+        fi
+        cat > "$TASK_BLOCKED_NOTE" <<BLOCKED
+# Task blocked before implementation
+
+Reason: task Files/Edit Surface includes protected harness implementation files.
+
+Protected surface:
+$TASK_PROTECTED_SURFACE
+
+The harness blocked this task before launching the implementation agent because editing these files from inside a running evolution session can corrupt the executing script or change the active workflow while it is still running.
+BLOCKED
+        TASK_LINEAGE_PAYLOAD=$(task_lineage_payload "reverted" "$PRE_TASK_SHA" "Task names protected implementation files before agent launch: $TASK_PROTECTED_SURFACE")
+        write_task_outcome_evidence "$TASK_ID" "$TASK_LINEAGE_PAYLOAD" || true
+        record_state_event "TaskLineageLinked" "$TASK_LINEAGE_PAYLOAD"
+        TASK_FAILURES=$((TASK_FAILURES + 1))
+        continue
+    fi
+
     # Save pre-task state for rollback
     if ! PRE_TASK_SHA=$(git rev-parse HEAD 2>&1); then
         echo "    FATAL: git rev-parse HEAD failed: $PRE_TASK_SHA"

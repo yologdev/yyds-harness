@@ -48,6 +48,8 @@ class EvolveSkillAlignmentTests(unittest.TestCase):
         self.assertIn("Evidence, Edit Surface, Verifier, Fallback", script)
         self.assertIn("Confirm the touched files overlap the task's Edit Surface", script)
         self.assertIn("Read the relevant source or artifact before editing", script)
+        self.assertIn("names protected implementation files before agent launch", script)
+        self.assertIn("editing these files from inside a running evolution session can corrupt the executing script", script)
 
     def test_assessment_phase_uses_self_assess_skill(self):
         script = EVOLVE_SCRIPT.read_text(encoding="utf-8")
