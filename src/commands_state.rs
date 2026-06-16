@@ -17343,6 +17343,84 @@ mod tests {
     }
 
     #[test]
+    fn why_report_cold_start_output_is_actionable_and_distinguishes_states() {
+        // Verify Success Criteria: cold-start `why last-failure` output gives
+        // actionable next evidence AND distinguishes no-history from in-progress
+        // from no-failures states.
+        //
+        // State 1: No history (empty events file, fresh cold start)
+        let no_history: Vec<Value> = vec![];
+        let err1 = build_why_report(&no_history, "last-failure").unwrap_err();
+        assert!(
+            err1.contains("no sessions have completed"),
+            "no-history should mention no sessions completed, got: {err1}"
+        );
+        assert!(
+            err1.contains("state tail"),
+            "no-history should suggest state tail as next action, got: {err1}"
+        );
+
+        // State 2: Active/incomplete run (RunStarted without RunCompleted)
+        let in_progress = vec![event(
+            "evt-start",
+            "RunStarted",
+            "run-cold-1",
+            json!({"task": "x"}),
+        )];
+        let err2 = build_why_report(&in_progress, "last-failure").unwrap_err();
+        assert!(
+            err2.contains("in progress"),
+            "in-progress should mention session in progress, got: {err2}"
+        );
+        assert!(
+            err2.contains("run-cold-1"),
+            "in-progress should show the incomplete run id, got: {err2}"
+        );
+        assert!(
+            err2.contains("state tail"),
+            "in-progress should suggest state tail to follow live events, got: {err2}"
+        );
+
+        // State 3: Completed but no failures (successful sessions, no failures to diagnose)
+        let no_failures = vec![
+            event("evt-start", "RunStarted", "run-ok", json!({"task": "x"})),
+            event(
+                "evt-done",
+                "RunCompleted",
+                "run-ok",
+                json!({"status": "success"}),
+            ),
+        ];
+        let err3 = build_why_report(&no_failures, "last-failure").unwrap_err();
+        assert!(
+            err3.contains("successful"),
+            "no-failures should mention successful sessions, got: {err3}"
+        );
+        assert!(
+            err3.contains("state crashes"),
+            "no-failures should suggest state crashes as next action, got: {err3}"
+        );
+        assert!(
+            err3.contains("state why last-crash"),
+            "no-failures should suggest state why last-crash, got: {err3}"
+        );
+
+        // All three outputs must be distinct (distinguishes the states)
+        assert_ne!(
+            err1, err2,
+            "no-history and in-progress outputs must be distinct"
+        );
+        assert_ne!(
+            err1, err3,
+            "no-history and no-failures outputs must be distinct"
+        );
+        assert_ne!(
+            err2, err3,
+            "in-progress and no-failures outputs must be distinct"
+        );
+    }
+
+    #[test]
     fn lineage_report_links_patch_events_by_patch_id_and_evidence() {
         let events = vec![
             event(
