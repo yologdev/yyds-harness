@@ -641,7 +641,13 @@ impl AgentTool for StreamingBashTool {
         // One final update with the complete output
         emit_update(&ctx, &output);
 
-        let formatted = format!("Exit code: {exit_code}\n{output}");
+        let formatted = if exit_code != 0 {
+            format!(
+                "Exit code: {exit_code}. Tip: use explicit paths (./script.sh, not script.sh) and -- to separate flags from positional args.\n{output}"
+            )
+        } else {
+            output
+        };
 
         Ok(TR {
             content: vec![Content::Text { text: formatted }],
@@ -1915,7 +1921,8 @@ mod tests {
         match text {
             yoagent::types::Content::Text { text } => {
                 assert!(text.contains("approved"));
-                assert!(text.contains("Exit code: 0"));
+                // Exit code 0: no exit-code line in content
+                assert!(!text.contains("Exit code:"));
             }
             _ => panic!("Expected text content"),
         }
@@ -1956,7 +1963,11 @@ mod tests {
         match &result.content[0] {
             yoagent::types::Content::Text { text } => {
                 assert!(text.contains("hello world"));
-                assert!(text.contains("Exit code: 0"));
+                // Exit code 0: no exit-code line or tip in content (success output is clean)
+                assert!(
+                    !text.contains("Exit code:"),
+                    "successful command should not show exit-code line: {text}"
+                );
             }
             _ => panic!("Expected text content"),
         }
@@ -1972,6 +1983,54 @@ mod tests {
         let result = tool.execute(params, ctx).await.unwrap();
         assert_eq!(result.details["exit_code"], 42);
         assert_eq!(result.details["success"], false);
+        // Verify the content text includes the exit code and bounded-command hint
+        match &result.content[0] {
+            yoagent::types::Content::Text { text } => {
+                assert!(
+                    text.starts_with("Exit code: 42."),
+                    "non-zero exit should include exit-code line in content: {text}"
+                );
+                assert!(
+                    text.contains("Tip:"),
+                    "non-zero exit should include a recovery tip: {text}"
+                );
+                assert!(
+                    text.contains("explicit paths"),
+                    "tip should mention explicit paths: {text}"
+                );
+            }
+            _ => panic!("Expected text content"),
+        }
+    }
+
+    /// When a bash command succeeds (exit 0), the content should not include
+    /// an exit-code line or tip — the output is clean by default. The exit
+    /// code is still available in the `details` field for programmatic use.
+    #[tokio::test]
+    async fn test_streaming_bash_exit_zero_no_prefix() {
+        let tool = StreamingBashTool::default();
+        let ctx = test_tool_context(None);
+        let params = serde_json::json!({"command": "echo success"});
+        let result = tool.execute(params, ctx).await.unwrap();
+        assert_eq!(result.details["exit_code"], 0);
+        assert_eq!(result.details["success"], true);
+        match &result.content[0] {
+            yoagent::types::Content::Text { text } => {
+                assert!(
+                    text.starts_with("success"),
+                    "exit 0 should not have exit-code prefix: {text}"
+                );
+                assert!(
+                    !text.contains("Exit code:"),
+                    "exit 0 should not contain exit-code line: {text}"
+                );
+                assert!(
+                    !text.contains("Tip:"),
+                    "exit 0 should not contain recovery tip: {text}"
+                );
+            }
+            _ => panic!("Expected text content"),
+        }
     }
 
     #[tokio::test]
@@ -2003,7 +2062,7 @@ mod tests {
         match &result.content[0] {
             yoagent::types::Content::Text { text } => {
                 // The accumulated output should have been truncated
-                // Total text = "Exit code: 0\n" + accumulated (which was truncated to ~100 bytes)
+                // When exit code is 0, the text is just the accumulated output (no exit-code prefix)
                 assert!(
                     text.contains("truncated") || text.len() < 500,
                     "Output should be truncated or short, got {} bytes",
@@ -2157,7 +2216,8 @@ mod tests {
         let result = tool.execute(params, ctx).await.unwrap();
         match &result.content[0] {
             yoagent::types::Content::Text { text } => {
-                assert!(text.contains("Exit code: 0"));
+                // Exit code 0: no exit-code line in content
+                assert!(!text.contains("Exit code:"));
                 assert!(text.contains("line1"));
                 assert!(text.contains("line2"));
                 assert!(text.contains("line3"));
