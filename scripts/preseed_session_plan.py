@@ -545,6 +545,7 @@ def render_task(task: dict[str, object], day: str, session_time: str) -> str:
     success = "\n".join(f"- {item}" for item in task["success"])
     verification = "\n".join(f"- {item}" for item in task["verification"])
     evidence = "\n".join(f"- {item}" for item in task["evidence"])
+    verifier = str(task["verification"][0])
     validated = task.get("validated_against_assessment", True)
     contradiction = task.get("contradiction_reason", "")
     validation_line = f"validated_against_assessment: {str(validated).lower()}"
@@ -555,6 +556,18 @@ Files: {task["files"]}
 Issue: none
 Origin: harness-seed
 {validation_line}
+
+Evidence:
+- Current assessment matched this harness seed: {task["why"]}
+
+Edit Surface:
+- {task["files"]}
+
+Verifier:
+- {verifier}
+
+Fallback:
+- If current assessment, source, or recent changes show this failure class is already fixed or no longer live, write an obsolete-task note instead of editing.
 
 Objective:
 {task["objective"]}
@@ -750,6 +763,10 @@ No clunky friction found in quick tool checks.
         assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
         text = render_task(task, "103", "12:53")
         assert "Title:" in text and "Success Criteria:" in text and "Origin: harness-seed" in text
+        assert "Evidence:\n-" in text
+        assert "Edit Surface:\n-" in text
+        assert "Verifier:\n-" in text
+        assert "Fallback:\n-" in text
         assessment = "Assessment phase produced a transcript but did not write session_plan/assessment.md."
         task = choose_task(assessment)
         assert task["title"] == "Repair evidence-backed planning after no-task sessions", task

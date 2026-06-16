@@ -722,6 +722,10 @@ class TaskLineageFeedback(unittest.TestCase):
             task = (out / "task_01.md").read_text(encoding="utf-8")
             self.assertIn("Title: Repair evidence-backed planning after no-task sessions", task)
             self.assertIn("Origin: harness-seed", task)
+            self.assertIn("Evidence:\n-", task)
+            self.assertIn("Edit Surface:\n-", task)
+            self.assertIn("Verifier:\n-", task)
+            self.assertIn("Fallback:\n-", task)
 
     def test_preseed_does_not_seed_cache_task_when_assessment_has_cache_ratio(self):
         with tempfile.TemporaryDirectory() as tmp:
