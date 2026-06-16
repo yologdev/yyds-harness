@@ -12,6 +12,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_CONTEXT_TOKENS: u64 = 200_000;
 pub const AUTO_COMPACT_THRESHOLD: f64 = 0.80;
 pub const PROACTIVE_COMPACT_THRESHOLD: f64 = 0.70;
+pub const DEFAULT_BASH_TIMEOUT_SECS: u64 = 300;
 
 /// Effective context window (tokens) for the current session.
 /// Set once in configure_agent() based on model config + CLI override.

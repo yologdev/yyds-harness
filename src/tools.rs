@@ -87,7 +87,7 @@ impl Default for StreamingBashTool {
     fn default() -> Self {
         Self {
             cwd: None,
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_secs(crate::cli_config::DEFAULT_BASH_TIMEOUT_SECS),
             max_output_bytes: 256 * 1024, // 256KB
             deny_patterns: vec![
                 "rm -rf /".into(),
@@ -402,7 +402,7 @@ impl AgentTool for StreamingBashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a bash command and return stdout/stderr. Use for running scripts, installing packages, checking system state, etc. Supports an optional timeout parameter (in seconds) for long-running commands."
+        "Execute a bash command and return stdout/stderr. Use for running scripts, installing packages, checking system state, etc. Supports an optional timeout parameter (in seconds, default: 300, max: 600) for long-running commands."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -415,7 +415,7 @@ impl AgentTool for StreamingBashTool {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Maximum seconds to wait for command (default: 120, max: 600)"
+                    "description": "Maximum seconds to wait for command (default: 300, max: 600)"
                 }
             },
             "required": ["command"]
@@ -2438,15 +2438,18 @@ mod tests {
     #[tokio::test]
     async fn test_streaming_bash_custom_timeout_default() {
         let tool = StreamingBashTool::default();
-        // Without a timeout param, the schema should use the default (120s)
+        // Without a timeout param, the struct field default (300s) is used
         let schema = tool.parameters_schema();
         let props = schema["properties"].as_object().unwrap();
         assert!(
             props.contains_key("timeout"),
             "Schema should include timeout parameter"
         );
-        // Verify the default timeout is 120s by checking the struct field
-        assert_eq!(tool.timeout, Duration::from_secs(120));
+        // Verify the default timeout matches the cli_config constant
+        assert_eq!(
+            tool.timeout,
+            Duration::from_secs(crate::cli_config::DEFAULT_BASH_TIMEOUT_SECS)
+        );
     }
 
     #[tokio::test]
@@ -2751,9 +2754,12 @@ mod tests {
     }
 
     #[test]
-    fn test_streaming_bash_default_timeout_is_120s() {
+    fn test_streaming_bash_default_timeout_is_300s() {
         let tool = StreamingBashTool::default();
-        assert_eq!(tool.timeout, Duration::from_secs(120));
+        assert_eq!(
+            tool.timeout,
+            Duration::from_secs(crate::cli_config::DEFAULT_BASH_TIMEOUT_SECS)
+        );
     }
 
     #[test]
