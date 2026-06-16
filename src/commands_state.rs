@@ -2926,6 +2926,30 @@ fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
         let run_started = events
             .iter()
             .any(|e| event_string(e, "event_type") == Some("RunStarted"));
+        let error_run_completed_count = events
+            .iter()
+            .filter(|e| {
+                event_string(e, "event_type") == Some("RunCompleted")
+                    && e.get("payload")
+                        .and_then(|p| p.get("status"))
+                        .and_then(|s| s.as_str())
+                        .map(|s| s != "success" && s != "completed")
+                        .unwrap_or(false)
+            })
+            .count();
+        let error_run_ids: Vec<&str> = events
+            .iter()
+            .filter(|e| {
+                event_string(e, "event_type") == Some("RunCompleted")
+                    && e.get("payload")
+                        .and_then(|p| p.get("status"))
+                        .and_then(|s| s.as_str())
+                        .map(|s| s != "success" && s != "completed")
+                        .unwrap_or(false)
+            })
+            .filter_map(|e| event_string(e, "run_id"))
+            .take(5)
+            .collect();
 
         if events.is_empty() || (run_completed_count == 0 && !run_started) {
             err.push_str("State recording is active but no sessions have completed yet.\n");
@@ -2969,15 +2993,27 @@ fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
                 err.push_str("\n\nTry 'yoyo state tail --limit 5' to follow live events.");
             }
         } else if failure_count == 0 {
-            err.push_str(&format!(
-                "{} successful session{} recorded. No failure data to diagnose.",
-                run_completed_count,
-                if run_completed_count == 1 { "" } else { "s" }
-            ));
-            if id == "last-failure" {
-                err.push_str(
-                    "\n\nTry 'yoyo state crashes --limit 10' for crashed or incomplete sessions, or 'yoyo state why last-crash' to diagnose the latest crash.",
-                );
+            if error_run_completed_count > 0 {
+                err.push_str(&format!(
+                    "{} session{} completed with errors but no FailureObserved events were recorded.\n\nError runs:",
+                    error_run_completed_count,
+                    if error_run_completed_count == 1 { "" } else { "s" }
+                ));
+                for rid in &error_run_ids {
+                    err.push_str(&format!("\n  {}", rid));
+                }
+                err.push_str("\n\nRun 'yoyo state tail' to inspect raw events for error details, or 'yoyo state crashes --limit 10' for crashed sessions.");
+            } else {
+                err.push_str(&format!(
+                    "{} successful session{} recorded. No failure data to diagnose.",
+                    run_completed_count,
+                    if run_completed_count == 1 { "" } else { "s" }
+                ));
+                if id == "last-failure" {
+                    err.push_str(
+                        "\n\nTry 'yoyo state crashes --limit 10' for crashed or incomplete sessions, or 'yoyo state why last-crash' to diagnose the latest crash.",
+                    );
+                }
             }
         } else {
             err.push_str(&format!(
@@ -17405,7 +17441,63 @@ mod tests {
             "no-failures should suggest state why last-crash, got: {err3}"
         );
 
-        // All three outputs must be distinct (distinguishes the states)
+        // State 4: Completed runs with error status but no FailureObserved events
+        let error_runs_no_failures = vec![
+            event("evt-start", "RunStarted", "run-err", json!({"task": "x"})),
+            event(
+                "evt-done",
+                "RunCompleted",
+                "run-err",
+                json!({"status": "error", "error_detail": "build failed"}),
+            ),
+        ];
+        let err4 = build_why_report(&error_runs_no_failures, "last-failure").unwrap_err();
+        assert!(
+            err4.contains("error"),
+            "error-runs should mention errors, got: {err4}"
+        );
+        assert!(
+            err4.contains("run-err"),
+            "error-runs should show the error run id, got: {err4}"
+        );
+        assert!(
+            !err4.contains("successful"),
+            "error-runs should NOT say successful, got: {err4}"
+        );
+
+        // State 5: Mixed success and error RunCompleted, both without FailureObserved
+        let mixed_runs = vec![
+            event("evt-start-ok", "RunStarted", "run-ok", json!({"task": "a"})),
+            event(
+                "evt-done-ok",
+                "RunCompleted",
+                "run-ok",
+                json!({"status": "completed"}),
+            ),
+            event(
+                "evt-start-err",
+                "RunStarted",
+                "run-err",
+                json!({"task": "b"}),
+            ),
+            event(
+                "evt-done-err",
+                "RunCompleted",
+                "run-err",
+                json!({"status": "error", "error_detail": "test failed"}),
+            ),
+        ];
+        let err5 = build_why_report(&mixed_runs, "last-failure").unwrap_err();
+        assert!(
+            err5.contains("error"),
+            "mixed-runs should mention errors, got: {err5}"
+        );
+        assert!(
+            !err5.contains("successful"),
+            "mixed-runs should NOT say successful, got: {err5}"
+        );
+
+        // All five outputs must be distinct (distinguishes the states)
         assert_ne!(
             err1, err2,
             "no-history and in-progress outputs must be distinct"
@@ -17415,8 +17507,28 @@ mod tests {
             "no-history and no-failures outputs must be distinct"
         );
         assert_ne!(
+            err1, err4,
+            "no-history and error-runs outputs must be distinct"
+        );
+        assert_ne!(
+            err1, err5,
+            "no-history and mixed-runs outputs must be distinct"
+        );
+        assert_ne!(
             err2, err3,
             "in-progress and no-failures outputs must be distinct"
+        );
+        assert_ne!(
+            err2, err4,
+            "in-progress and error-runs outputs must be distinct"
+        );
+        assert_ne!(
+            err3, err4,
+            "no-failures and error-runs outputs must be distinct"
+        );
+        assert_ne!(
+            err4, err5,
+            "error-runs and mixed-runs outputs must be distinct"
         );
     }
 
