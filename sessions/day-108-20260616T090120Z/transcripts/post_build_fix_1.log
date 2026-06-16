@@ -1,0 +1,307 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the test failures. There are 69 failed tests across multiple categories:
+
+1. **commands_file** - 4 tests: `test_suggest_related_module_parent`, `test_suggest_related_skips_already_added`, `test_suggest_related_test_file_detection`, `test_suggest_related_use_crate_parsing`
+2. **commands_git** - 1 test: `undo_last_commit_in_real_repo`
+3. **commands_goal** - 16 tests: All panicking at `src/commands_goal.rs:158:39` with "get cwd: Os { code: 2, kind: NotFound, message: "No such file or directory" }"
+4. **commands_run** - 2 tests: `test_run_result_success`, `test_run_result_failure` - both with `sh: 0: getcwd() failed: No such file or directory`
+5. **commands_search** - 5 tests: Various search/grep tests failing
+6. **commands_skill** - 1 test: `test_skill_list_with_real_skills`
+7. **context** - 17 tests: Various test failures with `No such file or directory` on cwd
+8. **deepseek** - 2 tests: `fim_edit_plan_builds_single_file_patch_for_allowed_scope`, `fim_file_request_builds_prefix_suffix_from_target_range`
+9. **eval_fixtures** - 2 tests: smoke tests failing to find fixture directory
+10. **hooks** - 1 test: `test_shell_hook_post_passthrough` - with `sh: 0: getcwd() failed`
+11. **repl** - 6 tests: File path completion tests failing
+12. **watch** - 6 tests: Various watch tests failing
+
+The common pattern across many failures is:
+- `getcwd: Os { code: 2, kind: NotFound, message: "No such file or directory" }` - The current working directory doesn't exist or was deleted.
+- `sh: 0: getcwd() failed: No such file or directory` - Shell can't get cwd.
+
+This looks like the test runner is being run from a directory that has been deleted, or there's a race condition with temp directories being cleaned up before tests finish.
+
+Let me look at the specific error locations to understand what's happening. The most informative ones are:
+
+1. `commands_goal.rs:158:39` - `get cwd: Os { code: 2, kind: NotFound, message: "No such file or directory" }` - This is a `std::env::current_dir()` call failing.
+
+2. `commands_file.rs:2467:9` - "should find module parent, got: []"
+
+3. `commands_search.rs:2018:9` - "Should find 'fn main' in src/ of this project"
+
+4. `commands_skill.rs:1104:9` - "Expected at least 4 core skills, got 0"
+
+5. `eval_fixtures.rs:1299:55` - "read fixture suite 'eval/fixtures/local-smoke': No such file or directory (os error 2)"
+
+Let me look at the specific source locations to understand the root causes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ pwd ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The working directory exists. But some tests are failing because the cwd gets deleted during test execution. Let me look at the specific failing tests.
+
+Let me read the specific source locations to understand the failures.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_goal.rs:150..170  ▶ read src/commands_file.rs:2460..2530  ▶ read src/commands_search.rs:2010..2040 ✓ (25ms)
+ ✓ (23ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the pattern. The issue with `commands_goal` tests is that `with_temp_dir` calls `env::current_dir().expect("get cwd")` at line 158, and it panics because the current working directory doesn't exist. This is actually weird since `pwd` worked fine from the bash command.
+
+Wait - looking more carefully at the earlier tests, I noticed some tests that create temp directories with `tempfile::tempdir()` and then switch cwd to them. But the `with_temp_dir` helper in `commands_goal.rs` just creates a `TempDir::new()` and then gets cwd. If some test is changing cwd to a temp dir and then that temp dir gets cleaned up before the test runs, the cwd would no longer exist.
+
+Actually, looking at the test output more carefully, I see `sh: 0: getcwd() failed: No such file or directory` happening during tests. This suggests that the process's current working directory has been deleted. But my `pwd` works fine from bash.
+
+The issue could be that some tests change the cwd to a temp dir and then the temp dir is cleaned up before the test restores cwd. Or more likely, the tests run in parallel and some test destroys the cwd of another test.
+
+Wait, many of these tests use `#[serial]` annotation to prevent parallel execution. But the `with_temp_dir` function doesn't use `#[serial]`... Let me look more carefully.
+
+Actually, looking at `commands_goal.rs`, the `with_temp_dir` helper at line 156-162:
+- Creates a temp dir
+- Gets current cwd
+- Sets cwd to temp dir
+- Runs the test function
+- Restores cwd
+
+The problem is `env::current_dir().expect("get cwd")` at line 158 fails because the cwd no longer exists. This means some *other* test (or perhaps the test runner itself) changed the cwd to a directory that was subsequently deleted.
+
+But wait - looking at the test output, the goal tests all fail, and they use `with_temp_dir`. The `with_temp_dir` function also changes cwd. If two tests that use `with_temp_dir` run concurrently (despite some having `#[serial]` and some not), there could be a race.
+
+Actually, looking more carefully, some `commands_goal` tests have `#[serial]` and some don't. Let me check:
+
+The tests failing are: test_clear_goal, test_clear_goal_no_file, test_goal_multiline_content, etc. Let me check if they use `with_temp_dir` or similar.
+
+Looking at line 158 - `env::current_dir().expect("get cwd")` - this is the `with_temp_dir` helper. If the cwd doesn't exist, this fails.
+
+Now, this is happening at test startup, not during the test body. The issue is that the cwd was deleted by some prior test's temp dir cleanup. Tests that use `tempfile::TempDir` and change cwd to it should restore cwd before the TempDir is dropped. But if there's a race or if the order is wrong...
+
+Let me look at the test that first switches cwd. Looking at `commands_file.rs`:
+
+```rust
+fn test_suggest_related_module_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    ...
+    let orig_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    
+    let suggestions = suggest_related_files("src/foo/bar.rs", &[]);
+    ...
+    
+    std::env::set_current_dir(orig_dir).unwrap();
+}
+```
+
+Wait, this test uses `std::env::set_current_dir(dir.path())` and then restores later. But if the assertion at line 2467 panics, the `set_current_dir(orig_dir)` never executes, leaving cwd pointing at the temp dir. When the temp dir is dropped (since `dir` is `tempfile::tempdir()` which is a `TempDir`), the cwd becomes invalid.
+
+But the assertion error says "should find module parent, got: []" at line 2467 - this test itself panics. So the cwd is left pointing to the deleted temp dir. Then subsequent tests fail with "No such file or directory" on getcwd.
+
+So the root cause is: **the first test that fails leaves cwd pointing to a deleted temp dir, which causes all subsequent tests that call `env::current_dir()` to fail.**
+
+The fix should ensure that cwd is always restored even when assertions fail. The idiomatic way is to use a guard/RAII pattern.
+
+But actually, looking at the test output more carefully, these all run in a single test binary. So if test A leaves cwd pointing nowhere, test B fails because `current_dir()` fails. Then test B's panic doesn't even get to restore cwd (it fails before it can), and the cascade continues.
+
+Let me identify which tests fail first and cause the cascade. Looking at the test output order, the `commands_file` tests fail first:
+- `test_suggest_related_module_parent` panics at line 2467 (assertion fails)
+- This leaves cwd pointing at its temp dir, which gets dropped
+- Then `test_suggest_related_skips_already_added` panics at line 2516 because `current_dir()` fails (cwd no longer exists)
+- And so on...
+
+So the fix has two parts:
+1. Fix the actual assertion failures (the root cause)
+2. Make cwd changes resilient to panics (defense in depth)
+
+Let me look at what each test is actually testing and why it fails.
+
+For `test_suggest_related_module_parent` (line 2466-2470):
+The test creates `src/foo/bar.rs` and `src/foo/mod.rs`, then calls `suggest_related_files("src/foo/bar.rs", &[])` and expects it to return `src/foo/mod.rs` as a module parent. But the result is empty.
+
+For `test_suggest_related_use_crate_parsing` (line 2491-2503):
+Creates `src/commands.rs` with `use crate::dispatch;` and `src/dispatch.rs`, expects `suggest_related_files` to find `src/dispatch.rs`. But `std::env::current_dir().unwrap()` fails.
+
+For `test_suggest_related_test_file_detection`:
+Similar pattern.
+
+For `test_suggest_related_skips_already_added`:
+Similar.
+
+Let me look at the `suggest_related_files` function to understand why it fails.
+
+Actually, let me first look at the `commands_search` tests that fail. `handle_grep_finds_real_matches` at line 2018 - "Should find 'fn main' in src/ of this project" - this is searching in the real project directory, but if cwd was changed by a prior test's panic...
+
+Wait, actually the tests run in a single process. Let me re-read the test output:
+
+```
+test commands_file::tests::test_suggest_related_module_parent ... FAILED
+...
+test commands_file::tests::test_suggest_related_skips_already_added ... FAILED
+test commands_file::tests::test_suggest_related_test_file_detection ... FAILED
+test commands_file::tests::test_suggest_related_use_crate_parsing ... FAILED
+```
+
+All 4 `test_suggest_related_*` tests fail. The first one (`test_suggest_related_module_parent`) panics inside the test body, and the other 3 fail because `current_dir()` fails.
+
+Then the cascade continues:
+- `commands_git::tests::undo_last_commit_in_real_repo` - `current_dir()` fails
+- All `commands_goal` tests - `current_dir()` fails  
+- `commands_run` tests - `sh: 0: getcwd() failed`
+- `commands_search` tests - various failures
+- etc.
+
+So the root cause is the `test_suggest_related_module_parent` assertion failure. Let me understand why `suggest_related_files` returns empty when it should find the module parent.
+
+Let me read the `suggest_related_files` function.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 37.4s (3 ✓)
+
+Let me trace the root cause. The first failing test leaves cwd pointing to a deleted temp dir, cascading to all others.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn suggest_related_files' in src/commands_file.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `suggest_related_files` function to understand why it might return empty for the module parent case.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_file.rs:879..979 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see lines 978+ to understand how files are checked for existence:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_file.rs:978..998 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the function. For `test_suggest_related_module_parent`:
+
+The test:
+1. Creates `src/foo/bar.rs` with content `fn bar() {}`
+2. Creates `src/foo/mod.rs` with content `mod bar;`
+3. Changes cwd to the temp dir
+4. Calls `suggest_related_files("src/foo/bar.rs", &[])`
+5. Expects `src/foo/mod.rs` to be in the suggestions
+
+In `suggest_related_files`:
+- Line 907-912: Gets parent of `src/foo/bar.rs` which is `src/foo`, joins with `mod.rs` → `src/foo/mod.rs`
+- Line 979: Checks `std::path::Path::new("src/foo/mod.rs").exists()` - this should be true since the file was created
+
+But wait, the cwd is set to `dir.path()`, and the files are created under `dir.path()/src/foo/`. So `src/foo/mod.rs` should exist relative to cwd.
+
+The assertion says `suggestions` is empty `[]`. So the candidates are being generated but then either not matching or not found. Let me think about what could go wrong...
+
+Actually, `src/foo/bar.rs` has a `.rs` extension. `is_source_extension` should return true for `.rs`. Let me check:
+
+```rust
+if !is_source_extension(path) {
+    return Vec::new();
+}
+```
+
+Let me check `is_source_extension`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn is_source_extension' in src/commands_file.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_file.rs:861..881 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check `SOURCE_EXTENSIONS`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'SOURCE_EXTENSIONS' in src/commands_file.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, `.rs` is in SOURCE_EXTENSIONS, so that's not the issue.
+
+Now looking at the test again:
+```rust
+fn test_suggest_related_module_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let src_foo = dir.path().join("src").join("foo");
+    std::fs::create_dir_all(&src_foo).unwrap();
+    std::fs::write(src_foo.join("bar.rs"), "fn bar() {}").unwrap();
+    std::fs::write(src_foo.join("mod.rs"), "mod bar;").unwrap();
+
+    let orig_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let suggestions = suggest_related_files("src/foo/bar.rs", &[]);
+    assert!(
+        suggestions.contains(&"src/foo/mod.rs".to_string()),
+        "should find module parent, got: {suggestions:?}"
+    );
+
+    std::env::set_current_dir(orig_dir).unwrap();
+}
+```
+
+This looks correct. The temp dir has `src/foo/bar.rs` and `src/foo/mod.rs`. cwd is set to the temp dir. `suggest_related_files("src/foo/bar.rs", &[])` should:
+1. Check `is_source_extension("src/foo/bar.rs")` → `.rs` → true ✓
+2. Create candidates including `src/foo/mod.rs` (from module parent logic, line 908-911)
+3. Check `Path::new("src/foo/mod.rs").exists()` → should be true
+
+But the assertion says suggestions is `[]`. So either candidates aren't being generated, or `exists()` returns false.
+
+Wait... maybe the issue is that `tempfile::tempdir()` creates the temp dir in `/tmp/`, and some test runner might have set TMPDIR to a directory that... Actually no, that shouldn't matter since cwd is set to the temp dir.
+
+Hmm, let me re-read the test output more carefully. The test `test_suggest_related_module_parent` panics at line 2467 which says "should find module parent, got: []". The line 2467 in the current code is the assert message. So suggestions is empty.
+
+Let me think about what could cause this. The function was working before (presumably), so something must have changed. Let me look at git log to see if there were recent changes to `suggest_related_files`.
+
+Actually wait - let me look at the test more carefully. Line 2467 is:
+```rust
+2467 |         assert!(
+2468 |             suggestions.contains(&"src/foo/mod.rs".to_string()),
+2469 |             "should find module parent, got: {suggestions:?}"
+2470 |         );
+```
+
+But the test output says:
+```
+thread 'commands_file::tests::test_suggest_related_module_parent' (30985) panicked at src/commands_file.rs:2467:9:
+should find module parent, got: []
+```
+
+So the line numbers match. The suggestions are empty.
+
+Let me try to reproduce this quickly with a focused test.
+
+Actually, let me try running just this one test first to see if it's really this test that fails, or if it's a cascade from a prior test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib commands_file… ✓ (181ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - the test passes when run alone! So the issue is a test ordering problem - some prior test leaves cwd pointing to a deleted directory, and then when this test runs, `current_dir()` fails or the temp dir behavior is different.
+
+Let me run the 4 failing `commands_file` tests together:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib commands_file… ✓ (146ms)
+
+
