@@ -227,8 +227,9 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn("TASK_TERMINAL_EVIDENCE: changed", evolve)
         self.assertIn("agent_log_has_terminal_evidence()", evolve)
         self.assertIn("incomplete_no_terminal_evidence", evolve)
-        self.assertIn("completed_missing_terminal_evidence", evolve)
-        self.assertIn("proceeding to verification instead of retrying for marker-only cleanup", evolve)
+        self.assertIn("completed_with_harness_terminal_evidence", evolve)
+        self.assertIn("recording harness terminal evidence and proceeding to verification", evolve)
+        self.assertIn("TASK_TERMINAL_EVIDENCE_KIND", evolve)
         self.assertIn("The harness only recognizes that exact marker line", evolve)
         self.assertIn("prose like \"task completed\"", evolve)
         self.assertIn("exact TASK_TERMINAL_EVIDENCE", evolve)
@@ -1694,6 +1695,81 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["task_incomplete_terminal_count"], 0)
             self.assertEqual(metrics["task_terminal_marker_missing_attempt_count"], 1)
             self.assertIn(
+                "task_terminal_marker_missing",
+                {lesson["kind"] for lesson in assessment["top_lessons"]},
+            )
+
+    def test_log_feedback_accepts_harness_terminal_evidence_for_mechanical_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "outcome.json",
+                {
+                    "tasks_attempted": 1,
+                    "tasks_succeeded": 1,
+                    "build_ok": True,
+                    "test_ok": True,
+                    "reverted": False,
+                },
+            )
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [{"task_id": "task_01"}],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "source_files": ["src/prompt.rs"],
+                    "touched_files": ["src/prompt.rs"],
+                    "commit_shas": ["abc123"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/eval_attempt_1.json",
+                {"task_id": "task_01", "status": "pass", "verdict": "PASS"},
+            )
+            attempts_path = session / "tasks/task_01/attempts.jsonl"
+            attempts_path.parent.mkdir(parents=True, exist_ok=True)
+            attempts_path.write_text(
+                json.dumps(
+                    {
+                        "task_id": "task_01",
+                        "phase": "implementation",
+                        "attempt": 1,
+                        "exit_code": 0,
+                        "status": "completed_with_harness_terminal_evidence",
+                        "terminal_evidence": {
+                            "kind": "changed",
+                            "source": "harness_mechanical_progress",
+                        },
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            assessment = log_feedback.build_assessment(
+                session_dir=session,
+                log_available=True,
+                log_error="",
+                log_text="Build: PASS\nTests: PASS\n",
+                repo="owner/repo",
+                run_id="123",
+                run_attempt="1",
+                workflow_conclusion="success",
+            )
+
+            metrics = assessment["metrics"]
+            self.assertEqual(metrics["task_success_rate"], 1.0)
+            self.assertEqual(metrics["task_terminal_marker_missing_attempt_count"], 0)
+            self.assertEqual(metrics["task_harness_terminal_evidence_count"], 1)
+            self.assertNotIn(
                 "task_terminal_marker_missing",
                 {lesson["kind"] for lesson in assessment["top_lessons"]},
             )

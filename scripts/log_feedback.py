@@ -230,6 +230,7 @@ GNOME_KEYS = [
     "task_unlanded_source_count",
     "task_incomplete_terminal_count",
     "task_terminal_marker_missing_attempt_count",
+    "task_harness_terminal_evidence_count",
     "task_analysis_only_attempt_count",
     "max_task_turn_count",
     "avg_task_turn_count",
@@ -1050,6 +1051,13 @@ def implementation_attempt_missing_terminal_evidence(
 ) -> bool:
     if str(attempt.get("phase") or "") != "implementation":
         return False
+    terminal_evidence = attempt.get("terminal_evidence")
+    if isinstance(terminal_evidence, dict) and terminal_evidence.get("kind") in {
+        "changed",
+        "obsolete",
+        "blocked",
+    }:
+        return False
     if str(attempt.get("status") or "") in MISSING_TERMINAL_EVIDENCE_STATUSES:
         return True
     if str(attempt.get("status") or "") != "completed":
@@ -1364,6 +1372,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     unlanded_source = 0
     incomplete_terminal = 0
     terminal_marker_missing_attempts = 0
+    harness_terminal_evidence_count = 0
     analysis_only_attempts = 0
     tasks_by_id = {str(task.get("task_id") or ""): task for task in tasks if isinstance(task, dict)}
     stale_seed_obsolete_note_count = 0
@@ -1377,6 +1386,13 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             if implementation_attempt_missing_terminal_evidence(session_dir, row)
         )
         terminal_marker_missing_attempts += missing_terminal_attempt_count
+        harness_terminal_evidence_count += sum(
+            1
+            for row in attempts
+            if str(row.get("phase") or "") == "implementation"
+            and isinstance(row.get("terminal_evidence"), dict)
+            and row["terminal_evidence"].get("source") == "harness_mechanical_progress"
+        )
         analysis_only_attempts += sum(
             1
             for row in attempts
@@ -1480,6 +1496,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "task_unlanded_source_count": unlanded_source,
         "task_incomplete_terminal_count": incomplete_terminal,
         "task_terminal_marker_missing_attempt_count": terminal_marker_missing_attempts,
+        "task_harness_terminal_evidence_count": harness_terminal_evidence_count,
         "task_analysis_only_attempt_count": analysis_only_attempts,
         "task_spec_quality_score": round(sum(quality_scores) / len(quality_scores), 4)
         if quality_scores

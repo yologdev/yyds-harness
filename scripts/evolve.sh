@@ -294,6 +294,7 @@ append_task_attempt_evidence() {
     local exit_code="$6"
     local status="$7"
     local base_sha="${8:-}"
+    local terminal_evidence="${9:-}"
     local output_path="$SESSION_STAGING/tasks/$task_id/attempts.jsonl"
     mkdir -p "$(dirname "$output_path")"
     TASK_ID="$task_id" \
@@ -304,6 +305,7 @@ append_task_attempt_evidence() {
     TASK_EXIT_CODE="$exit_code" \
     TASK_STATUS="$status" \
     TASK_BASE_SHA="$base_sha" \
+    TASK_TERMINAL_EVIDENCE="$terminal_evidence" \
     SESSION_STAGING="$SESSION_STAGING" \
     TASK_ATTEMPTS_OUT="$output_path" \
         python3 - <<'PY'
@@ -367,6 +369,13 @@ row = {
     "line_count": line_count,
     "byte_count": byte_count,
 }
+terminal_evidence = os.environ.get("TASK_TERMINAL_EVIDENCE", "").strip()
+if terminal_evidence:
+    row["terminal_evidence"] = {
+        "kind": terminal_evidence,
+        "source": "harness_mechanical_progress",
+        "reason": "implementation changed task-scoped files but agent output omitted TASK_TERMINAL_EVIDENCE",
+    }
 out = Path(os.environ["TASK_ATTEMPTS_OUT"])
 with out.open("a", encoding="utf-8") as handle:
     handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
@@ -1976,13 +1985,21 @@ TEOF
             TASK_ATTEMPT_STATUS="missing_terminal_evidence"
         fi
         TASK_PROGRESS=false
+        TASK_TERMINAL_EVIDENCE_KIND=""
         if task_has_progress_since_base "$PRE_TASK_SHA" || [ -s "$TASK_OBSOLETE_NOTE" ] || [ -s "$TASK_BLOCKED_NOTE" ]; then
             TASK_PROGRESS=true
         fi
         if [ "$TASK_ATTEMPT_STATUS" = "missing_terminal_evidence" ]; then
             if [ "$TASK_PROGRESS" = true ]; then
-                echo "    Task $TASK_NUM made progress without terminal evidence; proceeding to verification instead of retrying for marker-only cleanup."
-                TASK_ATTEMPT_STATUS="completed_missing_terminal_evidence"
+                echo "    Task $TASK_NUM made progress without agent terminal marker; recording harness terminal evidence and proceeding to verification."
+                if [ -s "$TASK_OBSOLETE_NOTE" ]; then
+                    TASK_TERMINAL_EVIDENCE_KIND="obsolete"
+                elif [ -s "$TASK_BLOCKED_NOTE" ]; then
+                    TASK_TERMINAL_EVIDENCE_KIND="blocked"
+                else
+                    TASK_TERMINAL_EVIDENCE_KIND="changed"
+                fi
+                TASK_ATTEMPT_STATUS="completed_with_harness_terminal_evidence"
             else
                 echo "    WARNING: Task $TASK_NUM ended without terminal evidence or file progress (attempt $ATTEMPT)."
                 TASK_ATTEMPT_STATUS="analysis_only_no_terminal_evidence"
@@ -1990,7 +2007,8 @@ TEOF
         fi
         append_task_attempt_evidence \
             "$TASK_ID" "implementation" "$ATTEMPT" "$TASK_STAGE_NAME" \
-            "transcripts/${TASK_STAGE_NAME}.log" "$TASK_EXIT" "$TASK_ATTEMPT_STATUS" "$PRE_TASK_SHA" || true
+            "transcripts/${TASK_STAGE_NAME}.log" "$TASK_EXIT" "$TASK_ATTEMPT_STATUS" "$PRE_TASK_SHA" \
+            "$TASK_TERMINAL_EVIDENCE_KIND" || true
         TASK_ATTEMPT_TRANSCRIPT_TAIL=$(tail -80 "$TASK_LOG" 2>/dev/null || true)
 
         # Abort on API errors (after fallback attempt if configured) — revert partial work and stop
