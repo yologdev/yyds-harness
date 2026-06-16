@@ -866,14 +866,23 @@ async fn handle_prompt_events(
                             }),
                         );
                         if tool_name == "bash" {
+                            let exit_code = result
+                                .details
+                                .get("exit_code")
+                                .and_then(|v| v.as_i64());
+                            let mut cmd_payload = serde_json::json!({
+                                "tool_call_id": tool_call_id.clone(),
+                                "is_error": is_error,
+                                "result_preview": preview.clone(),
+                            });
+                            if let Some(ec) = exit_code {
+                                cmd_payload["exit_code"] = serde_json::json!(ec);
+                                cmd_payload["success"] = serde_json::json!(ec == 0);
+                            }
                             crate::state::record(
                                 crate::state::EventType::CommandCompleted,
                                 crate::state::Actor::Tool,
-                                serde_json::json!({
-                                    "tool_call_id": tool_call_id.clone(),
-                                    "is_error": is_error,
-                                    "result_preview": preview.clone(),
-                                }),
+                                cmd_payload,
                             );
                             if let Some(command) = bash_command.as_deref() {
                                 if let Some(payload) =
@@ -2849,5 +2858,54 @@ mod tests {
         };
         assert!(outcome.text.contains('🐙'));
         assert!(outcome.text.contains("日本語"));
+    }
+
+    #[test]
+    fn test_command_completed_exit_code_extraction() {
+        // Simulate extracting exit_code from ToolResult.details, matching
+        // the logic in the AgentEvent::ToolExecutionEnd handler.
+        use yoagent::types::{Content, ToolResult};
+
+        // Case 1: details contains exit_code (bash tool normal result)
+        let result = ToolResult {
+            content: vec![Content::Text {
+                text: "Exit code: 0\noutput".into(),
+            }],
+            details: serde_json::json!({"exit_code": 0, "success": true}),
+        };
+        let exit_code = result.details.get("exit_code").and_then(|v| v.as_i64());
+        assert_eq!(exit_code, Some(0));
+        assert_eq!(exit_code.unwrap() == 0, true);
+
+        // Case 2: non-zero exit code
+        let result = ToolResult {
+            content: vec![Content::Text {
+                text: "Exit code: 1\ncommand not found".into(),
+            }],
+            details: serde_json::json!({"exit_code": 1, "success": false}),
+        };
+        let exit_code = result.details.get("exit_code").and_then(|v| v.as_i64());
+        assert_eq!(exit_code, Some(1));
+        assert_eq!(exit_code.unwrap() == 0, false);
+
+        // Case 3: details has no exit_code (non-bash tool, or empty details)
+        let result = ToolResult {
+            content: vec![Content::Text {
+                text: "some output".into(),
+            }],
+            details: serde_json::Value::Null,
+        };
+        let exit_code = result.details.get("exit_code").and_then(|v| v.as_i64());
+        assert_eq!(exit_code, None);
+
+        // Case 4: details is an empty object
+        let result = ToolResult {
+            content: vec![Content::Text {
+                text: "some output".into(),
+            }],
+            details: serde_json::json!({}),
+        };
+        let exit_code = result.details.get("exit_code").and_then(|v| v.as_i64());
+        assert_eq!(exit_code, None);
     }
 }
