@@ -970,20 +970,64 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
     let Ok(events) = read_tail_events(&path, limit) else {
         let diagnostic = crate::state::take_diagnostic_error();
 
-        eprintln!(
-            "{YELLOW}  No state events file found at {}{RESET}",
-            path.display()
-        );
+        if let Some(dir_info) = crate::state::state_directory_info() {
+            if !dir_info.dir_exists {
+                eprintln!(
+                    "{YELLOW}  State directory does not exist at {}{RESET}",
+                    dir_info
+                        .events_path
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new("."))
+                        .display()
+                );
+                eprintln!(
+                    "{YELLOW}  This is a cold start: the state system has never been initialized.{RESET}"
+                );
+                eprintln!("{DIM}  To enable state recording, run: yyds state init{RESET}");
+            } else if !dir_info.events_file_exists {
+                eprintln!(
+                    "{YELLOW}  State directory exists but no events file at {}{RESET}",
+                    dir_info.events_path.display()
+                );
+                if !dir_info.dir_files.is_empty() {
+                    eprintln!(
+                        "{DIM}  Directory contains: {}{RESET}",
+                        dir_info.dir_files.join(", ")
+                    );
+                } else {
+                    eprintln!("{DIM}  Directory is empty.{RESET}");
+                }
+                if let Some(ref sqlite) = dir_info.sqlite_file_name {
+                    eprintln!(
+                        "{DIM}  SQLite database found ({sqlite}) but events file is missing — state may have been partially initialized.{RESET}"
+                    );
+                }
+                eprintln!(
+                    "{DIM}  Try: yyds state init    (initialize or repair state recording){RESET}"
+                );
+            } else {
+                eprintln!(
+                    "{YELLOW}  Events file exists at {} but could not be read.{RESET}",
+                    dir_info.events_path.display()
+                );
+                eprintln!("{DIM}  This may be a permissions issue or a corrupt file.{RESET}");
+            }
+        } else {
+            eprintln!(
+                "{YELLOW}  No state events file found at {}{RESET}",
+                path.display()
+            );
+            eprintln!(
+                "{YELLOW}  This is a cold start: no evolution sessions have recorded state yet.{RESET}"
+            );
+        }
 
         if let Some(ref diag) = diagnostic {
+            eprintln!();
             eprintln!("{YELLOW}  A startup diagnostic error was captured:{RESET}");
             eprintln!("{DIM}    {diag}{RESET}");
             eprintln!();
         }
-
-        eprintln!(
-            "{YELLOW}  This is a cold start: no evolution sessions have recorded state yet.{RESET}"
-        );
 
         if id == "last-failure" {
             eprintln!("{DIM}  No completed failed sessions exist.{RESET}");

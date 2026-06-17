@@ -3197,6 +3197,63 @@ pub fn harness_internal_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Lightweight snapshot of the state directory for cold-start diagnostics.
+///
+/// Used by `yyds state why last-failure` and similar commands to distinguish
+/// "never initialized" from "initialized but events file missing" from
+/// "initialized with events file present."
+#[derive(Debug, Clone)]
+pub struct StateDirectoryInfo {
+    /// Whether the state directory itself exists.
+    pub dir_exists: bool,
+    /// Full path to the events file (even if it doesn't exist).
+    pub events_path: PathBuf,
+    /// Whether the events file exists.
+    pub events_file_exists: bool,
+    /// Files found in the state directory (names only, sorted).
+    pub dir_files: Vec<String>,
+    /// SQLite projection file name (if found in dir).
+    pub sqlite_file_name: Option<String>,
+}
+
+/// Inspect the state directory and events file without opening or parsing them.
+///
+/// Returns `None` when the events path cannot be resolved (which is unusual —
+/// it falls back to `".yoyo/state/events.jsonl"` by default).
+pub fn state_directory_info() -> Option<StateDirectoryInfo> {
+    let events_path = crate::commands_state::default_events_path();
+    let dir = events_path
+        .parent()
+        .unwrap_or_else(|| Path::new(".yoyo/state"));
+    let dir_exists = dir.exists() && dir.is_dir();
+    let events_file_exists = events_path.exists() && events_path.is_file();
+
+    let mut dir_files: Vec<String> = Vec::new();
+    let mut sqlite_file_name: Option<String> = None;
+
+    if dir_exists {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(".db") || name.ends_with(".sqlite") {
+                    sqlite_file_name = Some(name.clone());
+                }
+                dir_files.push(name);
+            }
+        }
+    }
+
+    dir_files.sort();
+
+    Some(StateDirectoryInfo {
+        dir_exists,
+        events_path,
+        events_file_exists,
+        dir_files,
+        sqlite_file_name,
+    })
+}
+
 fn now_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
