@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: The diff adds `StateDirectoryInfo` struct and `state_directory_info()` function to `src/state.rs` but never wires them into `handle_why` in `src/commands_state.rs` — the function is dead code with zero callers. The cold-start diagnostics already exist in `handle_why` (lines 970-1007), so the implementation is incomplete (no integration) and doesn't change `why last-failure` behavior at all.

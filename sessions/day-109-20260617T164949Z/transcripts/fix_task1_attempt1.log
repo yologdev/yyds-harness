@@ -1,0 +1,282 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. The evaluator rejected the implementation because `StateDirectoryInfo` struct and `state_directory_info()` were added to `src/state.rs` but never wired into `handle_why` in `src/commands_state.rs`.
+2. The cold-start diagnostics already exist in `handle_why` (lines 970-1007), but the new function is dead code with zero callers.
+3. I need to wire the new function into `handle_why` to make it useful for cold-start scenarios.
+
+Let me first look at the current state of both files to understand what was added and how to integrate it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/state.rs  ▶ read src/commands_state.rs:950..1030 ✓ (105ms)
+ ✓ (105ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see more of the `handle_why` function to understand its full structure, and also check what `StateDirectoryInfo` and `state_directory_info()` look like in `src/state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1025..  ▶ search 'StateDirectoryInfo' in src/state.rs ✓ (142ms)
+ ✓ (142ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the `StateDirectoryInfo` struct and `state_directory_info()` function, and also check how they should be integrated into `handle_why`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3200.. ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the situation. The `StateDirectoryInfo` struct and `state_directory_info()` function exist in `src/state.rs` but are never called from `handle_why` in `src/commands_state.rs`. 
+
+Looking at the `handle_why` function:
+- Lines 968-1007: When `read_tail_events` fails (cold start, no events file), it shows a generic message with next steps.
+- Lines 1008-1071: When events are loaded but no failure found, it shows incomplete runs and diagnostic errors.
+
+The missing integration: when `handle_why` is at cold start (events file can't be read), it should call `state_directory_info()` to get more specific diagnostics about the state directory state. Currently, the cold-start path just says "No state events file found" without distinguishing between:
+1. Never initialized (no `.yoyo/state/` directory)
+2. Initialized but events file missing
+3. Directory exists with other files but no events file
+
+The `StateDirectoryInfo` was designed exactly for this - to provide richer cold-start diagnostics.
+
+Let me now integrate it. The key change is in `handle_why` at the cold-start path (lines 970-1007). I need to:
+
+1. Call `state_directory_info()` before or alongside the current cold-start path
+2. Use the info to provide more specific diagnostics based on what we find
+
+Let me plan the edit. The cold-start path currently:
+1. Tries to read tail events → fails
+2. Gets diagnostic error
+3. Prints "No state events file found at <path>"
+4. If diagnostic, prints it
+5. Prints "cold start" message
+6. If `last-failure`, prints next evidence suggestions
+7. Returns
+
+I need to integrate `state_directory_info()` to give richer output. The function is on `src/state.rs` and is `pub`, so it's accessible from `commands_state.rs`. Let me now make the edit.
+
+Looking at lines 968-1007 more carefully:
+
+```rust
+fn handle_why(id: &str, show_summary: bool, limit: usize) {
+    let path = default_events_path();
+    let Ok(events) = read_tail_events(&path, limit) else {
+        let diagnostic = crate::state::take_diagnostic_error();
+
+        eprintln!(
+            "{YELLOW}  No state events file found at {}{RESET}",
+            path.display()
+        );
+
+        if let Some(ref diag) = diagnostic {
+            eprintln!("{YELLOW}  A startup diagnostic error was captured:{RESET}");
+            eprintln!("{DIM}    {diag}{RESET}");
+            eprintln!();
+        }
+
+        eprintln!(
+            "{YELLOW}  This is a cold start: no evolution sessions have recorded state yet.{RESET}"
+        );
+
+        if id == "last-failure" {
+            eprintln!("{DIM}  No completed failed sessions exist.{RESET}");
+            eprintln!();
+            eprintln!("{DIM}  Next evidence to inspect:{RESET}");
+            eprintln!(
+                "{DIM}    yyds state crashes --limit 10    (crash and session evidence){RESET}"
+            );
+            eprintln!("{DIM}    yyds state doctor                 (state health check){RESET}");
+            eprintln!(
+                "{DIM}    yyds state init                   (initialize state recording){RESET}"
+            );
+            eprintln!(
+                "{DIM}    yyds state tail --limit 5          (recent state events, after init){RESET}"
+            );
+        } else {
+            eprintln!("{DIM}  To enable state recording, run: yyds state init{RESET}");
+            eprintln!("{DIM}  Once sessions complete, run: yyds state why last-failure{RESET}");
+        }
+        return;
+    };
+```
+
+My plan:
+1. In the cold-start branch (when `read_tail_events` fails), call `crate::state::state_directory_info()` 
+2. Use its output to categorize the state:
+   - If `dir_exists` is false → "State directory does not exist" → suggest `yyds state init`
+   - If `dir_exists` but `events_file_exists` is false → show what files ARE in the directory
+   - If `events_file_exists` but we can't read (unlikely but handle it) → suggest permissions issue
+3. Still show the diagnostic error if present
+4. Keep the existing suggestions for `last-failure` and general case
+
+Let me do the edit now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the issue. `StateDirectoryInfo` and `state_directory_info()` exist in `src/state.rs` but are never called from `handle_why`. I need to wire them into the cold-start path to give richer diagnostics instead of the generic "no state events file found" message.
+        let Ok(events) = read_tail_events(&path, limit) else {
+            let diagnostic = crate::state::take_diagnostic_error();
+    
+  -         eprintln!(
+  -             "{YELLOW}  No state events file found at {}{RESET}",
+  -             path.display()
+  -         );
+  +         if let Some(dir_info) = crate::state::state_directory_info() {
+  +             if !dir_info.dir_exists {
+  +                 eprintln!(
+  +                     "{YELLOW}  State directory does not exist at {}{RESET}",
+  +                     dir_info.events_path.parent().unwrap_or_else(|| std::path::Path::new(".")).display()
+  +                 );
+  +                 eprintln!(
+  +                     "{YELLOW}  This is a cold start: the state system has never been initialized.{RESET}"
+  +                 );
+  +                 eprintln!(
+  +                     "{DIM}  To enable state recording, run: yyds state init{RESET}"
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (19 → 63 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (19 → 63 lines)
+        let Ok(events) = read_tail_events(&path, limit) else {
+            let diagnostic = crate::state::take_diagnostic_error();
+    
+  -         eprintln!(
+  -             "{YELLOW}  No state events file found at {}{RESET}",
+  -             path.display()
+  -         );
+  +         if let Some(dir_info) = crate::state::state_directory_info() {
+  +             if !dir_info.dir_exists {
+  +                 eprintln!(
+  +                     "{YELLOW}  State directory does not exist at {}{RESET}",
+  +                     dir_info.events_path.parent().unwrap_or_else(|| std::path::Path::new(".")).display()
+  +                 );
+  +                 eprintln!(
+  +                     "{YELLOW}  This is a cold start: the state system has never been initialized.{RESET}"
+  +                 );
+  +                 eprintln!(
+  +                     "{DIM}  To enable state recording, run: yyds state init{RESET}"
+  +                 );
+  +             } else if !dir_info.events_file_exists {
+  ... (49 more lines)
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to also update the part below where it says "No completed failed sessions exist" and the suggestions - that should remain unchanged for the case where we don't have directory info and for the `last-failure` case.
+
+Let me verify the edit was applied correctly by reading the modified section.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the edit looks correct:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:968.. ✓ (118ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edit looks correct. The integration is now complete:
+1. When `read_tail_events` fails (cold start), we call `crate::state::state_directory_info()`
+2. If it returns `Some(dir_info)`, we categorize:
+   - No directory → "never been initialized"
+   - Directory exists but no events file → "directory exists but no events file" with listing of what's in it + SQLite check
+   - Events file exists but can't read → "permissions/corrupt file"
+3. The fallback `else` branch handles the case where even `state_directory_info()` returns `None`
+4. The diagnostic error check and `last-failure` suggestions remain
+
+Now let me run `cargo fmt -- --check` and `cargo check` to verify the edit compiles and is properly formatted.
+────────────────────────────────────────────────────────────────────────────────
+
+The edit integrates `StateDirectoryInfo` into `handle_why`'s cold-start path. Now let me verify it compiles and is formatted:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && e… ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The formatting issues are:
+1. Long line in the `unwrap_or_else` chain needs to be broken
+2. Multi-line `eprintln!` calls that can be single-line need to be collapsed
+3. In `src/state.rs`, the `unwrap_or_else` line needs to be split
+
+Let me just run `cargo fmt` to auto-fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 && echo "FMT OK… ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, formatting is fixed. Now let's run `cargo check` to verify compilation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (7.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Compiles cleanly. Now let me run `cargo fmt -- --check` to confirm format is good, and then run the focused test the evaluator specified: `cargo test commands_state state`.
+────────────────────────────────────────────────────────────────────────────────
+
+Compiles clean. Let me now run the verification the evaluator specified:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && e… ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now run the focused tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state stat… ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `cargo test` syntax needs the test names as filters, not space-separated arguments. Let me use the right syntax - filter by test names containing "commands_state" or "state".
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state -- -… ✓ (33.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+168 tests passed. Let me also run the `state` tests to confirm nothing is broken there.
+────────────────────────────────────────────────────────────────────────────────
+
+All 168 matching tests pass. Let me also run the state tests:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state -- --test-thr… ✓ (20.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 287 state tests pass and 2 integration tests pass. The integration is complete and verified.
+
+Let me also verify the final state of the edit to make sure the formatting is correct.
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Let me verify the final formatted state of the key change:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:968.. ✓ (127ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything looks correct. Let me summarize what was done.
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**Problem:** The `StateDirectoryInfo` struct and `state_directory_info()` function in `src/state.rs` were dead code — defined but never called from `handle_why` in `src/commands_state.rs`.
+
+**Fix:** Wired `crate::state::state_directory_info()` into the cold-start path of `handle_why` (line 973). Instead of a single generic "No state events file found" message, the cold-start `why last-failure` output now distinguishes three states:
+
+1. **No state directory** (`!dir_info.dir_exists`) → "State directory does not exist — the state system has never been initialized."
+2. **Directory exists but events file missing** (`!dir_info.events_file_exists`) → Shows directory contents and any SQLite file found, with repair hints.
+3. **Events file exists but unreadable** → "This may be a permissions issue or a corrupt file."
+
+The diagnostic error check and `last-failure` next-evidence suggestions are preserved. The existing behavior for sessions with events loaded is unchanged.
+
+**Verification:**
+• `cargo fmt -- --check` — passes
+• `cargo check` — compiles clean
+• `cargo test commands_state` — 168 tests pass
+• `cargo test state` — 287 tests pass (+ 2 integration)
+
+

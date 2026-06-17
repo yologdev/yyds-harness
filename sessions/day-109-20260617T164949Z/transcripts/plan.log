@@ -1,0 +1,525 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the evidence and create the session plan. Let me start by checking what already exists in session_plan/ and then create task files.
+
+Key evidence from the assessment and trajectory:
+
+1. **State doctor type mapping is broken** - all 27,403 events classified as "unknown" despite schema V3. Low-impact cosmetic bug but undermines doctor's diagnostic value.
+
+2. **Repeated `src/main.rs` search errors** - agents search for `src/main.rs` which doesn't exist; the binary is at `src/bin/yyds.rs`.
+
+3. **`reverted_no_edit` tasks** - implementation agents that read but never produced file changes. The harness just landed a fix (stop retrying analysis-only), but there's more to do here.
+
+4. **Graph-derived pressure:**
+   - Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1)
+   - Raise verified task success rate (task_success_rate=0.0)
+   - Require strict verifier evidence for tasks (task_verification_rate=0.0)
+   - Verify readable paths before file reads (failed_tool_summary.read_error=2)
+   - Reconcile transcript-only tool failures (transcript_only_failed_tool_count=3)
+
+Let me first check if session_plan/task_01.md already exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null || echo "session_plan … ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already an assessment.md and task_01.md seeded. Let me read the seed task_01.md first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment.md (50 lines) ✓ (83ms)
+ ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me assess the seed task_01.md against the fresh assessment. The seed task says:
+
+- Title: "Improve cold-start state failure diagnostics"
+- Files: src/commands_state.rs, src/state.rs
+- It claims: "The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions."
+
+But the current assessment (just generated, Day 109 16:49) says:
+- `yyds state why last-failure` → correctly reports current session in progress ✓
+- `yyds state why last-crash` → no crashes found (10 preflight hidden) ✓
+- `yyds state failures --recent` → 12 recent failures, all retryable, mostly tool_execution ✓
+
+The cold-start `state why last-failure` issue was addressed in Day 108 (17:37): "Tests for `state why last-failure` cold-start output distinguishability". The seed task seems to be based on an older assessment pattern. The current assessment shows all these commands working fine.
+
+The only concrete bug the current assessment identifies is:
+1. **[LOW] `state doctor` classifies all events as "unknown"** - despite schema V3
+2. **[LOW] Repeated `src/main.rs` search errors** - 2 occurrences
+
+And the graph-derived pressure:
+1. Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1)
+2. Raise verified task success rate (task_success_rate=0.0)
+3. Require strict verifier evidence for tasks
+4. Verify readable paths before file reads (failed_tool_summary.read_error=2)
+5. Reconcile transcript-only tool failures (transcript_only_failed_tool_count=3)
+
+Let me check the seed validation. The seed says `validated_against_assessment: true` but the seed task's evidence doesn't match the current assessment fresh from `yyds state why last-failure` which passed. Let me verify this independently.
+
+Let me think about what tasks to create:
+
+1. **Fix `state doctor` type-classification mapping** - concrete, verifiable, low risk. The assessment says all 27,403 events are classified as "unknown" despite V3 schema. This is in `commands_state.rs` or `state.rs`.
+
+2. **Fix `src/main.rs` search path confusion** - agent tool errors where they search for `src/main.rs` which doesn't exist. Need to find where this happens and add path suggestion or context hint.
+
+3. Third slot: something from graph pressure. But many of those are harness-level (evolve.sh, preseed_session_plan.py) which are protected files. Let me check.
+
+Actually, let me first verify the seed task contradiction. The seed says `state why last-failure` returns `no state event found` during fresh-state sessions, but the current assessment says it "correctly reports current session in progress ✓". This could mean the seed is stale.
+
+Let me verify this real quick with `yyds state why last-failure` before I decide whether to replace the seed task.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.9s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ yyds state why last-failure 2>&1 | head -30  ▶ $ yyds state doctor 2>&1 | head -20 ✓ (133ms)
+ ✓ (288ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+yyds binary isn't on PATH from the runner context. Let me try `cargo run` or check where it is.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la target/debug/yyds 2>/dev/null || cargo build --bin yyds 2>&1 | tail -5 ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The binary exists. Let me test the key claim.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ./target/debug/yyds state why last-failure 2>&1  ▶ $ ./target/debug/yyds state doctor 2>&1 | grep -i "unknown\|event\|type" | head -1… ✓ (5.6s)
+ ✓ (6.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have concrete evidence:
+
+1. **Seed task_01 is stale**: The assessment says `state why last-failure` "correctly reports current session in progress ✓" but when I run it, I get `no state event found for 'last-failure'` — but with useful diagnostics (it says "1 successful session recorded. No failure data to diagnose." and suggests alternative commands). So the output is actually informative now — not the empty "no state event found" the seed claims. The seed task says this was a problem but the actual current output is reasonable: it tells you there are no failures and points you to `state why last-crash` etc.
+
+Wait, but the output IS saying `no state event found for 'last-failure'`. It then provides helpful context. But it's not returning a useful diagnosis of the LAST failure because there are none. This is actually behaving correctly. The seed task's claim that cold-start gives you nothing is wrong — it gives you friendly guidance.
+
+However, the assessment that ran in the same session got the "correctly reports current session in progress" result. The discrepancy might be because the assessment ran with more events or a different state. Let me re-read...
+
+Actually, looking at the output more carefully: `events: 200 total, runs: 0 started, 1 completed, failures: 0 recorded`. This shows it's working correctly — there are no failures to diagnose. The output is informative: "1 successful session recorded. No failure data to diagnose." and suggests alternatives.
+
+So the seed task_01 is indeed based on an OLD assessment pattern (pre-Day-108) where `state why last-failure` was unhelpful. The Day 108 and 109 work already addressed this.
+
+I should mark the seed task as obsolete and create better tasks. Let me now assess what the strongest evidence-backed tasks are:
+
+**Priority 1 evidence:**
+
+1. **`state doctor` type-classification broken** — `unknown=27556` for all events. This is a live, verified bug. Assessment confirms it. My `yyds state doctor` command confirms it. This is a concrete, low-risk code fix in `commands_state.rs` or `state.rs`.
+
+2. **`src/main.rs` search errors** — 2 occurrences in recent failures. But this is a prompt/context issue, not a code issue. The fix would be in context loading or search tool error recovery. However, this is harder to verify and might require broader changes.
+
+3. **Graph pressure: "Force reverted tasks to leave concrete evidence"** — the graph pressure says `task_no_edit_revert_count=1`. But recent harness work (Day 109 06:34) already addressed this by stopping retries on analysis-only attempts. HOWEVER, there's still the issue that when an implementation agent reverts without edits, no concrete evidence is left. This is more of a harness (`evolve.sh` / `preseed_session_plan.py`) improvement, but those are protected files.
+
+Let me check which files are protected and which aren't.
+
+Actually, looking at the CLAUDE.md safety rules: "Never modify ... scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, or .github/workflows/" - so `evolve.sh` and `preseed_session_plan.py` are protected. The preseed_session_plan.py protection was JUST added in the most recent commit (e9c3cb4) but it's not in the immutable list... Let me check.
+
+Actually, the CLAUDE.md says: "Never modify IDENTITY.md, PERSONALITY.md, ECONOMICS.md, scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, or .github/workflows/"
+
+`scripts/preseed_session_plan.py` is NOT in this list - it was modified in the most recent commit (e9c3cb4). But wait, I need to be careful about what changes are allowed.
+
+Let me focus on what I CAN do:
+
+**Task 1: Fix `state doctor` type-classification mapping**
+- Files: `src/commands_state.rs`, `src/state.rs`
+- Concrete, verifiable, low risk
+- Live bug confirmed by assessment AND my own command
+
+**Task 2: Something from graph pressure that's code-level**
+Let me look at the pressure items:
+- "Verify readable paths before file reads" — this is a prompt/tool issue. Could add path verification to the read_file or search tool. This would be in `tools.rs` or `smart_edit.rs`.
+- "Reconcile transcript-only tool failures" — harness-level, likely in `evolve.sh` scripts (protected)
+
+Actually, let me think about what's MOST actionable and impactful:
+
+1. **state doctor type fix** — yes, concrete code fix
+2. **src/main.rs search hint** — could add to context loading or search recovery. But the assessment says this is "low" impact.
+3. **Something about tool-use reliability** — the trajectory says "Verify readable paths before file reads (failed_tool_summary.read_error=2)"
+
+Let me look at the "read_error" issue. The assessment says: "2 occurrences — assessment agents hitting session_plan/ as a directory". This means agents are calling `read_file` on `session_plan/` which is a directory. This is a prompt/context issue, not a code bug.
+
+OK here's my plan:
+
+**Task 1: Fix `state doctor` type-classification mapping (replaces stale seed)**
+The seed task_01 is stale (its premise was already fixed in Day 108). Replace it with the state doctor type-mapping fix.
+
+**Task 2: Add path-existence guard to read_file tool before read attempts**
+The trajectory and assessment both point to `read_error` from trying to read directories. Add a stat check before `read_file` calls. This would be in `tools.rs` or `tool_wrappers.rs`.
+
+**Task 3: Skip if not enough slots or evidence for a third task**
+
+Wait, let me re-read the planning instructions:
+- "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence"
+
+Let me pick the two strongest:
+
+1. Fix `state doctor` type-classification (live bug, confirmed)
+2. Add path-type guard to read_file tool to prevent directory-read errors (trajectory pressure)
+
+For task 3, I could look at the `src/main.rs` issue or skip it. Let me keep it at 2 tasks since the assessment pattern shows 2 tasks is the sweet spot and recent sessions have struggled.
+
+Actually, let me also check if ISSUES_TODAY.md exists and has anything.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 25.3s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cat ISSUES_TODAY.md 2>/dev/null || echo "ISSUES_TODAY.md does not exist"  ▶ $ git grep -n "unknown" -- src/commands_state.rs src/state.rs 2>/dev/null | grep -… ✓ (114ms)
+ ✓ (264ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Found it. Let me look at both locations to understand the type-classification issue.
+
+Line 154: This is a JSON parse where it extracts event type by string, defaulting to "unknown". This seems fine — it's extracting the type from the event JSON.
+
+Line 12918: This is SQL where it uses COALESCE. This also seems fine as a default.
+
+The issue might be that the event's `type` field in the JSON doesn't match what the doctor expects, or that the doctor classification logic doesn't recognize the V3 event type names.
+
+Let me look at how `state doctor` classifies events and where the "unknown=27556" output comes from.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ rg -n "unknown" src/commands_state.rs | head -30 ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+rg isn't available. Let me use search instead.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'unknown' in src/commands_state.rs ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the doctor implementation. The issue is likely at line 154 where it extracts the type field from events. Let me search for the "doctor" function and understand the type-classification logic.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn.*doctor|Types:|event_type.*count|type.*breakdown' in src/commands_state.rs ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for "types:" or the output format that produces "unknown=N".
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'Types:' in src/commands_state.rs ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the code around line 267 to understand how the type breakdown is generated.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:240..300 ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to find `group_event_types` to understand how the classification happens. Let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn group_event_types' in src/commands_state.rs ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `group_event_types` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:356..396 ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the problem. The `group_event_types` function only recognizes the old V2 event type names:
+- RunStarted, RunCompleted, ToolCallStarted, ToolCallCompleted, etc.
+
+But the current V3 schema uses different event type names — likely something like `ModelCallCompleted`, `RunCompleted`, `ToolCallStarted`, etc. Let me check what actual event type names are in use by looking at events.
+
+Actually, looking at the state doctor output: `ModelCallCompleted: 1, RunCompleted: 1` — so those ARE the V3 names. But the `group_event_types` function is looking for old-style names like `RunStarted`, `RunCompleted`, etc. The V3 names might be different casing or prefix.
+
+Wait, but `yyds state tail` showed `ModelCallCompleted` and `RunCompleted`. But the function looks for `RunCompleted` too... Let me re-read:
+
+The function has:
+- merge "RunCompleted" — and we can see RunCompleted appears
+- merge "ModelCallCompleted" — and we can see ModelCallCompleted appears
+
+But the doctor reported: `Types: unknown=27556`. ALL events are classified as unknown. 
+
+Let me check the `type_counts` collection. It must be extracting types from somewhere, and the type names don't match the known set. Let me look at how type_counts gets populated.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:120..170 ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue clearly. At line 154, it reads `ev.get("type")` — the event's type field. But let me check what the actual V3 event type names are. Let me look at the events JSON to see what type values are actually stored.
+
+Looking at the tail output we saw: `ModelCallCompleted: 1, RunCompleted: 1` — those are the types reported in the tail output. But the doctor function's known types list at lines 380-394 lists `RunCompleted` and `ModelCallCompleted` (and others). 
+
+Wait, BUT the output says `unknown=27556`. That means the `type` field of events is literally "unknown" for almost all events. Maybe the issue is that the V3 events don't have a `type` field at all, or they use a different JSON key.
+
+Let me check: the context index shows event types like `evt-harness-e4839adb21228ab2 ModelCallCompleted: stopped_after_completion_file`, `evt-harness-c4b53904d54e691f RunCompleted: completed`. These look like they have a `type` field of `ModelCallCompleted`, `RunCompleted`, etc.
+
+But the doctor shows `unknown=27556` for ALL events. That means `ev.get("type")` returns None for all events. So the events don't have a `type` field at all — they have a different field name.
+
+Let me check what V3 events actually look like. Let me look at the events JSONL file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ head -3 .yoyo/events.jsonl 2>/dev/null | python3 -m json.tool 2>/dev/null | head… ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The events file might be empty or not have readable JSON. Let me check the file location.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la .yoyo/events.jsonl 2>/dev/null && wc -l .yoyo/events.jsonl && head -1 .yo… ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Seems like events.jsonl doesn't exist. Let me find where the events file actually is.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ find . -name "events.jsonl" -not -path "./.git/*" -not -path "./target/*" 2>/dev… ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ head -1 .yoyo/state/events.jsonl | python3 -m json.tool 2>/dev/null | head -30 ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the issue! The event uses `"event_type"` not `"type"`. The V3 schema uses `event_type` as the field name, but the doctor code at line 154 reads `ev.get("type")` which returns None, defaulting to "unknown".
+
+Let me verify by checking a few more events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ head -5 .yoyo/state/events.jsonl | python3 -c " (9 lines) ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the root cause. The V3 schema uses `event_type` (not `type`), but the doctor code reads `ev.get("type")`. Since the key `"type"` doesn't exist, it defaults to "unknown" for ALL events.
+
+The fix is simple: change `ev.get("type")` to `ev.get("event_type")` in the doctor function, and update the known type names in `group_event_types` to match V3 names.
+
+Let me check all the V3 event type names that are in use:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ head -100 .yoyo/state/events.jsonl | python3 -c " (10 lines) ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check a broader sample to see all event types:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (16 lines) ✓ (137ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Some lines have corrupt JSON - maybe truncated. Let me be more careful.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (22 lines) ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - most events have N/A event_type. But looking at the earlier sample, some events had event_type. Let me check the actual key names more carefully by looking at a few events that have N/A event_type.
+
+Wait, 593 out of 733 have `event_type` = `N/A`? That means `ev.get('event_type', 'N/A')` returns None for most events. That's strange - earlier I saw events with event_type. Let me check more carefully.
+
+Actually wait, I may be misreading. Let me check if there are different event schemas mixed together - some V2 events (with "type"), some V3 events (with "event_type").
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (23 lines) ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see it. There are **two** event schemas mixed in the events file:
+
+1. **V3 events** (129 out of 500): `actor, event_id, event_type, parent_event_ids, payload, run_id, schema_version, session_id, timestamp_ms, trace_id` — these use `event_type` for the type field.
+
+2. **V2/older events** (371 out of 500): `actor, causation_id, correlation_id, id, kind, payload` — these use `kind` for the type field, NOT `type`.
+
+So the doctor code reads `ev.get("type")` — but neither schema uses `"type"`! V3 uses `event_type`, and V2 uses `kind`.
+
+The fix needs to handle BOTH:
+- If `event_type` exists, use it (V3 schema)
+- Else if `kind` exists, use it (V2 schema) 
+- Else fallback to "unknown"
+
+And the `group_event_types` function needs its known types updated to match what's actually in the data.
+
+Let me look at the V2 `kind` values:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (32 lines) ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture:
+
+**V2 events** use `kind` with values: `ToolCallStarted`, `ToolCallCompleted`, `SessionStarted`, `RunStarted`, `RunCompleted`, `FileRead`, `CommandStarted`, `CommandCompleted`, `ModelCallStarted`, `DecisionRecorded`, `FileEdited`, `ModelCallCompleted`, `CacheMetricsRecorded`, `FailureObserved`
+
+**V3 events** use `event_type` with values: `RunCompleted`, `TaskLineageLinked`, `RunStarted`, `PatchEvaluated`, `DecisionRecorded`
+
+The doctor code at line 154 reads `ev.get("type")` which doesn't exist in either schema. It should read `event_type` first (V3), fall back to `kind` (V2), then "unknown".
+
+Also, the `group_event_types` function needs to know about V3 event types like `TaskLineageLinked`, `PatchEvaluated`, and V2 types like `SessionStarted`, `FailureObserved`.
+
+And the V2 kinds are what the current grouping logic handles — but since the code never reads them (it reads "type" which doesn't exist), the grouping has never worked.
+
+This is a clean, concrete fix. Let me now plan my session tasks:
+
+**Task 1: Fix `state doctor` type-classification to read both `event_type` (V3) and `kind` (V2)**
+- Replace stale seed task_01 with this
+- Files: `src/commands_state.rs` (and maybe `src/state.rs`)
+- Verifiable with `cargo test` and `yyds state doctor | grep Types`
+
+**Task 2: Add path-existence guard to read_file tool**
+- The trajectory pressure: "Verify readable paths before file reads (failed_tool_summary.read_error=2)"
+- Prevent agents from trying to read directories as files
+- Files: `src/tools.rs` or `src/tool_wrappers.rs`
+- But... this might be in yoagent's territory. Let me check if the read_file tool is our custom one or yoagent's.
+
+Actually, looking at the tools list: the read_file tool is a built-in yoagent tool. We can't modify it. The `failed_tool_summary.read_error=2` is from assessment agents trying to read `session_plan/` as a file. This is a prompt/context issue, not a code issue.
+
+Let me think about what tasks are actually code-level and actionable:
+
+1. **Fix state doctor type-classification** — ✅ concrete code fix, confirmed bug, low risk
+2. **Fix `src/main.rs` search confusion** — The assessment mentions 2 occurrences where agents search for `src/main.rs` which doesn't exist (binary is at `src/bin/yyds.rs`). This could be fixed by adding a path alias hint in context loading or search tool. But this might require broader changes.
+3. Something from graph pressure...
+
+Actually, let me look at graph pressure #1: "Force reverted tasks to leave concrete evidence" — this is about `evolve.sh` and `preseed_session_plan.py`. Both are protected/not-code files.
+
+Graph pressure #3: "Verify readable paths before file reads" — this is about tool discipline, not code.
+
+OK, let me go with:
+- **Task 1**: Fix state doctor type-classification (replaces stale seed)
+- **Task 2**: Skip — the other issues are either harness-level (protected files) or prompt-level (not code fixes)
+
+Actually wait, I need to produce at least one task (task_01) and the instructions say at least 2 slots should come from state/trajectory evidence. Let me think harder about what's actionable.
+
+Looking at the trajectory's "recent tool failures":
+- `missing 'path' parameter: 3 occurrences` — this is an agent tool-use issue, not a code bug
+- `src/main.rs not found: 2 occurrences` — this could be improved with context hints
+- `read_error: 2 occurrences` — reading directories as files
+
+For the `src/main.rs` search confusion: the assessment notes "the prompt/context may not clearly communicate that the binary entry point is `src/bin/yyds.rs`". I could add this information to the context loading in `src/context.rs`. That would be:
+- Files: `src/context.rs`
+- Add a note about `src/bin/yyds.rs` being the binary entry point (not `src/main.rs`)
+
+This is a small, focused change.
+
+But wait — the instruction says: "Don't try to do everything. Pick the highest-impact work." Let me focus on what's most impactful:
+
+1. **Fix state doctor type-classification** — makes `state doctor` useful, improves observability. This is a yoagent-state DeepSeek feedback task.
+2. Maybe just one task is fine given the recent pattern of reverted_no_edit. 
+
+Actually, re-reading the planning instructions: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+The state doctor fix IS state-driven. Let me see if there's a second one.
+
+Actually, looking at this more carefully, I think a single well-formed task that fixes a confirmed bug is better than padding with weak tasks. The recent sessions had 0/1 tasks complete because the tasks were unlandable. Let me focus on quality.
+
+Let me write the task file and issue_responses.md.
+
+For the stale seed task_01 — I need to:
+1. Write `session_plan/task_01_obsolete.md` explaining why the seed is stale
+2. Write `session_plan/task_01.md` with the new state doctor fix
+
+Or I can just overwrite task_01.md with the new content since the seed was already validated as stale against fresh assessment.
+
+Let me also check if the `read_events` function returns events as JSON objects with the right fields, and where it's called from in the doctor.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_events' in src/commands_state.rs ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me now also check what `state tail` does differently — it correctly reports event types (`ModelCallCompleted: 1, RunCompleted: 1`) while the doctor shows everything as unknown. This might be because tail uses the SQLite store and doctor reads the JSONL file directly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ ./target/debug/yyds state tail --limit 5 2>&1 | head -20 ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `state tail` reads from the SQLite store and correctly shows event types like `CommandStarted`, `ToolCallCompleted`, `ToolCallStarted`. The doctor reads from the JSONL file and can't find the type field.
+
+The fix is clear:
+- Line 154: change `ev.get("type")` to check `event_type` first (V3), then `kind` (V2), then default to "unknown"
+- Lines 157-169: update the match arms to handle both V2 `kind` values and V3 `event_type` values
+- Lines 356-395: update `group_event_types` to handle both schemas
+
+Let me also check what the "Run" tracking does. The doctor counts runs and failures. The V2 schema uses `RunStarted`/`RunCompleted`, and V3 also uses `RunStarted`/`RunCompleted`. So the match arms at 157-168 should work for both.
+
+Wait, but the issue is that line 154 gets "unknown" because `type` key doesn't exist. So the match never matches `RunStarted` or `RunCompleted`. Once I fix the key, both V2 and V3 `RunStarted`/`RunCompleted` events will be properly counted.
+
+Actually, V3 event_type includes `RunStarted` and `RunCompleted`, and V2 kind also includes `RunStarted` and `RunCompleted`. So the match arms should work for both once the key is fixed.
+
+Let me also check: does V3 have `FileEdited`? No, V3 event types in our sample are: `RunCompleted`, `TaskLineageLinked`, `RunStarted`, `PatchEvaluated`, `DecisionRecorded`. No `FileEdited`, `FileRead`, `ToolCallStarted`, `ToolCallCompleted`, `ModelCallStarted`, `ModelCallCompleted` — those are all V2.
+
+But wait — the `state tail` output shows `ToolCallStarted`, `ToolCallCompleted`, `CommandStarted`, `CommandCompleted` — those are V2 kinds. So the SQLite store has both schemas, and tail reads them correctly.
+
+So the fix needs to:
+1. At line 154: check `event_type` key first, then `kind` key, then "unknown"
+2. The `group_event_types` function's known types list needs to be expanded for V3 types (`TaskLineageLinked`, `PatchEvaluated`) and V2 types (`SessionStarted`, `FailureObserved`, `DecisionRecorded`)
+
+Now let me think about what matters for the task. Actually, `group_event_types` already handles unknown types — it just passes them through as-is. The main issue is that the TYPE KEY IS WRONG. Fixing that single line will fix most of the output.
+
+Let me also think about whether to add V3-specific event types to the known set. The current known set is:
+- RunStarted, RunCompleted → "Run"
+- ToolCallStarted, ToolCallCompleted → "ToolCall"  
+- CommandStarted, CommandCompleted → "Command"
+- ModelCallStarted, ModelCallCompleted → "Model"
+- FileRead, FileEdited → "File"
+- TestStarted, TestCompleted → "Test"
+- CacheMetricsRecorded → "Cache"
+
+And passthrough for everything else. Adding V3 types like `TaskLineageLinked` and `PatchEvaluated` to the grouping would be nice, but isn't critical for fixing the "all unknown" bug.
+
+OK, let me now write the session plan.
+
+Plan:
+1. **Overwrite task_01.md** with the state doctor type-classification fix
+2. Write `session_plan/task_01_obsolete.md` explaining the stale seed
+3. **task_02.md**: Add `src/bin/yyds.rs` path hint to context to reduce `src/main.rs` search errors
+4. Write `session_plan/issue_responses.md`
+
+For task_02, let me verify the files involved.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files src/context.rs 2>&1  ▶ search 'entry point|bin/|main\.rs|project.*type|Source Architecture' in src/context.rs ✓ (25ms)
+ ✓ (119ms)
+  2 tools completed in 119ms (2 ✓)
+
+

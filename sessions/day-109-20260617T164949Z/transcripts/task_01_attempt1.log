@@ -1,0 +1,601 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task: I need to improve cold-start state failure diagnostics so that `yyds state why last-failure` gives useful output even when there are no completed failed sessions yet. Let me start by reading the evolve skill, then examining the relevant source files.
+
+Let me read the evolve skill first, then look at the source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs (100 lines)  ▶ read src/state.rs (100 lines) ✓ (245ms)
+ ✓ (191ms)
+ ✓ (338ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the codebase better. I need to find:
+1. How `handle_why` works currently
+2. How `handle_failures` works
+3. What state events exist for failure tracking
+
+Let me search for the `handle_why` function and the `last-failure` handling.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+Let me find the key functions for failure diagnostics.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_why' in src/commands_state.rs  ▶ search 'last-failure' in src/commands_state.rs  ▶ search 'fn handle_failures' in src/commands_state.rs ✓ (74ms)
+ ✓ (84ms)
+ ✓ (123ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the handle_why function and the handle_failures function.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:968..1068  ▶ read src/commands_state.rs:782..882 ✓ (114ms)
+ ✓ (110ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the handle_why function to see the full cold-start handling and the build_why_report function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1067..1127  ▶ search 'fn build_why_report' in src/commands_state.rs  ▶ search 'fn find_incomplete_runs' in src/commands_state.rs ✓ (81ms)
+ ✓ (103ms)
+ ✓ (188ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the build_why_report function to understand what happens for "last-failure".
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.4s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2914..3014 ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the rest of build_why_report.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3013..3063 ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the current cold-start situation:
+
+1. When there is NO events file at all (line 970: `read_tail_events` fails), we enter the code at lines 970-1007. This already has a `last-failure` branch that gives diagnostic hints.
+
+2. When events file exists but `find_target_event` returns None (line 2915), we enter `build_why_report`'s error path. This already has several sub-cases handled at lines 2963-3033.
+
+3. But there's an important gap: When the events file exists but is completely empty (no events at all, events.is_empty()), the code at line 2963 handles it: "State recording is active but no sessions have completed yet." But in the cold-start no-file case (lines 970-1007), the message says "no state event found" which is fine.
+
+Let me check whether there's a gap around when `read_tail_events` succeeds but returns an empty events list. Let me also look at what the task asks for: "Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence."
+
+Looking at the current code more carefully:
+
+1. When no events file exists (line 970 Ok fails):
+   - Shows diagnostic error if any
+   - Says "This is a cold start: no evolution sessions have recorded state yet."
+   - For `last-failure`: shows "No completed failed sessions exist" + next evidence hints
+
+2. When events file exists but empty (line 2963 events.is_empty()):
+   - Says "State recording is active but no sessions have completed yet."
+   - "Diagnostics become available after 2-3 completed evolution sessions."
+   - For `last-failure`: suggests `yoyo state tail --limit 5`
+
+3. When events exist but no target found for `last-failure` and no failures in events (line 3004):
+   - With error runs: shows them
+   - Without error runs: "X successful session(s) recorded. No failure data to diagnose."
+
+Wait, there's another gap: when the events file exists but `read_tail_events` fails for some other reason (like JSON parse error), it doesn't show helpful diagnostics.
+
+But the main gap the task is about seems to be: when the events file doesn't exist yet (the `Ok(events) = read_tail_events` fails), the `last-failure` handler only shows generic "next evidence" hints. It should also check for nearby startup errors, incomplete runs from other tracking mechanisms, etc.
+
+Actually, re-reading the code more carefully:
+
+Lines 968-1007: This is when `read_tail_events` fails (no file). It already has:
+- Diagnostic error capture
+- "cold start" message
+- For last-failure: next evidence suggestions including `state crashes`, `state doctor`, `state init`, `state tail`
+
+Lines 2909-3033: This is when events file exists but no target found. It already has:
+- Various sub-cases for different states
+
+Looking at the task description again: "Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence."
+
+The current code already does a good amount of this. But let me think about what's missing:
+
+1. When the events file doesn't exist yet and we're in the cold-start path, we could also check for:
+   - The `.yoyo/state/` directory existence
+   - Whether there are any crash artifacts
+   - The existence of any `events.jsonl` in alternate locations
+
+2. The "no state event found" message at line 2917 should be clearer for `last-failure`
+
+Let me look at the `read_tail_events` function to understand what "failure" means.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail_events' in src/commands_state.rs  ▶ search 'fn read_events_lenient' in src/commands_state.rs ✓ (52ms)
+ ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read both of these functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1176..1226  ▶ read src/commands_state.rs:1207..1267 ✓ (89ms)
+ ✓ (85ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current state. Let me also look at `state.rs` to understand what state diagnostics are available there, specifically the `take_diagnostic_error` function and anything else related to startup/cold-start diagnostics.
+
+Let me also check: what does `state why` currently do when it shows "no state event found" — is this the right behavior, or should it provide more diagnostics for the `last-failure` case?
+
+From the code at lines 2914-3034, when `build_why_report` can't find the target event, it builds an error. The error has sub-cases:
+1. events empty AND no runs started AND no completed runs - "State recording is active but no sessions have completed yet."
+2. No completed runs but runs started - "A session is currently in progress." + incomplete runs list
+3. No failure events but error runs exist - error run listing
+4. No failure events and no error runs - "X successful session(s) recorded."
+5. Some failures but not enough - "X failure(s) recorded but not enough to cluster."
+
+But all of these already exist! The code seems quite comprehensive.
+
+Wait, let me re-read the task evidence more carefully:
+
+> Current assessment matched this harness seed: The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions. That leaves yyds unable to explain the earliest failures that block evolution.
+
+So the assessment found a specific issue: during "fresh-state sessions" (cold start, no events file), `state why last-failure` only returns "no state event found."
+
+Looking at the code flow for cold start (no events file):
+1. `read_tail_events` at line 970 fails (file doesn't exist)
+2. We enter lines 971-1007 which handle this cold start case
+3. For `last-failure`, it shows some diagnostic hints
+
+But wait - there's a subtlety. `read_tail_events` can fail for two reasons:
+1. File doesn't exist (the cold-start case)
+2. File exists but can't be read
+
+And it can succeed but return empty events:
+1. File exists but is empty
+
+Currently, the cold-start case (lines 970-1007) does provide helpful output, but maybe the issue is:
+- The file exists (state recording was initialized) but has stale/empty content
+- OR the file doesn't exist but the "next evidence" hints could be more actionable
+
+Let me also check: what if the events file exists but `read_tail_events` returns an error other than file-not-found? The current code just shows "No state events file found at ..." which is misleading if the file actually exists but is unreadable.
+
+Let me check the error handling more carefully. `read_tail_events` returns `Result<Vec<Value>, std::io::Error>`. At line 970, if it's `Err`, we show "No state events file found at ..." — but it could be a permission error or parse error, not just file-not-found.
+
+Let me look at what `read_tail` does when it fails:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.5s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail\b' in src/commands_state.rs ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me be more careful with the search pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail' in src/commands_state.rs ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1158..1178 ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a thorough understanding of the code. Let me analyze the gaps:
+
+**Current state for `yyds state why last-failure`:**
+
+1. **No events file at all** (lines 970-1007): Shows diagnostic error, cold-start message, and for `last-failure` shows: "No completed failed sessions exist" + next evidence hints like `state crashes`, `state doctor`, `state init`, `state tail`.
+
+2. **Events file exists but empty or no completed sessions** (lines 2963-2970 in build_why_report): Shows "State recording is active but no sessions have completed yet."
+
+3. **Events file exists with runs started but none completed** (lines 2971-3003): Shows "A session is currently in progress."
+
+4. **Events file exists, completed runs, no failures** (lines 3004-3026): Shows successful session count or error runs.
+
+5. **Events file exists, some failures** (lines 3027-3033): Shows failure count but not enough to cluster.
+
+The task says: "The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions."
+
+Looking at the code again at line 2917: `"no state event found for '{id}'\n"` — this is the error message shown when `find_target_event` returns `None` and we're in `build_why_report`. But note this is only reached when events DO exist (read_tail_events succeeds) but the specific event can't be found.
+
+But the first cold-start path (no file at all) at lines 984-1005 already handles `last-failure` reasonably well.
+
+Hmm. Let me re-think. Maybe the issue is more subtle. Let me check what happens when `read_tail_events` succeeds but returns an empty vec, and then `build_why_report` is called with empty events, and `find_target_event` returns None. In that case, we'd go to line 2963 which checks `events.is_empty() && (run_completed_count == 0 && !run_started)`. Since events is empty, this is true, and we'd show "State recording is active but no sessions have completed yet."
+
+Wait, but `read_tail_events` with limit=200 line 970 is called. If the file exists but is empty, `read_tail` reads an empty file and returns empty lines, then `read_tail_events` would return Ok with empty vec. That's fine.
+
+But what if the file exists and has parseable but irrelevant events? Then `find_target_event` returns None, and we go through the sub-cases at lines 2963-3033.
+
+OK, I think the actual issue is that the cold-start/no-file case (lines 970-1007) while showing hints, could be more actionable. Let me look at what else could be checked:
+
+1. When there's no events file, we check `take_diagnostic_error()` and show it. Good.
+2. We show "This is a cold start: no evolution sessions have recorded state yet." Good.
+3. For `last-failure`, we show "No completed failed sessions exist." Good.
+4. We show "Next evidence to inspect" hints. Good.
+
+But what's MISSING:
+- We don't check for recent crash artifacts
+- We don't check for `.yoyo/state/` directory contents
+- We don't give guidance on what might be causing the cold start (e.g., config issues, init not run)
+- The output could be more actionable for someone who just ran init but hasn't had sessions yet
+
+Wait, actually looking more carefully at the task description: "That leaves yyds unable to explain the earliest failures that block evolution."
+
+The key insight is: **when evolution hasn't started yet because something is blocking it** (like auth issues, config problems, etc.), `why last-failure` should help diagnose WHY the evolution is blocked, not just say "there are no failures yet."
+
+Currently the diagnostic error capture at line 978-982 is good, but it only works if the error was stashed in the same process. In many cases, the blocking error was from a previous process that crashed before recording state.
+
+So what could we add?
+
+1. When the events file doesn't exist, check for `.yoyo/state/` directory and its partial contents
+2. Check for recent crash artifacts or stashed errors in known locations
+3. Check the `take_diagnostic_error()` and present it more prominently
+4. Distinguish between "truly brand new with no state" vs "state directory exists but events file is missing/broken"
+
+Let me also look at what state.rs provides for diagnostics.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me understand the state.rs diagnostic capabilities and the full cold-start flow.
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn take_diagnostic_error' in src/state.rs  ▶ search 'fn stash_diagnostic_error' in src/state.rs  ▶ search 'fn store_run_error' in src/state.rs ✓ (77ms)
+ ✓ (106ms)
+ ✓ (129ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at what happens when `take_diagnostic_error` is called - it clears the error, so subsequent calls won't get it. Let me also check for the `LAST_RUN_ERROR` thread local variable to understand if we can check it without taking.
+
+Let me also look at how `handle_why` is invoked from the `why` handler to fully understand the flow.
+
+Actually, I think I now have a good understanding. Let me think about what the minimal, targeted improvement would be:
+
+**The gap**: When `read_tail_events` fails (no events file), the code currently shows a generic "cold start" message. For `last-failure`, it shows some hints. But:
+
+1. It doesn't check if the `.yoyo/state/` directory exists but is empty vs. doesn't exist at all
+2. It doesn't try to find crash evidence or error artifacts that might explain WHY there's no state
+3. The `take_diagnostic_error()` check is only useful within the same process — it doesn't help when a previous process crashed
+
+**What I can add to the no-events-file cold-start path:**
+
+1. Check if `.yoyo/state/` directory exists. If not, tell user they need to run `yyds state init`.
+2. If `.yoyo/state/` exists but events file doesn't, mention that explicitly.
+3. Check for any crash artifacts in `.yoyo/state/` directory.
+4. Show a more detailed "Your state evidence trail is empty because no evolution sessions have run. This is expected for a fresh clone or newly initialized state." message.
+
+Let me also look at what `LAST_RUN_ERROR` looks like — maybe we can also surface that.
+
+Wait, actually, I think the biggest improvement would be to also surface `LAST_RUN_ERROR` in the cold-start path (in addition to diagnostic errors). The `store_run_error` stores an error message that's included in the RunCompleted event, but if the process exits before RunCompleted is emitted, that error is lost. We could surface it in the cold-start diagnostics.
+
+Actually, `LAST_RUN_ERROR` is a thread_local, not persisted to disk. So it's only available within the current process. That's not helpful for cross-session diagnostics.
+
+OK, let me focus on more practical improvements:
+
+1. In the no-events-file path (lines 970-1007), add a check for `.yoyo/state/` directory existence
+2. Add a check for crash artifacts or partial state files in `.yoyo/state/`
+3. Better distinguish between "never initialized" vs "initialized but no sessions yet"
+4. For `last-failure`, provide more specific next steps based on what's actually present
+
+Let me also look at what `handle_crashes` does to understand if there are crash artifacts we can reference.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 9.7s (3 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_crashes' in src ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what information handle_crashes reads from.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs (80 lines) ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `handle_crashes` reads from the same events file. That means when there's no events file, both `why last-failure` and `crashes` will say "no state log found." So the issue is clear: when there's absolutely no state (fresh clone), the user gets little actionable guidance.
+
+Now let me think about what I can actually improve in a minimal way:
+
+**The plan:**
+
+1. In `handle_why` (the cold-start path at lines 970-1007), when `read_tail_events` fails:
+   - Check if `.yoyo/state/` directory exists and list its contents
+   - If the directory exists but events file is missing, mention that explicitly
+   - If the directory doesn't exist, emphasize that `state init` is needed
+   - Try to check for other evidence files in `.yoyo/`
+   - Make the `last-failure` output more informative by showing what state infrastructure does exist
+
+2. Also, in the `build_why_report` cold-start path (lines 2963-2970), when events are empty:
+   - Distinguish "state initialized but no sessions" from "totally empty events file"
+   - Add more actionable next steps for the `last-failure` case
+
+But actually, I need to be careful about scope. The task says "Edit Surface: src/commands_state.rs, src/state.rs". Let me focus on making the cold-start `why last-failure` output more useful.
+
+Let me check if there are existing tests for this path.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at existing tests for the why command and cold-start behavior.
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'last-failure' in src/commands_state.rs ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test around line 17499 to understand what's tested.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17450..17530 ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the beginning of this test to understand the setup.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17390..17450 ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a solid understanding. Let me now plan my changes.
+
+The task says:
+- Make `yyds state why last-failure` useful when there are no completed failed sessions yet
+- Cold-start `why last-failure` output gives actionable next evidence to inspect
+- Existing behavior for completed failed sessions remains unchanged
+- Output distinguishes no history from missing diagnostics and from active/incomplete runs
+
+Looking at the current code, the cold-start path when there's NO events file (lines 970-1007) already provides some diagnostics. But it doesn't distinguish between:
+1. "No .yoyo/state/ directory exists at all" (needs `state init`)
+2. ".yoyo/state/ directory exists but events file is missing" (was initialized, but file is gone)
+3. ".yoyo/state/events.jsonl exists but is empty" (initialized but no sessions)
+
+Wait, case 3 is handled by build_why_report at line 2963.
+
+Cases 1 and 2 both hit the `read_tail_events` failure path. Let me improve the cold-start path to distinguish these cases and provide better diagnostics.
+
+Also, I notice a potential issue: in the cold-start path at lines 970-1007, the `take_diagnostic_error()` is called (line 971) and stored in `diagnostic`. Then later at line 1058, `take_diagnostic_error()` is called again — but by this time, the diagnostic was already consumed at line 971! So lines 1054-1067 will never find a diagnostic error, because it was already taken. This is a bug! Let me verify...
+
+Actually, looking at the code structure:
+- Lines 970-1007: The `read_tail_events` failure path. `take_diagnostic_error()` is called at line 971 and used at lines 978-982. This is inside the `if Ok(events) = ...` error branch.
+- Lines 1008-1070: The success path where events were read. At line 1058, `take_diagnostic_error()` is called again inside the `build_why_report` error branch.
+
+These are separate branches — either we go into lines 970-1007 (no file), OR we go into lines 1008-1070 (file exists). So the diagnostic is correctly only consumed once.
+
+But wait, looking more carefully: in the no-file path (970-1007), the diagnostic is consumed at line 971, and we `return` at line 1007. So the second `take_diagnostic_error()` at line 1058 is only reached in the file-exists branch. This is correct.
+
+Now, what actual improvements should I make?
+
+**Improvement 1: Better cold-start path distinction in handle_why**
+
+When `read_tail_events` fails:
+- Check if the `.yoyo/state/` directory exists
+- If directory exists: list available files, show diagnostic error if any, suggest `state recover` or `state doctor`
+- If directory doesn't exist: suggest `state init`
+- For `last-failure`: provide more specific guidance based on what's found
+
+**Improvement 2: Add `LAST_RUN_ERROR` to the diagnostic surface**
+
+Actually, `LAST_RUN_ERROR` is thread-local so it doesn't help across processes.
+
+**Improvement 3: Better empty-events handling in build_why_report**
+
+When events are empty, distinguish between:
+- Truly no events (fresh init) 
+- Events file exists but couldn't be fully parsed
+
+Actually, looking at the code at lines 2963-2970, it already says "State recording is active but no sessions have completed yet." But when this path is reached, we're inside `build_why_report` which means events were read successfully but they're just an empty vec or don't contain the target. 
+
+Wait, re-reading lines 2963-2964: `if events.is_empty() || (run_completed_count == 0 && !run_started)`. The `events.is_empty()` check handles empty events. The message says "State recording is active but no sessions have completed yet." This is fine for the build_why_report path.
+
+But what about the case where `read_tail_events` succeeds (returns Ok(vec![])) and then `build_why_report` is called? At line 970, `read_tail_events(&path, limit)` with limit=200. If the file exists but is empty, `read_tail` returns empty lines, and `read_tail_events` returns `Ok(vec![])`. Then we go to line 1008, skip `show_summary`, and call `build_why_report(&events, id)` at line 1012 with empty events. That goes to line 2915, `find_target_event` returns None, and we go to line 2963, which says "State recording is active but no sessions have completed yet."
+
+Hmm, but there's a subtle issue: what if the events file doesn't exist and the limit is 200? `read_tail_events` calls `read_tail(path, limit)` which calls `std::fs::read_to_string(path)?`. If the file doesn't exist, this returns an Err, and `read_tail_events` returns Err. So we'd go to the cold-start path at line 970.
+
+OK, so the flows are:
+1. No events file → cold-start path (970-1007)
+2. Empty events file → build_why_report error path (2963-2970)
+3. Events file with data but no matching event → other build_why_report sub-cases
+
+Now let me think about what specific, minimal improvements to make.
+
+I think the key improvements are:
+
+**A. In the cold-start no-file path (lines 970-1007):**
+- Check if `.yoyo/state/` directory exists
+- If directory exists: list files, suggest using `state recover`, check for alternate files
+- If directory doesn't exist: stronger call to action for `state init`
+- For `last-failure`: add more specific "what might have happened" guidance
+
+**B. In the empty events build_why_report path (lines 2963-2970):**
+- Already decent, but could add more specific next-step guidance for `last-failure`
+
+**C. A new function in state.rs to check state directory health:**
+This could go in state.rs as a utility that `commands_state.rs` calls.
+
+Let me focus on the minimum viable change. I'll:
+
+1. Improve the cold-start no-file path in `handle_why` to check directory existence and list contents
+2. Add a small helper in `state.rs` for directory health checks
+
+Let me now implement this. First, let me look at what imports are available in commands_state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs (12 lines) ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now, let me plan the specific changes:
+
+1. In `handle_why`, the cold-start no-file path (lines 970-1007): I'll add checking for `.yoyo/state/` directory, listing any files found, providing more specific guidance.
+
+2. I could also add a helper in state.rs that checks state directory health, returning information about what exists.
+
+Let me think about what state.rs function I should add. Actually, I think the improvements can be scoped primarily to commands_state.rs, with maybe a small utility in state.rs.
+
+Let me check what's already exported from state.rs that could be useful.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn' in src/state.rs ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also check if there's already a function to check the state directory. Let me also look at what `default_events_path` returns to understand the directory structure.
+
+OK, I think my plan is:
+
+1. Modify the cold-start no-file path in `handle_why` (lines 970-1007):
+   - Check if the directory containing `events.jsonl` exists
+   - If it exists: list files, note that events file is missing, suggest `state recover` or `state doctor`
+   - If it doesn't exist: note that state is not initialized, suggest `state init`
+   - For `last-failure`, provide more specific next-step guidance
+
+2. Add a small test for the cold-start directory-check behavior
+
+Let me also look at what the `EventType` and other state.rs exports look like, and if I need to add a function to check state directory health.
+
+Actually, I'll keep it simple. I'll improve the handle_why cold-start path and add some tests. Let me also check if there are any tests for handle_why cold start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_why' in src/commands_state.rs ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `handle_why` is at line 968. Now let me look for tests that test handle_why directly with cold start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'cold.start.*why' in src/commands_state.rs ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now create a plan and implement it. Let me write a clear plan:
+
+### Plan
+
+**Problem**: Cold-start `yyds state why last-failure` returns only generic hints when there's no events file. It doesn't distinguish between "state never initialized" (no .yoyo/state/ directory) and "state initialized but events file missing" (directory exists, file absent). It also doesn't check for partial state artifacts.
+
+**Changes:**
+
+1. **`src/commands_state.rs` - `handle_why` (lines 970-1007)**: 
+   - After `read_tail_events` fails, check if `.yoyo/state/` directory exists
+   - If directory exists: list files inside it, show that events file is missing, suggest recovery
+   - If directory doesn't exist: note that state is not initialized, suggest init
+   - For `last-failure`: add explicit guidance about what missing diagnostics mean
+
+2. **`src/state.rs`**: Add a small utility function `state_directory_health()` that returns information about the state directory status (exists, contents, etc.)
+
+3. **Tests**: Add/update tests for cold-start `why last-failure` behavior
+
+Actually, for a minimal viable change, I can keep everything in `commands_state.rs` and add a small diagnostic function there. Let me not add to state.rs unless needed.
+
+Wait, the task edit surface says `src/commands_state.rs, src/state.rs`. Let me add something meaningful to state.rs as well.
+
+Let me think about what would be useful in state.rs: a function like `state_directory_info()` that returns a struct with:
+- Whether the state directory exists
+- What files are in it
+- Whether the events file exists
+
+This would be useful for both commands_state.rs and potentially other diagnostics.
+
+Let me implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding of the code. Let me plan and implement the changes.
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (29ms)
+  ▶ todo ✓ (26ms)
+  ▶ todo ✓ (47ms)
+  ▶ todo ✓ (109ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first look at the end of state.rs to find a good place to add the utility function, and also look at the existing test infrastructure.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.3s (4 ✓)
+
+Let me find a good insertion point in state.rs and see how tests are structured.
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3185..3215 ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. I'll add the `state_directory_info` function before the `#[cfg(test)]` section, around line 3198-3200. Let me now implement the changes.
+
+First, let me write the state_directory_info function in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the state_directory_info function.
+────────────────────────────────────────────────────────────────────────────────
+
+First, let me add the `StateDirectoryInfo` struct and function to `state.rs`:
+        std::env::var("YOYO_HARNESS_INTERNAL")
+            .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
+  + }
+  + 
+  + /// Lightweight snapshot of the state directory for cold-start diagnostics.
+  + ///
+  + /// Used by `yyds state why last-failure` and similar commands to distinguish
+  + /// "never initialized" from "initialized but events file missing" from
+  + /// "initialized with events file present."
+  + #[derive(Debug, Clone)]
+  + pub struct StateDirectoryInfo {
+  +     /// Whether the state directory itself exists.
+  +     pub dir_exists: bool,
+  +     /// Full path to the events file (even if it doesn't exist).
+  +     pub events_path: PathBuf,
+  +     /// Whether the events file exists.
+  +     pub events_file_exists: bool,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (5 → 60 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (5 → 60 lines)
+        std::env::var("YOYO_HARNESS_INTERNAL")
+            .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
+  + }
+  + 
+  + /// Lightweight snapshot of the state directory for cold-start diagnostics.
+  + ///
+  + /// Used by `yyds state why last-failure` and similar commands to distinguish
+  + /// "never initialized" from "initialized but events file missing" from
+  + /// "initialized with events file present."
+  + #[derive(Debug, Clone)]
+  + pub struct StateDirectoryInfo {
+  +     /// Whether the state directory itself exists.
+  +     pub dir_exists: bool,
+  +     /// Full path to the events file (even if it doesn't exist).
+  +     pub events_path: PathBuf,
+  +     /// Whether the events file exists.
+  +     pub events_file_exists: bool,
+  +     /// Files found in the state directory (names only, sorted).
+  +     pub dir_files: Vec<String>,
+  ... (39 more lines)
+ ✓ (25ms)
+
+

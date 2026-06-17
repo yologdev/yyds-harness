@@ -1,0 +1,251 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task: Improve cold-start state failure diagnostics in `state why last-failure` so that when there are no completed failed sessions, it reports nearby startup errors, incomplete runs, or missing diagnostic evidence instead of just "no state event found".
+
+The changes made show git diff as empty, but build/tests pass. I need to:
+1. Check if there are actually changes made
+2. If no changes, check if the feature already exists (obsolete task)
+3. Review the current state of the code
+
+Let me check what's actually in the git diff and the current state of the code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat HEAD 2>/dev/nu…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5 ✓ (79ms)
+ ✓ (314ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are uncommitted changes. Let me see the full diff.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD -- src/commands_… ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is truncated. Let me read the full files to understand the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me read the full diff and the relevant sections of both files to verify:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD -- src/commands_… ✓ (49ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output is truncated by the tool's diff display. Let me read the actual files directly to see the full changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD -- src/commands_…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD -- src/state.rs … ✓ (122ms)
+ ✓ (374ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is showing ellipsis truncation. Let me read the actual files directly to see what was changed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:965..1045  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:3195..3265 ✓ (65ms)
+ ✓ (161ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also see the rest of the handle_why function to see how the "next evidence to inspect" and the rest was changed:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:1044..1074 ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the rest of the last-failure fallback logic:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:1070..1120 ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture of the changes. Let me also check if there's a `find_incomplete_runs` function that was added:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn find_incomplete_runs' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check if there's a `state_directory_info` function in the old code (i.e., was it newly added?):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show HEAD:src/state.rs | g…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show HEAD:src/commands_sta… ✓ (161ms)
+ ✓ (315ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting. So `state_directory_info` is a new function added in `state.rs`, and the `find_incomplete_runs` and the "Next evidence to inspect" block in the cold-start path of `handle_why` were already present in HEAD. 
+
+Let me verify: the diff shows the `handle_why` function already had "Next evidence to inspect" in HEAD (line 991). But the diff shows changes around lines 970-990. Let me look more carefully at what was changed vs what existed.
+
+The diff said:
+- Old code had `eprintln!(...);` with a generic "No state events file found" message
+- New code has the `state_directory_info()` check with three distinct cases: dir doesn't exist, dir exists but no events file, events file exists but can't be read
+
+Let me verify this by looking at the git show HEAD output more carefully:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.3s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show HEAD:src/commands_sta… ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So now I can compare:
+
+**BEFORE (HEAD):**
+- On failure to read events: simple "No state events file found at ..." message
+- Then diagnostic
+- Then "This is a cold start..."
+- For `last-failure`: "No completed failed sessions exist" + next evidence suggestions
+- For other IDs: "To enable state recording, run: yyds state init"
+
+**AFTER (working tree):**
+- On failure to read events: calls `state_directory_info()` first
+  - If dir doesn't exist: specific message about state dir not existing, cold start, run `yyds state init`
+  - If dir exists but no events file: shows dir contents, SQLite file if present, suggests `yyds state init`
+  - If events file exists but can't be read: mentions permissions/corrupt file
+  - Fallback (None): the original generic message
+- Then diagnostic
+- For `last-failure`: "No completed failed sessions exist" + next evidence (same as before)
+- For other IDs: same as before
+
+**BEFORE (HEAD):**
+- `find_incomplete_runs` already existed in HEAD - this was part of a previous change
+- The "Next evidence to inspect" section with concrete commands was already in HEAD
+
+So the task implementation adds:
+1. `StateDirectoryInfo` struct and `state_directory_info()` function in `state.rs`
+2. Replaces the generic "No state events file found" message in `handle_why` with a three-way diagnostic that checks: (a) directory existence, (b) events file existence, (c) events file readability
+
+The `find_incomplete_runs` and the "Next evidence to inspect" block were pre-existing.
+
+Now let me evaluate against the task criteria:
+
+**Success Criteria:**
+- ✅ Cold-start `why last-failure` output gives actionable next evidence to inspect — the implementation adds specific diagnostics about directory state, file existence, and gives concrete next steps
+- ✅ Existing behavior for completed failed sessions remains unchanged — the changes only affect the cold-start path (when `read_tail_events` fails)
+- ✅ Output distinguishes no history from missing diagnostics and from active/incomplete runs — the three-way check (dir missing, dir exists but no events, events exists but unreadable) distinguishes these cases
+
+**Verification:**
+The task says: `cargo test commands_state state` and `cargo check`
+The build status says both passed already.
+
+Let me run the specific test to verify:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state stat… ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task verifier says `cargo test commands_state state` but these are different test modules. Let me run them separately or use a pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state 2>&1… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+168 tests passed for `commands_state`. Let me check if the `state` tests also pass, and also check if there's a test for `state_directory_info`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state --lib 2>&1 | … ✓ (18.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+287 tests passed, 0 failed. 
+
+Now let me also check that `cargo check` passes (the task's build status already said PASS, but let me verify the working tree compiles):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 | tail -5 ✓ (142ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything passes. Let me now verify the implementation thoroughly:
+
+1. **Task asks for**: `yyds state why last-failure` useful during cold-start by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence.
+
+2. **What was implemented**:
+   - `StateDirectoryInfo` struct in `state.rs` with: `dir_exists`, `events_path`, `events_file_exists`, `dir_files`, `sqlite_file_name`
+   - `state_directory_info()` function that inspects directory state without parsing
+   - In `handle_why`, the old generic "No state events file found" was replaced with a three-branch diagnostic:
+     a. Directory doesn't exist → cold start, run `yyds state init`
+     b. Directory exists but no events file → shows dir contents, SQLite presence, suggests init
+     c. Events file exists but unreadable → permissions/corruption
+   - The `find_incomplete_runs` and "Next evidence to inspect" were already in HEAD (pre-existing)
+   - The diagnostic error display from `take_diagnostic_error()` was already there
+
+3. **Success criteria check**:
+   - ✅ Cold-start `why last-failure` output gives actionable next evidence → the three-branch check tells you exactly what state you're in and what to do
+   - ✅ Existing behavior for completed failed sessions unchanged → changes only in the error path of `read_tail_events`
+   - ✅ Output distinguishes no history from missing diagnostics and from active/incomplete runs → the three-branch check clearly distinguishes
+
+4. **Build/Test**: Both pass
+
+The implementation matches the task description. The `find_incomplete_runs` feature and "Next evidence to inspect" were pre-existing (from a prior session), which is fine - the task added the `StateDirectoryInfo` inspection and the three-way diagnostic.
+
+Wait, but the task says the diff was empty in the task description ("=== CHANGES MADE (git diff) ===" with nothing after). This suggests the diff was being shown to me but it appeared empty. However, the actual git diff shows 109 insertions, 8 deletions across 2 files. The changes are real.
+
+Let me verify the implementation is complete and correct. Let me think about potential issues:
+
+1. The `state_directory_info()` function returns `Option<StateDirectoryInfo>`. The `None` case is handled by falling back to the old generic message. Good.
+
+2. The function reads the directory and collects file names - this could fail if the directory isn't readable, but `read_dir` returns a `Result` which is handled with `if let Ok`.
+
+3. The `default_events_path()` is called - this is from `commands_state` module.
+
+4. The function is `pub` and exposed correctly.
+
+One thing I notice: the task's "Implementation Notes" said "Keep the change scoped to the listed files unless verification reveals a direct dependency." The changes are in exactly the two listed files: `src/commands_state.rs` and `src/state.rs`. Good.
+
+All tests pass. Build passes. The implementation matches the task description.
+
+Verdict: PASS
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a complete picture. Let me write the evaluation.
+
+**Summary of changes:**
+
+**`src/state.rs`** — Added `StateDirectoryInfo` struct (with `dir_exists`, `events_path`, `events_file_exists`, `dir_files`, `sqlite_file_name`) and `state_directory_info()` function that inspects the state directory without parsing. Returns `None` only if path resolution fails.
+
+**`src/commands_state.rs`** — In `handle_why`, the old single-branch "No state events file found" message was replaced with a three-branch diagnostic using `state_directory_info()`:
+1. **No state directory** → cold start, run `yyds state init`
+2. **Directory exists, no events file** → shows dir contents, notes SQLite if present, suggests init
+3. **Events file exists but unreadable** → permissions/corruption hint
+4. **Fallback** (if `state_directory_info()` returns `None`) → original generic message
+
+The `find_incomplete_runs` scan and "Next evidence to inspect" block were pre-existing in HEAD.
+
+**Verification:**
+• `cargo check`: PASS
+• `cargo test commands_state`: 168 passed, 0 failed
+• `cargo test state --lib`: 287 passed, 0 failed
+• Changes scoped to exactly `src/commands_state.rs` and `src/state.rs`
+
+**Success criteria met:**
+• ✅ Cold-start `why last-failure` output now gives actionable next evidence (three-branch state directory diagnostic + concrete `yyds state` commands)
+• ✅ Existing behavior for completed failed sessions unchanged (changes only in the `read_tail_events` error path)
+• ✅ Output distinguishes no history from missing diagnostics and from active/incomplete runs
+  + Verdict: PASS
+  + Reason: Implementation adds StateDirectoryInfo diagnostics in state.rs and replaces the generic cold-start message in handle_why with a three-branch check (no dir / dir exists no events / events unreadable), giving actionable next steps. All tests pass (commands_state: 168 passed, state: 287 passed), cargo check clean, changes scoped to the two listed files.
+  ✓ Auto-approved: write: /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md (2 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ write /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md (2 lines) ✓ (27ms)
