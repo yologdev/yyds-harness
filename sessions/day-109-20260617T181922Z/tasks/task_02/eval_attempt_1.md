@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The diff exactly matches the task requirements — attempt 1 hint now includes concrete `rg --files | grep <name>` command template, attempt 2 hint includes bash fallback (`cat`/`head`) plus broader path-finding (`rg --files`, `rg -n '<symbol>'`). Build and tests pass. Existing test assertions (`bash || cat || head` for attempt 2, `read_file` substring for edit_file attempt 1) are satisfied by the new text. No regressions, hints remain concise and non-hallucinatory.
