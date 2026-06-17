@@ -632,6 +632,45 @@ def summarize_task_lineage(events: list[dict[str, Any]], source: Path | None = N
         if kind in {"DecisionRecorded", "TaskLineageLinked"} and data.get("phase") == "task_commit_linkage":
             if current_session_id and event_session_id(event, data) != current_session_id:
                 continue
+            for recorded_task in data.get("recorded_tasks", []) or []:
+                if not isinstance(recorded_task, dict):
+                    continue
+                key = task_key(recorded_task)
+                if not key:
+                    continue
+                row = tasks.setdefault(
+                    key,
+                    {
+                        "task_id": key,
+                        "task_number": recorded_task.get("task_number"),
+                        "task_title": recorded_task.get("task_title"),
+                        "gnome_metrics": {},
+                        "gnome_deltas": {},
+                    },
+                )
+                for field in ("task_number", "task_title", "status", "head_commit", "planned_files", "source_files"):
+                    if recorded_task.get(field) is not None:
+                        row[field] = recorded_task.get(field)
+                recorded_shas = [
+                    str(sha)
+                    for sha in (recorded_task.get("commit_shas") or [])
+                    if sha
+                ]
+                existing_shas = [
+                    str(sha)
+                    for sha in (row.get("commit_shas") or [])
+                    if sha
+                ]
+                row["commit_shas"] = list(dict.fromkeys(existing_shas + recorded_shas))
+                existing_commits = row.get("commits") if isinstance(row.get("commits"), list) else []
+                recorded_commits = (
+                    recorded_task.get("commits")
+                    if isinstance(recorded_task.get("commits"), list)
+                    else []
+                )
+                row["commits"] = existing_commits + recorded_commits
+                row["commit_linkage_event_id"] = event_id(event)
+                row.setdefault("commit_linkage_method", "recorded_task_event")
             for linked_task in data.get("tasks", []) or []:
                 if not isinstance(linked_task, dict):
                     continue

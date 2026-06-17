@@ -3319,6 +3319,7 @@ TASK_COMMIT_LINKS=$(python3 scripts/task_lineage.py \
     --repo-root . \
     --link-commits \
     --events "$SESSION_STATE_EVENTS" \
+    --audit-dir "$SESSION_STAGING" \
     --base "$SESSION_START_SHA" 2>/dev/null || echo '{}')
 printf '%s\n' "$TASK_COMMIT_LINKS" > "$TASK_COMMIT_LINKS_FILE"
 if ! python3 scripts/task_lineage.py \

@@ -1595,6 +1595,34 @@ def task_lineage(session_dir: Path, metrics: dict[str, Any], deltas: dict[str, A
         if session_id and current_session_id and session_id != current_session_id:
             continue
         if data.get("phase") == "task_commit_linkage" and kind in {"DecisionRecorded", "TaskLineageLinked"}:
+            for recorded_task in data.get("recorded_tasks", []) or []:
+                if not isinstance(recorded_task, dict):
+                    continue
+                task_id = str(recorded_task.get("task_id") or "")
+                if not task_id:
+                    continue
+                row = tasks.setdefault(
+                    task_id,
+                    {
+                        "task_id": task_id,
+                        "task_number": recorded_task.get("task_number"),
+                        "task_title": recorded_task.get("task_title"),
+                    },
+                )
+                for key in ("task_number", "task_title", "status", "head_commit", "planned_files", "source_files"):
+                    if recorded_task.get(key) is not None:
+                        row[key] = recorded_task.get(key)
+                existing = [str(sha) for sha in (row.get("commit_shas") or []) if sha]
+                recorded = [str(sha) for sha in (recorded_task.get("commit_shas") or []) if sha]
+                row["commit_shas"] = list(dict.fromkeys(existing + recorded))
+                current_commits = row.get("commits") if isinstance(row.get("commits"), list) else []
+                recorded_commits = (
+                    recorded_task.get("commits")
+                    if isinstance(recorded_task.get("commits"), list)
+                    else []
+                )
+                row["commits"] = current_commits + recorded_commits
+                row.setdefault("commit_linkage_method", "recorded_task_event")
             for linked_task in data.get("tasks", []) or []:
                 if not isinstance(linked_task, dict):
                     continue

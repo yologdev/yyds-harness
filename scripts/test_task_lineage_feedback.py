@@ -509,8 +509,66 @@ class TaskLineageFeedback(unittest.TestCase):
             payload = task_lineage.build_link_payload(args)
 
             self.assertEqual(payload["tasks"], [])
+            self.assertEqual(payload["recorded_task_count"], 1)
+            self.assertEqual(payload["recorded_task_commit_count"], 0)
+            self.assertEqual(payload["recorded_tasks"][0]["task_id"], "task_01")
             self.assertEqual(len(payload["unassigned_source_commits"]), 1)
             self.assertEqual(payload["unassigned_source_commits"][0]["source_files"], ["src/lib.rs"])
+
+    def test_commit_linkage_falls_back_to_task_outcomes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            (repo / "src").mkdir()
+            (repo / "src/lib.rs").write_text("pub fn before() {}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+            base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            (repo / "src/lib.rs").write_text("pub fn after() {}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-m", "Day 1 (00:00): Outcome only (Task 1)"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            task_sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            outcome_path = repo / "audit/tasks/task_01/outcome.json"
+            outcome_path.parent.mkdir(parents=True)
+            outcome_path.write_text(
+                json.dumps(
+                    {
+                        "task_id": "task_01",
+                        "task_number": 1,
+                        "task_title": "Outcome only",
+                        "status": "completed",
+                        "source_files": ["src/lib.rs"],
+                        "commit_shas": [task_sha],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            args = type(
+                "Args",
+                (),
+                {
+                    "repo_root": repo,
+                    "base": base,
+                    "head": "",
+                    "events": repo / "missing-events.jsonl",
+                    "audit_dir": repo / "audit",
+                },
+            )()
+            payload = task_lineage.build_link_payload(args)
+
+            self.assertEqual(payload["recorded_task_count"], 1)
+            self.assertEqual(payload["recorded_task_commit_count"], 1)
+            self.assertEqual(payload["recorded_tasks"][0]["commit_shas"], [task_sha])
+            self.assertEqual(payload["tasks"], [])
+            self.assertEqual(payload["unassigned_source_commits"], [])
 
     def test_task_verification_gate_requires_planned_file_overlap(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2902,6 +2960,56 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(task["commit_shas"], ["sha-wrap"])
             self.assertEqual(task["commit_linkage_method"], "source_file_overlap")
             self.assertEqual(task["commits"][0]["subject"], "Day 1 (00:00): session wrap-up")
+
+    def test_summary_uses_recorded_task_commit_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / "state"
+            state_dir.mkdir()
+            events_path = state_dir / "events.jsonl"
+            append_event(
+                events_path,
+                "TaskLineageLinked",
+                {
+                    "phase": "task_commit_linkage",
+                    "decision_type": "task_commit_linkage",
+                    "recorded_task_count": 1,
+                    "recorded_task_commit_count": 1,
+                    "recorded_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "task_title": "Already linked",
+                            "status": "completed",
+                            "source_files": ["src/context.rs"],
+                            "commit_shas": ["sha-task"],
+                            "commits": [
+                                {
+                                    "sha": "sha-task",
+                                    "short_sha": "sha-tas",
+                                    "subject": "Day 1 (00:00): Already linked (Task 1)",
+                                    "source_files": ["src/context.rs"],
+                                }
+                            ],
+                        }
+                    ],
+                    "tasks": [],
+                },
+            )
+
+            gnome_summary = summarize_state_gnomes.summarize(
+                summarize_state_gnomes.load_jsonl(events_path),
+                events_path,
+            )
+            feedback_tasks = log_feedback.task_lineage(root, {}, {})
+
+            self.assertEqual(gnome_summary["task_lineage"][0]["commit_shas"], ["sha-task"])
+            self.assertEqual(
+                gnome_summary["task_lineage"][0]["commit_linkage_method"],
+                "recorded_task_event",
+            )
+            self.assertEqual(feedback_tasks[0]["commit_shas"], ["sha-task"])
+            self.assertEqual(feedback_tasks[0]["commit_linkage_method"], "recorded_task_event")
 
 
 if __name__ == "__main__":

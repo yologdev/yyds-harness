@@ -249,10 +249,99 @@ def task_rows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def outcome_task_rows(audit_dir: Path | None) -> list[dict[str, Any]]:
+    if audit_dir is None:
+        return []
+    tasks_dir = audit_dir / "tasks"
+    if not tasks_dir.is_dir():
+        return []
+    rows: list[dict[str, Any]] = []
+    for outcome_path in sorted(tasks_dir.glob("task_*/outcome.json")):
+        outcome = load_json(outcome_path)
+        if not outcome:
+            continue
+        tid = str(outcome.get("task_id") or outcome_path.parent.name)
+        if not tid:
+            continue
+        row: dict[str, Any] = {
+            "task_id": tid,
+            "task_number": outcome.get("task_number"),
+            "task_title": outcome.get("task_title"),
+            "status": outcome.get("status"),
+            "head_commit": outcome.get("head_commit"),
+            "planned_files": compact([str(path) for path in (outcome.get("planned_files") or []) if path]),
+            "source_files": compact([str(path) for path in (outcome.get("source_files") or []) if path]),
+            "touched_files": compact([str(path) for path in (outcome.get("touched_files") or []) if path]),
+            "commit_shas": compact([str(sha) for sha in (outcome.get("commit_shas") or []) if sha]),
+            "commits": outcome.get("commits") if isinstance(outcome.get("commits"), list) else [],
+        }
+        rows.append({key: value for key, value in row.items() if value not in (None, [], {})})
+    return rows
+
+
+def merge_task_rows(primary: list[dict[str, Any]], fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for task in [*fallback, *primary]:
+        tid = str(task.get("task_id") or "")
+        if not tid:
+            continue
+        row = rows.setdefault(tid, {"task_id": tid})
+        for key in ("task_number", "task_title", "status", "head_commit"):
+            if task.get(key) is not None:
+                row[key] = task.get(key)
+        for key in ("planned_files", "source_files", "touched_files", "commit_shas"):
+            values = task.get(key)
+            if isinstance(values, list):
+                row[key] = compact([*(row.get(key) or []), *[str(value) for value in values if value]])
+        commits = task.get("commits")
+        if isinstance(commits, list):
+            existing = row.get("commits") if isinstance(row.get("commits"), list) else []
+            seen = {str(commit.get("sha") or "") for commit in existing if isinstance(commit, dict)}
+            row["commits"] = [
+                *existing,
+                *[
+                    commit
+                    for commit in commits
+                    if isinstance(commit, dict) and str(commit.get("sha") or "") not in seen
+                ],
+            ]
+    return sorted(
+        rows.values(),
+        key=lambda row: (
+            row.get("task_number") if isinstance(row.get("task_number"), int) else 999,
+            str(row.get("task_id") or ""),
+        ),
+    )
+
+
+def recorded_task_rows(tasks: list[dict[str, Any]], commits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_sha = {str(commit.get("sha") or ""): commit for commit in commits if isinstance(commit, dict)}
+    recorded: list[dict[str, Any]] = []
+    for task in tasks:
+        commit_shas = compact([str(sha) for sha in (task.get("commit_shas") or []) if sha])
+        row: dict[str, Any] = {
+            "task_id": task.get("task_id"),
+            "task_number": task.get("task_number"),
+            "task_title": task.get("task_title"),
+            "status": task.get("status"),
+            "head_commit": task.get("head_commit"),
+            "planned_files": compact([str(path) for path in (task.get("planned_files") or []) if path]),
+            "source_files": compact([str(path) for path in (task.get("source_files") or []) if path]),
+            "commit_shas": commit_shas,
+            "commits": [by_sha[sha] for sha in commit_shas if sha in by_sha],
+        }
+        recorded.append({key: value for key, value in row.items() if value not in (None, [], {})})
+    return recorded
+
+
 def build_link_payload(args: argparse.Namespace) -> dict[str, Any]:
     head = args.head or git(args.repo_root, ["rev-parse", "HEAD"]).strip()
-    tasks = task_rows(load_events(args.events))
+    tasks = merge_task_rows(
+        task_rows(load_events(args.events)) if args.events is not None else [],
+        outcome_task_rows(getattr(args, "audit_dir", None)),
+    )
     commits = [commit for commit in commit_records(args.repo_root, args.base, head) if commit["source_files"]]
+    recorded_tasks = recorded_task_rows(tasks, commits)
     known = {
         str(sha)
         for task in tasks
@@ -287,6 +376,10 @@ def build_link_payload(args: argparse.Namespace) -> dict[str, Any]:
         "decision_type": "task_commit_linkage",
         "base_commit": args.base or None,
         "head_commit": head or None,
+        "recorded_task_count": len(recorded_tasks),
+        "recorded_task_commit_count": sum(len(task.get("commit_shas") or []) for task in recorded_tasks),
+        "recorded_tasks": recorded_tasks,
+        "new_linked_task_count": len(linked_tasks),
         "tasks": linked_tasks,
         "unassigned_source_commits": [
             commit for commit in commits if commit["sha"] not in known and commit["sha"] not in assigned
@@ -454,6 +547,10 @@ def run_self_tests() -> int:
         }
         (repo / "events.jsonl").write_text(json.dumps(append) + "\n", encoding="utf-8")
         link_payload = build_link_payload(link_args)
+        assert link_payload["recorded_task_count"] == 1
+        assert link_payload["recorded_task_commit_count"] == 1
+        assert link_payload["recorded_tasks"][0]["commit_shas"] == [original_task_sha]
+        assert link_payload["new_linked_task_count"] == 1
         assert link_payload["tasks"][0]["linked_commit_shas"]
         outcome_path = repo / "audit/tasks/task_01/outcome.json"
         outcome_path.parent.mkdir(parents=True)
@@ -515,8 +612,8 @@ def main() -> int:
         sys.stdout.write("\n")
         return 0
     if args.link_commits:
-        if args.events is None or not args.base:
-            parser.error("--events and --base are required with --link-commits")
+        if not args.base or (args.events is None and args.audit_dir is None):
+            parser.error("--base and at least one of --events/--audit-dir are required with --link-commits")
         json.dump(build_link_payload(args), sys.stdout, sort_keys=True, separators=(",", ":"))
         sys.stdout.write("\n")
         return 0
