@@ -137,12 +137,16 @@ pub fn tool_recovery_hint(tool_name: &str, attempt: u32) -> &'static str {
         match tool_name {
             "bash" => {
                 "The shell command failed. Inspect the exit code and stderr output above \
-                 to understand why. Check if the command and any file paths exist, \
-                 try a simpler bounded version, or use a different approach."
+                 to understand why. Before retrying, verify any file paths exist: \
+                 use `test -f <path>` for files, `ls <dir>` for directories, or \
+                 `rg --files | head` to list available project files. \
+                 Then try a simpler bounded version of the command."
             }
             "edit_file" => {
-                "The edit failed (likely old_text mismatch). Use read_file to see \
-                 current contents, then retry with the exact text."
+                "The edit failed (likely old_text mismatch or wrong file path). \
+                 First verify the file path exists: run `ls <path>` or `rg --files | grep <name>` \
+                 to confirm the file is where you think it is. Then use read_file to see \
+                 current contents, and retry with the exact text."
             }
             "write_file" => {
                 "The file write failed. Check that the path exists and you have \
@@ -154,7 +158,13 @@ pub fn tool_recovery_hint(tool_name: &str, attempt: u32) -> &'static str {
                  looking for), or use `list_files` on the parent directory to see what's \
                  actually there."
             }
-            "search" => "The search failed. Try a simpler pattern or check the path.",
+            "search" => {
+                "The search failed — the path may not exist or the pattern found nothing. \
+                 Verify the directory exists with `ls <dir>` or use `list_files` to explore. \
+                 To find files by name, run `rg --files | grep <name>`. \
+                 For symbol-to-file mapping, try `rg -n '<symbol>' src/`. \
+                 Then retry with a verified path."
+            }
             "rename_symbol" => "The rename failed. Verify the symbol exists with search first.",
             _ => "The tool call failed. Try a different approach.",
         }
@@ -866,6 +876,48 @@ mod tests {
         assert!(
             hint.contains("edit_file") || hint.contains("replace"),
             "rename_symbol escalated hint should suggest manual replacement: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_search_attempt1_path_discovery() {
+        // search attempt 1 should include concrete path-finding commands
+        let hint = tool_recovery_hint("search", 1);
+        assert!(
+            hint.contains("rg --files") || hint.contains("list_files"),
+            "search hint should suggest path discovery commands: {hint}"
+        );
+        assert!(
+            hint.contains("ls ") || hint.contains("list_files") || hint.contains("directory"),
+            "search hint should suggest directory verification: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_edit_file_attempt1_path_verification() {
+        // edit_file attempt 1 should include path verification suggestion
+        let hint = tool_recovery_hint("edit_file", 1);
+        assert!(
+            hint.contains("path") || hint.contains("exists") || hint.contains("verify"),
+            "edit_file hint should suggest path verification: {hint}"
+        );
+        assert!(
+            hint.contains("read_file") || hint.contains("current contents"),
+            "edit_file hint should still suggest reading current contents: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_bash_attempt1_path_checking() {
+        // bash attempt 1 should include explicit path-checking commands
+        let hint = tool_recovery_hint("bash", 1);
+        assert!(
+            hint.contains("test -f") || hint.contains("ls ") || hint.contains("rg --files"),
+            "bash hint should suggest concrete path-checking commands: {hint}"
+        );
+        assert!(
+            hint.contains("exit") || hint.contains("stderr"),
+            "bash hint should still mention exit code or stderr output: {hint}"
         );
     }
 
