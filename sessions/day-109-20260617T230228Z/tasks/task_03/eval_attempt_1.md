@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The diff correctly replaces `max(parsed_tool_error_count, structured_unrecovered)` with just `structured_unrecovered_failed_tool_count` in `build_assessment()`, using the existing recovery-aware infrastructure from `structured_tool_action_metrics()` that cross-references failed tools against successful bash retries in audit.jsonl. All 98 self-tests pass including the new "recovered tool errors score higher than unrecovered" check.

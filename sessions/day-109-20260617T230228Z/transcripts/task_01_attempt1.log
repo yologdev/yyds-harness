@@ -1,0 +1,740 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task is to improve cold-start state failure diagnostics in `src/commands_state.rs` and `src/state.rs`. Let me first read the evolve skill, then understand the current state of the code before making changes.
+
+Let me start by reading the evolve skill and understanding the current code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs (100 lines)  ▶ read src/state.rs (100 lines) ✓ (270ms)
+ ✓ (287ms)
+ ✓ (239ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the current state system better. I need to find the `why` handler, specifically `handle_why`, and the `handle_failures` function. Let me also look at how state events are read and how failures are tracked.
+
+The task is about improving cold-start state failure diagnostics. When `yyds state why last-failure` is run in a fresh state (no completed failed sessions), it should give useful diagnostics instead of just "no state event found."
+
+Let me search for the relevant functions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.5s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_why' in src/commands_state.rs  ▶ search 'handle_failures' in src/commands_state.rs  ▶ search 'last-failure' in src/commands_state.rs ✓ (117ms)
+ ✓ (117ms)
+ ✓ (152ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `handle_why` function and surrounding context.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.4s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:968..1118  ▶ read src/commands_state.rs:782..968 ✓ (38ms)
+ ✓ (209ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current structure. The `handle_why` function already has cold-start support for when the events file can't be read. But the code paths where the events file exists but is empty (no events) and when `build_why_report` returns an error for `last-failure` both already have some handling.
+
+Let me now look at the `state_directory_info` function in state.rs to see if it captures enough info, and then look at `build_why_report` to understand how it handles events. Also let me check what the current tests look like.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+Now let me read the `state_directory_info` function and the `build_why_report` function, plus existing tests.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn state_directory_info' in src/state.rs  ▶ search 'fn build_why_report' in src/commands_state.rs  ▶ search 'fn find_incomplete_runs' in src/commands_state.rs ✓ (115ms)
+ ✓ (117ms)
+ ✓ (156ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `state_directory_info` function, `build_why_report`, and `find_incomplete_runs` functions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3223..3303  ▶ read src/commands_state.rs:2958..3058  ▶ read src/commands_state.rs:1130..1180 ✓ (95ms)
+ ✓ (384ms)
+ ✓ (359ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the code. Let me assess what exists vs what the task asks for.
+
+The current code in `handle_why` already handles several cold-start scenarios:
+
+1. **Events file can't be read** (line 970-1051): It checks `state_directory_info()` and shows diagnostics about:
+   - State directory doesn't exist → cold start message + "yyds state init"
+   - Dir exists but no events file → shows dir contents + SQLite detection
+   - Events file exists but unreadable → permissions issue
+   - Fallback: no state events file found
+
+2. **For `last-failure` when no events file** (line 1032-1049): Shows `yyds state crashes`, `yyds state doctor`, `yyds state init`, `yyds state tail` as next steps.
+
+3. **`build_why_report` error path** (line 1056-1115): Shows incomplete runs and stashed diagnostic errors.
+
+4. **`build_why_report` itself** (line 2958+) handles:
+   - Empty events / no completed sessions → "no sessions have completed yet"
+   - In-progress session (RunStarted but no RunCompleted)
+   - No failure events but error completions
+   - General "no state event found" message
+
+The task asks for:
+- Cold-start `why last-failure` output gives actionable next evidence to inspect
+- Existing behavior for completed failed sessions remains unchanged
+- Output distinguishes no history from missing diagnostics and from active/incomplete runs
+
+Looking at the current code, it seems like this is ALREADY mostly implemented. The cold-start paths already have:
+- Actionable next evidence (try `yyds state crashes`, `yyds state doctor`, etc.)
+- Distinction between no history, incomplete runs, and missing diagnostics
+- Startup diagnostic error capture
+
+But wait, let me re-read the task more carefully. The task says:
+
+"Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence."
+
+Let me check if there's a gap. Specifically, what happens when:
+1. Events file exists but has only RunStarted events (in-progress session)
+2. Events file exists but has only successful RunCompleted events (no failures)
+3. The state directory doesn't exist at all
+
+Let me trace through the code path for "events file exists but events are empty or only have non-failure events and we're asking for last-failure":
+
+1. `handle_why` is called with `id = "last-failure"`, `show_summary = false`, `limit = 200`
+2. It tries `read_tail_events(&path, limit)` - this succeeds, returns events
+3. If `show_summary` is true, prints summary
+4. Calls `build_why_report(&events, id)` - this returns Err("no state event found for 'last-failure'")
+5. In the error path (line 1067+), it checks `id == "last-failure"`:
+   - Finds incomplete runs with `find_incomplete_runs`
+   - Checks `take_diagnostic_error()`
+
+This seems already functional. Let me check if there's a gap in the "events file exists, has events, but no failures" path within `build_why_report`.
+
+Looking at `build_why_report`:
+- Line 2959: `find_target_event(events, id)` returns None for "last-failure" if there's no actual "last-failure" event
+- Line 2961: Sets error message "no state event found for 'last-failure'"
+- Line 3007: If events is empty or (no run_completed AND no run_started): shows "State recording is active but no sessions have completed yet."
+- Line 3015: If run_completed is 0 but run_started: shows "A session is currently in progress" with incomplete run IDs
+- Line 3048: If failure_count == 0 but error_run_completed > 0: shows error runs
+- Then falls through to general message
+
+Wait, let me see what happens after line 3057. There must be more of this function.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 9.8s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3057..3107 ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a comprehensive understanding. The current code already handles cold-start scenarios fairly well. Let me think about what's missing or could be improved:
+
+1. The `state_directory_info()` function collects good information, but there might be gaps in reporting startup errors that were captured via `stash_diagnostic_error`.
+
+2. What about the case where events file exists but has 0 bytes (empty file)? Let me check `read_tail_events`.
+
+3. What about when a panic was recorded via `install_panic_hook` but the events file wasn't readable?
+
+Let me look at the specific area that needs improvement. The task says "reporting nearby startup errors, incomplete runs, or missing diagnostic evidence." 
+
+Looking at the code paths more carefully:
+
+**Path 1**: Events file doesn't exist / can't be read (line 970-1051):
+- Already shows cold-start diagnostics with directory info
+- For "last-failure" it already shows next steps (crashes, doctor, init, tail)
+- BUT: It doesn't report startup diagnostic errors captured via `stash_diagnostic_error` in the same function block. Wait, it does check for `diagnostic` on line 1025-1030. Yes it does.
+
+**Path 2**: Events file exists but `build_why_report` returns error for `last-failure` (line 1056-1115):
+- Shows incomplete runs
+- Shows diagnostic errors from `take_diagnostic_error()`
+- This seems good
+
+**Path 3**: Events are empty (build_why_report line 3007):
+- "State recording is active but no sessions have completed yet."
+- For last-failure: "Try 'yoyo state tail --limit 5'"
+
+So the coverage already looks decent. But the task says the assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions. That suggests there's a code path where none of these better diagnostics fire.
+
+Let me think about what case would produce just "no state event found" without the richer diagnostics:
+
+1. If events file exists, is readable, has events, but none are failure events and none are RunStarted/RunCompleted → the `build_why_report` function path at line 3007 checks `events.is_empty() || (run_completed_count == 0 && !run_started)`. If there are events but none are RunStarted/RunCompleted, it would fall through to line 3071 "X failures recorded but not enough to cluster into patterns."
+
+2. If `find_target_event` returns None but `failure_count > 0`, it goes to the pattern at line 3071.
+
+3. If `find_target_event` returns None but `run_completed_count > 0 && failure_count == 0 && error_run_completed_count == 0`, it goes to "X successful sessions recorded" at line 3060.
+
+Hmm, so in what case would a user see just "no state event found" without the richer diagnostics? Let me look at `find_target_event`:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at `find_target_event` and `read_tail_events`:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn find_target_event' in src/commands_state.rs  ▶ search 'fn read_tail_events' in src/commands_state.rs ✓ (78ms)
+ ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions. Also, let me check the existing tests for `handle_why` / `build_why_report` to see what's already tested.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13993..14073  ▶ read src/commands_state.rs:1251..1301 ✓ (134ms)
+ ✓ (89ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a thorough understanding of the code. Let me think about what gaps exist:
+
+1. The `handle_why` function at line 968-1115 handles:
+   - When events file can't be read (line 970-1051): Shows directory info, cold start message, diagnostic errors, and for `last-failure` specifically shows next evidence
+   - When events file is readable but `build_why_report` fails (line 1056-1115): Shows incomplete runs and diagnostic errors for `last-failure`
+
+2. `build_why_report` at line 2958-3106 handles:
+   - If `find_target_event` returns None for `last-failure`: sets error "no state event found for 'last-failure'"
+   - Then categorizes: empty events, in-progress, error completions, successful only, failures but not enough
+
+But there's a subtle issue. When `read_tail_events` returns `Ok(events)` but events is empty (valid JSONL file with zero events), the code goes to `build_why_report` which handles this at line 3007. But when the events file is empty (0 bytes), `read_tail_events` returns Ok with an empty vec.
+
+Wait, actually there's a potential issue. What if the events file exists but `read_tail_events` returns `Err`? That goes to the first branch (line 970-1051) which is well-handled.
+
+What about when `read_tail_events` succeeds but `build_why_report` returns an error for reasons OTHER than `last-failure`? That goes to line 1058 which just prints the error.
+
+Let me now think about what could be improved:
+
+1. The task says "Cold-start `why last-failure` output gives actionable next evidence to inspect." - This already happens. The cold-start path (line 1032-1049) shows `yyds state crashes`, `yyds state doctor`, etc.
+
+2. "Existing behavior for completed failed sessions remains unchanged." - This should be preserved.
+
+3. "Output distinguishes no history from missing diagnostics and from active/incomplete runs." - These distinctions already exist.
+
+But hmm, let me re-read the evidence: "Current assessment matched this harness seed: The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions."
+
+This suggests that IN PRACTICE, users still see just "no state event found" somehow. Let me think about what code path could produce that.
+
+Looking at `build_why_report` again:
+- Line 2961: `err.push_str(&format!("no state event found for '{id}'\n"));` - This is ALWAYS added
+- Then additional context is appended
+
+But wait, the key question is: does `build_why_report` perhaps append this message AND THEN return Err, but the caller in `handle_why` (line 1056-1065) overwrites it?
+
+```rust
+match build_why_report(&events, id) {
+    Ok(report) => println!("{report}"),
+    Err(e) => {
+        let mut msg = format!("{YELLOW}  {e}{RESET}");
+        ...
+        eprintln!("{msg}");
+        // Then shows incomplete runs, diagnostic errors etc.
+    }
+}
+```
+
+So the `Err(e)` from `build_why_report` IS printed (in yellow), and then additional diagnostics are shown for `last-failure`. So the error message from `build_why_report` includes the rich context (in-progress, successful-only, etc.), but it's printed in yellow as an error.
+
+Wait, I think the issue might be more subtle. When there ARE events in the events file but none of them are failures, RunStarted, or RunCompleted — maybe some other event types — the code falls through to a path where `failure_count > 0` is false. Let me trace through:
+
+```
+run_completed_count = 0
+run_started = false
+events.is_empty() = false  (there are events, just not Run ones)
+failure_count = 0
+error_run_completed_count = 0
+```
+
+Line 3007: `events.is_empty() || (run_completed_count == 0 && !run_started)` → true! Because run_completed_count == 0 AND !run_started.
+So it shows: "State recording is active but no sessions have completed yet." → that IS a good message.
+
+What about when there ARE RunStarted but no RunCompleted?
+- `run_completed_count == 0 && run_started == true` → line 3015: "A session is currently in progress."
+
+OK so I think the existing code is actually pretty good. The task description might be based on an older version of the code, or maybe there's a specific edge case I'm missing.
+
+Let me check the git log to see if this was recently added or if it's been around for a while.
+
+Actually, let me re-read the task more carefully:
+
+"Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence."
+
+And:
+
+"Success Criteria:
+- Cold-start `why last-failure` output gives actionable next evidence to inspect.
+- Existing behavior for completed failed sessions remains unchanged.
+- Output distinguishes no history from missing diagnostics and from active/incomplete runs."
+
+I think the current code mostly does this. But the task says the assessment found just "no state event found" during fresh-state sessions. This could be because the assessment was from a while ago and the code has since been improved, OR there's a specific case where the diagnostics don't fire.
+
+Let me look at the `handle_why` function's code for the case where `read_tail_events` succeeds but returns an empty events vec. Let me trace through:
+
+1. `read_tail_events(&path, limit)` → Ok([]) (file exists but is empty or has non-JSON lines)
+2. `show_summary` is false → skip summary
+3. `build_why_report(&[], "last-failure")` → 
+   - `find_target_event` returns None
+   - Error: "no state event found for 'last-failure'\n" + state_summary + "\n\n"
+   - events.is_empty() is true → "State recording is active but no sessions have completed yet.\nDiagnostics become available after 2–3 completed evolution sessions."
+   - id == "last-failure" → "\n\nTry 'yoyo state tail --limit 5' to inspect recent events."
+   - Returns Err with this full message
+
+4. Back in handle_why, the Err path:
+   - Prints the full error message in yellow
+   - limit check (events.len() >= limit): 0 >= 200 → false
+   - id == "last-failure":
+     - find_incomplete_runs(&[]) → empty vec → no incomplete runs message
+     - take_diagnostic_error() → maybe Some or None
+   
+So even in the empty events case, you'd get a decent message. Not just "no state event found."
+
+I think the existing code is in good shape. But the task is a harness seed that was pre-written. The question is: is there ANY gap I can improve?
+
+Let me think about specific improvements:
+
+1. **Startup diagnostic errors in the events-file-missing path**: Currently, the diagnostic error is checked (line 1025-1030) in the can't-read-events path. But in the empty-events path (build_why_report), the diagnostic error is checked in the handle_why error handler (line 1102). This is good.
+
+2. **Empty events file case**: When events file exists but has 0 valid events, we go through `build_why_report` which provides a decent message. But `find_incomplete_runs` returns empty and `take_diagnostic_error` is called. This seems fine.
+
+3. **What about the case where state directory exists but events file is empty (0 bytes)?** Let me check how `read_tail_events` handles this.
+
+4. Actually wait, let me look more carefully at one thing. What if there's a `FailureObserved` event but no `RunCompleted` event? `find_target_event` for `last-failure` would find the `FailureObserved` event (since `is_failure_event_type` matches `FailureObserved`), and `build_why_report` would return Ok. So that path works.
+
+Hmm, I'm not finding a clear gap. Let me look at the test for `build_why_report` with `last-failure` to see what's tested:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 19.1s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'last-failure' in src/commands_state.rs ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test area around line 17543 to understand the existing test for `build_why_report` with `last-failure`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17470..17590 ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full test context — the "no-history" and "in-progress" test cases:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17420..17480 ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see a comprehensive test already exists. The test at line 17435 `why_report_cold_start_output_is_actionable_and_distinguishes_states` tests:
+1. Empty events (no history) → "no sessions have completed" + "state tail"
+2. In-progress run → "in progress" + "run-cold-1" + "state tail"
+3. No failures (successful only) → "successful" + "state crashes" + "state why last-crash"
+4. Error runs but no FailureObserved → "error" + "run-err"
+5. Mixed success + error → "error" + NOT "successful"
+
+All outputs are verified to be distinct.
+
+So the existing code already satisfies the task's success criteria pretty well. The cold-start diagnostics are already in place. The task might be from an older assessment that was written before these features were added.
+
+Wait, but the task says "The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions." Let me check if there's a specific scenario where just "no state event found" is shown without the rich diagnostics.
+
+Actually, looking at the code flow again. The "no state event found" message is appended at line 2961 BEFORE all the context. So the full error message would be something like:
+```
+no state event found for 'last-failure'
+<state summary>
+
+State recording is active but no sessions have completed yet.
+Diagnostics become available after 2–3 completed evolution sessions.
+
+Try 'yoyo state tail --limit 5' to inspect recent events.
+```
+
+This is then printed in yellow via `handle_why`. The output is actually quite good. 
+
+But hmm, maybe the issue is that the assessment was run from a state where:
+1. The state directory doesn't exist at all
+2. The current code does handle this (line 970-1051)
+
+But wait, there might be a subtlety. When the state directory doesn't exist, `read_tail_events` returns `Err`, and then the code goes to line 970. It checks `state_directory_info()` which returns `Some(StateDirectoryInfo { dir_exists: false, ... })`. In that branch (line 974-986), it prints the cold-start message. Then at line 1032, for `last-failure`, it prints the next steps. That's all good.
+
+But what if `state_directory_info()` returns `None`? Let me check... The function always returns `Some(...)`. So that's not an issue.
+
+OK, I think the existing code is actually quite complete for the cold-start scenario. But the task says it's a harness seed task that should be treated as a "minimum viable task." The instructions say:
+
+"If current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion in the listed task surface."
+
+So my job is to find the smallest improvement that strengthens verification. Let me think about what could be improved:
+
+1. **The `state_directory_info` function could include more info**: For example, whether a panic hook was installed (has `FailureObserved` from panic), or whether there are any process-level errors captured.
+
+2. **The `handle_why` function for the case where no events file exists**: Could also check for panics recorded via the panic hook (which creates thread-local state, not file state). But wait, the panic hook records via `record()`, which would write to the events file... if the global recorder is initialized. If it's not, it would fail silently (fail-soft).
+
+3. **A missing piece**: When `read_tail_events` returns `Err` AND `state_directory_info()` returns None (which doesn't happen currently), the fallback at line 1016-1023 would fire. This branch says "No state events file found at ..." but doesn't check for diagnostic errors. Wait, actually it does — at line 1025-1030 it checks `diagnostic`. But `diagnostic` is set at line 971, before the `if let Some(dir_info)` block. So yes, diagnostic errors ARE shown in this path too.
+
+4. **The `state_directory_info` function could be enhanced**: What if we add a field to indicate whether there are any startup/process-level errors available (from `take_diagnostic_error`)? This would let the cold-start message include "a startup diagnostic is also available."
+
+Actually, let me think about this differently. What new value can I add?
+
+Looking at the current `StateDirectoryInfo`:
+```rust
+struct StateDirectoryInfo {
+    dir_exists: bool,
+    events_path: PathBuf,
+    events_file_exists: bool,
+    dir_files: Vec<String>,
+    sqlite_file_name: Option<String>,
+}
+```
+
+And the `handle_why` cold-start path (line 970-1051):
+- Shows directory info
+- Shows diagnostic errors
+- For last-failure: shows next steps
+
+One potential improvement: the `state_directory_info` function could also check for the presence of a crash log or other diagnostic files in common locations (like `.yoyo/state/crashes.jsonl` or similar). But I don't know what crash files might exist.
+
+Another idea: The `state_directory_info` function currently doesn't report on whether the events file exists but is empty (0 bytes). Let me check if that matters.
+
+Actually, let me look at this from the perspective of the "expected evidence":
+
+"Expected Evidence:
+- Future assessment logs can cite concrete cold-start diagnostics instead of an empty result.
+- State/dashboard blockers become easier to trace to run/session ids."
+
+The key phrase is "concrete cold-start diagnostics." The current code already provides this. The question is whether there's a gap in providing run/session IDs during cold start.
+
+Let me look at `state_directory_info` more carefully. It returns directory-level info. But during a cold start, the most useful thing is to know WHAT went wrong. The `stash_diagnostic_error` function stores errors like auth failures, config parse errors, etc. These are checked in `handle_why`.
+
+One thing I notice: the `stash_diagnostic_error` error is consumed by `take_diagnostic_error()` which clears it. In `handle_why`, the diagnostic is checked twice:
+1. Line 971: `let diagnostic = crate::state::take_diagnostic_error();` — displayed at line 1025-1030
+2. Line 1102: `let diagnostic = crate::state::take_diagnostic_error();` — displayed at line 1102-1112
+
+But since `take_diagnostic_error()` clears the value, the second call will always return None. This is actually correct — the diagnostic is shown exactly once.
+
+Hmm, actually, I think there might be a subtle issue. In the first path (read failed), at line 971, the diagnostic is taken. Then AFTER the directory-info block, at line 1025-1030, it's checked again. But `diagnostic` was already captured at line 971. So that's fine — it's using the local variable, not calling `take_diagnostic_error()` again.
+
+Wait, but at line 1102 in the second path (build_why_report error), `take_diagnostic_error()` is called again. If the first path took it, the second path will get None. But that's fine because they're separate code paths — you either go through the first path (read failed) or the second path (build_why_report error), not both.
+
+OK, I think the code is in good shape. Let me think about what minimal improvement I can make.
+
+Looking at the task more carefully:
+
+"Implementation Notes:
+- This task was seeded by the harness before planner exploration because recent runs reached planning without durable task files.
+- Treat it as a minimum viable task for Day 109 (23:02); refine it if the planner has stronger evidence, but do not leave the session with zero task files.
+- Keep the change scoped to the listed files unless verification reveals a direct dependency."
+
+So this is a minimum viable task. The key action is to not leave the session with zero task files. Let me find the smallest, most impactful improvement.
+
+One thing I notice: the `state_directory_info()` function is used ONLY in the "can't read events" path of `handle_why`. If the events file exists and is readable but has 0 events, we go through `build_why_report` which gives good diagnostics. But what about when the events file has events but `read_tail_events` fails for some other reason (permissions issue mid-read, etc.)?
+
+Actually, I think there's ONE clear improvement opportunity: the `state_directory_info` function could also capture process-level diagnostic state. Currently, `stash_diagnostic_error` stores errors thread-locally, but these are only checked in `handle_why`. They're not surfaced in `state_directory_info`.
+
+But more importantly, I think the real gap might be something else entirely. Let me re-read the task evidence:
+
+"Evidence:
+- Current assessment matched this harness seed: The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions."
+
+If the assessment found this, it means the rich diagnostics path wasn't firing. This could happen if:
+1. The events file exists AND is readable AND has events
+2. But `build_why_report` returns Ok instead of Err for `last-failure`
+
+Wait, `build_why_report` returns Ok only if `find_target_event` finds a matching event. For `last-failure`, that means there IS a FailureObserved/JsonOutputFailure/ToolSchemaFailure event. If that exists, it returns Ok and shows details about that failure event. That's the correct behavior for non-cold-start.
+
+But if events exist, `find_target_event` for `last-failure` returns None, and `build_why_report` returns Err with the detailed message.
+
+So the scenario where just "no state event found" appears would be if:
+- Events file has events (not empty)
+- `build_why_report` returns Err
+- BUT the rich context in the Err message doesn't fire because ALL of the conditional branches fail
+
+Let me check: can ALL conditional branches in `build_why_report` (lines 3007-3077) fail to fire?
+
+```rust
+if events.is_empty() || (run_completed_count == 0 && !run_started) {
+    // branch 1: empty or no runs at all
+} else if run_completed_count == 0 && run_started {
+    // branch 2: in-progress
+} else if failure_count == 0 {
+    if error_run_completed_count > 0 {
+        // branch 3a: error runs
+    } else {
+        // branch 3b: successful sessions only
+    }
+} else {
+    // branch 4: failures recorded
+}
+```
+
+This covers all cases:
+- events empty → branch 1
+- events non-empty, no completed, no started → branch 1 (run_completed_count==0 && !run_started)
+- events non-empty, no completed, but started → branch 2
+- events non-empty, completed, no failures → branch 3a or 3b
+- events non-empty, failures → branch 4
+
+So ALL paths are covered. The error message always has context beyond "no state event found."
+
+Wait, maybe the issue is more mundane. The assessment might have been looking at the OLD version of the code before these improvements were added. If this task was seeded by the harness, maybe the seed is stale!
+
+Let me check git log for when the cold-start diagnostics were added:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check when the cold-start diagnostics were added to `handle_why`:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -20 -- src/c…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline --all --grep… ✓ (198ms)
+ ✓ (306ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! This task has been attempted multiple times already:
+- Day 108 (17:37): "Improve cold-start state failure diagnostics (Task 1)"
+- Day 108 (19:38): "Improve cold-start state failure diagnostics (Task 1)"
+- Day 109 (16:49): "Improve cold-start state failure diagnostics (Task 1)"
+
+That's the same task name! Let me look at what was changed in the most recent commit (Day 109 16:49):
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show 749260a --stat  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 749260a~1..749260a --… ✓ (94ms)
+ ✓ (377ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So Day 109 (16:49) already made changes. Let me see the full diff to understand what was added:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 749260a~1..749260a --… ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is truncated. Let me get more of it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 749260a~1..749260a --… ✓ (75ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff seems to be displayed in a truncated way. Let me get the raw content differently:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 749260a~1..749260a --… ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the most recent commit (Day 109 at 16:49) already added:
+1. `StateDirectoryInfo` struct in `state.rs` with `state_directory_info()` function
+2. Enhanced `handle_why` with directory inspection
+
+And the previous commits (Day 108) also worked on this task. So this task has been attempted multiple times. The current state of the code already has rich cold-start diagnostics.
+
+Given that this task has already been partially completed multiple times, and the current code already satisfies the success criteria, I should treat this as "the code already satisfies this task." Per the evolve skill rules:
+
+"If current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion in the listed task surface. If no honest code/test/docs improvement exists, write session_plan/task_01_obsolete.md explaining the exact evidence and stop without claiming the task landed."
+
+Let me now look at what gaps still exist. Let me check if:
+1. The `state_directory_info` function is comprehensive enough
+2. The test coverage is adequate
+3. There's a gap in the code
+
+Actually, let me look at what `StateDirectoryInfo` currently reports and what could be added. Looking at the struct:
+```rust
+pub struct StateDirectoryInfo {
+    pub dir_exists: bool,
+    pub events_path: PathBuf,
+    pub events_file_exists: bool,
+    pub dir_files: Vec<String>,
+    pub sqlite_file_name: Option<String>,
+}
+```
+
+One thing that's missing: the function doesn't report whether the events file is empty or has content. It just reports `events_file_exists`. For a cold start scenario, knowing that the events file exists but is empty (0 bytes) vs has content would be useful.
+
+Also, `state_directory_info()` could benefit from checking for the events file size or line count.
+
+But wait, looking at the current `handle_why` code path for when events file can't be read: the directory info is used to give different messages. But what about when events file IS readable but has zero events? That goes through `build_why_report` which handles it. So the directory info is only used in the "can't read" path.
+
+Actually, I think there's a real gap. Let me look at the empty-events-file path more carefully:
+
+1. Events file exists and is readable
+2. `read_tail_events` returns Ok([]) (empty file)
+3. `build_why_report` is called with empty events
+4. `build_why_report` shows "State recording is active but no sessions have completed yet."
+
+But what about `handle_state_summary` (the `--summary` path)? If `show_summary` is true AND events is empty, it prints the summary of an empty events list. Then `build_why_report` also runs. That seems fine.
+
+OK, I think the best improvement I can make is to enhance `state_directory_info` to also report the events file size (whether it's empty or has content). This would allow the cold-start diagnostics to distinguish between:
+- "Events file doesn't exist" → full cold start
+- "Events file exists but is empty" → initialized but no recordings yet
+- "Events file exists and has content" → has data but couldn't be read
+
+And also add a test for `state_directory_info`.
+
+Let me plan my change:
+
+1. Add `events_file_size: u64` to `StateDirectoryInfo`
+2. Update `state_directory_info()` to populate it
+3. Use it in `handle_why` to provide better diagnostics
+4. Add/update a test
+
+Wait, but actually, the task says the success criteria include:
+"Output distinguishes no history from missing diagnostics and from active/incomplete runs."
+
+The current code already does this in `build_why_report`. But `state_directory_info` is used in the "can't read events file" path, which is a different scenario.
+
+Let me think about what's the most impactful minimal improvement:
+
+Actually, looking more carefully at the diff from the recent commit, I see that the `state_directory_info` function and its usage in `handle_why` were just added. The function provides directory-level info. 
+
+One thing I notice: when `state_directory_info()` returns `Some(dir_info)` and `dir_info.dir_exists && dir_info.events_file_exists`, the code says "Events file exists at {path} but could not be read. This may be a permissions issue or a corrupt file." But it doesn't show the file size! A zero-byte file is different from a permissions-denied file.
+
+Let me add `events_file_size` to `StateDirectoryInfo` and use it in the diagnostic message.
+
+Actually, let me also check another thing. The `state_directory_info` function currently calls `default_events_path()` which is in `commands_state.rs`. This means `state.rs` depends on `commands_state.rs` for this function. Is that clean? Let me check the import chain...
+
+Looking at `state.rs` line 3224:
+```rust
+let events_path = crate::commands_state::default_events_path();
+```
+
+This is a dependency from `state.rs` to `commands_state.rs`. The functions `default_events_path` and `default_store_path` are `pub(crate)` in `commands_state.rs`. This is an existing dependency.
+
+OK, let me plan my minimal change:
+
+1. Add `events_file_size: Option<u64>` to `StateDirectoryInfo` in `state.rs`
+2. Update `state_directory_info()` to populate it (check file size if file exists)
+3. Update the diagnostic message in `handle_why` to mention file size when the file exists but can't be read
+4. Add a test for `state_directory_info`
+
+Let me see how much value this adds and whether it's worth it.
+
+Actually, let me reconsider. The task has been attempted 3 times already. The code is in good shape. Maybe the right move is to add a regression test that specifically tests the `state_directory_info` function (which was just added and might not have dedicated tests), plus maybe a small improvement.
+
+Let me check if `state_directory_info` has tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'state_directory_info' in src/state.rs  ▶ search 'state_directory_info' in src/commands_state.rs ✓ (82ms)
+ ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`state_directory_info` is only used in one place in `handle_why` and has no dedicated test. Let me check if there are tests for the `StateDirectoryInfo` struct:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'StateDirectoryInfo' in src/state.rs ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No tests for `StateDirectoryInfo`. Let me also look at what `handle_why` currently does with the directory info — I need to read the actual current state of the function after the recent commit:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:968..1058 ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The current code handles cold-start diagnostics well, but there are a few improvements I can make:
+
+1. **`StateDirectoryInfo` lacks `events_file_size`**: When the events file exists but can't be read, knowing whether it's 0 bytes (never written to) vs has content (permissions/corruption issue) makes diagnostics more actionable.
+
+2. **`state_directory_info` has no tests**: The new struct and function were just added and don't have dedicated tests.
+
+3. **The diagnostic for "events file exists but can't be read" (line 1009-1014)**: Could be more specific by checking file size.
+
+Let me make these improvements:
+
+1. Add `events_file_size: Option<u64>` to `StateDirectoryInfo`
+2. Populate it in `state_directory_info()` 
+3. Use it in the `handle_why` diagnostics
+4. Add a test for `state_directory_info`
+
+Wait, but another thought: the task says "Keep the change scoped to the listed files unless verification reveals a direct dependency." The listed files are `src/commands_state.rs` and `src/state.rs`. My changes would affect both of these files, which is within scope.
+
+But actually, I want to be even more targeted. Let me think about what the MOST minimal improvement would be...
+
+The test for `state_directory_info` already exists implicitly through the `handle_why` path being tested in `why_report_cold_start_output_is_actionable_and_distinguishes_states`. But there's no test that directly tests `state_directory_info` returning the right values for different directory states.
+
+Actually, you know what, let me think about this: is the harness seed task actually stale? The task says "The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions." But looking at the current code, this is no longer the case — the code has rich cold-start diagnostics.
+
+If the task is obsolete (the issue it describes is already fixed), then per the evolve skill rules, I should:
+"write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+But the task also says:
+"Treat it as a minimum viable task for Day 109 (23:02); refine it if the planner has stronger evidence, but do not leave the session with zero task files."
+
+So the harness wants me to do SOMETHING, even if minimal. Let me make the smallest meaningful improvement: add `events_file_size` to `StateDirectoryInfo` and use it for better diagnostics, plus add a test.
+
+Actually, wait. Let me re-read the task more carefully:
+
+"If current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion in the listed task surface."
+
+So my options are:
+1. Add a regression test
+2. Add docs clarification
+3. Add state-evidence guard
+4. Add dashboard assertion
+
+OR I can make the small improvement (events_file_size) AND a test.
+
+Let me go with the approach of:
+1. Add `events_file_size` to `StateDirectoryInfo`
+2. Use it in the diagnostics
+3. Add a test for `state_directory_info`
+4. Add a test assertion that the cold-start output is distinct
+
+This is a modest improvement that adds concrete value: when events file exists but can't be read, the user gets more specific info (0-byte file vs permissions issue).
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a thorough understanding. The code already has rich cold-start diagnostics from prior attempts (Days 108-109). Let me make the smallest meaningful improvement: add `events_file_size` to `StateDirectoryInfo` for more precise diagnostics when the events file exists but can't be read, plus a test.
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (40ms)
+  ▶ todo ✓ (41ms)
+  ▶ todo ✓ (80ms)
+  ▶ todo ✓ (110ms)
+  ▶ todo ✓ (93ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with task #1: adding `events_file_size` to `StateDirectoryInfo`.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.4s (5 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the current StateDirectoryInfo struct and state_directory_info function to make the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3197..3257 ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me edit the `StateDirectoryInfo` struct to add `events_file_size` and update the constructor.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        /// SQLite projection file name (if found in dir).
+        pub sqlite_file_name: Option<String>,
+  +     /// Size of the events file in bytes (None if file doesn't exist).
+  +     pub events_file_size: Option<u64>,
+    }
+  ✓ Auto-approved: edit: src/state.rs (3 → 5 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (3 → 5 lines)
+        /// SQLite projection file name (if found in dir).
+        pub sqlite_file_name: Option<String>,
+  +     /// Size of the events file in bytes (None if file doesn't exist).
+  +     pub events_file_size: Option<u64>,
+    }
+ ✓ (40ms)
+
+

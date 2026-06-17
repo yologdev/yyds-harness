@@ -1,0 +1,546 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and then following the evolve skill rules. The task is about modifying `scripts/log_feedback.py` to not penalize recovered tool failures in session scoring.
+
+Let me:
+1. Read the evolve skill first
+2. Read the relevant source file
+3. Implement the change
+4. Test and commit
+
+Let me start by reading the evolve skill and the relevant parts of log_feedback.py.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/log_feedback.py (100 lines) ✓ (120ms)
+ ✓ (114ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the key functions mentioned in the task: `score_assessment()` around line 1735, `build_assessment()` around line 1755, and `SCORE_FAILURE_WEIGHTS`. I also need to understand the transcript parsing infrastructure.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1730..1830  ▶ search 'SCORE_FAILURE_WEIGHTS' in scripts/log_feedback.py  ▶ search 'tool_error_count' in scripts/log_feedback.py ✓ (79ms)
+ ✓ (160ms)
+ ✓ (174ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the SCORE_FAILURE_WEIGHTS definition and the line where `tool_error_count` is assigned in `build_assessment`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:260..280  ▶ read scripts/log_feedback.py:1829..1909 ✓ (128ms)
+ ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the key area. At line 1871-1876, `tool_error_count` is computed from the log-parsed count and structured tools. The `structured_tools` already has `structured_unrecovered_failed_tool_count` — so it seems like structured tools already distinguishes recovered from unrecovered failures.
+
+Let me look at `structured_tool_action_metrics` to understand what it returns, and also understand the transcript parsing to see if recovery evidence is available.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def structured_tool_action_metrics' in scripts/log_feedback.py  ▶ search 'structured_unrecovered_failed_tool_count' in scripts/log_feedback.py ✓ (100ms)
+ ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `structured_tool_action_metrics` function to understand how it distinguishes recovered vs unrecovered tool failures.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:602..682 ✓ (49ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current state. The `structured_tool_action_metrics` already distinguishes between recovered and unrecovered failed tools. At lines 1871-1876, `tool_error_count` is already set to the *max* of log-parsed and `structured_unrecovered_failed_tool_count`.
+
+Wait, let me re-read this carefully:
+
+```python
+if structured_tools:
+    metrics["text_tool_error_count"] = int(parsed.get("tool_error_count") or 0)
+    metrics["tool_error_count"] = max(
+        int(parsed.get("tool_error_count") or 0),
+        int(structured_tools.get("structured_unrecovered_failed_tool_count") or 0),
+    )
+```
+
+So when `structured_tools` exists (i.e., when state events are available), `tool_error_count` is the MAX of:
+1. the log-parsed count (from transcript/CI log text)
+2. the structured unrecovered count (from state events)
+
+This means when structured tools are available, `tool_error_count` already doesn't count recovered errors. BUT when structured tools are NOT available (empty `structured_tools` dict), it falls through to the `parsed` value, which counts ALL tool errors including recovered ones.
+
+Wait, actually let me re-examine. When `structured_tools` is an empty dict (`return {}`), the `if structured_tools:` condition is False, so the `tool_error_count` stays as whatever `parsed` set it to. And `parsed` gets its `tool_error_count` from `parse_log()`, which counts tool errors from log text — and that doesn't distinguish recovered vs unrecovered.
+
+So the issue is that when state events aren't available (structured_tools is empty), `tool_error_count` from log parsing counts ALL tool errors. And even when structured tools ARE available, the `tool_error_count` is `max(parsed_tool_error_count, structured_unrecovered)` — but the parsed version might still overcount.
+
+Actually, wait. Let me re-read. When `structured_tools` exists and is non-empty, `tool_error_count` is `max(parsed_tool_error_count, structured_unrecovered)`. The parsed value from log text could be higher (counting more errors) than the structured unrecovered count. So the max would still be higher.
+
+But if structured tools gives us the more accurate unrecovered count, shouldn't we prefer that over the parsed log count? The current code takes the MAX, which could overcount.
+
+However, the task says:
+> The build_assessment() function computes tool_error_count from session evidence but doesn't cross-reference transcript recovery evidence.
+
+And:
+> A session where the agent hit one tool error, retried, and succeeded gets the same tool_error_count=1 penalty as a session where the error was unrecovered — this is unfair scoring.
+
+Let me check what the parsed "tool_error_count" comes from.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'tool_error_count' in scripts/log_feedback.py ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at line 205 to see the context of `tool_error_count` and how it's parsed from log text.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:195..255 ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `parse_log` to see how `tool_error_count` is initially computed from log text.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def parse_log' in scripts/log_feedback.py ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read parse_log to see how tool_error_count is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:776..876 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more to see where `tool_errors` is incremented and how the result is constructed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:875..995 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Here's the flow:
+
+1. `parse_log()` counts `tool_errors` from log text using `TOOL_ERROR_RE` — these are raw text matches without any recovery awareness.
+2. `structured_tool_action_metrics()` reads state events and distinguishes recovered vs unrecovered tool failures by cross-referencing with audit.jsonl successful bash commands.
+3. In `build_assessment()` (lines 1871-1876), when `structured_tools` is non-empty, `tool_error_count` is set to `max(parsed_tool_error_count, structured_unrecovered)`.
+
+The issue is:
+- When `structured_tools` is empty (no state events), `tool_error_count` stays as the raw parsed count, which includes recovered errors.
+- Even when `structured_tools` exists, using `max()` means the parsed count can overrule the structured unrecovered count — if the text parser overcounts (which it often does, since TOOL_ERROR_RE is broad), the max approach doesn't help.
+
+The fix should be: when `structured_tools` is available, use `structured_unrecovered_failed_tool_count` as the primary `tool_error_count`, not the max of both. The `text_tool_error_count` (raw parsed count) can be kept as a separate metric for comparison.
+
+Wait, but let me think about this more carefully. The task says:
+> The simplest approach: when tool_error_count > 0, scan the session transcript files for evidence that the errored tool succeeded in a later attempt within the same task. If evidence of recovery exists, either:
+>   a) Subtract recovered errors from tool_error_count before scoring, OR
+>   b) Add a separate "recovered_tool_error_count" metric and adjust SCORE_FAILURE_WEIGHTS.
+> Approach (a) is simpler and preferred.
+
+But actually, looking at the code, `structured_tool_action_metrics` already does recovery detection by checking audit.jsonl for successful bash commands. So the infrastructure already exists. The problem is just that:
+1. When structured tools aren't available, we can't adjust.
+2. When they ARE available, we use `max()` instead of using the structured unrecovered count.
+
+Let me think about what approach is simplest and most correct:
+
+**Option A**: When `structured_tools` is non-empty, use `structured_unrecovered_failed_tool_count` as `tool_error_count` (not the max with parsed count).
+
+**Option B**: Add transcript-based recovery detection to complement the state-event-based detection.
+
+Looking at the task again:
+> If transcript files aren't available (log_available=False), keep the unrecovered tool_error_count — don't assume recovery without evidence.
+
+This suggests the task author wants to use transcript scanning. Let me look at `transcript_feedback_text` and understand what transcript data is available.
+
+Actually wait - the structured_tool_action_metrics already works with state events (events.jsonl) and audit.jsonl, not transcript files. And it already separates recovered from unrecovered. The key problem is how that information is used.
+
+Looking at lines 1871-1876 again:
+```python
+if structured_tools:
+    metrics["text_tool_error_count"] = int(parsed.get("tool_error_count") or 0)
+    metrics["tool_error_count"] = max(
+        int(parsed.get("tool_error_count") or 0),
+        int(structured_tools.get("structured_unrecovered_failed_tool_count") or 0),
+    )
+```
+
+The current logic takes the MAX of parsed count and structured unrecovered count. But the parsed count includes recovered errors (text-based), so it's always >= structured unrecovered. So `tool_error_count` is effectively just the parsed count.
+
+The fix: When `structured_tools` is available and has recovery data, use the structured unrecovered count as the primary `tool_error_count`, since it's more accurate.
+
+But we should also add recovery detection from transcripts, as the task suggests. Let me check if there's transcript-parsing infrastructure.
+
+Actually, let me re-read the task:
+> Use the existing transcript-parsing infrastructure already in log_feedback.py (TRANSCRIPT_ACTION_RE, clean_transcript_action, etc.).
+
+Wait, but the task also says "TRANSCRIPT_ACTION_RE" — let me check if that exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'TRANSCRIPT_ACTION_RE' in scripts/log_feedback.py  ▶ search 'clean_transcript_action' in scripts/log_feedback.py ✓ (89ms)
+ ✓ (89ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Those regexes don't exist yet. The task says to use "existing" transcript-parsing infrastructure, but actually the infrastructure that exists is the state-event-based `structured_tool_action_metrics` which already does recovery detection.
+
+Let me look at what's actually available:
+1. `structured_tool_action_metrics` already distinguishes recovered from unrecovered.
+2. The issue is just that `tool_error_count` uses `max(parsed, structured_unrecovered)` which makes the parsed count (which includes recovered errors) dominate.
+
+The simplest fix: when structured tools data is available (meaning we have recovery evidence), replace the `max()` with just the structured unrecovered count. When structured tools is NOT available (no state events), keep the parsed count as-is (the task says "don't assume recovery without evidence").
+
+Let me also look at `transcript_feedback_text` — maybe it can provide recovery evidence when state events aren't available.
+
+Actually, let me look at this more carefully. The structured tool count only works on state events, which may not always be available. When they're not, `tool_error_count` stays as the raw parsed count.
+
+For the transcript case: transcripts contain turn-by-turn information. We could parse transcripts to detect "tool error → later same-tool success" patterns. But that's complex.
+
+The task says "The simplest approach is preferred" and "Use the existing transcript-parsing infrastructure already in log_feedback.py."
+
+But there's no such infrastructure. The `TRANSCRIPT_ACTION_RE` and `clean_transcript_action` are mentioned in the task but don't exist in the code.
+
+Let me instead focus on what DOES exist: the `structured_tool_action_metrics` recovery detection. The fix should be:
+1. When `structured_tools` has recovery data, use `structured_unrecovered_failed_tool_count` as `tool_error_count` instead of taking the max.
+2. This correctly handles the case where state events are available.
+
+For when state events aren't available, we keep the parsed count as-is (which is the best we can do without recovery evidence).
+
+Now let me figure out the exact edit. At lines 1871-1876:
+
+```python
+if structured_tools:
+    metrics["text_tool_error_count"] = int(parsed.get("tool_error_count") or 0)
+    metrics["tool_error_count"] = max(
+        int(parsed.get("tool_error_count") or 0),
+        int(structured_tools.get("structured_unrecovered_failed_tool_count") or 0),
+    )
+```
+
+Should become something like:
+```python
+if structured_tools:
+    metrics["text_tool_error_count"] = int(parsed.get("tool_error_count") or 0)
+    # When state events provide recovery evidence, use the unrecovered count
+    # to avoid penalizing tool errors that were later recovered by retry.
+    # The structured count cross-references ToolCallCompleted errors against
+    # successful bash commands in audit.jsonl to detect recovery.
+    metrics["tool_error_count"] = int(structured_tools.get("structured_unrecovered_failed_tool_count") or 0)
+```
+
+Wait, but what if `structured_unrecovered_failed_tool_count` is 0 but the parsed count is non-zero? That means all tool errors from the log text were recovered — great, `tool_error_count` should be 0.
+
+What if `structured_unrecovered_failed_tool_count` is non-zero but the parsed count is 0? That means the structured tool detection found unrecovered errors that the text parser missed. Using the structured count would catch those.
+
+What if `structured_unrecovered_failed_tool_count` is 5 and the parsed count is 3? The structured detection found more unrecovered errors than text parsing. Using the structured count is more accurate.
+
+So in all cases, when structured tools is available, using `structured_unrecovered_failed_tool_count` as `tool_error_count` is strictly better than taking the max. The max approach was wrong because it allowed the overcounted parsed value to dominate.
+
+But actually, wait — what about the case where `structured_unrecovered_failed_tool_count` is 0 but `parsed_tool_error_count` is 5? Does the structured tool detection catch ALL types of tool errors? Let me check `structured_tool_action_metrics` again.
+
+It reads events from `events.jsonl` looking for `ToolCallStarted` and `ToolCallCompleted` with `is_error=True` or exit code failure. Then cross-references with audit.jsonl for successful bash commands. This should catch most tool errors, but maybe not all (e.g., non-bash tool errors like `read_file` failures, `edit_file` failures, etc.).
+
+Actually, looking at it more carefully: `structured_tool_action_metrics` checks ALL tool types (not just bash) for errors. But the recovery detection only checks bash commands (because audit.jsonl only has bash tool entries). So for non-bash tool errors, the recovery detection doesn't apply and they'd all be counted as unrecovered.
+
+This means the structured unrecovered count could be higher than the parsed count for non-bash tool errors (which the text parser might miss). And it could be lower for recovered bash errors.
+
+Using the structured unrecovered count is still the right call: it's more accurate for bash tools (recovery-aware), and for non-bash tools it catches errors the text parser might miss.
+
+But there's a subtlety: if `structured_tools` exists but `structured_unrecovered_failed_tool_count` is 0 because no tool errors were found in state events (while the text parser found some), we might be undercounting. But the text parser's count includes recovered errors, so it's an overcount.
+
+I think the cleanest approach is: when structured tools data is available, prefer the structured unrecovered count. Keep the text count as a separate metric for comparison.
+
+But I also want to handle the case where structured tools exists but the structured count might be significantly lower than the text count (suggesting the parser found tool errors in logs that weren't captured in state events). In that case, we should fall back to the text count (which might overcount but at least won't miss errors entirely).
+
+Actually, let me keep it simple. The task says the simplest approach is preferred. Let me just use `structured_unrecovered_failed_tool_count` when available, and fall back to `parsed_tool_error_count` when not. This is a clean improvement.
+
+Let me also check the self-tests to see what test cases exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 14.1s (2 ✓)
+
+Now let me look at the self-tests and understand the scoring better.
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:2550..2650  ▶ read scripts/log_feedback.py:1700..1760 ✓ (120ms)
+ ✓ (98ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me summarize the situation and plan the edit:
+
+**Current state:**
+1. `parse_log()` counts `tool_error_count` from log text — counts ALL tool errors, recovered or not.
+2. `structured_tool_action_metrics()` distinguishes recovered vs unrecovered using state events + audit.jsonl.
+3. In `build_assessment()` (lines 1871-1876), when structured tools data is available:
+   - `text_tool_error_count` = parsed count (overcounts, includes recovered)
+   - `tool_error_count` = max(parsed_count, structured_unrecovered_count)
+   - Since parsed_count ≥ structured_unrecovered (it includes recovered + anything the parser catches), this is effectively just parsed_count.
+
+**The fix:**
+When `structured_tools` data is available, use `structured_unrecovered_failed_tool_count` as the primary `tool_error_count` because it's recovery-aware. Keep `text_tool_error_count` as a diagnostic metric.
+
+The edit is simple: change the `max()` call to just use the structured unrecovered count.
+
+Let me also check what happens with non-bash tool errors. The structured tool detection catches ALL tool errors from state events (bash and non-bash). For non-bash tools, the recovery check against audit.jsonl won't find matches (since audit.jsonl only has bash), so they'll all be counted as unrecovered. This is correct behavior — if a non-bash tool fails and we don't have evidence of recovery, it should count.
+
+For bash errors: if the same command later succeeded (found in audit.jsonl), it's marked as recovered. This is the primary case we want to fix.
+
+OK, let me make the edit. I also need to add a self-test for the recovered case.
+
+Let me first run the existing self-tests to ensure I understand the baseline.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.1s (2 ✓)
+
+Now I have a clear understanding. Let me verify by running the existing self-tests first, then implement the fix.
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/log_feedback.p… ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to run with --self-test or the test runner. Let me check how self-tests are invoked.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'run_self_tests' in scripts/log_feedback.py ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:2940..2960 ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Run with `--test`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/log_feedback.p… ✓ (94ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, all tests pass. Now let me implement the fix. The change is at lines 1871-1876.
+
+Current code:
+```python
+if structured_tools:
+    metrics["text_tool_error_count"] = int(parsed.get("tool_error_count") or 0)
+    metrics["tool_error_count"] = max(
+        int(parsed.get("tool_error_count") or 0),
+        int(structured_tools.get("structured_unrecovered_failed_tool_count") or 0),
+    )
+```
+
+Should become:
+```python
+if structured_tools:
+    metrics["text_tool_error_count"] = int(parsed.get("tool_error_count") or 0)
+    # When state events provide recovery evidence, use the unrecovered count.
+    # structured_tool_action_metrics cross-references failed tool calls against
+    # successful bash commands in audit.jsonl to detect recovery.
+    # This avoids penalizing tool errors that were later recovered by retry.
+    metrics["tool_error_count"] = int(structured_tools.get("structured_unrecovered_failed_tool_count") or 0)
+```
+
+Now I also need to add a self-test for this. Let me add a test case that verifies:
+1. A session with tool_error_count=1 but recovered=true gives a higher score than unrecovered.
+2. Actually, let me add a test that verifies `score_assessment` gives different scores when `tool_error_count` differs.
+
+Let me add the test after line 2577 (the existing score comparison test).
+
+Let me also trace through: when `structured_tools` is available, `tool_error_count` gets set to `structured_unrecovered_failed_tool_count`. When it's not available, `tool_error_count` stays as `parsed_tool_error_count`.
+
+The task mentions adding a test case with recovered tool errors. Let me add:
+1. A test checking that `tool_error_count` in scoring reflects only unrecovered errors.
+2. A test comparing scores: session with tool_error_count=1 (unrecovered) vs tool_error_count=0 (recovered).
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Now let me implement the fix. The key change is in `build_assessment()` at lines 1871-1876 where `tool_error_count` uses `max()` instead of the recovery-aware structured count.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (39ms)
+  ▶ todo ✓ (40ms)
+  ▶ todo ✓ (49ms)
+  ▶ todo ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me make the edit now.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.6s (4 ✓)
+
+
+        if structured_tools:
+            metrics["text_tool_error_count"] = int(parsed.get("tool_error_count") or 0)
+  -         metrics["tool_error_count"] = max(
+  -             int(parsed.get("tool_error_count") or 0),
+  -             int(structured_tools.get("structured_unrecovered_failed_tool_count") or 0),
+  +         # When state events provide recovery evidence, use the unrecovered count.
+  +         # structured_tool_action_metrics cross-references failed tool calls against
+  +         # successful bash commands in audit.jsonl to detect recovery.
+  +         # This avoids penalizing tool errors that were later recovered by retry.
+  +         metrics["tool_error_count"] = int(
+  +             structured_tools.get("structured_unrecovered_failed_tool_count") or 0
+            )
+  ✓ Auto-approved: edit: scripts/log_feedback.py (6 → 9 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (81ms)
+  ▶ edit scripts/log_feedback.py (6 → 9 lines)
+        if structured_tools:
+            metrics["text_tool_error_count"] = int(parsed.get("tool_error_count") or 0)
+  -         metrics["tool_error_count"] = max(
+  -             int(parsed.get("tool_error_count") or 0),
+  -             int(structured_tools.get("structured_unrecovered_failed_tool_count") or 0),
+  +         # When state events provide recovery evidence, use the unrecovered count.
+  +         # structured_tool_action_metrics cross-references failed tool calls against
+  +         # successful bash commands in audit.jsonl to detect recovery.
+  +         # This avoids penalizing tool errors that were later recovered by retry.
+  +         metrics["tool_error_count"] = int(
+  +             structured_tools.get("structured_unrecovered_failed_tool_count") or 0
+            )
+ ✓ (79ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add the self-test. I'll add it after line 2577 (the score comparison test).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+Now let me add the self-test for recovered vs unrecovered tool error scoring:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:2574..2584 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add a test that compares scoring with tool_error_count=1 (unrecovered) vs tool_error_count=0 (recovered was already handled). The test should show that a lower tool_error_count gives a higher score.
+
+I'll add two test cases:
+1. Same metrics except tool_error_count differs (1 vs 0) — the one with 0 should score higher.
+2. A test where a session with tool_error_count=1 but recovered gives same score as tool_error_count=0.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        bad = dict(metrics)
+        bad.update({"workflow_success": False, "session_success": False, "distinct_failure_count": 8})
+        check("failed score is lower", score_assessment(bad) < score_assessment(metrics))
+  +     # Recovered tool errors should not penalize scoring: a session where all
+  +     # tool errors were recovered (tool_error_count=0) scores higher than one
+  +     # with unrecovered tool errors (tool_error_count=1).
+  +     unrecovered = dict(metrics)
+  +     unrecovered.update({"tool_error_count": 1})
+  +     recovered = dict(metrics)
+  +     recovered.update({"tool_error_count": 0})
+  +     check("recovered tool errors score higher than unrecovered", score_assessment(recovered) > score_assessment(unrecovered))
+        check("missing session selection is empty", find_session_for_run(Path("/does/not/exist"), "1") == "")
+  ✓ Auto-approved: edit: scripts/log_feedback.py (5 → 13 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (84ms)
+  ▶ todo ✓ (40ms)
+  ▶ edit scripts/log_feedback.py (5 → 13 lines)
+        bad = dict(metrics)
+        bad.update({"workflow_success": False, "session_success": False, "distinct_failure_count": 8})
+        check("failed score is lower", score_assessment(bad) < score_assessment(metrics))
+  +     # Recovered tool errors should not penalize scoring: a session where all
+  +     # tool errors were recovered (tool_error_count=0) scores higher than one
+  +     # with unrecovered tool errors (tool_error_count=1).
+  +     unrecovered = dict(metrics)
+  +     unrecovered.update({"tool_error_count": 1})
+  +     recovered = dict(metrics)
+  +     recovered.update({"tool_error_count": 0})
+  +     check("recovered tool errors score higher than unrecovered", score_assessment(recovered) > score_assessment(unrecovered))
+        check("missing session selection is empty", find_session_for_run(Path("/does/not/exist"), "1") == "")
+ ✓ (96ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run the self-tests to verify.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (42ms)
+  ▶ todo ✓ (42ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/log_feedback.p… ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 96+ tests pass. Let me check the git diff to confirm the changes are correct.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.3s (3 ✓)
+
+All tests pass. Let me check the diff:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff ✓ (79ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks good. Now let me also verify the `git diff --name-only` to confirm the edit surface matches.
+
+The task says the Edit Surface is `scripts/log_feedback.py` and that's the only file changed. Let me confirm.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — only `scripts/log_feedback.py` was changed, matching the task's Edit Surface.
+
+Now let me verify the logic: the change is that when `structured_tools` data is available (state events exist and tool action metrics were computed), `tool_error_count` now uses `structured_unrecovered_failed_tool_count` instead of `max(parsed_tool_error_count, structured_unrecovered_failed_tool_count)`.
+
+This means:
+- Recovered tool errors (detected via state events + audit.jsonl cross-reference) are NOT counted in `tool_error_count`.
+- When state events aren't available (structured_tools is empty), `tool_error_count` still comes from the text parser (which may overcount but we have no recovery evidence to adjust).
+
+The test verifies that `score_assessment` gives a higher score when `tool_error_count=0` vs `tool_error_count=1`.
+
+Now let me commit. But first, let me also verify the task objective is met. The task says:
+
+> Sessions where tool errors were recovered in subsequent attempts score higher than identical sessions where the same errors were unrecovered.
+
+And:
+
+> The self-tests in log_feedback.py continue to pass.
+
+Both verified. Let me commit now.
+
+Actually wait, let me also think about whether we need to check if `parsed_tool_error_count` is significantly higher than `structured_unrecovered_failed_tool_count` to catch cases where the structured tool detection missed errors. But the task says "The simplest approach is preferred" and "Use the existing transcript-parsing infrastructure already in log_feedback.py." The structured tool detection is the existing infrastructure — it's more accurate than text parsing for bash tools (recovery-aware) and catches all tool errors from state events.
+
+I think the current change is correct and complete.
+
+Let me also verify: what about when `structured_tools` is empty (no state events)? In that case, `tool_error_count` falls through to the `parsed` value — the `if structured_tools:` block doesn't execute, and `tool_error_count` stays as whatever `**parsed` set. This is correct behavior per the task: "If transcript files aren't available (log_available=False), keep the unrecovered tool_error_count — don't assume recovery without evidence."
+
+OK, let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+The diff is clean — only `scripts/log_feedback.py` changed, matching the Edit Surface. Let me commit.
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (40ms)
+  ▶ todo ✓ (42ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (202ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed. Let me now verify the commit and mark the task as complete.
+
+Let me verify what I changed:
+1. In `build_assessment()`: Changed `tool_error_count` from `max(parsed, structured_unrecovered)` to just `structured_unrecovered_failed_tool_count` when structured tools data is available. This ensures recovered tool errors aren't penalized.
+2. Added a self-test verifying that `score_assessment` gives a higher score for `tool_error_count=0` (recovered) vs `tool_error_count=1` (unrecovered).
+
+The key insight: `structured_tool_action_metrics()` already cross-references `ToolCallCompleted` errors against successful bash commands in `audit.jsonl` to detect recovery. The problem was that `build_assessment()` was using `max()` which let the text-parsed count (which counts ALL tool errors, recovered or not) dominate. Now when state events are available, we use the recovery-aware count.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (40ms)
+
+

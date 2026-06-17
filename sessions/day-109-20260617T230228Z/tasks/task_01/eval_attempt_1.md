@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The implementation adds `events_file_size` to `StateDirectoryInfo` and surfaces it in the "file exists but unreadable" error path, improving cold-start diagnostic granularity. The broader cold-start handling (incomplete runs, diagnostic errors, actionable next-steps like `yyds state crashes`/`yyds state doctor`) was already present and is validated by the `why_report_cold_start_output_is_actionable_and_distinguishes_states` test covering 5 distinct states. Build and tests pass.
