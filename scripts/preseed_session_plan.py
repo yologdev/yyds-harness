@@ -540,26 +540,27 @@ def choose_task(assessment: str) -> dict[str, object]:
 
     return {
         "title": "Repair evidence-backed planning after no-task sessions",
-        "files": "skills/evolve/SKILL.md, skills/self-assess/SKILL.md, scripts/task_manifest.py",
+        "files": "scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py",
         "objective": (
-            "Improve yyds planning guidance and task manifest validation so an evidence-rich assessment "
-            "is reliably converted into concrete task files."
+            "Improve yyds fallback task selection and manifest validation so an evidence-rich assessment "
+            "is reliably converted into concrete, landable task files."
         ),
         "why": (
             "The harness reached planning with no task artifacts. That makes evolution look healthy while "
             "skipping implementation, so planning reliability itself becomes the highest-priority repair."
         ),
         "success": [
-            "The planning skill explicitly prioritizes writing task artifacts before extra exploration.",
+            "Fallback planning repair tasks avoid protected implementation files.",
             "Task manifest warnings make no-task planning failures visible.",
-            "Future planning failures preserve enough evidence to select a repair task.",
+            "Future planning failures preserve enough evidence to select a landable repair task.",
         ],
         "verification": [
+            "python3 scripts/preseed_session_plan.py --test",
             "python3 -m unittest scripts.test_task_manifest",
             "python3 scripts/task_manifest.py --help",
         ],
         "evidence": [
-            "Future dashboard sessions show selected task artifacts instead of an empty implementation phase.",
+            "Future task manifests show selected task artifacts with non-protected Files entries.",
             "planning_failed remains visible when it occurs.",
         ],
     }
@@ -785,6 +786,9 @@ No clunky friction found in quick tool checks.
 """
         task = choose_task(assessment)
         assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
+        assert not _has_protected_files(task), task
+        assert "skills/evolve" not in str(task["files"]), task
+        assert "skills/self-assess" not in str(task["files"]), task
         text = render_task(task, "103", "12:53")
         assert "Title:" in text and "Success Criteria:" in text and "Origin: harness-seed" in text
         assert "Evidence:\n-" in text
@@ -886,6 +890,9 @@ resolved API keys to spawned workers. `api_key_present` now reports true.
                 if path.strip() in PROTECTED_IMPLEMENTATION_FILES
             ]
             assert not protected, f"{candidate['title']} includes protected implementation files: {protected}"
+        fallback = choose_task("No known current bug matched this assessment.")
+        assert fallback["title"] == "Repair evidence-backed planning after no-task sessions", fallback
+        assert not _has_protected_files(fallback), fallback
         print("preseed_session_plan self-tests passed")
         return 0
     if args.assessment is None:
