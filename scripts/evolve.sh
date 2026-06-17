@@ -2171,13 +2171,37 @@ marker."
             echo "    Retrying Task $TASK_NUM with checkpoint (attempt 2)..."
             rm -f "$TASK_LOG"
             continue
+        elif [ "$INTERRUPTED" = true ] \
+            && [ "$TASK_ATTEMPT_STATUS" = "analysis_only_no_terminal_evidence" ] \
+            && [ "$ATTEMPT" -eq 1 ]; then
+            echo "    Analysis-only attempt made no file progress — writing blocked evidence instead of spending a second attempt."
+            TASK_TRANSCRIPT_TAIL=$(tail -80 "$TASK_LOG" 2>/dev/null || true)
+            if [ "$TASK_BLOCKED_NOTE_PREEXISTED" != true ] && [ ! -s "$TASK_BLOCKED_NOTE" ]; then
+                cat > "$TASK_BLOCKED_NOTE" <<BLOCKEDEOF
+# Task blocked by analysis-only implementation attempt
+
+The implementation agent exited without landing file progress or emitting
+TASK_TERMINAL_EVIDENCE on the first attempt. The harness stopped the task
+instead of spending a second attempt on more analysis.
+
+This task should be replanned with narrower scope, clearer owning files, or
+stronger pre-confirmed evidence before another implementation attempt.
+
+Recent transcript tail:
+\`\`\`
+${TASK_TRANSCRIPT_TAIL:-no transcript tail captured}
+\`\`\`
+BLOCKEDEOF
+            fi
+            rm -f "$TASK_LOG"
+            break
         elif [ "$INTERRUPTED" = true ] && [ "$ATTEMPT" -eq 1 ]; then
             echo "    No file progress detected — retrying once with action-first checkpoint..."
             TASK_TRANSCRIPT_TAIL=$(tail -80 "$TASK_LOG" 2>/dev/null || true)
-            CHECKPOINT_SECTION="=== CHECKPOINT: PREVIOUS ATTEMPT WAS ANALYSIS-ONLY ===
+            CHECKPOINT_SECTION="=== CHECKPOINT: PREVIOUS ATTEMPT MADE NO FILE PROGRESS ===
 
-The previous implementation attempt ended without landed file progress and
-without TASK_TERMINAL_EVIDENCE. Do not continue broad source archaeology.
+The previous implementation attempt was interrupted without landed file progress
+or TASK_TERMINAL_EVIDENCE. Do not continue broad source archaeology.
 This is the final implementation attempt for this task. Treat it as
 failure-recovery mode, not a fresh investigation.
 
@@ -2214,8 +2238,8 @@ ${TASK_TRANSCRIPT_TAIL:-no transcript tail captured}
         cat > "$TASK_BLOCKED_NOTE" <<BLOCKEDEOF
 # Task blocked by no-progress implementation attempts
 
-The implementation agent used both allowed attempts without landing file
-progress or emitting TASK_TERMINAL_EVIDENCE.
+The implementation agent used the allowed attempts without landing file progress
+or emitting TASK_TERMINAL_EVIDENCE.
 
 This task should be replanned with narrower scope, clearer owning files, or
 stronger pre-confirmed evidence before another implementation attempt.
