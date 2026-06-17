@@ -1,0 +1,783 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to make analysis-only task pressure landable by modifying `scripts/preseed_session_plan.py`, `scripts/state_graph_tools.py`, and `scripts/test_state_graph_tools.py`. Let me first read the evolve skill and then the relevant files.
+
+The key problem: "analysis-only/no-edit attempts" produce implementation attempts with no file progress and no terminal evidence. I need to ensure that when task_analysis_only_attempt_count > 0 and task_success_rate is 0.0, the preseeding logic selects a concrete, landable task instead of selecting broad or protected-file harness work.
+
+Let me start by reading the evolve skill and the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py  ▶ read scripts/state_graph_tools.py ✓ (244ms)
+ ✓ (231ms)
+ ✓ (251ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand what I need to do. The task is about making "analysis-only task pressure" landable. The key insight is:
+
+- When `task_analysis_only_attempt_count > 0` and `task_success_rate == 0.0`, the graph-derived pressure should produce a concrete, landable task selection.
+- The current preseed logic should detect this pattern and select a task whose Files list contains no protected implementation files.
+- Need to add a task to the TASKS list in preseed_session_plan.py that handles this case, and ensure the graph tools can detect and suggest the right tasks.
+
+Let me look more carefully at the preseed logic - specifically the `choose_task` function and how it maps assessment evidence to tasks.
+
+Let me also look at the `evolution_suggestions` function in state_graph_tools.py since that's where graph-derived pressure recommendations come from, and check what `task_analysis_only_attempt_count` is used for currently.
+
+Let me also look at the test file.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.3s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'task_analysis_only_attempt_count'  ▶ search 'def choose_task' in scripts/preseed_session_plan.py  ▶ search 'task_success_rate' in scripts/state_graph_tools.py ✓ (62ms)
+ ✓ (60ms)
+ ✓ (177ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the choose_task function and the relevant areas more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:180..280  ▶ read scripts/preseed_session_plan.py:470..670 ✓ (90ms)
+ ✓ (109ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the task is already listed in the TASKS array at line 186-221. Let me see what the current tests look like and what the `current_evidence_text` and `numeric_metrics` functions look like, and how `has_actionable_lifecycle_gap` works. The existing test on lines 632-643 already tests this case.
+
+Now let me understand what's actually needed. The task says "Make analysis-only task pressure landable" and the code already has the task in TASKS and a test. But looking at the `choose_task` function more carefully, the flow right now is:
+
+1. For each task in TASKS, check if its keys match.
+2. For lifecycle tasks, check `has_actionable_lifecycle_gap`.
+3. For search friction tasks, check `has_actionable_search_friction`.
+4. All other tasks just get appended to candidates.
+
+The "analysis-only" task at line 186-221 has `keys` that include "task_analysis_only_attempt_count" and "analysis-only task attempts". So when the assessment text mentions these patterns, it should match.
+
+But wait - let me look at the `check_task_contradiction` function and how it interacts. The task selection flow: candidates are gathered, then checked for contradictions. The current test at line 632-643 shows it DOES select the analysis-only task when both analysis-only AND lifecycle signals are present. That's because the analysis-only task comes BEFORE lifecycle task in the candidate list (it's at index 6 in TASKS, lifecycle is at index 7).
+
+The test at line 640 asserts: `assert task["title"] == "Make analysis-only task pressure landable"` - so it currently DOES prioritize analysis-only over lifecycle. That seems correct behavior.
+
+But wait - let me re-read the task objective more carefully:
+
+"Ensure task-success pressure from analysis-only/no-edit attempts produces a small, landable follow-up task instead of selecting broad or protected-file harness work."
+
+So the concern is: when analysis-only pressure exists, the selected task should be LANDABLE (files are not protected). Let me check the current analysis-only task's files:
+
+```
+"files": "scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py"
+```
+
+And PROTECTED_IMPLEMENTATION_FILES:
+```python
+PROTECTED_IMPLEMENTATION_FILES = (
+    "scripts/evolve.sh",
+    "scripts/format_issues.py",
+    "scripts/build_site.py",
+    "skills/self-assess/SKILL.md",
+    "skills/evolve/SKILL.md",
+)
+```
+
+The analysis-only task's files are NOT in the protected list. Good.
+
+Now let me think about what's actually needed. Let me look at the state_graph_tools.py to see how `evolution_suggestions` generates pressure, and how it interacts with the preseed.
+
+Let me also check: does the `choose_task` function properly check for protected files in the candidates? Currently it seems like it doesn't - it just checks keys and contradictions.
+
+Let me look at the state_graph_tools.py `evolution_suggestions` function to understand the graph-derived pressure system.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 14.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def evolution_suggestions' in scripts/state_graph_tools.py  ▶ search 'task_analysis_only_attempt_count' in scripts/state_graph_tools.py ✓ (62ms)
+ ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the evolution_suggestions function and the relevant section around line 1481.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:1109..1309  ▶ read scripts/state_graph_tools.py:1470..1530 ✓ (91ms)
+ ✓ (103ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The state_graph_tools.py already has the analysis-only pressure at lines 1475-1483, and the preseed_session_plan.py already has the task in TASKS at lines 186-221 and a test at lines 632-643.
+
+Now let me understand what the task is actually asking me to do. Let me re-read the success criteria:
+
+1. "Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup." - This seems to work already based on the test at line 632-643.
+
+2. "The selected seed Files list contains no protected implementation files." - The task's files are `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py` which don't overlap with PROTECTED_IMPLEMENTATION_FILES. ✓
+
+3. "Preseed self-tests cover the analysis-only/no-edit pressure path." - The test at line 632-643 already covers this.
+
+So what's missing? Let me look more carefully...
+
+The task says: "Recent evo evidence showed implementation attempts ending with no file progress and no terminal evidence. The next seed must target landable task-selection logic so DeepSeek can improve the loop without touching protected evolution files."
+
+The key insight might be about the LANDABLE part. Let me check: when analysis-only pressure is present alongside lifecycle gaps, does the preseed pick the analysis-only task or the lifecycle task?
+
+Looking at the test on line 632-643:
+```
+assessment = """
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2): ...
+- Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1): ...
+- Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): ...
+"""
+task = choose_task(assessment)
+assert task["title"] == "Make analysis-only task pressure landable"
+```
+
+The test confirms it DOES pick the analysis-only task. But let me think about whether there might be a gap...
+
+When would the LIFECYCLE task win over the analysis-only task? Let me look at `choose_task` more carefully. Both tasks are in the candidate list. The `check_task_contradiction` determines which one wins - since analysis-only is earlier in TASKS, it would be checked first, and if not contradicted, returned.
+
+So the behavior seems correct. But wait - what if both tasks are NOT contradicted? Then the analysis-only task (first in line) wins. What if the lifecycle task comes first? Actually no, analysis-only is at index 6 (line 186), lifecycle is at index 7 (line 222) in TASKS. So analysis-only wins.
+
+Now let me think about what actually needs to be changed. Let me re-read the task more carefully:
+
+"Ensure task-success pressure from analysis-only/no-edit attempts produces a small, landable follow-up task instead of selecting broad or protected-file harness work."
+
+The word "landable" is key. Maybe I need to add a guard in `choose_task` that skips tasks with protected files? Currently the PROTECTED_IMPLEMENTATION_FILES check is only in the tests at line 858-864, not in the production `choose_task` function itself.
+
+Let me also look at the `no_edit` pressure path. There's `task_no_edit_revert_count` which has its own graph suggestion. Does choosing the analysis-only task also cover `task_no_edit_revert_count`?
+
+Looking at the test on line 632-643, both `task_analysis_only_attempt_count=2` AND `task_no_edit_revert_count=1` are present, and the analysis-only task is selected. That's because it appears first in the assessment text and both match keys. Good.
+
+Actually, wait. Let me look more carefully at the PROTECTED_IMPLEMENTATION_FILES check in the test:
+
+```python
+for candidate in TASKS:
+    protected = [
+        path.strip()
+        for path in str(candidate.get("files") or "").split(",")
+        if path.strip() in PROTECTED_IMPLEMENTATION_FILES
+    ]
+    assert not protected, f"{candidate['title']} includes protected implementation files: {protected}"
+```
+
+This check is in the test, but it only checks the TASKS definition at test time, not runtime. The task says the seed Files list should contain no protected implementation files, which is already satisfied.
+
+OK so what's the actual work to do here? Let me think about what gaps there might be:
+
+1. The current `choose_task` doesn't have a runtime check against PROTECTED_IMPLEMENTATION_FILES for candidates - it only checks this in tests.
+2. Maybe I need to add a guard in `choose_task` that when task-success pressure is active and analysis-only signals are present, the lifecycle task should be deprioritized.
+3. Or maybe I need to ensure that when both analysis-only and lifecycle signals are present, the analysis-only task is selected with higher confidence.
+
+Looking at lines 492-501:
+```python
+if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+    if not has_actionable_lifecycle_gap(metrics):
+        continue
+    candidates.append(task)
+    continue
+if task["title"] == SEARCH_FRICTION_TASK_TITLE:
+    if not has_actionable_search_friction(lower):
+        continue
+    candidates.append(task)
+    continue
+candidates.append(task)
+```
+
+The analysis-only task is added via the generic `candidates.append(task)` path (line 502). The lifecycle task has special gating. Both end up in candidates.
+
+Now the question is: when both analysis-only AND lifecycle tasks match, does the analysis-only task always get checked for contradiction first? Yes, because analysis-only comes before lifecycle in TASKS.
+
+Hmm, but should we make the logic more explicit? Let me think about what could go wrong in production that this task is trying to fix...
+
+Maybe the issue is that when `task_success_pressure_active` is true (from state_graph_tools.py) AND `task_analysis_only_attempt_count > 0`, the preseed should explicitly ensure the analysis-only task is selected over lifecycle cleanup. Currently it just relies on TASKS ordering, which is fragile.
+
+Let me look at how `task_success_pressure_active` flows into the preseed. Looking at the graph-derived pressure suggestions:
+- Line 1475-1483: analysis-only suggestion has priority 94 when task_success_pressure_active, 90 otherwise
+- Line 1223-1239: lifecycle suggestion has priority 84 when task_success_pressure_active, 96 otherwise
+
+So when task_success_pressure is active, analysis-only gets higher priority (94) than lifecycle (84). Good.
+
+But the preseed_session_plan.py doesn't read graph suggestions directly - it reads the assessment text. The assessment text would include both "Force analysis-only attempts into action" and "Close yyds state and model lifecycle gaps" from the extract_trajectory.py rendering.
+
+In `choose_task`, both tasks match their keys and are added as candidates. The analysis-only task wins because it's earlier in TASKS. But this is fragile - if someone reorders TASKS, the behavior could change.
+
+Let me think about what concrete change I should make. The task says the change should be in these files:
+- scripts/preseed_session_plan.py
+- scripts/state_graph_tools.py  
+- scripts/test_state_graph_tools.py
+
+Let me look at what state_graph_tools.py currently does with analysis-only pressure in terms of the `print_markdown_suggestions` function to see how suggestions become assessment text.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 24.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def print_markdown_suggestions' in scripts/state_graph_tools.py  ▶ read scripts/test_state_graph_tools.py:1..51 ✓ (32ms)
+ ✓ (128ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test file for analysis-only patterns and see what tests already exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'analysis_only' in scripts/test_state_graph_tools.py ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at those test sections around lines 664 and 1029 to understand the context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_state_graph_tools.py:650..700  ▶ read scripts/test_state_graph_tools.py:1010..1070  ▶ read scripts/state_graph_tools.py:1610..1650 ✓ (253ms)
+ ✓ (238ms)
+ ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a solid understanding. Let me look at:
+
+1. The preseed `choose_task` function - it currently selects candidates based on matching keys in assessment text, then checks contradictions. When both analysis-only and lifecycle tasks match, analysis-only wins due to TASKS ordering. But there's no explicit guard against protected files in the `choose_task` function.
+
+2. The state_graph_tools `evolution_suggestions` function already properly prioritizes analysis-only over lifecycle when task_success_pressure_active (priority 94 vs 84).
+
+What concrete changes should I make? The task says "Make analysis-only task pressure landable." The success criteria say:
+- Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup.
+- Selected seed Files list contains no protected implementation files.
+- Preseed self-tests cover the analysis-only/no-edit pressure path.
+
+Looking at what already exists:
+1. The test in preseed at lines 632-643 already tests this path ✓
+2. The task's files are not protected ✓
+3. The graph tools already prioritize analysis-only over lifecycle when tasks fail ✓
+
+I think the main gap is that `choose_task` doesn't have a `protected_files` filter, and the task could be more robust. Let me look more carefully at what needs improvement.
+
+Actually, let me re-read the task's "Expected Evidence":
+- "Future task manifests show landable Files entries for task-success repair pressure."
+- "Future trajectory pressure leads with implementation failure repair when `task_analysis_only_attempt_count` is above 0 and task_success_rate is 0.0."
+
+The second point about trajectory pressure leading with implementation failure repair - let me check how the extract_trajectory.py feeds into this. The trajectory renders these suggestions. Let me look at `extract_trajectory.py` to see how analysis-only pressure is rendered.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.4s (3 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'analysis_only' in scripts/extract_trajectory.py  ▶ search 'render_graph_suggestions' in scripts/extract_trajectory.py ✓ (62ms)
+ ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `extract_trajectory.py` doesn't directly reference `analysis_only` - it uses `render_graph_suggestions` which calls `state_graph_tools.evolution_suggestions`. The trajectory renders graph suggestions as markdown, which flows into the assessment, and then the preseed uses `choose_task` to match.
+
+OK, let me now take a step back and think about what ACTUAL change I need to make. Looking at the code that currently exists:
+
+1. The "Make analysis-only task pressure landable" task is ALREADY in TASKS in preseed_session_plan.py ✓
+2. It's ALREADY tested ✓  
+3. The state_graph_tools already generates correct pressure ✓
+4. The evolve_suggestions already prioritizes it correctly ✓
+
+But the task title says this needs to be MADE landable... Maybe the issue is that the current code is close but not quite right. Let me look more carefully at `choose_task` to see if there's a gap in the production logic.
+
+Wait - let me look at the `check_task_contradiction` function. Maybe the analysis-only task gets contradicted in some scenarios.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.4s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def check_task_contradiction' in scripts/preseed_session_plan.py ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the contradiction check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:422..482 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, now I have a thorough understanding of the code. Let me figure out what changes are needed.
+
+Looking at the task's success criteria:
+1. "Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup." - Already works.
+2. "The selected seed Files list contains no protected implementation files." - Already true for the analysis-only task but there's no runtime guard.
+3. "Preseed self-tests cover the analysis-only/no-edit pressure path." - Already tests this path.
+
+So the question is: what needs to actually change? Let me re-read the task:
+
+"Ensure task-success pressure from analysis-only/no-edit attempts produces a small, landable follow-up task instead of selecting broad or protected-file harness work."
+
+The key insight is: when analysis-only pressure exists, make sure the selected task is landable (not broad, not protected files). Currently:
+- The analysis-only task files are fine (not protected) ✓
+- But `choose_task` doesn't check if a candidate has protected files ✗
+- And the TASKS ordering-based priority (analysis-only before lifecycle) is fragile
+
+Also, looking at the test at line 632, it checks that when BOTH analysis-only and lifecycle signals are present, the analysis-only task is selected. But the test asserts `assert task["title"] == "Make analysis-only task pressure landable"`. This relies on TASKS ordering.
+
+I think the actual improvements needed are:
+
+1. In `choose_task`, add a guard: when `task_success_pressure_active` and analysis-only signals present, skip lifecycle candidate unless no analysis-only candidate survives contradiction check.
+2. In `choose_task`, add a runtime check against PROTECTED_IMPLEMENTATION_FILES for each candidate - skip candidates with protected files.
+3. Strengthen the tests.
+
+Wait, but `choose_task` doesn't have access to `task_success_rate` or `task_success_pressure_active`. Those are computed in state_graph_tools.py's `evolution_suggestions`. The preseed reads assessment text.
+
+Let me think about this differently. The preseed matches tasks based on keywords in the assessment. When the assessment text mentions `task_analysis_only_attempt_count`, it matches the analysis-only task. The TASKS ordering then gives it priority.
+
+But the gap I see is:
+1. If someone reorders TASKS, the lifecycle task could win even when analysis-only pressure is present.
+2. There's no runtime check for protected files.
+
+Let me add a concrete change: in `choose_task`, when selecting candidates, add a protected-file filter and when both analysis-only and lifecycle tasks are candidates, ensure analysis-only wins when task-success pressure is present.
+
+Actually, let me look at this from the perspective of what would make the task ACTUALLY landable vs just appearing in TASKS. The analysis-only task itself is "Make analysis-only task pressure landable" which is about selecting a landable task. The fact that it IS the task means the pattern is self-referential - the task to make analysis-only pressure landable is itself analysis-only pressure's target. 
+
+Let me now think about the concrete changes:
+
+**Change 1: preseed_session_plan.py** - Add protected-file filtering to `choose_task` and ensure analysis-only priority.
+
+**Change 2: state_graph_tools.py** - Ensure the suggestion title/description correctly conveys landability.
+
+**Change 3: test_state_graph_tools.py** - Add/strengthen tests.
+
+Let me now also look at how the analysis-only task currently flows through the system. Since this task IS the "Make analysis-only task pressure landable" task (selected by the preseed), I'm literally implementing the fix that makes future analysis-only pressure select landable tasks. So what I need to do is:
+
+1. Make `choose_task` skip candidates whose files include protected implementation files.
+2. In `choose_task`, when analysis-only/no-edit signals are present alongside lifecycle signals, ensure the analysis-only task is selected over lifecycle.
+3. Add tests for these behaviors.
+
+Let me now write the code.
+
+Actually wait - let me first check if there's already a `check_task_contradiction` for the analysis-only task that might cause issues. The task has `keys` that include "task_analysis_only_attempt_count" and the contradiction check looks for Recent Changes showing those problems are resolved. That seems fine.
+
+Let me look at the `extract_section` function to understand how it works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def extract_section' in scripts/preseed_session_plan.py  ▶ search 'def current_evidence_text' in scripts/preseed_session_plan.py ✓ (62ms)
+ ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now think about what the actual change should be. Let me read through the full `choose_task` flow once more:
+
+1. It gets `current_evidence_text` - the "Current Session" section
+2. It gets `numeric_metrics` from the text
+3. For each task in TASKS:
+   - Check if any key matches
+   - Skip if any reject_key matches
+   - Lifecycle task: check actionable lifecycle gap
+   - Search friction: check actionable search friction
+   - Otherwise add as candidate
+4. For each candidate, check contradiction
+5. If any uncontradicted, return it
+6. If all contradicted, return first with annotation
+7. If no candidates, return fallback task
+
+Now, the task I'm implementing IS the "Make analysis-only task pressure landable" task. This task itself is what the preseed selected for this session. So the code already works to select this task.
+
+But the question is: does the code work robustly for FUTURE sessions? The answer to that is what I need to improve.
+
+Let me now implement the changes:
+
+1. In `choose_task`, add a guard against protected files - skip candidates whose files include PROTECTED_IMPLEMENTATION_FILES.
+2. In `choose_task`, add a guard that when `task_analysis_only_attempt_count` or `task_no_edit_revert_count` metrics are > 0, the analysis-only task takes priority over lifecycle tasks.
+3. Add tests for these behaviors.
+
+Actually, wait. Let me look at this more carefully. The current `choose_task` adds candidates to a list, then checks contradictions in order. The analysis-only task (index 6) comes before lifecycle (index 7) in TASKS. But both get added as candidates if their keys match. Then `check_task_contradiction` is called for each in order. So analysis-only wins by ordering.
+
+The issue is: what if the lifecycle task has no contradiction but the analysis-only task does? Then the lifecycle task would be returned. That might be wrong when analysis-only pressure exists.
+
+But actually that IS the right behavior - if analysis-only problem is contradicted (already resolved), then it shouldn't be selected.
+
+OK, I think the main concrete changes are:
+
+1. **Protected file guard in `choose_task`**: Skip candidates whose files include PROTECTED_IMPLEMENTATION_FILES.
+2. **Analysis-only priority in `choose_task`**: When both analysis-only and lifecycle tasks match, ensure analysis-only task is checked for contradiction first (already works) and gets the right priority.
+3. **Tests**: Verify protected file filtering and analysis-only priority.
+
+Let me now plan and execute. The changes should be small and focused.
+
+Looking at `choose_task` again:
+```python
+def choose_task(assessment: str) -> dict[str, object]:
+    current = current_evidence_text(assessment)
+    lower = (current if current.strip() else assessment).lower()
+    metrics = numeric_metrics(lower)
+    lifecycle_metrics_present = has_lifecycle_metrics(metrics)
+    candidates: list[dict[str, object]] = []
+    for task in TASKS:
+        if not any(key in lower for key in task["keys"]):
+            continue
+        if any(key in lower for key in task.get("reject_keys", ())):
+            continue
+        if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+            if not has_actionable_lifecycle_gap(metrics):
+                continue
+            candidates.append(task)
+            continue
+        if task["title"] == SEARCH_FRICTION_TASK_TITLE:
+            if not has_actionable_search_friction(lower):
+                continue
+            candidates.append(task)
+            continue
+        candidates.append(task)
+    
+    for candidate in candidates:
+        contradicted, reason = check_task_contradiction(candidate, assessment)
+        if not contradicted:
+            candidate["validated_against_assessment"] = True
+            return candidate
+    ...
+```
+
+I think what I should add is:
+
+1. After building candidates, filter out any that have protected files.
+2. Add a test for this.
+3. Make sure the analysis-only priority over lifecycle is explicit rather than relying on TASKS order.
+
+Wait, actually filtering out protected files might be too aggressive. The lifecycle task has files like `scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py` which are NOT protected. So filtering protected files from candidates wouldn't affect lifecycle task.
+
+But the search friction task has `src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py` - also not protected.
+
+Let me also check the sub-agent task: `src/tools.rs, src/agent_builder.rs, src/lib.rs` - not protected.
+Cache metrics task: `src/prompt.rs, src/deepseek.rs, src/state.rs` - not protected.
+Run completion guard: `src/state.rs` - not protected.
+
+So all tasks' files are fine except maybe the fallback task at the bottom:
+```python
+return {
+    "title": "Repair evidence-backed planning after no-task sessions",
+    "files": "skills/evolve/SKILL.md, skills/self-assess/SKILL.md, scripts/task_manifest.py",
+    ...
+}
+```
+
+Wait! This fallback task has `skills/evolve/SKILL.md` and `skills/self-assess/SKILL.md` which ARE in PROTECTED_IMPLEMENTATION_FILES! That's a problem. The fallback task should not include protected files.
+
+Actually, looking at the test more carefully on line 604-617:
+```python
+assessment = """# Assessment
+
+## Self-Test Results
+- `yyds state crashes --json` shows 10 crashes, all `empty_input` with `api_key_present: false` (CI/automation noise)
+
+## Structured State Snapshot
+Top tool-failure categories:
+- `search_regex_error` = 57
+- `search_binary_match` = 19
+"""
+task = choose_task(assessment)
+assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
+```
+
+This test shows the fallback task gets selected when there are search failure tools but search friction has no actionable matches (they look like cumulative counts from a "Top tool-failure categories" header). The sub-agent task gets rejected by the "CI/automation noise" reject key. So no candidates match, and the fallback is returned.
+
+The fallback task has protected files: `skills/evolve/SKILL.md, skills/self-assess/SKILL.md`. This is the fallback for when NO candidates match. Since it's the last resort, maybe it's intentional that it includes protected files - it's saying "even the fallback requires editing protected files, so something is fundamentally broken."
+
+Hmm, but the task says: "Ensure task-success pressure from analysis-only/no-edit attempts produces a small, landable follow-up task instead of selecting broad or protected-file harness work."
+
+So the concern is specifically about analysis-only/no-edit pressure. Let me focus there.
+
+For the analysis-only task specifically:
+- Its files are: `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`
+- None are in PROTECTED_IMPLEMENTATION_FILES ✓
+
+So the analysis-only task IS already landable. What needs to be done is:
+1. Add a runtime protected-file filter in `choose_task` so no task with protected files gets selected. This is a defense-in-depth measure.
+2. Strengthen the analysis-only priority to be explicit rather than relying on TASKS ordering.
+
+OK let me now write the code. Here's my plan:
+
+**In preseed_session_plan.py:**
+1. Add a `_has_protected_files` helper function
+2. In `choose_task`, skip candidates whose files include PROTECTED_IMPLEMENTATION_FILES
+3. After building candidates, ensure analysis-only/no-edit tasks take priority when task-success metrics indicate pressure
+4. Add/strengthen the existing test coverage
+
+**In state_graph_tools.py:**
+- No changes needed - the analysis-only pressure is already correctly generated with proper priority.
+
+**In test_state_graph_tools.py:**
+- Add a test that verifies analysis-only pressure has higher priority than lifecycle when task_success_rate is 0.0 (already exists at line 655).
+
+Wait, the test at line 655 already exists and passes. So the graph tools side is already fine.
+
+Let me focus on the preseed side changes:
+
+1. Add protected-file filtering to `choose_task` (candidates with protected files are skipped)
+2. Make analysis-only priority explicit
+3. Add tests
+
+Let me now actually implement.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 26.3s (2 ✓)
+
+Now I have a clear picture. Let me read the full `choose_task` function and the test section one more time, then implement.
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:332..452 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me plan the concrete changes. Looking at line 481-541 (the `choose_task` function) and line 594-643 (the test section for this task):
+
+The analysis-only task is at lines 186-221 in TASKS. The test at lines 632-643 already verifies it gets selected when both analysis-only and lifecycle signals are present.
+
+Here's what I think needs to change:
+
+1. In `choose_task`, add a protected-file filter: skip candidates whose `files` include any PROTECTED_IMPLEMENTATION_FILES.
+2. In `choose_task`, add explicit analysis-only/no-edit priority: when `task_analysis_only_attempt_count` or `task_no_edit_revert_count` metrics are > 0, ensure the analysis-only task is selected before lifecycle (even if TASKS ordering changes).
+3. Add a test that verifies protected-file filtering works.
+4. Strengthen the existing analysis-only priority test.
+
+Wait, actually, I need to check: does the current `choose_task` function use `metrics` for anything besides lifecycle gap detection? Looking at the code:
+
+```python
+def choose_task(assessment: str) -> dict[str, object]:
+    current = current_evidence_text(assessment)
+    lower = (current if current.strip() else assessment).lower()
+    metrics = numeric_metrics(lower)
+    lifecycle_metrics_present = has_lifecycle_metrics(metrics)
+    candidates: list[dict[str, object]] = []
+    for task in TASKS:
+        if not any(key in lower for key in task["keys"]):
+            continue
+        if any(key in lower for key in task.get("reject_keys", ())):
+            continue
+        if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+            if not has_actionable_lifecycle_gap(metrics):
+                continue
+            candidates.append(task)
+            continue
+        if task["title"] == SEARCH_FRICTION_TASK_TITLE:
+            if not has_actionable_search_friction(lower):
+                continue
+            candidates.append(task)
+            continue
+        candidates.append(task)
+```
+
+So `metrics` is already computed from the assessment text. I can use it to detect `task_analysis_only_attempt_count > 0` and deprioritize lifecycle.
+
+Actually, let me think more carefully. The lifecycle task has its own dedicated gating - `has_actionable_lifecycle_gap(metrics)`. When analysis-only pressure is present alongside lifecycle gaps, BOTH tasks become candidates. The ordering in TASKS determines priority. Analysis-only comes first, so it wins.
+
+But if someone reorders TASKS (putting lifecycle first), lifecycle would win. To make this robust, I could add logic that when analysis-only metrics are present, the lifecycle task gets skipped or deprioritized.
+
+However, there's a subtlety: if analysis-only is contradicted (e.g., Recent Changes shows the problem is fixed), then lifecycle should indeed be selected. The current contradiction-check loop handles this correctly since it iterates candidates in order and returns the first non-contradicted one.
+
+So the fix is more defense-in-depth:
+1. Add protected-file filtering
+2. Add an explicit check that when analysis-only metrics are present, the lifecycle task is considered only after the analysis-only task
+
+Let me add a new helper function and modify `choose_task`.
+
+Actually, let me reconsider. Instead of making `choose_task` more complex, the simplest and most impactful change would be:
+
+1. **Add protected-file filtering** in `choose_task` - filter candidates whose files include protected paths.
+2. **Ensure analysis-only task has higher priority** by adding an explicit check.
+
+For #2, the current behavior already works correctly. The TASKS ordering gives analysis-only priority. The test verifies this. Adding explicit code would be belt-and-suspenders.
+
+For #1, this is a real gap - if a task in TASKS has protected files, it would be selected if its keys match and it's not contradicted.
+
+Let me add both. Here's my plan:
+
+**In `preseed_session_plan.py`:**
+1. Add `_has_protected_files(task)` helper that checks if a task's files overlap with PROTECTED_IMPLEMENTATION_FILES.
+2. In `choose_task`, after building candidates, filter out any with protected files (but log a warning).
+3. Also filter protected files from the fallback task.
+4. Add analysis-only priority: when building candidates, if analysis-only signals are present, skip lifecycle candidate (or reorder).
+5. Add tests.
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (30ms)
+  ▶ todo ✓ (31ms)
+  ▶ todo ✓ (38ms)
+  ▶ todo ✓ (64ms)
+  ▶ todo ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement the changes. First, let me add the `_has_protected_files` helper and modify `choose_task`.
+
+Let me plan the exact edits:
+
+1. Add `_has_protected_files(task)` function after `has_actionable_search_friction` (line 478)
+2. Modify `choose_task` to:
+   - Filter protected file candidates
+   - Add analysis-only priority (skip lifecycle when analysis-only signals present)
+3. Add tests
+
+Let me write the code.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.2s (5 ✓)
+
+Now let me implement. First, I'll add the `_has_protected_files` helper and modify `choose_task`.
+                continue
+            return True
+        return False
+  + 
+  + 
+  + def _has_protected_files(task: dict[str, object]) -> bool:
+  +     """Return True if the task's files include any protected implementation file."""
+  +     files_str = str(task.get("files") or "")
+  +     task_files = {path.strip() for path in files_str.split(",") if path.strip()}
+  +     return bool(task_files & set(PROTECTED_IMPLEMENTATION_FILES))
+  + 
+  + 
+  + _ANALYSIS_ONLY_METRICS = (
+  +     "task_analysis_only_attempt_count",
+  +     "task_no_edit_revert_count",
+  + )
+  + 
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (15 → 33 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (15 → 33 lines)
+                continue
+            return True
+        return False
+  + 
+  + 
+  + def _has_protected_files(task: dict[str, object]) -> bool:
+  +     """Return True if the task's files include any protected implementation file."""
+  +     files_str = str(task.get("files") or "")
+  +     task_files = {path.strip() for path in files_str.split(",") if path.strip()}
+  +     return bool(task_files & set(PROTECTED_IMPLEMENTATION_FILES))
+  + 
+  + 
+  + _ANALYSIS_ONLY_METRICS = (
+  +     "task_analysis_only_attempt_count",
+  +     "task_no_edit_revert_count",
+  + )
+  + 
+  + 
+  + def _has_analysis_only_pressure(metrics: dict[str, int]) -> bool:
+  +     """Return True when analysis-only/no-edit pressure exists."""
+  ... (1 more lines)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now let me modify `choose_task` to use the new helpers.
+────────────────────────────────────────────────────────────────────────────────
+
+Now modify `choose_task` to add protected-file filtering and analysis-only priority:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:497..562 ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me modify `choose_task` to:
+1. Filter candidates with protected files
+2. When analysis-only pressure exists, skip lifecycle candidate
+3. Only fall back to lifecycle when analysis-only is NOT present (or is contradicted)
+
+I also want to add the protected-file guard to the fallback task. Let me change the fallback to not include protected files. Actually, the fallback is "Repair evidence-backed planning after no-task sessions" which includes protected files. Since the evolve skill says not to modify protected files except when explicitly named, this is a pre-existing issue. I should not change the fallback task itself, but I should add a note that it's a last-resort that may need human approval.
+
+Actually, wait. The task says to keep the change scoped to the listed files. Let me re-read: "Keep the change scoped to the listed files unless verification reveals a direct dependency."
+
+The change should be:
+1. `choose_task` skips candidates that have protected implementation files
+2. The fallback task also gets the protected-file check (it's inside `choose_task`)
+
+Let me now edit `choose_task`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        lower = (current if current.strip() else assessment).lower()
+        metrics = numeric_metrics(lower)
+        lifecycle_metrics_present = has_lifecycle_metrics(metrics)
+  +     analysis_only_active = _has_analysis_only_pressure(metrics)
+        candidates: list[dict[str, object]] = []
+        for task in TASKS:
+            if not any(key in lower for key in task["keys"]):
+                continue
+            if any(key in lower for key in task.get("reject_keys", ())):
+  +             continue
+  +         if _has_protected_files(task):
+                continue
+            if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+  +             if analysis_only_active:
+  +                 # Analysis-only pressure takes priority over lifecycle cleanup
+  +                 continue
+                if not has_actionable_lifecycle_gap(metrics):
+                    continue
+                candidates.append(task)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (61 → 67 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (61 → 67 lines)
+        lower = (current if current.strip() else assessment).lower()
+        metrics = numeric_metrics(lower)
+        lifecycle_metrics_present = has_lifecycle_metrics(metrics)
+  +     analysis_only_active = _has_analysis_only_pressure(metrics)
+        candidates: list[dict[str, object]] = []
+        for task in TASKS:
+            if not any(key in lower for key in task["keys"]):
+                continue
+            if any(key in lower for key in task.get("reject_keys", ())):
+  +             continue
+  +         if _has_protected_files(task):
+                continue
+            if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+  +             if analysis_only_active:
+  +                 # Analysis-only pressure takes priority over lifecycle cleanup
+  +                 continue
+                if not has_actionable_lifecycle_gap(metrics):
+                    continue
+                candidates.append(task)
+ ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add tests. Let me look at the test section and add:
+1. A test for protected-file filtering
+2. A test that analysis-only pressure overrides lifecycle selection even when both are present
+
+Let me read the current test section around where the analysis-only test is.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (29ms)
+  ▶ todo ✓ (30ms)
+  ▶ todo ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the current test section to see where to add tests.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.4s (3 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:617..717 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the rest of the tests and then add my new tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:716..796 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the end of the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:795..875 ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the last bit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:874..915 ✓ (30ms)
+
+
