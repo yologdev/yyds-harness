@@ -3214,6 +3214,8 @@ pub struct StateDirectoryInfo {
     pub dir_files: Vec<String>,
     /// SQLite projection file name (if found in dir).
     pub sqlite_file_name: Option<String>,
+    /// Size of the events file in bytes (None if file doesn't exist).
+    pub events_file_size: Option<u64>,
 }
 
 /// Inspect the state directory and events file without opening or parsing them.
@@ -3245,12 +3247,19 @@ pub fn state_directory_info() -> Option<StateDirectoryInfo> {
 
     dir_files.sort();
 
+    let events_file_size = if events_file_exists {
+        std::fs::metadata(&events_path).ok().map(|m| m.len())
+    } else {
+        None
+    };
+
     Some(StateDirectoryInfo {
         dir_exists,
         events_path,
         events_file_exists,
         dir_files,
         sqlite_file_name,
+        events_file_size,
     })
 }
 

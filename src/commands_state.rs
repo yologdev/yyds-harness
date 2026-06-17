@@ -1007,8 +1007,12 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
                 );
             } else {
                 eprintln!(
-                    "{YELLOW}  Events file exists at {} but could not be read.{RESET}",
-                    dir_info.events_path.display()
+                    "{YELLOW}  Events file exists at {} ({}) but could not be read.{RESET}",
+                    dir_info.events_path.display(),
+                    match dir_info.events_file_size {
+                        Some(sz) => format!("{sz} bytes"),
+                        None => "unknown size".to_string(),
+                    }
                 );
                 eprintln!("{DIM}  This may be a permissions issue or a corrupt file.{RESET}");
             }
