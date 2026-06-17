@@ -478,18 +478,42 @@ def has_actionable_search_friction(text: str) -> bool:
     return False
 
 
+def _has_protected_files(task: dict[str, object]) -> bool:
+    """Return True if the task's files include any protected implementation file."""
+    files_str = str(task.get("files") or "")
+    task_files = {path.strip() for path in files_str.split(",") if path.strip()}
+    return bool(task_files & set(PROTECTED_IMPLEMENTATION_FILES))
+
+
+_ANALYSIS_ONLY_METRICS = (
+    "task_analysis_only_attempt_count",
+    "task_no_edit_revert_count",
+)
+
+
+def _has_analysis_only_pressure(metrics: dict[str, int]) -> bool:
+    """Return True when analysis-only/no-edit pressure exists."""
+    return any(metrics.get(key, 0) > 0 for key in _ANALYSIS_ONLY_METRICS)
+
+
 def choose_task(assessment: str) -> dict[str, object]:
     current = current_evidence_text(assessment)
     lower = (current if current.strip() else assessment).lower()
     metrics = numeric_metrics(lower)
     lifecycle_metrics_present = has_lifecycle_metrics(metrics)
+    analysis_only_active = _has_analysis_only_pressure(metrics)
     candidates: list[dict[str, object]] = []
     for task in TASKS:
         if not any(key in lower for key in task["keys"]):
             continue
         if any(key in lower for key in task.get("reject_keys", ())):
             continue
+        if _has_protected_files(task):
+            continue
         if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+            if analysis_only_active:
+                # Analysis-only pressure takes priority over lifecycle cleanup
+                continue
             if not has_actionable_lifecycle_gap(metrics):
                 continue
             candidates.append(task)
