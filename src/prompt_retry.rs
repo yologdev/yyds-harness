@@ -106,8 +106,10 @@ pub fn tool_recovery_hint(tool_name: &str, attempt: u32) -> &'static str {
                  apply your edit to the full text, then use write_file to replace the entire file."
             }
             "read_file" => {
-                "Try bash instead: use `cat <path>` or `head -n 100 <path>` to read \
-                 the file contents directly."
+                "Still failing. Use bash to find the right path: run `rg --files` to list all \
+                 tracked files and find the exact path, then use `cat <exact-path>` or \
+                 `head -n 100 <exact-path>` to read it. Or use `rg -n '<symbol>' src/` to \
+                 find which file defines the symbol you need."
             }
             "search" => {
                 "Try bash instead: use `grep -rn '<pattern>' <path>` for regex search, \
@@ -147,8 +149,10 @@ pub fn tool_recovery_hint(tool_name: &str, attempt: u32) -> &'static str {
                  the right permissions."
             }
             "read_file" => {
-                "The file read failed. Use list_files to verify the path, or \
-                 search for the file."
+                "The file read failed — the path doesn't exist. Verify the correct path: \
+                 run `rg --files | grep <name>` (replace <name> with the filename you were \
+                 looking for), or use `list_files` on the parent directory to see what's \
+                 actually there."
             }
             "search" => "The search failed. Try a simpler pattern or check the path.",
             "rename_symbol" => "The rename failed. Verify the symbol exists with search first.",
