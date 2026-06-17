@@ -1870,9 +1870,12 @@ def build_assessment(
     }
     if structured_tools:
         metrics["text_tool_error_count"] = int(parsed.get("tool_error_count") or 0)
-        metrics["tool_error_count"] = max(
-            int(parsed.get("tool_error_count") or 0),
-            int(structured_tools.get("structured_unrecovered_failed_tool_count") or 0),
+        # When state events provide recovery evidence, use the unrecovered count.
+        # structured_tool_action_metrics cross-references failed tool calls against
+        # successful bash commands in audit.jsonl to detect recovery.
+        # This avoids penalizing tool errors that were later recovered by retry.
+        metrics["tool_error_count"] = int(
+            structured_tools.get("structured_unrecovered_failed_tool_count") or 0
         )
     promote_manifest_seed_contradictions(metrics)
     seed_contradictions = suppress_resolved_seed_replacement(metrics)
@@ -2575,6 +2578,14 @@ def run_self_tests() -> int:
     bad = dict(metrics)
     bad.update({"workflow_success": False, "session_success": False, "distinct_failure_count": 8})
     check("failed score is lower", score_assessment(bad) < score_assessment(metrics))
+    # Recovered tool errors should not penalize scoring: a session where all
+    # tool errors were recovered (tool_error_count=0) scores higher than one
+    # with unrecovered tool errors (tool_error_count=1).
+    unrecovered = dict(metrics)
+    unrecovered.update({"tool_error_count": 1})
+    recovered = dict(metrics)
+    recovered.update({"tool_error_count": 0})
+    check("recovered tool errors score higher than unrecovered", score_assessment(recovered) > score_assessment(unrecovered))
     check("missing session selection is empty", find_session_for_run(Path("/does/not/exist"), "1") == "")
     import tempfile
 
