@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: All three verifier commands pass (preseed self-tests, 13 task_manifest tests including 2 new ones for all_tasks_harness_seeded warning, and --help output works). The diff adds the promised manifest warning to make harness-seeded-only planning visible, and the preseed script already filters protected files via PROTECTED_IMPLEMENTATION_FILES. Implementation matches the task description.

@@ -1,0 +1,597 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. The task is about repairing evidence-backed planning after no-task sessions. Let me understand the problem:
+
+1. The harness reached planning with no task artifacts - this means planning ran but produced zero task files
+2. This makes evolution look healthy while skipping implementation
+3. The task is to improve fallback task selection and manifest validation
+
+The files to edit are:
+- `scripts/preseed_session_plan.py`
+- `scripts/task_manifest.py`
+- `scripts/test_task_manifest.py`
+
+Let me first read the evolve skill, then read the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py  ▶ ls scripts (task_manifest*) ✓ (175ms)
+ ✓ (143ms)
+ ✓ (199ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the task_manifest.py and test_task_manifest.py files, and also look at the fallback task in preseed_session_plan.py more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.3s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py  ▶ search 'test_task_manifest' in scripts ✓ (80ms)
+ ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test_task_manifest.py file and also understand the fallback task better. The fallback task in preseed_session_plan.py is:
+
+```python
+{
+    "keys": ("no task matched", "planning_failed", "planner produced no task"),
+    "reject_keys": (),
+    "title": "Repair evidence-backed planning after no-task sessions",
+    "files": "scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py",
+    ...
+}
+```
+
+Now let me look at the actual fallback task rendering more carefully, and the test file.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_manifest.py ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now understand the full picture. The task says:
+
+1. The harness reached planning with no task artifacts - `preseed_session_plan.py` is supposed to create a fallback task when the planner produces no tasks
+2. The fallback task is "Repair evidence-backed planning after no-task sessions" which targets `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`
+3. The success criteria are:
+   - Fallback planning repair tasks avoid protected implementation files
+   - Task manifest warnings make no-task planning failures visible
+   - Future planning failures preserve enough evidence to select a landable repair task
+
+Let me check what the current code does:
+
+1. In `preseed_session_plan.py`:
+   - `choose_task()` returns the fallback task when no keys match
+   - The fallback task is `TASKS[-1]` which has `_has_protected_files` check in the test
+   - The fallback task files are: `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`
+
+2. In `task_manifest.py`:
+   - When `planning_failed` is True (or `not tasks`), it adds a warning "planner_produced_no_task_files"
+   - The manifest captures this in `planner.planning_failed`
+
+Let me look more closely at the fallback task to understand if it avoids protected files, and if the manifest makes no-task planning failures visible.
+
+Let me check the protected files list:
+```python
+PROTECTED_IMPLEMENTATION_FILES = (
+    "scripts/evolve.sh",
+    "scripts/format_issues.py",
+    "scripts/build_site.py",
+    "skills/self-assess/SKILL.md",
+    "skills/evolve/SKILL.md",
+)
+```
+
+The fallback task files are `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py` - none of these are in the protected list. Good.
+
+Now let me verify what the `_has_protected_files` function does:
+
+Looking at the code, `TASKS` is defined in the file and the fallback task is the last element. Let me look for the `_has_protected_files` function.
+
+Actually, I see line 895: `assert not _has_protected_files(fallback), fallback` — I need to find this function. Let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '_has_protected_files' scripts/preseed_session_plan.py  ▶ read scripts/preseed_session_plan.py:520..620 ✓ (40ms)
+ ✓ (208ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `_has_protected_files` function and understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:481..501 ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the situation. Let me assess what the task needs:
+
+1. **Fallback planning repair tasks avoid protected implementation files** — Already checked: the fallback task files are `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py` and none are in `PROTECTED_IMPLEMENTATION_FILES`. This is already verified in the test on line 895.
+
+2. **Task manifest warnings make no-task planning failures visible** — Already implemented: `task_manifest.py` line 195 checks `not tasks` and adds "planner_produced_no_task_files" warning. The manifest also records `planning_failed`.
+
+3. **Future planning failures preserve enough evidence to select a landable repair task** — This could be improved.
+
+Let me now look at what might still be missing. Let me check:
+
+1. The test in preseed_session_plan.py ensures the fallback task doesn't have protected files — DONE
+2. The manifest captures no-task failures — DONE
+3. But what about the `preseed_session_plan.py` failing to produce a task at all?
+
+Let me check the main flow more carefully. The `main()` function in `preseed_session_plan.py`:
+- Line 903-904: If there are already task files in output_dir, return 0 (early exit)
+- Line 909-910: If assessment is empty, return 0
+- Line 912-916: Otherwise, write task_01.md
+
+So if the assessment is empty or has no matching keys, `choose_task` returns the fallback, and it gets written. That seems fine.
+
+But wait - what if `preseed_session_plan.py` itself fails (e.g., due to a bug)? Then no task file is produced, and the planner may also not produce tasks. The task manifest should then capture this `planning_failed` state.
+
+Let me look at the whole flow more carefully. The key question is: are there actual bugs or missing features that would help, or is this mostly already working?
+
+Let me check what tests exist and run them first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (187ms)
+ ✓ (267ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me understand what the task is actually asking me to improve. The task says:
+
+1. "Fallback planning repair tasks avoid protected implementation files" - this is already verified
+2. "Task manifest warnings make no-task planning failures visible" - already implemented
+3. "Future planning failures preserve enough evidence to select a landable repair task" - this could use improvement
+
+Let me think about what specific improvements could be made:
+
+Looking at the code flow:
+1. `preseed_session_plan.py` runs before the planner
+2. If no task files exist and assessment is present, it creates `task_01.md` with the fallback task
+3. `task_manifest.py` builds the manifest from `session_plan/task_*.md` files
+4. The manifest records `planning_failed` status
+
+Now, what are the actual gaps?
+
+Looking at `preseed_session_plan.py` more carefully:
+
+1. The `choose_task` function's fallback (when no candidates match) returns a hardcoded dict `{title, files, objective, ...}` — this is NOT in the `TASKS` list. It's the last-resort fallback on line 541-566.
+
+2. The test asserts that the fallback task has no protected files (line 895).
+
+3. But there's no explicit check that the fallback task's files avoid protected files in the `_has_protected_files` check for `TASKS` (which happens on line 886-892). That check is only for candidates in the TASKS list, not for the fallback.
+
+Wait, I see the test code checks both:
+- Line 886-892: Check all TASKS entries (not just candidates) don't have protected files
+- Line 893-895: Check fallback specifically doesn't have protected files
+
+So both are covered.
+
+Let me think about what's actually broken or could be improved...
+
+Looking at the issue more carefully:
+- The task says "The harness reached planning with no task artifacts. That makes evolution look healthy while skipping implementation"
+- The preseed creates a fallback task, but if the assessment itself is empty or missing, `preseed_session_plan.py` exits early (line 909-910)
+- If the assessment is present but the fallback task is written, the planner might still fail to produce tasks
+
+One thing I notice: the `task_manifest.py` records `planning_failed` when `not tasks`, but what about when the fallback task from `preseed_session_plan.py` is the only task? That would mean `len(tasks) == 1` and `planning_failed == False`. The manifest wouldn't flag this as a problem.
+
+Actually wait, let me re-read the flow. `preseed_session_plan.py` creates `task_01.md` BEFORE the planner runs. So if the planner fails, there's still 1 task in the plan dir. The manifest would see 1 task and NOT set `planning_failed`. This is actually the bug!
+
+If `preseed_session_plan.py` creates the fallback task, and the planner then fails (or produces nothing), the manifest sees 1 task file (the preseed fallback) and reports "planning didn't fail." The manifest can't distinguish between "planner produced tasks" and "preseed produced a fallback that the planner didn't touch."
+
+But wait - looking at `evolve.sh`, the planning phase would presumably overwrite or add task files. Let me not guess about the shell script flow.
+
+Let me focus on what I can actually improve:
+
+1. In `preseed_session_plan.py`: The current logic in `main()` checks `if any(args.output_dir.glob("task_*.md"))`, and returns early if any task files exist. But what if the existing task files are from a previous session? The condition should be more specific.
+
+Actually, looking at this more carefully, the early exit on line 903-904 is: if there are ALREADY task files in the output dir, exit. This means: if the planner already produced tasks, don't overwrite them. If there are NO tasks, and assessment exists, create the fallback.
+
+So the flow is:
+1. Planner runs → may produce task_01.md, task_02.md, etc.
+2. `preseed_session_plan.py` runs → if no tasks exist, it creates a fallback task_01.md
+
+Wait no, looking at the evolve.sh more carefully... `preseed_session_plan.py` is meant to run BEFORE the planner. The name says "preseed" — it seeds tasks before the planner runs.
+
+Actually, let me re-read the preseed code. Lines 903-904:
+```python
+if any(args.output_dir.glob("task_*.md")):
+    return 0
+```
+
+This means: if there are already task files, don't create more. But what if these are LEFT OVER from a previous session? The session_plan dir should be cleaned between sessions...
+
+But the real issue is: what if `preseed_session_plan.py` creates the fallback task_01.md, and then the planner ALSO creates task_01.md? The planner would overwrite it.
+
+OK, I think I'm overanalyzing this. Let me focus on concrete improvements I can make:
+
+1. Add a test in `test_task_manifest.py` that verifies the manifest properly reports `planning_failed` when there are zero task files even when a preseed fallback exists (but the planner produced nothing additional).
+
+2. Add a warning in `task_manifest.py` when the only task has `origin: harness-seed` (indicating it came from preseed, not the planner).
+
+3. Make the fallback in `preseed_session_plan.py` more robust.
+
+Actually, let me think about what would actually help based on the success criteria:
+
+**Success Criteria 1**: "Fallback planning repair tasks avoid protected implementation files." 
+- Already done ✅
+
+**Success Criteria 2**: "Task manifest warnings make no-task planning failures visible."
+- Currently: manifest sets `planning_failed` when `not tasks` and adds "planner_produced_no_task_files" warning
+- But: doesn't distinguish between "planner produced tasks" and "only preseed fallback exists"
+
+**Success Criteria 3**: "Future planning failures preserve enough evidence to select a landable repair task."
+- The fallback task in `preseed_session_plan.py` hardcodes files. Could this be smarter?
+
+Let me look at what I can actually improve. Let me look at the `planning_failure_file` usage and the `--planning-failed` flag more carefully.
+
+Actually, looking at the manifest more carefully:
+
+```python
+planning_failed = bool(args.planning_failed or failure_text or not tasks)
+```
+
+This combines three signals:
+1. `--planning-failed` CLI flag
+2. Non-empty `--planning-failure-file`
+3. Zero task files
+
+If the preseed creates task_01.md, `not tasks` is False, so `planning_failed` depends on the other two signals. If those aren't set, the manifest reports planning as successful even though the planner didn't actually produce anything.
+
+The improvement could be: detect in the manifest when ALL tasks have `origin: harness-seed` and add a warning.
+
+Let me also check if there's a way to mark the preseed task distinctly so the manifest can detect it.
+
+Looking at the rendered task from preseed (line 579-616):
+```
+Title: Repair evidence-backed planning after no-task sessions
+Files: scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py
+Issue: none
+Origin: harness-seed
+validated_against_assessment: true
+```
+
+So the `Origin: harness-seed` field is present. The manifest parses `origin` (line 163). But the manifest doesn't use this to detect preseed-only tasks.
+
+Let me plan my changes:
+
+### Change 1: `task_manifest.py` — Add warning when all tasks are harness-seeded
+When all tasks have `origin: harness-seed`, add a warning like `all_tasks_harness_seeded` to make no-task planning failures visible even when the preseed created a fallback.
+
+### Change 2: `test_task_manifest.py` — Add test for harness-seed-only detection
+Add a test that verifies the manifest adds a warning when all tasks have `origin: harness-seed`.
+
+### Change 3: `preseed_session_plan.py` — Ensure fallback task remains robust
+The current fallback is already robust: it avoids protected files and provides sufficient evidence. But let me check if the `--planning-failed` flag is properly propagated.
+
+Wait, let me first understand the actual problem better. Let me look at how `evolve.sh` calls these.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 19.3s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'preseed_session_plan\… ✓ (97ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the context around these lines in evolve.sh to understand how they're called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1375..1405  ▶ read scripts/evolve.sh:1790..1830 ✓ (116ms)
+ ✓ (115ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me understand the flow:
+
+1. **Before planning**: `preseed_session_plan.py` runs. If no task files exist and assessment is present, it creates `session_plan/task_01.md` with a fallback task.
+2. **Planning agent runs**: The planner may overwrite `task_01.md` or add `task_02.md`, `task_03.md`.
+3. **After planning**: `task_manifest.py` builds the manifest from `session_plan/task_*.md` files.
+
+The issue: If `preseed_session_plan.py` creates `task_01.md` (the fallback), and then the planner runs but produces nothing (or fails), the manifest sees 1 task file and reports `planning_failed: false` (since `not tasks` is False). The manifest can't distinguish between "planner produced task_01.md" and "preseed created task_01.md and planner did nothing."
+
+The fix should be in `task_manifest.py`:
+- When ALL tasks have `origin: harness-seed`, add a warning indicating that all tasks came from the preseed fallback, not from the planner.
+- This makes no-task planning failures visible even when the preseed mask them.
+
+Let me also check if there's a specific scenario that could be improved in `preseed_session_plan.py`.
+
+Looking at the preseed code again:
+- If assessment is empty/missing: returns 0, no task file created → planning_failed detected by manifest ✅
+- If assessment has matching keys: creates a targeted task → planner refines it (or adds more)
+- If assessment has no matching keys: creates the fallback repair task → this is the case we need to handle
+
+Now, the todo list and plan:
+
+1. **`task_manifest.py`**: Add detection for "all tasks are harness-seeded" and emit a warning
+2. **`test_task_manifest.py`**: Add test for harness-seed-only detection
+3. **`preseed_session_plan.py`**: Maybe improve the fallback to also set a marker for detection
+
+Let me now implement these changes.
+
+Actually, let me think about what the minimum viable change is:
+
+The task's success criteria:
+1. "Fallback planning repair tasks avoid protected implementation files." — Already tested ✅
+2. "Task manifest warnings make no-task planning failures visible." — Needs improvement: manifest should warn when all tasks are harness-seeded
+3. "Future planning failures preserve enough evidence to select a landable repair task." — The preseed already does this by creating the fallback task
+
+So the main gap is #2: the manifest doesn't currently warn when all tasks come from the preseed.
+
+Here's my plan:
+1. Add warning to `task_manifest.py` when all selected tasks have `origin: harness-seed`
+2. Add test to `test_task_manifest.py` for this
+3. Optionally improve `preseed_session_plan.py`
+
+Let me implement this now.
+
+Actually wait - looking more carefully, there's another thing I should check. When the preseed creates a fallback task and the planner then also runs and creates tasks, the preseed task_01.md gets overwritten by the planner's task_01.md. In that case, `origin` would be `planner` (from the planner), not `harness-seed`. So the "all harness-seed" warning would only fire when the planner truly didn't produce anything. That's the correct behavior.
+
+But what if the planner produces task_02.md but not task_01.md? Then we'd have task_01.md (harness-seed) and task_02.md (planner). The warning wouldn't fire. But that's also correct — the planner did produce something.
+
+OK, let me implement.
+
+Actually, let me also think about whether the detection should be at the `tasks` level or `selected_tasks` level. Since `selected_tasks` is what gets implemented, and `tasks` covers all, I think checking `tasks` (all tasks in the plan dir) is better because it covers the case where the preseed created task_01.md and the planner added nothing — resulting in exactly one task that's harness-seeded.
+
+Let me now implement the changes.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.1s (2 ✓)
+
+Now I understand the situation. Let me check what specific gap exists. The core issue: when `preseed_session_plan.py` creates a fallback `task_01.md` with `Origin: harness-seed`, the manifest sees 1 task and reports `planning_failed: false` — masking the fact that the planner didn't produce any tasks. The manifest needs to detect when all tasks are harness-seeded.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (39ms)
+  ▶ todo ✓ (39ms)
+  ▶ todo ✓ (74ms)
+  ▶ todo ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the changes. First, write the test, then implement the code change.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 1.7s (4 ✓)
+
+Let me start with the test first, then implement.
+
+**Change 1**: Add a test for harness-seed-only detection in `test_task_manifest.py`.
+  +     def test_manifest_warns_when_all_tasks_harness_seeded(self):
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             root = Path(tmp)
+  +             plan = root / "session_plan"
+  +             plan.mkdir()
+  +             (plan / "assessment.md").write_text(
+  +                 "# Assessment\nNo known current bug matched this assessment.\n", encoding="utf-8"
+  +             )
+  +             (plan / "task_01.md").write_text(
+  +                 """Title: Repair evidence-backed planning after no-task sessions
+  + Files: scripts/preseed_session_plan.py, scripts/task_manifest.py
+  + Issue: none
+  + Origin: harness-seed
+  + validated_against_assessment: true
+  + 
+  + Objective:
+  + Improve fallback task selection.
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_task_manifest.py (22 → 122 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (80ms)
+  ▶ edit scripts/test_task_manifest.py (22 → 122 lines)
+  +     def test_manifest_warns_when_all_tasks_harness_seeded(self):
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             root = Path(tmp)
+  +             plan = root / "session_plan"
+  +             plan.mkdir()
+  +             (plan / "assessment.md").write_text(
+  +                 "# Assessment\nNo known current bug matched this assessment.\n", encoding="utf-8"
+  +             )
+  +             (plan / "task_01.md").write_text(
+  +                 """Title: Repair evidence-backed planning after no-task sessions
+  + Files: scripts/preseed_session_plan.py, scripts/task_manifest.py
+  + Issue: none
+  + Origin: harness-seed
+  + validated_against_assessment: true
+  + 
+  + Objective:
+  + Improve fallback task selection.
+  + 
+  + Why this matters:
+  + The harness reached planning with no task artifacts.
+  ... (83 more lines)
+ ✓ (67ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me implement the change in `task_manifest.py` to add the warning.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+Now implement the warning in `task_manifest.py`:
+        warnings: list[str] = []
+        if planning_failed:
+            warnings.append("planner_produced_no_task_files")
+  +     harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+  +     if tasks and len(harness_seeded) == len(tasks):
+  +         warnings.append("all_tasks_harness_seeded")
+        for task in tasks:
+  ✓ Auto-approved: edit: scripts/task_manifest.py (5 → 8 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (84ms)
+  ▶ todo ✓ (40ms)
+  ▶ edit scripts/task_manifest.py (5 → 8 lines)
+        warnings: list[str] = []
+        if planning_failed:
+            warnings.append("planner_produced_no_task_files")
+  +     harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+  +     if tasks and len(harness_seeded) == len(tasks):
+  +         warnings.append("all_tasks_harness_seeded")
+        for task in tasks:
+ ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests to verify.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.9s (3 ✓)
+
+Now run the tests:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 13 tests pass. Now let me also run the preseed self-tests to make sure nothing is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+All 13 tests pass. Now check `preseed_session_plan.py` self-tests:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also verify the `--help` flag works for task_manifest.py, since it's listed in the verifier.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/task_manifest.… ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All verification passes. Now let me mark the tasks done and look at the preseed_session_plan.py for any robustness improvements.
+
+Let me now check task #3: Ensure preseed_session_plan.py fallback task is robust. Looking at the code:
+
+1. The fallback task already avoids protected files ✅ (verified by test on line 893-895)
+2. The fallback task has proper success criteria, verification, and expected evidence ✅
+3. The `_has_protected_files` check runs on all TASKS entries ✅ (line 886-892)
+
+One thing I notice: the fallback task on line 541-566 has `"contradiction_reason"` missing from the dict, but `render_task` (line 569) accesses `task.get("contradiction_reason", "")` with a default, so it's fine.
+
+What about a scenario where the assessment file is empty? Looking at lines 909-910:
+```python
+if not assessment.strip():
+    return 0
+```
+If the assessment is empty, preseed exits without creating a task. Then if the planner also produces nothing, the manifest correctly detects `planning_failed`. Good.
+
+What about when `choose_task` returns the fallback but there's an error writing it? The fallback task on line 541-566 is a hardcoded dict, and the write on line 913 uses `path.write_text()`. If the write fails, the exception propagates and the shell script catches it (line 1390-1392 in evolve.sh).
+
+I think the preseed code is already robust enough. Let me look if there's anything else I should improve.
+
+Actually, let me look more at the preseed self-test code to see if there are tests I should add.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (44ms)
+  ▶ todo ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the preseed self-test more carefully to see if there's a test for the combination of preseed fallback + manifest.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+Let me check the preseed self-test coverage more carefully - specifically looking at the interaction between preseed fallback and the manifest:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:820..920 ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The preseed self-tests check:
+1. All TASKS entries avoid protected files
+2. The fallback task avoids protected files
+3. Various contradiction checks
+4. The fallback is returned when no assessment matches
+
+Now let me think about what else needs to be done. The core improvement is already in place: the manifest now adds `all_tasks_harness_seeded` warning. Let me also confirm there's nothing else to improve.
+
+Let me now run the full verification suite:
+1. `python3 scripts/preseed_session_plan.py --test` ✅
+2. `python3 -m unittest scripts.test_task_manifest` ✅
+3. `python3 scripts/task_manifest.py --help` ✅
+
+Now I should look at the git diff to confirm the changes are scoped to the right files.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the final verification:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (41ms)
+  ▶ todo ✓ (39ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (141ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All verification passes. Now let me check the git diff to confirm changes are scoped properly.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.8s (3 ✓)
+
+All verification passes. Let me check git diff:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff shows exactly the files listed in the task's Edit Surface (well, 2 of the 3 - `preseed_session_plan.py` isn't changed because it was already robust). Let me check the actual diff content to make sure it's correct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 2>&1 ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The diff shows exactly what I changed:
+1. `scripts/task_manifest.py` — Added 3 lines to detect when all tasks are harness-seeded and emit a warning
+2. `scripts/test_task_manifest.py` — Added 2 new tests:
+   - `test_manifest_warns_when_all_tasks_harness_seeded` — verifies the warning is emitted
+   - `test_manifest_no_warning_when_planner_tasks_exist` — verifies the warning is NOT emitted when planner tasks exist
+
+The changes are minimal, focused, and within the task's Edit Surface. The `preseed_session_plan.py` already has:
+- The fallback task avoids protected files (tested on line 893-895)
+- The `_has_protected_files` check on all TASKS (line 886-892)
+
+Now I need to commit. But first, let me run cargo fmt and cargo check to make sure nothing is broken (these are Rust commands, the changes are Python, but let me still check).
+
+Actually, the task says to run `cargo fmt -- --check` and `cargo build` or focused checks. These are Rust-specific but the changes are Python-only. Let me still run them to satisfy the harness gates.
+
+Let me also check if there are any Rust changes I might have accidentally made.
+────────────────────────────────────────────────────────────────────────────────
+
+Diff looks clean — only the two intended Python files. Let me run the Rust checks to satisfy harness gates:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, cargo fmt passes. Now let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Clean. Now commit:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed. Let me verify the commit landed properly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log -1 --stat 2>&1 ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify I've done everything. The task asked for changes to:
+- `scripts/preseed_session_plan.py` — already robust, no changes needed (fallback avoids protected files, tested)
+- `scripts/task_manifest.py` — added `all_tasks_harness_seeded` warning ✓
+- `scripts/test_task_manifest.py` — added 2 new tests ✓
+
+The verifier evidence:
+- `python3 scripts/preseed_session_plan.py --test` — passed ✓
+- `python3 -m unittest scripts.test_task_manifest` — 13 tests passed ✓
+- `python3 scripts/task_manifest.py --help` — works ✓
+
+Let me now mark the final task done and provide the terminal evidence.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (39ms)
+
+

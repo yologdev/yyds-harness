@@ -1,0 +1,365 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to:
+
+1. Read the evolve skill for the canonical implementation contract
+2. Read the current `scripts/task_verification_gate.py` to understand what it does
+3. Add a `git_diff_summary()` helper that collects staged, unstaged, and untracked files
+4. Include it in the `verify()` return value under a new "diff_summary" key
+5. Add a self-test case
+6. Run verification
+
+Let me start by reading the evolve skill and the current script.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/task_verification_gate.py ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current script. Let me plan the changes:
+
+1. Add a `git_diff_summary()` helper that collects staged, unstaged, and untracked files as three separate lists
+2. Include it in the `verify()` return value under a new "diff_summary" key
+3. Add a new self-test case that verifies `diff_summary` is populated when there are unstaged changes
+4. Keep it under ~40 lines
+
+Let me first run the existing tests to see the baseline.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/task_verification_gate.py --test ✓ (72ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, tests pass. Now let me implement the changes. My plan:
+
+1. Add a `git_diff_summary()` function that runs:
+   - `git diff --cached --name-only` (staged)
+   - `git diff --name-only` (unstaged)
+   - `git ls-files --others --exclude-standard` (untracked)
+   
+2. Call it from `verify()` and include the result in the return dict under "diff_summary"
+
+3. Add a self-test that creates unstaged changes and verifies diff_summary is populated
+
+Let me be careful about the implementation. The `changed_files` function already does similar git commands - I can leverage that.
+
+Actually, looking at this more carefully: `changed_files` already collects staged, unstaged, and untracked into a single list. What the task wants is to separate them into three categories so we can distinguish "no changes at all" from "changes were made then reverted."
+
+Wait, re-reading the task more carefully:
+
+> Make reverted-no-edit tasks leave richer diagnostic evidence by capturing the git diff summary (staged + unstaged + untracked) at verification time
+
+So the `diff_summary` should capture:
+- `staged`: files in staging area
+- `unstaged`: modified but not staged  
+- `untracked`: new files not tracked
+
+The key insight: when a task is reverted (via `git checkout -- .`), staged files would have been unstaged, and unstaged changes would have been reverted. But `git ls-files --others --exclude-standard` would still show any untracked files that were created and not cleaned up.
+
+But actually, the way the harness works, the verification happens before revert - so the diff_summary would capture whatever state the repo is in at verification time. If the agent made changes and they're still there (staged or unstaged), those would show up. If the task was reverted before verification, there would be nothing.
+
+Hmm, but the point is to capture this at verification time, which happens *before* the revert decision. Let me re-read the task more carefully.
+
+> capturing the git diff summary (staged + unstaged + untracked) at verification time
+
+So at the moment `verify()` is called, we capture what's staged, what's unstaged (modified but not staged), and what's untracked. This gives richer evidence for post-mortem.
+
+The `changed_files` function already merges all of these together. I need to split them out.
+
+Let me implement:
+
+```python
+def git_diff_summary(repo: Path) -> dict[str, list[str]]:
+    return {
+        "staged": git(repo, ["diff", "--cached", "--name-only"]),
+        "unstaged": git(repo, ["diff", "--name-only"]),
+        "untracked": git(repo, ["ls-files", "--others", "--exclude-standard"]),
+    }
+```
+
+And add it to `verify()` return value.
+
+For the self-test, I need:
+- Create a repo with a base commit
+- Make an unstaged change
+- Verify diff_summary shows the unstaged file
+- Make a staged change
+- Verify diff_summary shows the staged file
+- Create an untracked file
+- Verify diff_summary shows the untracked file
+
+Let me keep it simple and add one test that verifies diff_summary is populated when there are unstaged changes.
+
+Now let me write the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the current script. Let me implement the changes.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement all the changes. I'll add:
+1. `git_diff_summary()` after `changed_files()`
+2. Call it in `verify()` and add `diff_summary` to the return dict
+3. Add a self-test for the new behavior
+
+Let me make the edits.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.3s (4 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the `git_diff_summary()` function after `changed_files()`, then update `verify()` to include it.
+────────────────────────────────────────────────────────────────────────────────
+
+First, add the `git_diff_summary()` helper after `changed_files()`:
+        files.extend(git(repo, ["diff", "--name-only"]))
+        files.extend(git(repo, ["ls-files", "--others", "--exclude-standard"]))
+        return compact(files)
+  + 
+  + 
+  + def git_diff_summary(repo: Path) -> dict[str, list[str]]:
+  +     """Collect staged, unstaged, and untracked files as three separate lists."""
+  +     return {
+  +         "staged": git(repo, ["diff", "--cached", "--name-only"]),
+  +         "unstaged": git(repo, ["diff", "--name-only"]),
+  +         "untracked": git(repo, ["ls-files", "--others", "--exclude-standard"]),
+  +     }
+  ✓ Auto-approved: edit: scripts/task_verification_gate.py (3 → 12 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_verification_gate.py (3 → 12 lines)
+        files.extend(git(repo, ["diff", "--name-only"]))
+        files.extend(git(repo, ["ls-files", "--others", "--exclude-standard"]))
+        return compact(files)
+  + 
+  + 
+  + def git_diff_summary(repo: Path) -> dict[str, list[str]]:
+  +     """Collect staged, unstaged, and untracked files as three separate lists."""
+  +     return {
+  +         "staged": git(repo, ["diff", "--cached", "--name-only"]),
+  +         "unstaged": git(repo, ["diff", "--name-only"]),
+  +         "untracked": git(repo, ["ls-files", "--others", "--exclude-standard"]),
+  +     }
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now update `verify()` to call `git_diff_summary()` and include it in the return dict.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add `diff_summary` to the return dict in `verify()`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+Now add `diff_summary` to the `verify()` return value:
+                for path in touched
+                if not any(path_matches(planned_file, path) for planned_file in planned)
+            ],
+  +         "diff_summary": git_diff_summary(repo),
+        }
+  ✓ Auto-approved: edit: scripts/task_verification_gate.py (6 → 7 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_verification_gate.py (6 → 7 lines)
+                for path in touched
+                if not any(path_matches(planned_file, path) for planned_file in planned)
+            ],
+  +         "diff_summary": git_diff_summary(repo),
+        }
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now add the self-test for diff_summary. Let me add it before the final print/return.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the self-test. I want to:
+1. Create a new task file
+2. Make an unstaged change to a tracked file
+3. Verify diff_summary contains the unstaged file
+4. Also test with staged and untracked files for completeness
+
+Let me read the current test section to see where to insert.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_verification_gate.py:128.. ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add a test for diff_summary. I'll add it after the existing assertions, inside the same temp directory block. Let me add:
+
+1. A test that has an unstaged change and verifies diff_summary.unstaged contains the file
+2. A test for staged changes
+3. A test for untracked files
+
+Actually, let me keep it simple and focused - one test case that verifies diff_summary is populated when there are unstaged changes, as the task says. I can test staged and untracked in the same block for completeness.
+
+Let me add the test after line 151 (after the `failed` assertions) but before the print.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the self-test for `diff_summary`:
+            assert failed["reason"] == "task changes do not overlap planned Files entries"
+  +         # Test diff_summary captures staged, unstaged, and untracked files.
+  +         task.write_text("Title: x\nFiles: src/lib.rs\n", encoding="utf-8")
+  +         subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
+  +         unstaged_file = repo / "src/unstaged.rs"
+  +         unstaged_file.write_text("// unstaged\n", encoding="utf-8")
+  +         subprocess.run(["git", "-C", str(repo), "add", unstaged_file])
+  +         # Now modify it to make it unstaged
+  +         unstaged_file.write_text("// unstaged modified\n", encoding="utf-8")
+  +         untracked_file = repo / "new_file.txt"
+  +         untracked_file.write_text("untracked\n", encoding="utf-8")
+  +         result = verify(repo, base, task)
+  +         ds = result["diff_summary"]
+  +         assert "src/lib.rs" in ds["staged"], f"expected src/lib.rs in staged, got {ds['staged']}"
+  +         assert "src/unstaged.rs" in ds["unstaged"], f"expected src/unstaged.rs in unstaged, got {ds['unstaged']}"
+  +         assert "new_file.txt" in ds["untracked"], f"expected new_file.txt in untracked, got {ds['untracked']}"
+        print("task_verification_gate self-tests passed")
+  ✓ Auto-approved: edit: scripts/task_verification_gate.py (2 → 17 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_verification_gate.py (2 → 17 lines)
+            assert failed["reason"] == "task changes do not overlap planned Files entries"
+  +         # Test diff_summary captures staged, unstaged, and untracked files.
+  +         task.write_text("Title: x\nFiles: src/lib.rs\n", encoding="utf-8")
+  +         subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
+  +         unstaged_file = repo / "src/unstaged.rs"
+  +         unstaged_file.write_text("// unstaged\n", encoding="utf-8")
+  +         subprocess.run(["git", "-C", str(repo), "add", unstaged_file])
+  +         # Now modify it to make it unstaged
+  +         unstaged_file.write_text("// unstaged modified\n", encoding="utf-8")
+  +         untracked_file = repo / "new_file.txt"
+  +         untracked_file.write_text("untracked\n", encoding="utf-8")
+  +         result = verify(repo, base, task)
+  +         ds = result["diff_summary"]
+  +         assert "src/lib.rs" in ds["staged"], f"expected src/lib.rs in staged, got {ds['staged']}"
+  +         assert "src/unstaged.rs" in ds["unstaged"], f"expected src/unstaged.rs in unstaged, got {ds['unstaged']}"
+  +         assert "new_file.txt" in ds["untracked"], f"expected new_file.txt in untracked, got {ds['untracked']}"
+        print("task_verification_gate self-tests passed")
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/task_verification_gate.py --test ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Tests pass. Let me verify the final file looks correct.
+────────────────────────────────────────────────────────────────────────────────
+
+Tests pass. Let me verify the full file looks correct:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_verification_gate.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file looks good. Now let me check `git diff --name-only` to see what files are changed, then run `cargo fmt -- --check` and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now let me check the diff and run verification:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, only the task file is changed. Now run `cargo fmt -- --check` as required by the evolve skill's verification step, then commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passes. Now let me review the diff summary to confirm everything looks right.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff scripts/task_verifica… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Diff looks clean. Only one file changed, and it's within the task's Edit Surface (`scripts/task_verification_gate.py`). The changes are:
+
+1. Added `git_diff_summary()` function (9 lines) 
+2. Added `"diff_summary": git_diff_summary(repo)` to the `verify()` return dict (1 line)
+3. Added self-test for staged, unstaged, and untracked file detection (15 lines)
+
+Total: ~25 new lines, well under the ~40 line budget.
+
+Now commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed. Let me verify with `git log -1` and then mark the task done.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log -1 --oneline ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything is done. Let me update the todo and provide the summary.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me summarize what was done.
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**Changed**: `scripts/task_verification_gate.py` (+25 lines)
+
+**What changed**:
+1. Added `git_diff_summary(repo)` helper (lines 64-70) that collects staged, unstaged, and untracked files as three separate lists via `git diff --cached --name-only`, `git diff --name-only`, and `git ls-files --others --exclude-standard`.
+
+2. Added `"diff_summary"` key to the `verify()` return dict (line 111), populated by the new helper. This is additive — no existing logic or "ok"/"reason" behavior was changed.
+
+3. Added a self-test (lines 152-166) that creates staged, unstaged, and untracked files in a temp repo and asserts the `diff_summary` correctly categorizes each.
+
+**Why this matters**: Previously, a reverted-no-edit task only produced the reason `"task produced no git-visible file changes"`, which collapsed two very different failure modes: (a) the agent never touched any file, vs (b) the agent made changes but they were reverted before verification. The new `diff_summary` field lets downstream consumers (dashboard, log_feedback) distinguish these cases by checking whether staged/unstaged/untracked lists are empty or non-empty at verification time.
+
+**Verification**: `python3 scripts/task_verification_gate.py --test` — all self-tests passed, including the new diff_summary assertions.
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
