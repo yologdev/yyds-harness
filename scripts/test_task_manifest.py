@@ -412,6 +412,106 @@ Verification:
             self.assertIsNone(manifest["artifacts"]["assessment"])
             self.assertEqual(manifest["artifacts"]["assessment_missing"], "tasks/assessment_missing.md")
 
+    def test_manifest_warns_when_all_tasks_harness_seeded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment.md").write_text(
+                "# Assessment\nNo known current bug matched this assessment.\n", encoding="utf-8"
+            )
+            (plan / "task_01.md").write_text(
+                """Title: Repair evidence-backed planning after no-task sessions
+Files: scripts/preseed_session_plan.py, scripts/task_manifest.py
+Issue: none
+Origin: harness-seed
+validated_against_assessment: true
+
+Objective:
+Improve fallback task selection.
+
+Why this matters:
+The harness reached planning with no task artifacts.
+
+Success Criteria:
+- Fallback tasks avoid protected files.
+
+Verification:
+- python3 scripts/preseed_session_plan.py --test
+
+Expected Evidence:
+- planning_failed remains visible when it occurs.
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "assessment_missing_file": plan / "assessment_missing.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+
+            self.assertFalse(manifest["planner"]["planning_failed"])
+            self.assertEqual(len(manifest["tasks"]), 1)
+            self.assertEqual(manifest["tasks"][0]["origin"], "harness-seed")
+            self.assertIn("all_tasks_harness_seeded", manifest["warnings"])
+
+    def test_manifest_no_warning_when_planner_tasks_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment.md").write_text("# Assessment\nSome assessment.\n", encoding="utf-8")
+            (plan / "task_01.md").write_text(
+                """Title: Planner task
+Files: src/main.rs
+Issue: none
+Origin: planner
+
+Objective:
+Do something useful.
+
+Why this matters:
+It matters.
+
+Success Criteria:
+- Something works.
+
+Verification:
+- cargo test
+
+Expected Evidence:
+- Tests pass.
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "assessment_missing_file": plan / "assessment_missing.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+
+            self.assertNotIn("all_tasks_harness_seeded", manifest["warnings"])
+
     def test_write_task_decisions_creates_per_task_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -194,6 +194,9 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     warnings: list[str] = []
     if planning_failed:
         warnings.append("planner_produced_no_task_files")
+    harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+    if tasks and len(harness_seeded) == len(tasks):
+        warnings.append("all_tasks_harness_seeded")
     for task in tasks:
         quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
         if quality.get("generic_self_improvement"):
