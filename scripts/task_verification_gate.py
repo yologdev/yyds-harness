@@ -61,6 +61,15 @@ def changed_files(repo: Path, base: str) -> list[str]:
     return compact(files)
 
 
+def git_diff_summary(repo: Path) -> dict[str, list[str]]:
+    """Collect staged, unstaged, and untracked files as three separate lists."""
+    return {
+        "staged": git(repo, ["diff", "--cached", "--name-only"]),
+        "unstaged": git(repo, ["diff", "--name-only"]),
+        "untracked": git(repo, ["ls-files", "--others", "--exclude-standard"]),
+    }
+
+
 def path_matches(planned: str, touched: str) -> bool:
     planned = planned.strip().strip("/")
     touched = touched.strip().strip("/")
@@ -99,6 +108,7 @@ def verify(repo: Path, base: str, task_file: Path) -> dict[str, Any]:
             for path in touched
             if not any(path_matches(planned_file, path) for planned_file in planned)
         ],
+        "diff_summary": git_diff_summary(repo),
     }
 
 
@@ -139,6 +149,21 @@ def run_self_tests() -> int:
         failed = verify(repo, base, task)
         assert failed["ok"] is False
         assert failed["reason"] == "task changes do not overlap planned Files entries"
+        # Test diff_summary captures staged, unstaged, and untracked files.
+        task.write_text("Title: x\nFiles: src/lib.rs\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "src/lib.rs"], check=True)
+        unstaged_file = repo / "src/unstaged.rs"
+        unstaged_file.write_text("// unstaged\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", unstaged_file])
+        # Now modify it to make it unstaged
+        unstaged_file.write_text("// unstaged modified\n", encoding="utf-8")
+        untracked_file = repo / "new_file.txt"
+        untracked_file.write_text("untracked\n", encoding="utf-8")
+        result = verify(repo, base, task)
+        ds = result["diff_summary"]
+        assert "src/lib.rs" in ds["staged"], f"expected src/lib.rs in staged, got {ds['staged']}"
+        assert "src/unstaged.rs" in ds["unstaged"], f"expected src/unstaged.rs in unstaged, got {ds['unstaged']}"
+        assert "new_file.txt" in ds["untracked"], f"expected new_file.txt in untracked, got {ds['untracked']}"
     print("task_verification_gate self-tests passed")
     return 0
 
