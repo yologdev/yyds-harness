@@ -1877,9 +1877,23 @@ struct CacheModelReport {
 
 fn handle_cache_report(args: &[String]) {
     let path = default_events_path();
-    let Ok(events) = read_events(&path) else {
-        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
-        return;
+    let events = match read_events(&path) {
+        Ok(events) => events,
+        Err(_) => match read_events_from_sqlite(&path) {
+            Ok(events) => {
+                eprintln!(
+                    "{YELLOW}  events.jsonl unavailable - using SQLite projection{RESET}"
+                );
+                events
+            }
+            Err(e) => {
+                eprintln!(
+                    "{YELLOW}  no state log found at {} ({e}){RESET}",
+                    path.display()
+                );
+                return;
+            }
+        },
     };
     match build_cache_report(&events) {
         Ok(report) if args.iter().any(|arg| arg == "--json") => println!(
@@ -1894,6 +1908,43 @@ fn handle_cache_report(args: &[String]) {
 
 fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
     crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
+}
+
+/// Fall back to the SQLite projection when the raw events.jsonl is unavailable.
+///
+/// Reads `CacheMetricsRecorded` events from the `state_events` table and
+/// returns them in the same `Vec<Value>` shape that `read_events` produces,
+/// so `build_cache_report` can consume them unchanged.
+fn read_events_from_sqlite(events_path: &Path) -> Result<Vec<Value>, String> {
+    let sqlite_path = crate::state::sqlite_projection_path(events_path);
+    if !sqlite_path.exists() {
+        return Err(format!(
+            "SQLite projection not found at {}",
+            sqlite_path.display()
+        ));
+    }
+    let conn = rusqlite::Connection::open(&sqlite_path)
+        .map_err(|e| format!("open sqlite projection '{}': {e}", sqlite_path.display()))?;
+    let mut stmt = conn
+        .prepare("SELECT payload_json FROM state_events WHERE event_type = 'CacheMetricsRecorded' ORDER BY timestamp_ms")
+        .map_err(|e| format!("prepare cache events query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("query cache events: {e}"))?;
+    let mut events = Vec::new();
+    for row in rows {
+        let payload_json = row.map_err(|e| format!("read cache event row: {e}"))?;
+        let payload: Value = serde_json::from_str(&payload_json)
+            .map_err(|e| format!("parse cache event payload: {e}"))?;
+        events.push(json!({
+            "event_type": "CacheMetricsRecorded",
+            "payload": payload,
+        }));
+    }
+    if events.is_empty() {
+        return Err("no CacheMetricsRecorded events in SQLite projection".to_string());
+    }
+    Ok(events)
 }
 
 fn build_cache_report(events: &[Value]) -> Result<CacheReport, String> {
