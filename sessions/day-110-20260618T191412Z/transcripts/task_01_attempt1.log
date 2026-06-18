@@ -1,0 +1,448 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully:
+
+1. The problem: `state summary` returns "empty (no events recorded yet)" when `events.jsonl` is missing but the SQLite projection has event data.
+2. The fix: Add a SQLite fallback to `handle_state_summary` when `read_tail_events` fails.
+3. Edit surface: `src/commands_state.rs`
+
+Let me start by reading the relevant code and understanding the current flow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant sections of the code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1150..1270  ▶ read src/commands_state.rs:1..61 ✓ (115ms)
+ ✓ (168ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the full picture. I need to:
+
+1. See how `build_state_summary` works and what it produces
+2. Find the SQLite projection functions to understand how to query from SQLite
+3. See if there's already a fallback mechanism or query path
+
+Let me find `build_state_summary` and also look at the SQLite query functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for build_state_summary and sqlite_projection_path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_state_summary' in src/commands_state.rs  ▶ search 'sqlite_projection_path' in src/state.rs ✓ (62ms)
+ ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read build_state_summary and the SQLite projection path function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2733..2883  ▶ read src/state.rs:770..800 ✓ (138ms)
+ ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand:
+1. The SQLite projection path: `.yoyo/state/state.sqlite` (next to events.jsonl)
+2. How to query it - let me look at `query_sqlite_relations` and see if there's a way to query events from SQLite
+
+Let me also check:
+- `handle_state_summary` is called from where?
+- Is there already a fallback mechanism?
+- What does `query_sqlite_relations` do and can I use it to get events?
+
+Let me also check if there's a way to read events from SQLite directly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_state_summary' in src/commands_state.rs  ▶ search 'fn query_sqlite_relations' in src/state.rs ✓ (59ms)
+ ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the handle_state_subcommand entry point for "summary" and also the query_sqlite_relations function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:62..102  ▶ read src/state.rs:1230..1310 ✓ (158ms)
+ ✓ (190ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the architecture:
+- The SQLite projection has a `state_events` table with event data
+- `query_sqlite_relations` queries the `state_relations` table, not the events
+- Other state commands like `failures` and `evals` query SQLite directly
+
+Let me look at how `handle_failures` or `handle_evals` query the SQLite to understand the pattern, and then figure out how to query events from SQLite for the summary fallback.
+
+Let me also search for how events are queried from SQLite (e.g., from `state_events` table).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_failures' in src/commands_state.rs  ▶ search 'state_events' in src/state.rs ✓ (60ms)
+ ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the SQLite schema and understand how to query events from the `state_events` table.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1015..1095  ▶ read src/commands_state.rs:782..862 ✓ (155ms)
+ ✓ (192ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `handle_failures` function also only reads from `events.jsonl` via `read_events_lenient`, not from SQLite. But the task says `state failures --recent` showed 12 failures and `state evals` showed 19 log-feedback evals — so those work because events.jsonl has data. The issue is that `state summary` can't find the events.jsonl.
+
+Wait, let me re-read the evidence: "Phase A1 self-test: `state summary` returned 'empty (no events recorded yet)' while `state failures --recent` showed 12 failures and `state evals` showed 19 log-feedback evals. Both `state failures` and `state evals` read from the SQLite projection; `state summary` only reads from the raw events.jsonl file."
+
+Hmm, the evidence says `state failures` and `state evals` read from the SQLite projection. But looking at the code, `handle_failures` actually reads from `default_events_path()` (events.jsonl), not SQLite. Let me check if `handle_evals` uses SQLite...
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_evals' in src/commands_state.rs ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read handle_evals to see if it uses SQLite.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:916..976 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `handle_evals` and `handle_failures` also read from events.jsonl, not SQLite. The evidence in the task description says they read from SQLite projection, but that appears incorrect based on the actual code.
+
+But the core problem remains: `state summary` returns "empty" when events.jsonl is missing or empty. The task says the fix should be to add a SQLite fallback.
+
+Now I need to figure out how to read events from the SQLite projection. Let me look at the schema again:
+- `state_events` table has: event_id, event_type, timestamp_ms, actor, run_id, session_id, trace_id, parent_event_ids_json, payload_json
+- We can query these and convert them back to `Value` objects
+
+Let me look for an `open_projection` function and see how other parts of the code query SQLite.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn open_projection' in src/state.rs ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the open_projection function and also look at how the code base queries state_events from SQLite elsewhere (maybe in "lifecycle" or other handlers).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:951..991  ▶ search 'state_events' in src/commands_state.rs ✓ (60ms)
+ ✓ (111ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that `open_projection` is a private function in `state.rs` (no `pub`). Let me check if there's a public way to access the SQLite connection or query the state_events table.
+
+Let me search for public functions in state.rs that query the SQLite projection.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn.*sqlite' in src/state.rs ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly for public functions in state.rs that use the projection.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search '^pub fn' in src/state.rs ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for "pub fn" in state.rs more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^pub fn ' src/state.rs | head -30 ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The public functions in `state.rs` that interact with SQLite are:
+- `sqlite_projection_path` - returns the path
+- `rebuild_sqlite_projection` - rebuilds from events.jsonl
+- `migrate_sqlite_projection` - migrates the schema
+- `query_sqlite_relations` - queries relations
+
+There's no public function to read events from the SQLite projection. But `commands_state.rs` already imports `rusqlite::Connection` and uses it in several places. Let me check if there are any existing SQLite queries in `commands_state.rs` that read from `state_events` table.
+
+Looking at the code more carefully, I see that `open_projection` is private in `state.rs`, and there's no public way to open the SQLite connection from `commands_state.rs`.
+
+Wait, but `commands_state.rs` imports `rusqlite::Connection` directly and has its own SQLite queries. Let me search for `state_events` usage in commands_state.rs to see if it queries the events table directly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'state_events\|sqlite\|Connection\|rusqlite' src/commands_state.rs | hea… ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `commands_state.rs` directly uses `rusqlite::Connection` and opens the SQLite DB via `Connection::open(&store_path)`. But I noticed that `open_projection` is private in state.rs, and `commands_state.rs` opens the connection directly.
+
+Now, let me look at the approach:
+1. When `read_tail_events` fails (events.jsonl missing/empty), try to read from SQLite
+2. Query `state_events` table from the SQLite projection
+3. Convert rows to `Value` objects that `build_state_summary` can consume
+
+Let me look at the SQLite schema for `state_events`:
+- event_id TEXT
+- event_type TEXT
+- timestamp_ms INTEGER
+- actor TEXT
+- run_id TEXT
+- session_id TEXT
+- trace_id TEXT
+- parent_event_ids_json TEXT
+- payload_json TEXT
+
+I'll need to reconstruct `Value` objects from these columns. Let me also check the `StateDirectoryInfo` struct to understand what information is available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct StateDirectoryInfo' in src/state.rs ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the StateDirectoryInfo struct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3206..3236 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the context I need. Let me plan the implementation:
+
+1. In `handle_state_summary` (line 1166), when `read_tail_events` fails, instead of just printing "no state log found" and returning, try to read events from the SQLite projection.
+
+2. I need a new function `read_tail_events_with_sqlite_fallback` that:
+   - Tries `read_tail_events` first
+   - If that fails, opens the SQLite projection and queries `state_events` table
+   - Returns `Vec<Value>` that `build_state_summary` can consume
+
+3. For the SQLite fallback, I need to:
+   - Open the SQLite connection at `default_store_path`
+   - Query `SELECT event_type, timestamp_ms, run_id, session_id, event_id, trace_id, actor, parent_event_ids_json, payload_json FROM state_events ORDER BY timestamp_ms DESC LIMIT ?`
+   - Convert rows to `Value` objects matching the format that `build_state_summary` expects
+
+Let me look at what format `build_state_summary` expects from `Value` objects. It uses `event_string(e, "event_type")`, `event_timestamp_ms(e)`, and checks `is_failure_event_type`. So I need the Value objects to have "event_type" and timestamp fields.
+
+Let me check what format the events from `read_events` (i.e., `read_compatibility_events`) produce.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3156..3196 ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the format. The `Value` objects have:
+- event_id
+- event_type
+- schema_version
+- timestamp_ms
+- actor
+- run_id
+- session_id
+- trace_id
+- parent_event_ids
+- payload
+
+And `event_string(e, "event_type")` gets the event_type as a string. `event_timestamp_ms(e)` gets the timestamp_ms.
+
+Let me check what `event_string` and `event_timestamp_ms` look like.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_string' in src/commands_state.rs  ▶ search 'fn event_timestamp_ms' in src/commands_state.rs ✓ (59ms)
+ ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14187..14207  ▶ read src/commands_state.rs:1531..1551 ✓ (152ms)
+ ✓ (207ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the information I need. Let me also check what `is_failure_event_type` does:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn is_failure_event_type' in src/commands_state.rs ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check this quickly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14050..14070 ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. Let me now plan the implementation:
+
+1. Add a function `read_events_from_sqlite` that queries the `state_events` table from the SQLite projection and returns `Vec<Value>` objects in the format that `build_state_summary` expects.
+
+2. Modify `handle_state_summary` to fall back to SQLite when `read_tail_events` fails.
+
+The SQLite `state_events` table has:
+- event_id TEXT
+- event_type TEXT  
+- timestamp_ms INTEGER
+- actor TEXT
+- run_id TEXT
+- session_id TEXT
+- trace_id TEXT
+- parent_event_ids_json TEXT
+- payload_json TEXT
+
+I need to convert each row to a `Value` with the same structure as `compatibility_event_value`:
+```json
+{
+    "event_id": "...",
+    "event_type": "...",
+    "schema_version": "...", // not in state_events directly
+    "timestamp_ms": ...,
+    "actor": "...",
+    "run_id": "...",
+    "session_id": "...",
+    "trace_id": "...",
+    "parent_event_ids": [...],
+    "payload": {...}
+}
+```
+
+Wait, the SQLite schema doesn't have `schema_version`. But `event_string` and `event_timestamp_ms` only use "event_type" and "timestamp_ms" fields. And `build_state_summary` uses `event_string(e, "event_type")`, `event_timestamp_ms(e)`, and `is_failure_event_type`. So I really just need these fields to be present in the Value.
+
+Let me construct the Value objects from the SQLite rows. The parent_event_ids_json and payload_json columns contain JSON strings that need to be parsed.
+
+Now, I need to know how `open_projection` works. It's private in `state.rs`. But `commands_state.rs` uses `Connection::open(&store_path)` directly. So I'll do the same.
+
+Let me also think about the `handle_why` function with `--summary` flag. Let me check the call path:
+
+Looking at line 91: when `handle_why` is called without an explicit id, it calls `handle_state_summary(args, limit)`. And when `--summary` is passed with an id (line 95), it calls `handle_why(id, summary, limit)`. Let me read `handle_why` to understand if it also needs the fallback.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:969..1029 ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. `handle_why` also reads from events.jsonl and has its own error handling with useful diagnostics. The task mentions "The fallback also works for `state why <id>` when `--summary` is passed" — but looking at the code, `--summary` with an id just calls `handle_why(id, true, limit)`. Let me see the rest of `handle_why`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1028..1078 ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I see the full picture. For `handle_why`, when `show_summary` is true, it calls `build_state_summary(&events)`. But the events are read via `read_tail_events`, which already has the same problem.
+
+Now, my plan:
+
+1. Create a function `read_events_from_sqlite_for_summary` that reads from the SQLite projection.
+2. Modify `handle_state_summary` to try SQLite fallback when `read_tail_events` fails.
+3. Similarly modify the `handle_why` function to use the fallback when `show_summary` is true.
+
+Actually, looking more carefully at the task description: "The fallback also works for `state why <id>` when `--summary` is passed" — but looking at the code, `state why <id> --summary` calls `handle_why(id, true, limit)` which also reads events via `read_tail_events`. So I should make the fallback available there too.
+
+But wait — the task says the edit surface is `src/commands_state.rs` only. And the goal is to make `state summary` work when SQLite has data. The `handle_why` path is secondary.
+
+Let me think about the cleanest approach:
+
+1. Add a helper `read_tail_events_with_sqlite_fallback(path, limit) -> Result<Vec<Value>, String>` that:
+   - Tries `read_tail_events(path, limit)` first
+   - On failure, queries the SQLite projection
+   - Returns the events
+
+2. Use it in `handle_state_summary` and the relevant `handle_why` path.
+
+Now, for the SQLite query, I need to reconstruct `Value` objects. Let me look at how the events are stored in SQLite and construct Values that match what `build_state_summary` expects.
+
+The key fields `build_state_summary` accesses:
+- `event_string(e, "event_type")` → needs "event_type" field as a string
+- `event_timestamp_ms(e)` → needs "timestamp_ms" field as i64
+- `is_failure_event_type` → checks against event_type string
+
+So I need to construct Value objects with at least "event_type" and "timestamp_ms" fields. For completeness (and in case other summary functions use them), I should also include event_id, run_id, session_id, etc.
+
+Let me now implement this. Let me also check `default_store_path`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:19..29 ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also quickly verify: what does the SQLite projection path look like relative to events.jsonl? Events.jsonl is at `.yoyo/state/events.jsonl`. The SQLite path would be `.yoyo/state/state.sqlite` (derived from `sqlite_projection_path` which joins "state.sqlite" into the parent dir of events.jsonl).
+
+Actually wait - let me re-check. The function says:
+```rust
+pub fn sqlite_projection_path(events_path: &Path) -> PathBuf {
+    events_path
+        .parent()
+        .map(|parent| parent.join("state.sqlite"))
+        .unwrap_or_else(|| PathBuf::from("state.sqlite"))
+}
+```
+
+So if events_path is `.yoyo/state/events.jsonl`, then sqlite_projection_path returns `.yoyo/state/state.sqlite`. But wait, the evidence says "projection.sqlite". Let me check...
+
+Actually no, the evidence says: "in an env where events.jsonl is missing but .yoyo/state/projection.sqlite exists from prior CI". But looking at the code, the actual path is `state.sqlite`, not `projection.sqlite`. The task's Verifier section mentions "projection.sqlite" which may be a minor inaccuracy. The code clearly uses `state.sqlite`.
+
+OK, let me implement the solution now. Here's my plan:
+
+1. Add a function `read_events_from_sqlite_for_summary` that:
+   - Takes the store_path (SQLite path) and a limit
+   - Opens the SQLite DB
+   - Queries the state_events table
+   - Returns Vec<Value> objects compatible with build_state_summary
+
+2. Modify `handle_state_summary` to use the fallback.
+
+3. Test with `cargo test commands_state state -- --test-threads=1`
+
+Let me start coding. First, let me write the test.
+
+Actually, let me first check what tests exist for `state summary` or `handle_state_summary`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (28ms)
+
+

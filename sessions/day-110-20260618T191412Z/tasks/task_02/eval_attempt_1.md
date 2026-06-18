@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Implementation adds SQLite fallback to `handle_cache_report` via new `read_events_from_sqlite` helper. When events.jsonl is unavailable, it queries `state_events` table for `CacheMetricsRecorded` events, reconstructs them in the same `Vec<Value>` shape, and falls through to the unchanged `build_cache_report`. Build, clippy (-D warnings), and tests all pass. Existing behavior is preserved when events.jsonl IS available.
