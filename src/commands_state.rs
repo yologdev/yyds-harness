@@ -786,7 +786,7 @@ fn handle_failures(args: &[String]) {
     }
     if !args.is_empty() && args.first().map(|arg| arg.as_str()) != Some("--recent") {
         eprintln!("{YELLOW}  Usage: yoyo state failures --recent [--limit N]{RESET}");
-        eprintln!("{YELLOW}         yoyo state failures tools [--limit N]{RESET}");
+        eprintln!("{YELLOW}         yoyo state failures tools [--limit N] [--by-session]{RESET}");
         return;
     }
     let limit = flag_value(args, "--limit")
@@ -832,6 +832,7 @@ fn handle_tool_failures(args: &[String]) {
     let limit = flag_value(args, "--limit")
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(10);
+    let by_session = args.iter().any(|a| a == "--by-session");
     let path = default_events_path();
     let (events, skipped) = match read_events_lenient(&path) {
         Ok(result) => result,
@@ -862,7 +863,7 @@ fn handle_tool_failures(args: &[String]) {
             skipped
         );
     }
-    match build_tool_failures_report(&events, limit) {
+    match build_tool_failures_report(&events, limit, by_session) {
         Ok(report) => println!("{report}"),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
     }
@@ -1990,7 +1991,11 @@ fn build_recent_failure_report(events: &[Value], limit: usize) -> Result<String,
     Ok(out.trim_end().to_string())
 }
 
-fn build_tool_failures_report(events: &[Value], limit: usize) -> Result<String, String> {
+fn build_tool_failures_report(
+    events: &[Value],
+    limit: usize,
+    group_by_session: bool,
+) -> Result<String, String> {
     let failures: Vec<&Value> = events
         .iter()
         .rev()
@@ -2026,7 +2031,8 @@ fn build_tool_failures_report(events: &[Value], limit: usize) -> Result<String, 
         "{BOLD}Tool failure events{RESET} (showing {})\n\n",
         failures.len()
     ));
-    for event in &failures {
+
+    fn format_failure_line(event: &Value) -> String {
         let ts = event
             .get("timestamp_ms")
             .and_then(|v| v.as_i64())
@@ -2055,11 +2061,46 @@ fn build_tool_failures_report(events: &[Value], limit: usize) -> Result<String, 
         } else {
             error_summary.to_string()
         };
-        let run_id = event_string(event, "run_id").unwrap_or("(unknown)");
-        out.push_str(&format!(
-            "  {DIM}{ts}{RESET}  {BOLD}{tool_name}{RESET}  {RED}{error_summary}{RESET}  {DIM}run={run_id}{RESET}\n"
-        ));
+        format!(
+            "  {DIM}{ts}{RESET}  {BOLD}{tool_name}{RESET}  {RED}{error_summary}{RESET}"
+        )
     }
+
+    if group_by_session {
+        // Group failures by run_id, preserving reverse-chronological order of runs
+        let mut groups: Vec<(String, Vec<&Value>)> = Vec::new();
+        for event in &failures {
+            let run_id = event_string(event, "run_id")
+                .unwrap_or("(unknown)")
+                .to_string();
+            if let Some((_, group)) = groups.iter_mut().find(|(id, _)| id == &run_id) {
+                group.push(event);
+            } else {
+                groups.push((run_id, vec![event]));
+            }
+        }
+        for (run_id, group) in &groups {
+            out.push_str(&format!(
+                "  {BOLD}run {run_id}{RESET} {DIM}({} failure{}){RESET}\n",
+                group.len(),
+                if group.len() == 1 { "" } else { "s" }
+            ));
+            for event in group {
+                out.push_str(&format_failure_line(event));
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+    } else {
+        for event in &failures {
+            let run_id = event_string(event, "run_id").unwrap_or("(unknown)");
+            out.push_str(&format!(
+                "{}  {DIM}run={run_id}{RESET}\n",
+                format_failure_line(event)
+            ));
+        }
+    }
+
     Ok(out.trim_end().to_string())
 }
 
