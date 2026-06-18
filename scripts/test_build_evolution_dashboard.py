@@ -4710,6 +4710,13 @@ class BuildEvolutionDashboard(unittest.TestCase):
             [row["name"] for row in summary["top_unresolved"]],
             ["historical_lifecycle_gap", "recent_assessment_gap"],
         )
+        self.assertEqual(
+            summary["non_proven_claim_sessions"],
+            {
+                "historical_lifecycle_gap": ["day-1"],
+                "recent_assessment_gap": ["day-5"],
+            },
+        )
 
     def test_count_claim_proves_zero_expected_when_metric_is_absent(self):
         claim = count_claim(

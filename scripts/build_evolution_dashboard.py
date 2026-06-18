@@ -4907,6 +4907,25 @@ def build_dashboard_claim_summary(claims_projection: dict[str, Any]) -> dict[str
         for status, value in status_counts.items()
         if status != "proven"
     )
+    non_proven_claim_sessions: dict[str, list[str]] = {}
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        session_id = str(session.get("id") or "")
+        for claim in session.get("claims", []):
+            if not isinstance(claim, dict):
+                continue
+            if str(claim.get("status") or "unknown") == "proven":
+                continue
+            name = str(claim.get("name") or "unknown_claim")
+            if name not in non_proven_claim_sessions:
+                non_proven_claim_sessions[name] = []
+            sess_list = non_proven_claim_sessions[name]
+            if session_id not in sess_list and len(sess_list) < 5:
+                sess_list.append(session_id)
+    non_proven_claim_sessions = dict(
+        sorted(non_proven_claim_sessions.items())[:10]
+    )
     return {
         "claim_count": int(summary.get("claim_count") or 0) if isinstance(summary, dict) else 0,
         "status_counts": dict(sorted(status_counts.items())),
@@ -4919,6 +4938,7 @@ def build_dashboard_claim_summary(claims_projection: dict[str, Any]) -> dict[str
         "recent_unresolved_count": recent_unresolved_count,
         "recent_top_unresolved": recent_top_unresolved,
         "top_unresolved": top_unresolved,
+        "non_proven_claim_sessions": non_proven_claim_sessions,
     }
 
 
