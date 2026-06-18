@@ -81,6 +81,13 @@ impl DeepSeekUsage {
             Some(hit as f64 / total as f64)
         }
     }
+
+    /// Returns `true` when both `cache_hit_tokens` and `cache_miss_tokens` are
+    /// populated, meaning the cache ratio is independently verifiable from
+    /// token counts rather than derived from prose claims alone.
+    pub fn is_token_backed(&self) -> bool {
+        self.cache_hit_tokens.is_some() && self.cache_miss_tokens.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2643,6 +2650,42 @@ mod tests {
             ..DeepSeekUsage::default()
         };
         assert_eq!(usage.cache_hit_ratio(), Some(0.75));
+    }
+
+    #[test]
+    fn is_token_backed_true_only_when_both_cache_fields_populated() {
+        // Default: neither field set → not token-backed
+        assert!(!DeepSeekUsage::default().is_token_backed());
+
+        // Only hit tokens → not token-backed
+        let hit_only = DeepSeekUsage {
+            cache_hit_tokens: Some(100),
+            ..DeepSeekUsage::default()
+        };
+        assert!(!hit_only.is_token_backed());
+
+        // Only miss tokens → not token-backed
+        let miss_only = DeepSeekUsage {
+            cache_miss_tokens: Some(25),
+            ..DeepSeekUsage::default()
+        };
+        assert!(!miss_only.is_token_backed());
+
+        // Both fields set → token-backed
+        let both = DeepSeekUsage {
+            cache_hit_tokens: Some(75),
+            cache_miss_tokens: Some(25),
+            ..DeepSeekUsage::default()
+        };
+        assert!(both.is_token_backed());
+
+        // Both set to zero → still token-backed (ratio is verifiable even if 0/0)
+        let zero = DeepSeekUsage {
+            cache_hit_tokens: Some(0),
+            cache_miss_tokens: Some(0),
+            ..DeepSeekUsage::default()
+        };
+        assert!(zero.is_token_backed());
     }
 
     #[test]
