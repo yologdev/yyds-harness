@@ -1881,9 +1881,7 @@ fn handle_cache_report(args: &[String]) {
         Ok(events) => events,
         Err(_) => match read_events_from_sqlite(&path) {
             Ok(events) => {
-                eprintln!(
-                    "{YELLOW}  events.jsonl unavailable - using SQLite projection{RESET}"
-                );
+                eprintln!("{YELLOW}  events.jsonl unavailable - using SQLite projection{RESET}");
                 events
             }
             Err(e) => {
