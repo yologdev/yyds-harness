@@ -2056,14 +2056,17 @@ TEOF
         fi
         if [ "$TASK_EXIT" -eq 0 ] \
             && [ "$TASK_ATTEMPT_STATUS" = "completed" ] \
-            && [ ! -s "$TASK_OBSOLETE_NOTE" ] \
+            && { [ "$TASK_OBSOLETE_NOTE_PREEXISTED" = true ] || [ ! -s "$TASK_OBSOLETE_NOTE" ]; } \
+            && { [ "$TASK_BLOCKED_NOTE_PREEXISTED" = true ] || [ ! -s "$TASK_BLOCKED_NOTE" ]; } \
             && ! agent_log_has_terminal_evidence "$TASK_LOG"; then
             echo "    WARNING: Task $TASK_NUM exited 0 without final terminal evidence (attempt $ATTEMPT)."
             TASK_ATTEMPT_STATUS="missing_terminal_evidence"
         fi
         TASK_PROGRESS=false
         TASK_TERMINAL_EVIDENCE_KIND=""
-        if task_has_progress_since_base "$PRE_TASK_SHA" || [ -s "$TASK_OBSOLETE_NOTE" ] || [ -s "$TASK_BLOCKED_NOTE" ]; then
+        if task_has_progress_since_base "$PRE_TASK_SHA" \
+            || { [ "$TASK_OBSOLETE_NOTE_PREEXISTED" != true ] && [ -s "$TASK_OBSOLETE_NOTE" ]; } \
+            || { [ "$TASK_BLOCKED_NOTE_PREEXISTED" != true ] && [ -s "$TASK_BLOCKED_NOTE" ]; }; then
             TASK_PROGRESS=true
         fi
         if [ "$TASK_ATTEMPT_STATUS" = "missing_terminal_evidence" ]; then
