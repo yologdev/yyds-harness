@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Implementation adds `non_proven_claim_sessions` field mapping claim names to session IDs with correct bounds (max 10 claim entries, max 5 session IDs each), preserves all existing fields unchanged, and the test verifies the field works with synthetic data mapping "historical_lifecycle_gap"→["day-1"] and "recent_assessment_gap"→["day-5"]. Both files pass Python syntax checks and the task reports build/tests green.

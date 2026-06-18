@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Syntax check passes; `unique_delta_labels` correctly returns sorted set-difference elements truncated to 20 (matching the companion `unique_delta_count` pattern); new fields `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels` are wired into the action_evidence dict alongside the existing counts using the identical set-difference direction — exact match to task spec.

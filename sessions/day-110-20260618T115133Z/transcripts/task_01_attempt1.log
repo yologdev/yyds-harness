@@ -1,0 +1,347 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and the evolve skill contract. I need to:
+
+1. Read the evolve skill first
+2. Find and read the relevant section of `scripts/build_evolution_dashboard.py` around lines 2635-2668 and line 478
+3. Add diagnostic output for state/transcript tool failure reconciliation gaps
+4. Write a test, edit the file, verify, and commit
+
+Let me start by reading the evolve skill and the target file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/build_evolution_dashboard.py:470..500  ▶ read scripts/build_evolution_dashboard.py:2630..2680 ✓ (329ms)
+ ✓ (295ms)
+ ✓ (255ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task:
+
+1. I need to add diagnostic output for state/transcript tool failure reconciliation gaps in `scripts/build_evolution_dashboard.py`
+2. Around line 478, there's `unique_delta_count` which computes set difference counts
+3. Around lines 2635-2668, the reconciliation block uses `unique_delta_count` to compute `state_only_failed_tool_count` and `transcript_only_failed_tool_count`
+
+The plan:
+1. Add a companion function to `unique_delta_count` that returns the actual differing elements (or modify it)
+2. At the reconciliation block, compute label lists alongside the counts
+3. Store them as `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels`
+4. Truncate to 20 entries max
+
+Let me read more of the context to understand `event_data` and `transcript_actions` better, and find where `action_evidence` is used downstream.
+
+First, let me look at the broader function context to understand what `event_data` and `transcript_actions` look like.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.3s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2550..2630  ▶ search 'def action_evidence_summary' in scripts/build_evolution_dashboard.py ✓ (86ms)
+ ✓ (84ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good picture of the code. Let me also check where `action_evidence` is serialized/used downstream to make sure the new fields will flow through.
+
+Let me look at how `action_evidence` from `work_summary` ends up in the dashboard output, and also check the `action_evidence_summary_for_sessions` function to see if there's a schema that needs updating.
+
+But first, let me focus on the core change:
+1. Add a function like `unique_delta_labels` that returns the actual differing elements
+2. At lines 2666-2667, also compute the labels
+3. Add them to `action_evidence`
+
+Let me also check what `normalized_set` does and how `state_failed_tools_all` and `transcript_failed_tools_all` look.
+
+Let me also read `action_evidence_summary_for_sessions` to understand the schema.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:4989..5039  ▶ read scripts/build_evolution_dashboard.py:2675..2705 ✓ (123ms)
+ ✓ (134ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me also check the `action_evidence_summary_for_sessions` function more (around the return statement) to see if the new label fields need to be handled there.
+
+Let me also check the `transcript_summary` and `summarize_events_for_work` to understand what `_failed_tools_all` contains.
+
+Actually, I have enough context. Let me now plan and implement:
+
+1. Add a `unique_delta_labels` function near `unique_delta_count` (line 478) that returns the actual differing elements
+2. At lines 2666-2667, compute the labels and add them to `action_evidence`
+3. Write a test for this
+
+Let me now look at the `action_evidence_summary_for_sessions` return more carefully to see if the new label lists need any special handling.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:5030..5060  ▶ search 'def test_unique_delta' in scripts ✓ (83ms)
+ ✓ (90ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I understand the full picture. Let me also check if there are existing tests for the dashboard script.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def test_' in scripts ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if there's a test file for `build_evolution_dashboard.py`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_evolution_dashboard' in scripts ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's `scripts/test_build_evolution_dashboard.py`. Let me look at its structure to see if there's a test for `unique_delta_count` or `work_summary`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'unique_delta\|work_summary\|action_evidence' scripts/test_build_evoluti… ✓ (87ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me look at the test file to understand the testing patterns used, and then also look at how `work_summary` is tested. Let me find the test class structure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_build_evolution_dashboard.py:1..41  ▶ read scripts/test_build_evolution_dashboard.py:1000..1060 ✓ (143ms)
+ ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me also quickly check if `action_evidence` is tested in the test file.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'action_evidence\|state_only_failed\|transcript_only_failed\|failed_tool… ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `test_action_evidence_preserves_state_and_transcript_provenance` test since it's the one that tests the reconciliation counts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_build_evolution_dashboard.py:3986..4066 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see more of this test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_build_evolution_dashboard.py:4065..4095 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have enough context. Let me also quickly check how `summarize_events_for_work` constructs `_failed_tools_all` and how `summarize_transcript_actions` does the same. This will help me understand the data types.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '_failed_tools_all' scripts/build_evolution_dashboard.py | head -20 ✓ (85ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the lines 710 and 2450 to understand the data types. These are lists of strings (tool failure labels).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:700..720  ▶ read scripts/build_evolution_dashboard.py:2440..2460 ✓ (124ms)
+ ✓ (134ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `_failed_tools_all` fields contain lists of failure label strings. The `unique_delta_count` function computes `len(normalized_set(left) - normalized_set(right))`. I need to add a companion function that returns the actual differing elements (up to 20).
+
+Here's my plan:
+1. Add a `unique_delta_labels` function near `unique_delta_count` at line 478
+2. At lines 2666-2667, compute the label lists and add them to `action_evidence`
+3. Add a test in the test file
+
+Let me implement this now.
+
+For the function:
+```python
+def unique_delta_labels(left: list[str], right: list[str], max_items: int = 20) -> list[str]:
+    diff = sorted(normalized_set(left) - normalized_set(right))
+    return diff[:max_items]
+```
+
+For the action_evidence addition:
+```python
+"state_only_failed_tool_labels": unique_delta_labels(state_failed_tools_all, transcript_failed_tools_all),
+"transcript_only_failed_tool_labels": unique_delta_labels(transcript_failed_tools_all, state_failed_tools_all),
+```
+
+Let me also check how these fields will flow through `action_evidence_summary_for_sessions` — currently it only reads the count fields and labels won't be aggregated. That's fine; the labels are per-session diagnostics. They're already stored in the per-session `action_evidence` in the data.json output.
+
+Now let me write the test first. I'll look at the existing test `test_action_evidence_preserves_state_and_transcript_provenance` and extend it (or add a new test) for the label fields.
+
+Actually, let me write a focused test function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.5s (2 ✓)
+
+Now I have a clear picture. Let me implement:
+
+1. Add `unique_delta_labels` function near `unique_delta_count` (line 478)
+2. Add label fields to `action_evidence` (around line 2666-2667)
+3. Write a test
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (44ms)
+  ▶ todo ✓ (42ms)
+  ▶ todo ✓ (91ms)
+  ▶ todo ✓ (47ms)
+  ▶ todo ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with task #1 - add the `unique_delta_labels` function.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.2s (5 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the `unique_delta_labels` function right after `unique_delta_count`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+    def unique_delta_count(left: list[str], right: list[str]) -> int:
+        return len(normalized_set(left) - normalized_set(right))
+  + 
+  + 
+  + def unique_delta_labels(left: list[str], right: list[str], max_items: int = 20) -> list[str]:
+  +     return sorted(normalized_set(left) - normalized_set(right))[:max_items]
+  ✓ Auto-approved: edit: scripts/build_evolution_dashboard.py (2 → 6 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/build_evolution_dashboard.py (2 → 6 lines)
+    def unique_delta_count(left: list[str], right: list[str]) -> int:
+        return len(normalized_set(left) - normalized_set(right))
+  + 
+  + 
+  + def unique_delta_labels(left: list[str], right: list[str], max_items: int = 20) -> list[str]:
+  +     return sorted(normalized_set(left) - normalized_set(right))[:max_items]
+ ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add the label fields to `action_evidence`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (44ms)
+  ▶ todo ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the label fields to action_evidence. Let me re-read the current state of that block to get the exact text to replace.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2666..2676 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the label fields after line 2671. Let me replace the two lines with the same plus the new label lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            "state_only_failed_tool_count": unique_delta_count(state_failed_tools_all, transcript_failed_tools_all),
+            "transcript_only_failed_tool_count": unique_delta_count(transcript_failed_tools_all, state_failed_tools_all),
+  +         "state_only_failed_tool_labels": unique_delta_labels(state_failed_tools_all, transcript_failed_tools_all),
+  +         "transcript_only_failed_tool_labels": unique_delta_labels(transcript_failed_tools_all, state_failed_tools_all),
+        }
+  ✓ Auto-approved: edit: scripts/build_evolution_dashboard.py (3 → 5 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/build_evolution_dashboard.py (3 → 5 lines)
+            "state_only_failed_tool_count": unique_delta_count(state_failed_tools_all, transcript_failed_tools_all),
+            "transcript_only_failed_tool_count": unique_delta_count(transcript_failed_tools_all, state_failed_tools_all),
+  +         "state_only_failed_tool_labels": unique_delta_labels(state_failed_tools_all, transcript_failed_tools_all),
+  +         "transcript_only_failed_tool_labels": unique_delta_labels(transcript_failed_tools_all, state_failed_tools_all),
+        }
+ ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me write the test. Let me find a good place near the existing `test_action_evidence_preserves_state_and_transcript_provenance` test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (43ms)
+  ▶ todo ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look for a good place to add the test. I'll add it after the existing `test_action_evidence_preserves_state_and_transcript_provenance` test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_build_evolution_dashboard.py:4070..4080 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add the test right after line 4072 (after `self.assertIn("action_evidence", data_json)` and before the next test method). Let me first check what imports I need — `unique_delta_labels` is not currently imported in the test file.
+────────────────────────────────────────────────────────────────────────────────
+
+First, let me check what's imported from `build_evolution_dashboard` in the test file.
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_build_evolution_dashboard.py:16..36 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add `unique_delta_labels` to the import list. Let me also add a focused test. I'll extend the existing test (`test_action_evidence_preserves_state_and_transcript_provenance`) by adding assertions for the label fields, rather than creating a whole new test, since the setup is exactly the same.
+
+Actually, the task says to write a test. Let me just add assertions to the existing test that already sets up the mismatched tool failures. That's the most efficient approach.
+
+In the existing test:
+- State has a bash tool error → `state_failed_tools_all` will have something like "bash git status:..." (actually let me check what label is generated)
+- Transcript has a search error → `transcript_failed_tools_all` will have something like "search 'missing' in src/main.rs"
+
+Let me look at how `summarize_events_for_work` constructs the `failed_tools` labels.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:640..720 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check `summarize_events_for_work` to see how state-side failed_tools are labeled.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def summarize_events_for_work' in scripts/build_evolution_dashboard.py ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how the state-side failed tools are constructed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2199..2249 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where state-side failed_tools are appended with labels.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'failed_tools.append' scripts/build_evolution_dashboard.py | head -20 ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check line 2326 and its context for the state-side failed_tools.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2318..2338 ✓ (43ms)
+
+
