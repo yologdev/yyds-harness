@@ -1,0 +1,808 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and following the evolve skill rules. I need to:
+
+1. Read `skills/evolve/SKILL.md` first
+2. Read the relevant source file `src/commands_state_graph.rs`
+3. Understand the current error path
+4. Add ID discovery hints
+
+Let me begin by reading the evolve skill and the source file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state_graph.rs ✓ (144ms)
+ ✓ (109ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the structure. The file `src/commands_state_graph.rs` handles graph subcommands. I can see at line 68 the `handle_graph_subcommand` function. Lines 69-81 handle "clusters", lines 82-94 handle "impact", lines 95+ handle "signals", etc. And around line 466 there's a generic usage fallback.
+
+Let me read more of the file around the end to see the generic usage error, and also see the other subcommand handlers.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+Let me read the rest of the file to find the generic usage error at line 466 and understand all the graph subcommands.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:95..215  ▶ read src/commands_state_graph.rs:440..500 ✓ (129ms)
+ ✓ (92ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the file. Let me understand the structure:
+
+1. Lines 69-81: `clusters` subcommand - already has a focused error when no ID
+2. Lines 82-94: `impact` subcommand - already has a focused error when no ID
+3. Lines 95-107: `signals` subcommand
+4. Lines 108-123: `evidence` subcommand
+5. Lines 124-139: `files` subcommand
+6. Lines 140-155: `evals` subcommand
+7. Lines 156-171: `patches` subcommand
+8. Lines 172-187: `decisions` subcommand
+9. Lines 188-203: `hypotheses` subcommand
+10. Lines 204-...: `versions` subcommand
+... and so on through lines 444-450: `hotspots` (no ID required)
+... and lines 451-463: `summary`
+11. Lines 464-475: generic fallback with the big usage wall
+
+The task says:
+- Line 466 has the generic usage error
+- The current error path prints a wall of usage text without guidance
+
+Looking at the code, each subcommand already prints a focused usage line when no ID is provided (e.g., line 72 for clusters). The problem is that these usage lines don't tell users how to discover valid IDs.
+
+The task asks me to:
+1. Add an ID discovery hint to each subcommand's missing-ID error message
+2. Also add a hint to the generic usage at line 466
+
+Wait, let me re-read the task more carefully. The task says:
+- "The current error path (line 466 of src/commands_state_graph.rs) prints a wall of usage text without any guidance"
+- The assessment recorded: "UX friction: help doesn't explain what arguments to pass."
+- "Make `yyds state graph clusters` (and all `state graph *` subcommands) tell users how to discover valid IDs when they don't provide one."
+
+So the issue is:
+1. When you type `yyds state graph clusters` (no ID), you get: `Usage: yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]`
+2. This doesn't tell you HOW to find those IDs
+3. When you type just `yyds state graph` with no subcommand at all, you get the wall of text
+
+The fix: add discovery hints to each of the subcommand error messages.
+
+Let me plan the change:
+
+For each subcommand that requires an ID (all except `hotspots`), I need to change the error message from:
+```
+"{YELLOW}  Usage: yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]{RESET}"
+```
+to something like:
+```
+"{YELLOW}  Usage: yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n  Tip: use 'state tail --limit 10', 'state graph hotspots', 'state evals', or 'state patches' to discover valid IDs{RESET}"
+```
+
+And for the generic usage at line 464-466, add a similar tip.
+
+Let me count how many subcommands need this change. Looking through the function:
+1. clusters (line 69-81)
+2. impact (line 82-94)
+3. signals (line 95-107)
+4. evidence (line 108-123)
+5. files (line 124-139)
+6. evals (line 140-155)
+7. patches (line 156-171)
+8. decisions (line 172-187)
+9. hypotheses (line 188-203)
+10. versions (line 204-...)
+11. runs
+12. artifacts
+13. models
+14. tools
+15. commands
+16. tests
+17. commits
+18. memories
+19. issues
+20. cache
+21. failures
+22. policies
+23. protocol
+24. timeline
+25. summary (line 451-463)
+26. hotspots - NO ID required, skip
+27. base graph (line 464-475)
+
+That's a lot of changes. But they're all the same pattern.
+
+The task says "Keep the change minimal — this is a help-text improvement, not a refactor."
+
+Let me think about the most efficient approach. I could:
+1. Create a helper function that generates the error message with the tip
+2. Or just add the tip line to each eprintln! call
+
+Given the task says "minimal change", I'll add a helper function that appends the ID discovery hint. Or actually, simpler: define a constant string for the hint, and append it to each eprintln.
+
+Wait, the simpler approach: just add the hint text to each eprintln. Let me add a constant for the hint.
+
+Actually, looking more carefully, each subcommand has a slightly different usage line. I can either:
+- Add a constant HINT and append it to each
+- Or create a helper function
+
+Let me create a helper function that wraps the eprintln and adds the hint. But that might be more complex than needed.
+
+Actually, the simplest approach: add a const string and append it to each eprintln. Let me do that.
+
+Let me define a constant like:
+```rust
+const GRAPH_ID_DISCOVERY_HINT: &str = "  Tip: discover valid IDs with 'state tail --limit 10', 'state graph hotspots', 'state evals', or 'state patches'";
+```
+
+Then change each eprintln from:
+```rust
+eprintln!(
+    "{YELLOW}  Usage: yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]{RESET}"
+);
+```
+to:
+```rust
+eprintln!(
+    "{YELLOW}  Usage: yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n{GRAPH_ID_DISCOVERY_HINT}{RESET}"
+);
+```
+
+Wait, but the task says "The dispatch for graph clusters is at line 69" which is already handled. Let me re-read...
+
+The task says:
+- "When no ID follows, it currently falls through to the generic usage error at line 466."
+- "Add a specific check BEFORE the generic usage: if the user typed `graph clusters` (or any `graph <subcommand>`) without an ID, print a focused error with discovery hints."
+
+Hmm, but looking at the code, `graph clusters` (without ID) already has its own check at line 70-74. It doesn't fall through to line 466. It prints its own focused usage line at line 72 and returns.
+
+Wait, let me re-check: `args.get(3)` would be "clusters" and `args.get(4)` would be the ID. If there's no args[4], it hits the `let Some(id) = args.get(4) else { ... return; }` at line 70. So it's already handled.
+
+But the task says "When no ID follows, it currently falls through to the generic usage error at line 466." That seems wrong based on the code I'm reading. Let me check again...
+
+Actually wait, looking at lines 69-81:
+```rust
+if args.get(3).map(|arg| arg.as_str()) == Some("clusters") {
+    let Some(id) = args.get(4) else {
+        eprintln!("{YELLOW}  Usage: ...{RESET}");
+        return;
+    };
+    ...
+}
+```
+
+If args.get(3) is "clusters" and args.get(4) is None, it prints the usage and returns. That's already a focused error. The task description seems slightly inaccurate about the fall-through behavior for `clusters` specifically.
+
+But the point remains: the error messages don't tell users how to discover valid IDs. That's the real gap. Let me focus on adding discovery hints to all the error messages.
+
+Now, let me figure out the best approach:
+
+1. Define a constant `GRAPH_ID_DISCOVERY_HINT` 
+2. Modify all the eprintln! calls to include this hint
+
+Let me also check: the task mentions adding a hint for the generic usage at line 466 too. Looking at lines 464-468:
+```rust
+let Some(id) = args.get(3) else {
+    eprintln!(
+        "{YELLOW}  Usage: yoyo state graph <event-id|patch-id|eval-id|commit> [--depth N] ...
+```
+This fires when there's no subcommand - just `yyds state graph` with no arguments. I should add a hint there too.
+
+Let me now plan my edits. I'll add a constant at the top of the function (or near the top of the file), then modify each eprintln.
+
+Actually, thinking about it more carefully, the task says:
+
+"Also update the usage text at line 466 to add a trailing hint line like: 'Tip: use 'state tail', 'state graph hotspots', or 'state evals' to discover valid IDs.'"
+
+OK so:
+1. Add discovery hint to each subcommand's missing-ID error (lines 72, 85, 98, 111, 127, 143, 159, 175, 191, 207, ... all the way to summary at line 454)
+2. Add discovery hint to the generic usage at line 466
+
+Let me read the full range to see all subcommands that need the hint.
+
+Let me read lines 204-450 to see all subcommands.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 22.5s (2 ✓)
+
+Let me read the rest of the subcommand handlers to see all of them:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:214..470 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. Let me count all the subcommands that need the hint:
+
+1. clusters (line 72)
+2. impact (line 85)
+3. signals (line 98)
+4. evidence (line 111)
+5. files (line 127)
+6. evals (line 143)
+7. patches (line 159)
+8. decisions (line 175)
+9. hypotheses (line 191)
+10. versions (line 207)
+11. runs (line 223)
+12. artifacts (line 239)
+13. models (line 255)
+14. tools (line 271)
+15. commands (line 287)
+16. tests (line 303)
+
+I need to see 312-420 area still. Let me check for more.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:312..432 ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Here are all the subcommands that need the ID discovery hint:
+
+1. clusters (line 72)
+2. impact (line 85)
+3. signals (line 98)
+4. evidence (line 111)
+5. files (line 127)
+6. evals (line 143)
+7. patches (line 159)
+8. decisions (line 175)
+9. hypotheses (line 191)
+10. versions (line 207)
+11. runs (line 223)
+12. artifacts (line 239)
+13. models (line 255)
+14. tools (line 271)
+15. commands (line 287)
+16. tests (line 303)
+17. commits (line 319)
+18. memories (line 335)
+19. issues (line 351)
+20. cache (line 367)
+21. failures (line 383)
+22. policies (line 399)
+23. protocol (line 415)
+24. timeline (line 431)
+25. summary (line 454)
+26. base graph (line 466)
+
+Plus the generic usage at line 466.
+
+The most efficient approach would be to define a constant and append it. But given there are 25+ edit points, using `edit_file` for each would be very tedious and error-prone. Let me think about the best approach...
+
+Actually, a much cleaner approach: add a constant at the top, then wrap the hint into each eprintln. But doing 26 individual edits is impractical.
+
+Alternative approach: extract a small helper function that all subcommands call. Something like:
+```rust
+fn graph_usage(subcmd: &str, id_types: &str, extra_flags: &str) {
+    eprintln!(
+        "{YELLOW}  Usage: yoyo state graph {subcmd} <{id_types}> {extra_flags}\n  {GRAPH_ID_DISCOVERY_HINT}{RESET}"
+    );
+}
+```
+
+But that changes more code and is more invasive.
+
+Actually, the simplest approach: since every eprintln! has the same `{YELLOW}` prefix and `{RESET}` suffix, and I just need to add a newline + hint before the end, I can use a simpler approach. Let me just add a const and modify each eprintln.
+
+Wait, let me think about this differently. There's a massive amount of repetition here. Each subcommand follows the exact same pattern. But the task says "Keep the change minimal — this is a help-text improvement, not a refactor."
+
+Let me follow the task most literally: add a hint constant and modify each error eprintln. Since there are 26 places, I'll use a helper function to reduce the risk of mistakes.
+
+Actually, the best minimal approach: I'll add a const `GRAPH_ID_DISCOVERY_HINT` and then modify each eprintln to include it. Let me also add a small helper function to avoid repeating the same pattern 26 times.
+
+Wait, actually the simplest and most minimal: just add a const and change every eprintln. But 26 edits with edit_file is a lot of tool calls.
+
+Let me think about what approach uses the fewest tool calls while being correct...
+
+Option A: Write the whole function fresh with write_file. But the function is ~400 lines and that's risky.
+
+Option B: Use edit_file 26 times. Very tedious but precise.
+
+Option C: Add a helper function that takes the subcommand name and ID types, formats the usage with hint, and replaces each eprintln call. This requires changing each call site, but each edit is smaller/simpler.
+
+Actually, let me reconsider. The task specifically says "Use edit_file for surgical changes." Let me use a pragmatic approach:
+
+1. Add the const at the top of the function
+2. Use a small number of edit_file calls that each hit multiple consecutive blocks
+
+But wait, `edit_file` requires exact old_text/new_text matching. I can't do multiple blocks in one call easily.
+
+Let me just go with the approach that's most maintainable: add a const, then use a helper macro or function. Actually, the simplest: just a const and append it inline.
+
+Given the number of changes, let me use a more efficient approach. I'll add a const and then replace every eprintln block. Since there are many identical patterns, let me see if I can collapse them.
+
+OK, I'll take the practical approach: use `write_file` to write the entire function since it's self-contained and I have the exact text. But that's risky.
+
+Actually wait, the best approach: add a const and modify the function to use a small local helper. Let me define:
+
+```rust
+const GRAPH_ID_DISCOVERY_HINT: &str = "  Tip: discover valid IDs with 'state tail --limit 10', 'state graph hotspots', 'state evals', or 'state patches'";
+```
+
+Then modify each eprintln to include the hint. Let me count the unique patterns to see how many distinct edit_file calls I need.
+
+Looking at the patterns, there are several variations:
+- Pattern 1 (no --limit): `"{YELLOW}  Usage: yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]{RESET}"`
+- Pattern 2 (with --limit): `"{YELLOW}  Usage: yoyo state graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"`
+- Pattern 3 (runs - different ID types): `"{YELLOW}  Usage: yoyo state graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"`
+- Pattern 4 (artifacts): `"{YELLOW}  Usage: yoyo state graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"`
+- Pattern 5 (hypotheses): has `hypothesis-id`
+- Pattern 6 (versions): has `harness-version`
+- Pattern 7 (memories): has `memory-id`
+- Pattern 8 (issues): has `issue-id`
+- Pattern 9 (summary - no --limit): `"{YELLOW}  Usage: yoyo state graph summary <event-id|patch-id|eval-id|commit> [--depth N] [--json]{RESET}"`
+- Pattern 10 (hotspots): no ID, skip
+- Pattern 11 (base graph): the big wall of text
+
+OK, there are many unique patterns. Let me just use a helper function. I'll define it at the top of `handle_graph_subcommand`:
+
+```rust
+fn graph_usage_hint() -> &'static str {
+    "  Tip: discover valid IDs with 'state tail --limit 10', 'state graph hotspots', 'state evals', or 'state patches'"
+}
+```
+
+Wait, inner functions aren't allowed to be called before they're defined in Rust without declaring them first. Let me use a closure or just inline.
+
+Actually, the simplest approach that minimizes tool calls: define a const at file scope, then in each eprintln, add `\n{GRAPH_ID_DISCOVERY_HINT}` before `{RESET}`. 
+
+Let me count the tool calls:
+1. One edit to add the const (somewhere near the top of the file)
+2. For each subcommand's eprintln, one edit to add the hint
+
+That's 27 edit_file calls. That's a lot. Let me try a different approach.
+
+Alternative: since the pattern is so repetitive, I can use a helper function that constructs the usage string. Let me define:
+
+```rust
+fn graph_missing_id_usage(subcmd: &str, id_types: &str, extra_flags: &str) {
+    eprintln!(
+        "{YELLOW}  Usage: yoyo state graph {subcmd} <{id_types}> {extra_flags}\n  Tip: discover valid IDs with 'state tail --limit 10', 'state graph hotspots', 'state evals', or 'state patches'{RESET}"
+    );
+}
+```
+
+Then replace each eprintln with a call to this helper. But each call site has a slightly different format string, so this would still need individual edits for each.
+
+Hmm, let me think differently. Let me define ONLY a const and do the edits. I think the most practical approach is:
+
+1. Add the const near the top of the file, before the function
+2. Replace the body of handle_graph_subcommand with a version that has the hint in every eprintln
+
+But step 2 requires writing the whole function. Let me check if there's a way to do batch replacements.
+
+Actually, maybe I can use the bash tool with sed for mass replacement? But the evolve skill says "Use edit_file for surgical changes."
+
+OK, let me just be practical. I'll:
+1. Add the const
+2. Use a series of edit_file calls for each eprintln
+
+Actually wait. Let me re-read the task more carefully:
+
+"Add a specific check BEFORE the generic usage: if the user typed `graph clusters` (or any `graph <subcommand>`) without an ID, print a focused error with discovery hints."
+
+"Also update the usage text at line 466 to add a trailing hint line"
+
+The task says to add discovery hints to the error messages. It doesn't say every single subcommand must be individually edited. The most impactful change is:
+1. The generic usage at line 466 (when someone types `state graph` with no args)
+2. The individual subcommand errors (when someone types `state graph clusters` with no ID)
+
+Let me be practical and do a clean implementation. I'll add a const and modify the 26 error messages. To save tool calls, let me try using write_file for the whole function since I have all the content.
+
+Actually, the smarter approach: let me construct the full modified function text and write it with write_file. But the function is part of a 1306-line file and I don't want to rewrite the whole file.
+
+Let me take a different approach: define a format macro or helper that wraps the eprintln. Here's what I'll do:
+
+1. Add a const `GRAPH_ID_DISCOVERY_HINT` near the imports
+2. Use bash sed to add the hint to every eprintln in the function
+
+Wait, the evolve skill says to use edit_file for surgical changes. But 26 edit_file calls is impractical. Let me use a pragmatic approach with sed via bash, then verify with cargo build.
+
+Actually, let me reconsider the whole approach. The task says:
+
+"Example hint text: 'No ID provided. To find valid IDs, try:\n  yyds state tail --limit 5\n  yyds state graph hotspots\n  yyds state evals\n  yyds state patches'"
+
+And: "Also update the usage text at line 466 to add a trailing hint line like: 'Tip: use 'state tail', 'state graph hotspots', or 'state evals' to discover valid IDs.'"
+
+Let me do the simplest thing that works:
+
+1. Add a const at the top of the function
+2. For each of the 25 subcommand eprintln! calls, add the hint
+
+Since there are 25+ subcommands, let me try to use bash to do a targeted replacement. All eprintln calls in this function have the pattern:
+```
+eprintln!(
+            "{YELLOW}  Usage:...{RESET}"
+        );
+```
+
+I can replace `{RESET}"` with `{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"` but only within the handle_graph_subcommand function. Let me use sed with a line range.
+
+Actually, let me check: do all the eprintln calls end with `{RESET}"`? Let me verify... yes, they all end with `{RESET}"` and then `);` on the next line.
+
+OK, here's my plan:
+1. Add const near the top of the file
+2. Use sed to do a targeted replacement within lines 68-475 only, replacing `{RESET}"` with `\n{GRAPH_ID_DISCOVERY_HINT}{RESET}"` - but ONLY for eprintln calls
+
+Actually, this is getting complicated. Let me just use edit_file for each unique pattern. Let me count the unique patterns:
+
+Patterns that need the hint (all end with `{RESET}"`):
+1. `[--depth N] [--json]{RESET}"` - clusters, impact, signals, summary, base graph (but base graph is different)
+2. `[--depth N] [--limit N] [--json]{RESET}"` - evidence, files, evals, patches, decisions, versions, runs, artifacts, models, tools, commands, tests, commits, memories, issues, cache, failures, policies, protocol, timeline
+3. Hypotheses and versions have different ID types but same ending
+4. Base graph has the wall of text
+
+Wait, the patterns differ only in the middle part. They all end with `[--json]{RESET}"` or `[--limit N] [--json]{RESET}"`.
+
+So there are really only 2 ending patterns to replace:
+- `[--json]{RESET}"` → `[--json]\n{GRAPH_ID_DISCOVERY_HINT}{RESET}"`
+- `[--limit N] [--json]{RESET}"` → `[--limit N] [--json]\n{GRAPH_ID_DISCOVERY_HINT}{RESET}"`
+
+And then the base graph wall at line 466 needs a different approach.
+
+Let me try using sed via bash for this. It's a surgical change - just adding a hint string. Let me do it.
+
+Actually, I just realized: the search tool doesn't support regex replacement. Let me use bash with sed for a scoped change.
+
+Plan:
+1. Add the const `GRAPH_ID_DISCOVERY_HINT` 
+2. Use sed to add the hint to all subcommand usage eprintlns in the function
+3. Also update the generic usage at line 466
+
+Let me first add the const, then use sed.
+
+Wait, but I need to be careful with sed. The hint contains single quotes which could break sed.
+
+Let me use a simpler approach: write the entire function body with write_file. I have all the content from reading the file. Let me construct it.
+
+Actually, the cleanest approach: I'll construct the modified handle_graph_subcommand function (lines 68-475) and use write_file to overwrite just that portion. But write_file overwrites the whole file...
+
+OK, I think the most practical approach here is:
+1. First, add the const GRAPH_ID_DISCOVERY_HINT near the top of the file (before the function)
+2. Then use edit_file to modify the base graph usage (line 466) - that's the most impactful single change
+3. Then use edit_file to modify at least the clusters error (line 72) as the task specifically mentions it
+
+But the task says "all `state graph *` subcommands". Let me just do all of them.
+
+Let me try using bash with sed. I'll construct the sed command carefully.
+
+The eprintln calls all have this structure:
+```
+            eprintln!(
+                        "{YELLOW}  Usage: yoyo state graph SUBCOMMAND <...> [--...] [--json]{RESET}"
+                    );
+```
+
+I need to replace `[--json]{RESET}"` with `[--json]\n{GRAPH_ID_DISCOVERY_HINT}{RESET}"` in lines 68-475.
+
+Let me check if there's a clean way to do this. Let me use Python via bash:
+
+```bash
+python3 -c "
+import re
+with open('src/commands_state_graph.rs') as f:
+    content = f.read()
+
+# Add const before the function
+old = 'pub fn handle_graph_subcommand(args: &[String]) {'
+hint = 'const GRAPH_ID_DISCOVERY_HINT: &str = \"  Tip: discover valid IDs with '\"'\"'state tail --limit 10'\"'\"', '\"'\"'state graph hotspots'\"'\"', '\"'\"'state evals'\"'\"', or '\"'\"'state patches'\"'\"';\";\n\n'
+new = f'{hint}pub fn handle_graph_subcommand(args: &[String]) {{'
+
+# ... 
+"
+```
+
+This is getting complicated with quoting. Let me think of a simpler approach.
+
+Actually, the most practical approach: Use `write_file` to write the entire file with the modifications. I have all the content. Let me construct it by reading the whole file and then writing it back with modifications.
+
+But that's 1306 lines... that's doable but risky.
+
+OK, let me take the pragmatic approach:
+
+1. Add the const using edit_file
+2. Use sed via bash to add `\n{GRAPH_ID_DISCOVERY_HINT}` before `{RESET}` in lines 68-475, but only for eprintln calls
+
+Actually, the simplest sed approach: replace all `[--json]{RESET}"` within the handle_graph_subcommand function with `[--json]\n{GRAPH_ID_DISCOVERY_HINT}{RESET}"`. But I need to scope it to lines 68-475.
+
+Let me try:
+```bash
+sed -i '68,475 s/\[--json\]{RESET}"/[--json]\\n{GRAPH_ID_DISCOVERY_HINT}{RESET}"/g' src/commands_state_graph.rs
+```
+
+Wait, sed doesn't understand Rust string interpolation. I need to use the literal text. Let me use the actual const value inline:
+
+```bash
+sed -i '68,475 s/{RESET}"/{RESET}\\n  Tip: discover valid IDs with '\''state tail --limit 10'\'', '\''state graph hotspots'\'', '\''state evals'\'', or '\''state patches'\''/g' src/commands_state_graph.rs
+```
+
+Hmm, this is very fragile with quoting. Let me use a Python one-liner instead.
+
+OK let me just use write_file for the whole file. I'll read it once more to make sure I have everything, then write the modified version. But 1306 lines is a lot.
+
+Actually, you know what, let me be practical. I'll:
+1. Use edit_file to add the const before the function
+2. Use a Python script via bash to do the replacements
+3. Verify with cargo build
+
+Let me write a small Python script.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a complete picture. There are 25 subcommands that print usage without ID discovery hints, plus the generic fallback. Let me implement this efficiently.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (41ms)
+  ▶ todo ✓ (40ms)
+  ▶ todo ✓ (48ms)
+  ▶ todo ✓ (94ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the const first, then use Python to do the replacements.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 1.7s (4 ✓)
+
+First, let me add the `GRAPH_ID_DISCOVERY_HINT` const before the `handle_graph_subcommand` function:
+  + const GRAPH_ID_DISCOVERY_HINT: &str =
+  +     "  Tip: discover valid IDs with 'state tail --limit 10', 'state graph hotspots', 'state evals', or 'state patches'";
+  + 
+    pub fn handle_graph_subcommand(args: &[String]) {
+  ✓ Auto-approved: edit: src/commands_state_graph.rs (1 → 4 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_graph.rs (1 → 4 lines)
+  + const GRAPH_ID_DISCOVERY_HINT: &str =
+  +     "  Tip: discover valid IDs with 'state tail --limit 10', 'state graph hotspots', 'state evals', or 'state patches'";
+  + 
+    pub fn handle_graph_subcommand(args: &[String]) {
+ ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to modify all the eprintln calls to include the hint. There are 25 subcommand error messages and one generic usage wall. Let me use a Python script for this since there are so many.
+
+The pattern I need to replace: each eprintln ends with `{RESET}"` and the hint needs to go right before `{RESET}`.
+
+For the subcommand errors (lines 72-470 area), they all end with one of:
+- `[--json]{RESET}"` - for clusters, impact, signals, summary
+- `[--limit N] [--json]{RESET}"` - for all others
+- `[--json]{RESET}"` at end of the big wall (line 466)
+
+The replacement should be:
+- `[--json]{RESET}"` → `[--json]\n{GRAPH_ID_DISCOVERY_HINT}{RESET}"`
+- `[--limit N] [--json]{RESET}"` → `[--limit N] [--json]\n{GRAPH_ID_DISCOVERY_HINT}{RESET}"`
+
+But wait, the const I defined is a Rust const, so in format strings it would be used as `{GRAPH_ID_DISCOVERY_HINT}` literally. Let me check: in eprintln!("{YELLOW}...{RESET}"), YELLOW and RESET are also consts. Let me check how they're defined.
+
+I see `use crate::format::*;` which imports Color, constants, etc. Let me check how YELLOW and RESET are defined.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify how YELLOW and RESET are defined and used in these format strings:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'const YELLOW' (*.rs)  ▶ search 'const RESET' (*.rs) ✓ (83ms)
+ ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Not consts. Let me check what YELLOW and RESET actually are - they're probably re-exported from format module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'pub const YELLOW' (*.rs)  ▶ search 'YELLOW:' (*.rs) ✓ (40ms)
+ ✓ (122ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+YELLOW is a `pub static` (not const). But in format strings, both `const` and `static` can be used as named parameters. Let me check if format args support statics.
+
+Actually in Rust, format strings use named parameters, and the values can be static or const. So `{YELLOW}` in `eprintln!("{YELLOW}...{RESET}")` works because YELLOW is a static. Similarly, `{GRAPH_ID_DISCOVERY_HINT}` should work if GRAPH_ID_DISCOVERY_HINT is a const.
+
+Wait, actually I need to check. In Rust, `eprintln!("{FOO}...", FOO = some_value)` is the named parameter syntax. But the code uses `"{YELLOW}...{RESET}"` without explicitly passing YELLOW and RESET as named arguments. This works because in Rust, if a name matches a variable/static/const in scope, it's captured automatically.
+
+So my const `GRAPH_ID_DISCOVERY_HINT` should work the same way in the format string.
+
+Now let me do the replacements. I need to modify the eprintln calls. Let me use a Python script for the mass edit since there are 26 places.
+
+The patterns in the eprintln calls:
+1. `[--json]{RESET}"` → the hint goes before `{RESET}`
+2. `[--limit N] [--json]{RESET}"` → same
+
+For the base usage wall (line 466), it ends with `[--json]{RESET}"` at the very end of the big string.
+
+Let me write a Python script to do this replacement. I need to:
+1. Find all eprintln! calls within handle_graph_subcommand (lines 68-475)
+2. For each, add `\n{GRAPH_ID_DISCOVERY_HINT}` before `{RESET}`
+
+Actually, simpler: just replace `{RESET}"` with `{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"` BUT only within the handle_graph_subcommand function, and only inside eprintln calls.
+
+Using sed:
+```bash
+sed -i '/^pub fn handle_graph_subcommand/,/^}$/ s/{RESET}"/{RESET}\\n{GRAPH_ID_DISCOVERY_HINT}"/g' src/commands_state_graph.rs
+```
+
+Wait, but this would also match {RESET} in other places within the function that shouldn't have the hint (like the "no state projection found" error at line 482). Let me check...
+
+Line 482: `"{YELLOW}  no state projection found at {} (run `yoyo state project --rebuild`){RESET}"` — this is in a different function, so it wouldn't be affected if I scope the sed correctly.
+
+But line 493: `eprintln!("{YELLOW}  {e}{RESET}");` — this is also in a different function.
+
+The key is to ONLY modify eprintln calls within `handle_graph_subcommand`. Let me check: the function starts at line 68 (now 71 because I added 3 lines) and ends at line 478 (now 481).
+
+Wait, I need to re-read the file to get exact line numbers after my edit.
+
+Let me just use a Python script that's more precise. Here's my strategy: replace `{RESET}"` with `\n{GRAPH_ID_DISCOVERY_HINT}{RESET}"` but only inside the `handle_graph_subcommand` function body. 
+
+Actually, let me think about which {RESET}" instances should NOT get the hint:
+- Line 493: `eprintln!("{YELLOW}  {e}{RESET}");` in `handle_graph` function - should NOT get hint
+- Line ~508: similar in `handle_graph_summary` - should NOT get hint
+- ...all other functions after handle_graph_subcommand
+
+So I need to scope the replacement to just the handle_graph_subcommand function. Let me count the function boundaries.
+
+After my edit (adding 3 lines), `handle_graph_subcommand` starts at line 71 and ends at... let me check the original end. The function ends at line 475 originally, which is the closing `}` after the base graph handler. After my edit, that would be line 478.
+
+Let me verify by reading the current state:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 13.3s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:68..78  ▶ read src/commands_state_graph.rs:475..485 ✓ (123ms)
+ ✓ (86ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The function `handle_graph_subcommand` is now at lines 71-478. I need to add the hint to every `{RESET}"` inside eprintln! calls within this function. Let me use a Python script to do this precisely.
+
+The plan: use Python to read the file, find the function body (lines 71-478), and for every eprintln! call within that range, add `\n{GRAPH_ID_DISCOVERY_HINT}` before `{RESET}`.
+
+Actually, let me think about this differently. Not every {RESET} in the function should get the hint. Only the ones in the usage eprintln calls. But let me check... are there any other eprintln calls in the function?
+
+Let me search for eprintln in the function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'eprintln!' (src/commands_state_graph.rs) ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search tool seems to not find eprintln! (maybe because of the ! or macro). Let me use bash grep.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'eprintln!' src/commands_state_graph.rs | head -40 ✓ (86ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The function `handle_graph_subcommand` spans lines 71-478. The eprintln calls within this function are at lines 74, 87, 100, 113, 129, 145, 161, 177, 193, 209, 225, 241, 257, 273, 289, 305, 321, 337, 353, 369, 385, 401, 417, 433, 456, 468.
+
+Lines 484+ are in other functions (handle_graph, handle_graph_summary, etc.)
+
+All 26 eprintln calls in handle_graph_subcommand are usage errors that should get the hint. Lines 74-456 are the subcommand-specific usage errors. Line 468 is the big wall of usage text.
+
+The cleanest approach: use a Python script to add the hint to every eprintln within lines 71-478. Let me do that.
+
+Actually, let me use sed with a line range. The function spans lines 71-478. Every eprintln within that range that ends with `{RESET}"` should get the hint added before `{RESET}`.
+
+But wait - I need to add `\n{GRAPH_ID_DISCOVERY_HINT}` before `{RESET}` in the format string. Let me use sed:
+
+```bash
+sed -i '71,478 s/{RESET}"/{RESET}\\n{GRAPH_ID_DISCOVERY_HINT}"/g' src/commands_state_graph.rs
+```
+
+This will replace ALL instances of `{RESET}"` in lines 71-478 with `{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"`. That should be exactly the right thing because:
+1. All eprintln calls in handle_graph_subcommand end with `{RESET}"`
+2. There are no other `{RESET}"` instances in that range (outside of eprintln)
+
+Let me verify there are no other {RESET} instances in that range before running.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '{RESET}' src/commands_state_graph.rs | awk -F: '$1 >= 71 && $1 <= 478' ✓ (92ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Every one of these 26 instances is an eprintln usage error in handle_graph_subcommand. I need to add the hint before `{RESET}` in each one.
+
+The sed approach:
+```bash
+sed -i '71,478 s/{RESET}"/{RESET}\\n{GRAPH_ID_DISCOVERY_HINT}"/g' src/commands_state_graph.rs
+```
+
+This will add `\n{GRAPH_ID_DISCOVERY_HINT}` before every `{RESET}"` in lines 71-478. Let me verify this is correct by checking what's in lines 71-478. All {RESET} occurrences are in usage eprintln calls.
+
+But wait, line 469 has `{RESET}"` at the end of the big wall of text. It should also get the hint, but should the hint go at the very end of the wall of text (after all the usage lines) or before the last `{RESET}`? The task says to add a "trailing hint line". So yes, putting it at the end before `{RESET}` is correct - it will appear as the last line.
+
+Let me run the sed command.
+────────────────────────────────────────────────────────────────────────────────
+
+All 26 instances of `{RESET}"` in the function are usage error messages. Let me use sed to add the hint before every `{RESET}`:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -i '71,478 s/{RESET}"/{RESET}\\n{GRAPH_ID_DISCOVERY_HINT}"/g' src/commands_s… ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the edit by reading a few of the modified lines.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the edit looks correct:
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'GRAPH_ID_DISCOVERY_HINT' src/commands_state_graph.rs ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+27 matches total: 1 for the const definition + 26 for the usage in eprintln calls. 
+
+Wait, the output shows "27 matches in 1 files" and then lists lines 68, 434, but doesn't show all 27 lines clearly. But the count is correct: 1 const + 26 eprintln hints = 27.
+
+Let me check a few specific modified lines to verify they look right.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:72..82  ▶ read src/commands_state_graph.rs:465..477 ✓ (149ms)
+ ✓ (114ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edits look correct. Now let me run cargo build to verify it compiles.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (49ms)
+  ▶ todo ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify it builds and tests pass.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+Now let me build and test:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (15.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build succeeded. Now let me run the targeted tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now run the tests:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state_grap… ✓ (29.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No specific tests with "commands_state_graph" in the name. Let me run the broader state tests and also try to manually check the output.
+────────────────────────────────────────────────────────────────────────────────
+
+No tests match the exact filter. Let me run the broader state tests:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- state 2>&1 ✓ (19.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 287 state tests pass, plus 2 integration tests pass. Let me also run a quick format check and then check if we can do a manual verification of the output.
+
+Actually, let me first run the binary to check the output:
+────────────────────────────────────────────────────────────────────────────────
+
+All 287 state tests pass, plus 2 integration tests. Let me also verify the output manually:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state graph clust… ✓ (136ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output is correct. The hint is displayed after the usage line. Let me also check the base `state graph` (no args) output and `state graph hotspots` (which shouldn't have the hint since it doesn't need an ID):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state graph 2>&1 …  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run -- state graph hotsp… ✓ (227ms)
+ ✓ (284ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both look correct:
+1. `state graph clusters` shows the usage + hint
+2. `state graph` shows the big wall + hint at the end
+3. `state graph hotspots` works unchanged (no hint, no ID needed)
+
+Now let me also verify `cargo fmt -- --check` passes:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+Both work correctly. Now let me run format check and commit:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+

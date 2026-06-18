@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The ID discovery hints are already implemented and committed in HEAD. The `GRAPH_ID_DISCOVERY_HINT` constant (line 68-69) is included in all `state graph` subcommand error paths and the generic usage text. Manual verification confirms: `yyds state graph clusters` (no args) prints "Tip: discover valid IDs with 'state tail --limit 10', 'state graph hotspots', 'state evals', or 'state patches'", and `yyds state graph clusters <valid-id>` processes normally. All state tests pass (2/2). Build and tests are green.

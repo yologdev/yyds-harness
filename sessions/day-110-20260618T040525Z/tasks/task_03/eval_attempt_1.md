@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Implementation adds `--by-session` flag to `state failures tools` that groups tool failure events by run_id with per-session failure counts, preserves flat view without the flag, keeps `--limit` working, and all 168 commands_state + 24 failures tests pass. The feature's placement on `tools` subcommand (not `--recent`) is correct since that's where tool failure events are handled.

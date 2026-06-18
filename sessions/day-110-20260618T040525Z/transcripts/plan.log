@@ -1,0 +1,587 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The user wants me to act as a planning agent (Phase A2). I need to:
+
+1. Review the assessment and trajectory evidence
+2. Create session plan task files
+3. Create issue responses file
+
+Let me first check what exists in the session_plan directory and read ISSUES_TODAY.md.
+
+The assessment already provides a comprehensive analysis. Let me proceed efficiently:
+
+Key findings from assessment:
+- Build passes, tests pass
+- 4 consecutive successful sessions
+- Main task candidates:
+  1. Reconcile state/transcript tool failure disagreement (MEDIUM)
+  2. Improve `state graph clusters` discoverability (LOW)
+  3. Verify and reduce non-proven claim rate (LOW)
+  4. Add token-backed cache ratio verification (LOW)
+
+Trajectory pressure:
+1. Reconcile transcript-only tool failures (2)
+2. Reconcile state-only tool failures (13)
+3. Recover failed tool actions before scoring (1)
+4. Reduce successful-task turn overhead (max 25)
+5. Cache ratio verification (1)
+
+Let me first check if session_plan/task_01.md already exists, and read ISSUES_TODAY.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null; echo "---"; cat ISSUE… ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a `task_01.md` from the seed task. Let me read it to see what the harness preselected, and also read the assessment.md to understand the full picture. Then I'll decide whether to keep, refine, or replace task_01.md, and add task_02.md and task_03.md.
+
+Let me read both files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment.md (80 lines) ✓ (129ms)
+ ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. The seed task (task_01.md) says "Improve cold-start state failure diagnostics" — but the assessment CLEARLY states this was ALREADY DONE on Day 109 23:02: "Task 1: Improved cold-start state failure diagnostics — `state why last-failure` now shows file size when events file exists but can't be read (`commands_state.rs` + `state.rs`)". 
+
+The assessment's self-test also confirms: `yyds state why last-failure` → no failures, 1 incomplete run (current session) ✓. This works.
+
+So the seed task is OBSOLETE — it was already implemented yesterday. I need to handle this per the planning instruction: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+Now, what should my tasks be? Let me pick from the trajectory/assessment evidence:
+
+From trajectory graph pressure:
+1. **Reconcile transcript-only tool failures** (2) — state capture may be missing tool failure events
+2. **Reconcile state-only tool failures** (13) — state events contain failed tool actions without matching transcript records
+3. **Recover failed tool actions before scoring** (1) — remaining unrecovered tool failure
+4. **Reduce successful-task turn overhead** (max 25 turns)
+5. **Cache ratio verification** (1 unverified ratio)
+
+From assessment candidate tasks:
+1. Reconcile state/transcript tool failure disagreement (MEDIUM)
+2. Improve `state graph clusters` discoverability (LOW)
+3. Verify and reduce non-proven claim rate (LOW)
+4. Add token-backed cache ratio verification (LOW)
+
+Let me prioritize:
+
+**Task 1**: Reconcile state/transcript tool failure disagreement. This is the highest-ranked trajectory pressure and the assessment's highest-impact candidate. The mismatch between state and transcript about tool failures directly undermines evidence quality. I need to figure out which files to touch.
+
+Let me do ownership checks on the relevant symbols:
+- State recording of tool failures: `src/state.rs` or `src/tools.rs` or `src/tool_wrappers.rs`
+- Transcript parsing: `scripts/log_feedback.py` or `scripts/build_evolution_dashboard.py`
+
+Actually, let me think more carefully. The task says 2 transcript-only failures + 13 state-only failures. This could be in:
+- Tool failure event recording (state.rs, tools.rs, tool_wrappers.rs)
+- Transcript parsing / failure classification (log_feedback.py, build_evolution_dashboard.py)
+
+But the assessment says these are cumulative historical, not fresh. Still, it's trajectory-ranked pressure.
+
+Let me think about size. I should keep tasks small (max 3 files). 
+
+For the reconciliation task, I could split it:
+- Task A: Add diagnostic command to identify the specific mismatched events
+- Task B: Fix the underlying recording/parsing issue
+
+Actually, let me reconsider. The constraint says tasks must touch at most 3 files. The reconciliation would likely touch `scripts/log_feedback.py` (transcript parsing) and maybe `src/state.rs` (state recording). 
+
+But actually, the key question is: where do the mismatches originate? Let me think about what "transcript-only" and "state-only" failures mean:
+
+- "Transcript-only": The transcript log shows a tool failure, but state events don't show it. This means either: (a) state recording is missing the failure event, or (b) transcript is misclassifying something as a failure.
+- "State-only": State events show a tool failure, but transcript doesn't. This means either: (a) state is recording failures that aren't real, or (b) transcript is not capturing the failure.
+
+The investigation task could go into `scripts/log_feedback.py` (which computes these counts) and/or `src/commands_state.rs` (which queries state). But actually the reconciliation metric comes from `scripts/build_evolution_dashboard.py` (see the `transcript_only_failed_tool_count` and `state_only_failed_tool_count` fields).
+
+Let me look at what files are involved. The dashboard computes these from comparing state events vs transcript actions. Let me search for the key symbols.
+
+Actually, the planning instruction says: "You may still use cheap ownership checks before finalizing Files: entries: `git ls-files <path>`, `git grep -n -- <symbol> src/`, or a scoped `rg -n <simple_identifier> src/`. Do not read the matched files during planning."
+
+Let me do quick ownership checks for the reconciliation task and the other candidates.
+
+For task sizing, I think the reconciliation task is too broad. Let me create a focused, narrow task: add a diagnostic command that lists the specific mismatched tool failure events, so the implementation agent can identify the root cause. But that's still investigatory...
+
+Actually, the planning instruction says: "Prefer tasks that add/modify one thing and can be verified with cargo build && cargo test."
+
+Let me re-think my task selection:
+
+1. **Task 1**: `state graph clusters` discoverability (LOW, but high bang-for-buck). This is purely in `src/commands_state.rs`. Small scope, verifiable with cargo test. It's a genuine UX friction found in self-tests.
+
+2. **Task 2**: Token-backed cache ratio verification (LOW). The trajectory says `deepseek_cache_ratio_unverified_count=1` — a DeepSeek cache ratio reported without token counts. This is in `src/deepseek.rs` or `scripts/log_feedback.py`. It's a DeepSeek-specific harness improvement.
+
+3. **Task 3**: State/transcript reconciliation — but I need to make it smaller. Maybe just add the diagnostic to list mismatches (a new `state graph` subcommand or flag).
+
+Wait, let me re-read the trajectory pressure more carefully:
+
+"Reconcile transcript-only tool failures (transcript_only_failed_tool_count=2): Recent transcripts contained failed tool actions absent from state ev..."
+"Reconcile state-only tool failures (state_only_failed_tool_count=13): State events contained failed tool actions without matching transcrip..."
+
+The counts are small (2 and 13) and cumulative. The assessment says "these are cumulative historical, not fresh reproductions. Recent 4 sessions show clean passes."
+
+So the reconciliation task, while trajectory-ranked, might not be the most actionable right now. The clusters UX fix is more concrete and immediately verifiable.
+
+Let me go with:
+1. **Task 1 (replacing obsolete seed)**: `state graph clusters` discoverability — make it work without args by listing recent clusters, or improve help text
+2. **Task 2**: Token-backed cache ratio verification — add token-count verification to deepseek cache ratio reporting
+3. **Task 3**: Maybe the state/transcript reconciliation diagnostic, or skip to keep it at 2 tasks
+
+Actually, wait. Let me reconsider the instruction: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+So at least 2 of my 3 tasks should be state/trajectory-driven. Let me ensure that.
+
+1. Task 1: state graph clusters UX → this is state-driven (from self-test finding)
+2. Task 2: cache ratio verification → this is trajectory-driven (deepseek_cache_ratio_unverified_count=1)
+3. Task 3: state/transcript reconciliation diagnostic → this is trajectory/state-driven
+
+But I'm worried about task sizing for #3. Let me scope it narrowly.
+
+Actually, let me think about what's most useful and completable in 20 min:
+
+Task 1 (replacing seed): Fix `state graph clusters` UX - make it show a helpful message when no args given, suggesting how to get IDs, or list recent clusters. 1 file: `src/commands_state.rs`. Very small scope.
+
+Task 2: Add token-backed cache ratio verification. When DeepSeek reports a cache ratio in prose but there are no token count events to back it, flag it. This is in `src/deepseek.rs` or `scripts/log_feedback.py`. I need to check ownership.
+
+Task 3: Add a `state graph tool-failures` subcommand that lists tool failures and cross-references with transcripts, or at minimum lists mismatched failures. This would be in `src/commands_state.rs`.
+
+Hmm, let me check ownership with quick greps for task 2 and 3.
+
+Let me keep it simple and do the ownership checks now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 21.6s (2 ✓)
+
+The seed task_01.md claims "Improve cold-start state failure diagnostics" but the assessment shows this was **already completed on Day 109 23:02** (Task 1). Self-test confirms `yyds state why last-failure` works. The seed task is obsolete. Let me verify and then create fresh tasks from current evidence.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && rg -n 'transcript_only_failed_…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && rg -n 'deepseek_cache_ratio_un… ✓ (354ms)
+ ✓ (476ms)
+ ✓ (550ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+rg is not available. Let me use grep instead.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'transcript_only_faile…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn 'cache_ratio_unverifi…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'graph clusters\|fn.*c… ✓ (375ms)
+ ✓ (498ms)
+ ✓ (551ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have good ownership data. Let me plan my tasks:
+
+**Task 1 (replacing obsolete seed)**: Fix `state graph clusters` UX — the command requires `<event-id|patch-id|eval-id|commit>` but doesn't tell users how to discover valid IDs. The fix is in `src/commands_state.rs` — add a helpful error message suggesting how to find valid IDs (e.g., `state tail`, `state graph hotspots`, `state evals --recent`). This is a clean 1-file change, verifiable with cargo build && cargo test.
+
+**Task 2**: Add token-backed cache ratio verification. The trajectory says `deepseek_cache_ratio_unverified_count=1` — a DeepSeek cache ratio reported without token-backed metrics. The ownership is `src/deepseek.rs` for cache parsing and `scripts/log_feedback.py` for scoring. The most focused task would be: when `log_feedback.py` encounters a prose cache ratio without token counts, flag it as unverified. Owner: `scripts/log_feedback.py`. Or: add a token-backed assertion in `src/deepseek.rs` when computing cache ratios.
+
+Actually, let me think about what "token-backed" means. The DeepSeek API returns cache hit/miss token counts in the usage block. If we have `cache_read_input_tokens` and `cache_creation_input_tokens`, we can compute the ratio independently. The unverified case is when DeepSeek reports a ratio in prose (e.g., in a completion text) but the actual token metrics aren't available.
+
+Let me check where the unverified detection happens:
+
+From the grep output: `scripts/log_feedback.py:2548: check("cache prose ratio marked unverified", cache_prose["deepseek_cache_ratio_unverified_count"] == 1, cache_prose)`
+
+So `deepseek_cache_ratio_unverified_count` is computed in log_feedback.py. Let me find where.
+
+I think the best task here is: in `scripts/log_feedback.py`, improve the detection of unverified cache ratios so the scorer can flag them. But this is investigatory — need to find where the ratio is extracted from prose vs tokens.
+
+Actually, let me look at what's simpler. The `src/deepseek.rs` already has `cache_hit_ratio()` which returns `Option<f64>`. If we add a method that returns whether the ratio is token-backed (i.e., computed from actual token counts rather than parsed from prose), we can use that.
+
+Let me keep the tasks focused:
+
+**Task 1**: Fix `state graph clusters` UX — add discovery hints to the error message. File: `src/commands_state.rs`. Very small, verifiable.
+
+**Task 2**: Reconcile state/transcript tool failure disagreement. This is the #1 trajectory pressure. But it's a broad investigation. Let me scope it very narrowly: add a `state graph tool-failures` subcommand or extend `state failures --recent` to report tool failure count mismatches. This gives the implementation agent a concrete deliverable.
+
+Wait, `state failures --recent` already exists in the usage line. Let me check what it does.
+
+Actually, I need to be careful. Let me look at the usage line more carefully. It shows lots of subcommands including `failures --recent`. Let me check if that exists.
+
+Let me look at what failures command exists:
+
+From the usage: `failures --recent` — it exists. So I could extend it to show the reconciliation gap. But this is investigatory.
+
+Hmm, let me think differently. The trajectory pressure says "Reconcile transcript-only tool failures" and "Reconcile state-only tool failures". The dashboard computes these from comparing tool failure events in state vs transcript. The root cause could be:
+1. State not recording tool failures when they happen (tool_wrappers.rs, state.rs)
+2. Transcript parsing missing tool failures (log_feedback.py)
+3. Dashboard comparison logic bug (build_evolution_dashboard.py)
+
+This is too broad for a single 3-file task. Let me split it:
+- Task 2a (this session): Add a diagnostic subcommand to list per-session tool failure reconciliation gaps, so we can see which specific events mismatch. 
+- Task 2b (future session): Fix the root cause once diagnosed.
+
+But actually, the assessment says these are cumulative historical counts, not fresh. The recent 4 sessions show clean passes. So maybe this isn't the highest priority right now.
+
+Let me go with these 3 tasks:
+
+1. **Task 1** (replacing obsolete seed): Fix `state graph clusters` UX — add ID discovery hints. 1 file: `src/commands_state.rs`. LOW risk, immediate UX improvement.
+
+2. **Task 2**: Add token-backed verification to DeepSeek cache ratio reporting. When DeepSeek reports a cache ratio in prose without corresponding token count events, flag it as unverified so scoring doesn't depend on unbacked claims. Files: `src/deepseek.rs` and `scripts/log_feedback.py`. MEDIUM-LOW risk.
+
+3. **Task 3**: Add a `state graph tool-failures` diagnostic that compares tool failure records between state events and transcript evidence, showing the reconciliation gap per session. Files: `src/commands_state.rs`. MEDIUM risk — more complex but directly addresses trajectory pressure #1/#2.
+
+Actually, I'm worried about Task 2 touching both Rust and Python. That's 2 files but across language boundaries. The task would need the agent to understand both. Let me scope it to just the Rust side: add a method to `DeepSeekUsage` that indicates whether the cache ratio is token-backed (i.e., computed from actual token counts rather than parsed from completion prose). Then the Python side can use it in a future task.
+
+Or even simpler: just add the verification in the Python scoring script. Let me check what `log_feedback.py` does with cache ratios.
+
+Let me keep it simple. For Task 2, in `scripts/log_feedback.py`: when the cache ratio comes from a prose claim without token-backed metrics, emit a warning and mark it unverified. This is a pure Python change in one file.
+
+Wait, I need to understand the flow better. Let me check how cache ratios flow from deepseek.rs to log_feedback.py.
+
+The assessment says the cache report works: `yyds deepseek cache-report` → 95.73% hit ratio (138.9M hit / 6.2M miss across 209 events). So the token-backed computation exists. The unverified case is probably when the model says "cache hit ratio: 95%" in its response text but the actual usage block doesn't have the token breakdown.
+
+I think the simplest approach: in `src/deepseek.rs`, add a method `is_token_backed()` to `DeepSeekUsage` that returns true only when both `cache_read_input_tokens` and `cache_creation_input_tokens` are present. Then in `scripts/log_feedback.py`, check this flag before trusting the ratio.
+
+Hmm but that's 2 files. Let me just do the Rust side — add the method and a test. Then the dashboard can consume it later.
+
+OK let me finalize:
+
+**Task 1**: Fix `state graph clusters` UX — add ID discovery hints to the error message when no valid ID is provided. Files: `src/commands_state.rs`. Verifier: `cargo test commands_state`.
+
+**Task 2**: Add `is_token_backed()` method to `DeepSeekUsage` in `src/deepseek.rs` with tests. This enables downstream verification that cache ratios are computed from actual token counts. Files: `src/deepseek.rs`. Verifier: `cargo test deepseek`.
+
+**Task 3**: Add per-session tool failure reconciliation gap to `state failures --recent` or a new `state graph tool-failures` subcommand. Files: `src/commands_state.rs`. Verifier: `cargo test commands_state`.
+
+Actually, Task 2 is quite small. Let me make it a bit meatier: also add the check in `scripts/log_feedback.py`? No, the task says max 3 files and I want to keep it focused.
+
+Let me also reconsider: the assessment candidate #2 says "Improve `state graph clusters` discoverability" and #4 says "Add token-backed cache ratio verification". Both are LOW priority. The #1 candidate (reconciliation) is MEDIUM. Maybe I should do the reconciliation task as Task 2 instead.
+
+Let me decide:
+
+Task 1: state graph clusters UX (LOW, 1 file, immediate win)
+Task 2: Token-backed cache ratio method in deepseek.rs (LOW, 1 file, enables future verification)
+Task 3: Tool failure reconciliation diagnostic (MEDIUM, 1 file, addresses #1 trajectory pressure)
+
+All 3 are in `src/` files, all verifiable with `cargo test`. All state-driven.
+
+Now let me write the files. First, I need to mark task_01.md as obsolete.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 24.1s (3 ✓)
+
+Now let me check the cold-start fix was indeed already done (confirming the seed task is stale):
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline --all --grep…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn.*tool_failure\|too… ✓ (82ms)
+ ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed: the cold-start fix was committed on Day 109 23:02. The seed task is definitely obsolete.
+
+Now, `handle_tool_failures` exists at line 831 and `build_tool_failures_report` at line 1993 in `src/commands_state.rs`. The tool failures handler already exists. Let me check what it does and whether it could be extended to show reconciliation gaps.
+
+Let me also check for the state graph clusters argument handling to understand the UX gap.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+Good — cold-start fix committed on Day 109. The seed task is stale. Let me check the clusters argument handling and the tool_failures handler briefly:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:5113..5143  ▶ read src/commands_state.rs:831..871  ▶ read src/commands_state.rs:14205..14235 ✓ (257ms)
+ ✓ (287ms)
+ ✓ (300ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find where `graph clusters` is dispatched — where it checks for the required `id` argument:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.4s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'graph.*clusters\|"clu… ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where graph clusters is dispatched — specifically where it checks for the id argument:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '"clusters"\|clusters.… ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The dispatch for `graph clusters` is probably in the main handler function. Let me find where "graph" subcommands are dispatched:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '"graph"' src/commands… ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The graph subcommand is dispatched to a separate module: `crate::commands_state_graph::handle_graph_subcommand`. Let me check that file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git ls-files src/commands_stat… ✓ (79ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — `src/commands_state_graph.rs` exists. Let me find the clusters dispatch there:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '"clusters"\|clusters'… ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `handle_graph_clusters` function is in `src/commands_state_graph.rs` at line 523. The dispatch at line 69 requires an `id` argument. If no `id` is provided, it falls through to the usage error at line 466.
+
+The UX gap is: when a user runs `yyds state graph clusters`, they get a wall of usage text but no hint about how to discover valid IDs.
+
+Now let me also check the `handle_graph_clusters` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:523..553 ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have enough context to write the task files. Let me finalize:
+
+1. **Task 1**: Fix `state graph clusters` discoverability. The current behavior when no ID is provided is a wall of usage text. Improve the error message to suggest how to discover valid IDs (e.g., `state tail`, `state graph hotspots`, `state evals`, `state patches`). Also add a hint in the usage text itself. Files: `src/commands_state_graph.rs`.
+
+2. **Task 2**: Add `is_token_backed()` method to `DeepSeekUsage` in `src/deepseek.rs`. The trajectory shows `deepseek_cache_ratio_unverified_count=1` — a cache ratio reported in prose without token-backed metrics. Adding a method that returns `true` only when both `cache_read_input_tokens` and `cache_creation_input_tokens` are present enables downstream verification. Files: `src/deepseek.rs`.
+
+3. **Task 3**: Add tool failure reconciliation reporting to `state failures --recent` or add a new `state graph tool-failures` subcommand. This directly addresses trajectory pressure #1/#2 (state/transcript tool failure disagreement). The command should compare tool failure events in state vs what transcripts show, and surface the reconciliation gap. Files: `src/commands_state.rs`, `src/commands_state_graph.rs`.
+
+Wait, task 3 could be complex. Let me think about whether I can scope it narrowly enough.
+
+The `handle_tool_failures` function at line 831 already exists and reads tool failure events. The reconciliation gap would involve also parsing transcripts. But that's complex.
+
+Alternative: just add a diagnostic in `log_feedback.py` that lists the specific mismatched events. But that's a Python file, not Rust.
+
+Let me scope task 3 very narrowly: extend the existing `handle_tool_failures` function to report the count of tool failures by tool name and by session, making it easier to cross-reference with transcripts. Then in a future session, add transcript cross-reference.
+
+Actually, even simpler: add a `--reconcile` flag to `state failures --recent` that shows which sessions have tool failure mismatches. But that requires transcript access...
+
+Let me just keep task 3 tight: add a "tool failure count by session" breakdown to the existing `state failures --recent` output. This makes it possible to manually cross-reference with transcripts. It's a small addition to `build_tool_failures_report` in `src/commands_state.rs`.
+
+Hmm actually, let me reconsider whether 3 tasks is too ambitious. The planning instruction says "You have 3 task slots per session." Let me aim for 2 solid tasks and keep the 3rd optional:
+
+OK, 3 tasks it is. Let me write them all.
+
+For task 2, let me verify that `DeepSeekUsage` has those token fields:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'cache_read_input_toke… ✓ (92ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the struct definition:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:66..96 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have everything I need. The `DeepSeekUsage` struct has `cache_hit_tokens` (Option<u64>) and `cache_miss_tokens` (Option<u64>). The `cache_hit_ratio()` method returns `None` when either is missing. So `is_token_backed()` would return `true` when both are `Some`.
+
+Now let me write the task files. Let me start with the obsolete notice for task_01.md, then write 3 new tasks.
+
+Final task plan:
+
+**Task 1**: Improve `state graph clusters` discoverability — add ID discovery hints to the error message when no ID is provided, and add a hint line to the usage text. Files: `src/commands_state_graph.rs`.
+
+**Task 2**: Add `is_token_backed()` method to `DeepSeekUsage` — returns true when cache ratio is computed from actual token counts. Files: `src/deepseek.rs`.
+
+**Task 3**: Add per-session tool failure breakdown to `state failures --recent` — group tool failures by session to enable manual cross-referencing with transcript evidence. Files: `src/commands_state.rs`.
+
+All 3 are in `src/`, all verifiable with `cargo build && cargo test`.
+
+Now let me write the task_01_obsolete.md and then the 3 task files.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have full ownership context. Let me write the plan files. First, mark the obsolete seed task, then create 3 evidence-backed tasks.
+  + # Task 01 OBSOLETE — cold-start state failure diagnostics
+  + 
+  + ## Why obsolete
+  + 
+  + The assessment self-test output confirms this task was **already completed on Day 109 (23:02)**:
+  + 
+  + ```
+  + $ yyds state why last-failure
+  + → no failures, 1 incomplete run (current session) ✓
+  + ```
+  + 
+  + The commit `08c4c69` (Day 109 23:02) delivered this exact feature:
+  + "Improve cold-start state failure diagnostics (Task 1)"
+  + 
+  + The seed task was generated from stale harness evidence before the Day 109 23:02 session results were available. The feature is live and working. Running it again would be a no-op or a regression risk.
+  + 
+  + ## Evidence that the feature is done
+  + 
+  + 1. `yyds state why last-failure` returns actionable output instead of "no state event found"
+  + 2. Assessment self-test confirms the command works in the current session
+  ... (6 more lines)
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (26 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (26 lines) ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write the 3 actual task files. Let me also remove the old task_01.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ rm /home/runner/work/yyds-harness/yyds-harness/session_plan/task_01.md ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write the 3 task files and the issue_responses.md:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Improve `state graph clusters` discoverability with ID discovery hints
+  + Files: src/commands_state_graph.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Self-test on Day 110: `yyds state graph clusters` shows the usage line requires `<event-id|patch-id|eval-id|commit>` but does not tell the user how to discover valid IDs. The assessment recorded: "UX friction: help doesn't explain what arguments to pass."
+  + - The current error path (line 466 of src/commands_state_graph.rs) prints a wall of usage text without any guidance on how to find valid event/patch/eval/commit IDs.
+  + - This is a real usability gap: the user must guess or read source to learn that `state tail`, `state graph hotspots`, `state evals`, or `state patches` provide discoverable IDs.
+  + 
+  + Edit Surface:
+  + - src/commands_state_graph.rs — the `handle_graph_subcommand` function's error path and usage text
+  + 
+  + Verifier:
+  + - cargo test commands_state_graph
+  + - cargo test -- state
+  + 
+  + Fallback:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (55 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (55 lines) ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now Task 2:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Add `is_token_backed()` method to DeepSeekUsage for cache ratio verification
+  + Files: src/deepseek.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Trajectory graph pressure (Day 110): `deepseek_cache_ratio_unverified_count=1` — a DeepSeek cache hit ratio was reported in prose without token-backed cache metrics to independently verify it.
+  + - `scripts/log_feedback.py` line 2548 self-tests this: `check("cache prose ratio marked unverified", cache_prose["deepseek_cache_ratio_unverified_count"] == 1, cache_prose)` — the test confirms the unverified detection exists but the underlying struct (`DeepSeekUsage`) has no method to expose token-backed status.
+  + - `src/deepseek.rs` line 66-84: `DeepSeekUsage` has `cache_hit_tokens: Option<u64>` and `cache_miss_tokens: Option<u64>`. The `cache_hit_ratio()` method already returns `None` when either is missing. But there is no method to query *whether* the ratio is token-backed (both fields present) vs prose-derived (one or both fields absent).
+  + - The cache report (`yyds deepseek cache-report`) works correctly (95.73% hit ratio from 209 events) — this task adds a verification building block, not a fix to broken behavior.
+  + 
+  + Edit Surface:
+  + - src/deepseek.rs — `DeepSeekUsage` impl block (around line 73)
+  + 
+  + Verifier:
+  + - cargo test deepseek
+  + - cargo test -- deepseek_usage
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (57 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (57 lines) ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now Task 3 — tool failure reconciliation. Let me make this focused and actionable.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Add per-session tool failure grouping to `state failures --recent`
+  + Files: src/commands_state.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Trajectory graph pressure #1: `transcript_only_failed_tool_count=2` — transcript logs contain tool failures absent from state events
+  + - Trajectory graph pressure #2: `state_only_failed_tool_count=13` — state events contain tool failures unmatched in transcript records
+  + - These are computed by `scripts/build_evolution_dashboard.py` line 2666-2667 using `unique_delta_count()` on state vs transcript tool failure sets
+  + - The `state failures --recent` command (src/commands_state.rs line 831) already reads tool failure events but reports them as a flat list — no session grouping, making it impossible to cross-reference with per-session transcripts
+  + - Without session-level grouping, diagnosing the 15 mismatched events requires manual correlation across flat event lists
+  + 
+  + Edit Surface:
+  + - src/commands_state.rs — `handle_tool_failures` (line 831) and `build_tool_failures_report` (line 1993)
+  + 
+  + Verifier:
+  + - cargo test commands_state
+  + - cargo test -- failures
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_03.md (57 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_03.md (57 lines) ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write the issue_responses.md:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 110
+  + 
+  + No trusted owner issues today. Nothing to respond to.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (3 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (3 lines) ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the plan files are all present and correct:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la /home/runner/work/yyds-harness/yyds-harness/session_plan/ && echo "---" &… ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 3 task files plus the obsolete note and issue responses are in place. Let me verify the plan is sound:
+
+1. Task 01: `state graph clusters` UX — 1 file, `src/commands_state_graph.rs`. Clean, small scope, immediate UX improvement. Verifier: `cargo test commands_state_graph`.
+
+2. Task 02: `is_token_backed()` on `DeepSeekUsage` — 1 file, `src/deepseek.rs`. Clean, small scope, adds verification building block. Verifier: `cargo test deepseek`.
+
+3. Task 03: Per-session tool failure grouping — 1 file, `src/commands_state.rs`. Directly addresses trajectory pressure #1/#2. Verifier: `cargo test commands_state`.
+
+All 3 tasks:
+- Touch at most 1 source file each (within the 3-file limit)
+- Are state-driven (from trajectory/assessment evidence)
+- Are verifiable with `cargo test`
+- Are completable in 20 minutes each
+- Have clear success criteria and fallback conditions
+
+The obsolete seed task is documented in `task_01_obsolete.md`.
+
+This is a solid plan. Let me summarize for the user.
+────────────────────────────────────────────────────────────────────────────────
+
+Plan complete. Here's what I produced:
+
+## Session Plan — Day 110
+
+### Seed Task Handling
+The harness-seeded `task_01.md` ("Improve cold-start state failure diagnostics") was **already completed on Day 109 23:02** (commit `08c4c69`). Self-test confirms `yyds state why last-failure` works. I marked it obsolete in `session_plan/task_01_obsolete.md` and replaced it.
+
+### Three New Tasks
+
+| # | Title | Files | Origin |
+|---|-------|-------|--------|
+| 1 | Improve state graph clusters discoverability | src/commands_state_graph.rs | Self-test friction (assessment) |
+| 2 | Add is_token_backed() to DeepSeekUsage | src/deepseek.rs | Trajectory pressure #5 (cache ratio unverified) |
+| 3 | Per-session tool failure grouping in state failures --recent | src/commands_state.rs | Trajectory pressure #1/#2 (state/transcript reconciliation) |
+
+### Why These Tasks
+
+• **Task 1** (LOW risk, 1 file): Every `state graph` subcommand silently demands an ID with no discovery hint. A 5-minute fix — add "to find valid IDs, try `state tail` / `state graph hotspots` / `state evals`". Immediate UX win from the assessment self-test.
+
+• **Task 2** (LOW risk, 1 file): Trajectory shows `deepseek_cache_ratio_unverified_count=1` — a prose cache ratio without token backing. Adding `is_token_backed()` is a 10-line method + tests that enables downstream verification. Prerequisite for future scoring improvements.
+
+• **Task 3** (MEDIUM risk, 1 file): Trajectory's top two pressures are `transcript_only_failed_tool_count=2` and `state_only_failed_tool_count=13`. Before fixing root cause, we need per-session grouping to identify *which sessions* mismatch. Extends existing `state failures --recent` to group by run ID.
+
+### Deferred
+
+• The state/transcript reconciliation root cause fix waits for Task 3's diagnostic output
+• Non-proven claim rate (18.1%) — needs more investigation; the 119 non-proven claims suggest systematic gaps but no fresh reproduction
+• Turn overhead reduction (max 25 turns) — a pattern optimization task, not a bug fix
+
+### Issue Responses
+
+No trusted owner issues today. `session_plan/issue_responses.md` is empty.
+
+

@@ -1,0 +1,489 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and understanding the task, then examine the relevant code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the task. Let me examine the relevant code in `src/commands_state.rs` to understand the current `handle_tool_failures` and `build_tool_failures_report` functions.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at the relevant functions in `src/commands_state.rs`:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_tool_failures' in src/commands_state.rs  ▶ search 'build_tool_failures_report' in src/commands_state.rs ✓ (85ms)
+ ✓ (85ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read both functions to understand the current implementation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:831..881  ▶ read src/commands_state.rs:1993..2053 ✓ (145ms)
+ ✓ (113ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the rest of the build_tool_failures_report function to see the full current implementation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2052..2082 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I can see that:
+
+1. `build_tool_failures_report` already extracts `run_id` from each event (line 2058)
+2. It currently formats them as a flat list, showing the run_id in dim at the end of each line
+3. The events are already being sorted in reverse chronological order (`.rev()` on line 1996)
+
+The task wants me to group by session/run_id. Since the events already have `run_id` in the event, I can group by that. Let me also check how `state summary` or `state lifecycle` groups by run/session, and look at how `--recent` is handled.
+
+Let me check how `handle_tool_failures` handles `--recent` — looking at the args handling.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check how `--recent` is handled in `handle_tool_failures`, and also look at how state events carry `run_id`:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:780..834 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the structure. `handle_failures` handles `state failures --recent` and calls `build_recent_failure_report`. `handle_tool_failures` handles `state failures tools` and calls `build_tool_failures_report`.
+
+The task says: "Extend `yyds state failures --recent` to group tool failure events by session run ID" — wait, let me re-read the task more carefully.
+
+Looking at the task again:
+- "The `state failures --recent` command (src/commands_state.rs line 831) already reads tool failure events"
+- Wait, line 831 is `handle_tool_failures`, which handles `state failures tools`, not `state failures --recent`
+
+Hmm, but the task says line 831. Let me look at what `state failures --recent` shows vs `state failures tools`. Let me check `build_recent_failure_report`.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check `build_recent_failure_report` to understand what `--recent` currently does:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_recent_failure_report' in src/commands_state.rs ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `build_recent_failure_report`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1946..1996 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `state failures --recent` uses `build_recent_failure_report` which shows a flat list of all failure events (not just tool failures). And `state failures tools` uses `build_tool_failures_report` which specifically filters for `ToolCallCompleted` with error/success=false status.
+
+Now let me re-read the task objective:
+
+"Extend `yyds state failures --recent` to group tool failure events by session run ID"
+
+Wait, but `state failures --recent` shows all failure types, not just tool failures. The task title says "Add per-session tool failure grouping to `state failures --recent`". 
+
+Looking more carefully at the task, it says:
+- "The `state failures --recent` command (src/commands_state.rs line 831) already reads tool failure events but reports them as a flat list"
+
+But line 831 is `handle_tool_failures`, which handles `state failures tools`, not `state failures --recent`. The task might have confused which function handles what. But the *intent* is clear: add session-based grouping to tool failure reporting.
+
+Let me re-read the task more carefully:
+- "Extend `yyds state failures --recent` to group tool failure events by session run ID"
+
+I think the task wants me to modify `state failures tools` (which shows tool failures specifically) to group by run ID and optionally add this grouping to `--recent` as well. Or maybe the task writer confused the two commands.
+
+Let me just focus on the practical goal: Add session/run grouping to the tool failure output. The simplest approach is to modify `build_tool_failures_report` to group by `run_id` and add a `--by-session` flag or make it the default.
+
+Looking at the Success Criteria:
+- `yyds state failures --recent` groups output by run ID
+- Running without `--recent` still works
+- Existing `--limit` flag still works
+- The flat failure detail view is preserved — grouping is additive, not a replacement
+
+Wait, I think the task wants me to support both `failures --recent` and `failures tools` with session grouping for tool failures. Let me look at how `handle_failures` decides between them:
+
+From line 782-791:
+- `state failures tools` → `handle_tool_failures`
+- `state failures --recent` → uses `build_recent_failure_report`
+
+The task title references `--recent` but the code references point to `handle_tool_failures`. I think the pragmatic approach is:
+
+1. Modify `build_tool_failures_report` to group by run_id (since it already extracts run_id)
+2. Maybe also add a `--by-session` flag to `handle_tool_failures` that toggles grouping
+3. Keep the flat view as default, but add a `--by-session` or `--group` flag
+
+Actually, re-reading the Success Criteria more carefully:
+- "`yyds state failures --recent` groups output by run ID (session)"
+- "Running without `--recent` still works (shows all failures)"
+
+So "without `--recent`" means not limiting to recent events? Or showing all failures? I think it means: `state failures` without `--recent` shows all failures (ungrouped), and `state failures --recent` shows recent failures grouped by session.
+
+But wait, looking at the current code: `state failures --recent` already exists and uses `build_recent_failure_report`. The task wants to add tool failure grouping. So maybe the task wants `state failures --recent` to ALSO show tool failures grouped by session?
+
+Actually, I think the task is confused about which function does what. The intent is:
+- Add session grouping to tool failure output
+- The tool failures command path is `state failures tools`
+
+Let me go with modifying `build_tool_failures_report` to group by `run_id`, and add a `--by-session` flag to `handle_tool_failures`. I'll also add a note about the `--recent` path if that's what the task actually wants.
+
+Wait, let me re-read the task once more. The task says:
+"Extend `yyds state failures --recent` to group tool failure events by session run ID"
+
+And the Success Criteria says:
+"`yyds state failures --recent` groups output by run ID"
+
+But currently `state failures --recent` shows ALL failure types, not just tool failures. So maybe the task wants to add tool failure grouping to THAT output?
+
+I think the simplest reading is: modify the tool failures report (`build_tool_failures_report`) to group by run_id, and make this happen when you do `state failures --recent` — but that doesn't make sense because `--recent` uses a different report function.
+
+Let me just go with the most useful change: modify `build_tool_failures_report` to group by `run_id` and make the grouping optional via a `--by-session` flag. That way:
+- `state failures tools` → flat list (current behavior)
+- `state failures tools --by-session` → grouped by run_id
+- `state failures --recent` → unchanged (shows all failure types, flat)
+
+Actually wait, I think the task intent might be simpler than I'm making it. Let me look again at the Success Criteria example:
+
+```
+run github-actions-27735942108 (2 failures):
+  ToolCallFailed: bash command `cargo build` exit=1 ...
+  ToolCallFailed: read_file path `src/nonexistent.rs` ...
+```
+
+This is clearly for tool failures grouped by run. The task says "Extend `yyds state failures --recent`" — maybe they want `state failures --recent` to ALSO show tool failures grouped when tool failures exist?
+
+But that would change the semantics of `--recent` which currently shows all failure types. 
+
+You know what, I think the task is imprecise about which command path to modify. The core intent is: "add per-session grouping to tool failure reporting." The natural place is `build_tool_failures_report` and `handle_tool_failures`. Let me just do that and add clear flags.
+
+Let me implement:
+1. Add `--by-session` flag support to `handle_tool_failures`
+2. Modify `build_tool_failures_report` to accept a `group_by_session` boolean parameter
+3. When grouping is enabled, organize failures by run_id with counts
+
+Let me also check what `event_string` looks like and how `run_id` is extracted.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also check how `event_string` works and look at the `is_failure_event_type` function:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_string' in src/commands_state.rs  ▶ search 'fn is_failure_event_type' in src/commands_state.rs ✓ (87ms)
+ ✓ (85ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `event_string` function to understand how it works.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14148..14163 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture. Let me look at the test for `build_tool_failures_report` to understand the test pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at existing tests for these functions to understand test patterns:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_tool_failures_report' in src/commands_state.rs ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No tests for `build_tool_failures_report` directly. Let me search for `failures` in the test section to find related tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'tool_failures' in src/commands_state.rs ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for test functions that test the failures command.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test.*failures' in src/commands_state.rs ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search in the test module for failures-related tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_recent_failure' in src/commands_state.rs ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test at line 14440 to understand the pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14425..14505 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the `event_at` and `event` helper functions used in tests so I can understand the event structure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_at' in src/commands_state.rs  ▶ search 'fn event\b' in src/commands_state.rs ✓ (82ms)
+ ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `event_at` helper.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14265..14305 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the `event` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event\(' in src/commands_state.rs ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search '"fn event"' in src/commands_state.rs ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for just `event(` as called in tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn event(' src/commands_state.rs | head -5 ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14250..14270 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the event structure. Each event has `run_id`, `event_type`, `payload`, `timestamp_ms`, etc.
+
+Now let me plan my implementation:
+
+1. **Modify `build_tool_failures_report`** to accept a `group_by_session: bool` parameter.
+2. When `group_by_session` is true, group the failures by `run_id` and display them with per-session headers.
+3. **Modify `handle_tool_failures`** to check for a `--by-session` flag and pass it.
+4. Add a test for the grouped output.
+
+Let me also look at how `handle_tool_failures` handles `--recent`. Looking at line 831-869, I see that `handle_tool_failures` does NOT have a `--recent` check — it just passes args to the report. The `--recent` check is in `handle_failures` (line 787).
+
+Wait, let me re-read this. The task says:
+- "`state failures --recent` groups output by run ID"
+- "Running without `--recent` still works (shows all failures)"
+
+Currently `state failures` without args shows errors. `state failures --recent` shows all failure types. `state failures tools` shows tool failures. 
+
+I think the task is slightly confused about the command structure. The intent is:
+- Add session grouping to the tool failure display
+- The `--recent` in the task description might refer to `state failures tools --recent` (though this doesn't exist yet)
+
+Let me re-read the Edit Surface:
+"src/commands_state.rs — `handle_tool_failures` (line 831) and `build_tool_failures_report` (line 1993)"
+
+So the task explicitly says I should edit `handle_tool_failures` and `build_tool_failures_report`. This means the grouping is for `state failures tools` (which dispatches to `handle_tool_failures`).
+
+Given the Success Criteria example shows grouped output, I'll:
+1. Add a `--by-session` flag to `handle_tool_failures` 
+2. Modify `build_tool_failures_report` to accept a `group_by_session` parameter
+3. When grouping is enabled, output per-run_id headers with counts
+4. Also maybe support `--recent` in `handle_tool_failures` as a synonym for limiting
+
+Actually, let me simplify. The task wants session grouping. The simplest approach:
+1. Make `build_tool_failures_report` group by `run_id` by default when there are multiple sessions
+2. Or: add a `--by-session` flag
+
+Let me go with adding grouping as a flag: `--by-session`. This way:
+- `state failures tools` → flat list (current behavior preserved)
+- `state failures tools --by-session` → grouped by run_id
+- `--limit` works in both modes
+
+Here's my plan:
+
+1. Modify `build_tool_failures_report` signature to: `fn build_tool_failures_report(events: &[Value], limit: usize, group_by_session: bool) -> Result<String, String>`
+2. When `group_by_session` is true, collect all failures, group by `run_id`, sort groups, display each group with header
+3. Update `handle_tool_failures` to parse `--by-session` flag and pass it
+4. Add a test
+
+Let me now implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding of the code. Let me create a todo list and start implementing:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (43ms)
+  ▶ todo ✓ (42ms)
+  ▶ todo ✓ (109ms)
+  ▶ todo ✓ (93ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the changes. First, let me modify `handle_tool_failures` to parse the `--by-session` flag.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.5s (4 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now edit `handle_tool_failures` to add the `--by-session` flag and pass it to `build_tool_failures_report`.
+────────────────────────────────────────────────────────────────────────────────
+
+First, let me edit `handle_tool_failures` to add the `--by-session` flag:
+        let limit = flag_value(args, "--limit")
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(10);
+  +     let by_session = args.iter().any(|a| a == "--by-session");
+        let path = default_events_path();
+        let (events, skipped) = match read_events_lenient(&path) {
+            Ok(result) => result,
+  ···
+                skipped
+            );
+        }
+  -     match build_tool_failures_report(&events, limit) {
+  +     match build_tool_failures_report(&events, limit, by_session) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+        }
+  ✓ Auto-approved: edit: src/commands_state.rs (39 → 40 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (39 → 40 lines)
+        let limit = flag_value(args, "--limit")
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(10);
+  +     let by_session = args.iter().any(|a| a == "--by-session");
+        let path = default_events_path();
+        let (events, skipped) = match read_events_lenient(&path) {
+            Ok(result) => result,
+  ···
+                skipped
+            );
+        }
+  -     match build_tool_failures_report(&events, limit) {
+  +     match build_tool_failures_report(&events, limit, by_session) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+        }
+ ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now let me modify `build_tool_failures_report` to support the grouping.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (42ms)
+  ▶ todo ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to modify `build_tool_failures_report` to accept and use the `group_by_session` parameter. Let me re-read the full function and then edit it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+Now modify `build_tool_failures_report` to support per-session grouping:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1993..2065 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll replace the function with one that supports grouping. I need to:
+
+1. Change the signature to accept `group_by_session: bool`
+2. When `group_by_session` is true, group by `run_id` and display per-session headers
+3. When `group_by_session` is false, keep the flat list
+
+Let me write the replacement.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - fn build_tool_failures_report(events: &[Value], limit: usize) -> Result<String, String> {
+  + fn build_tool_failures_report(
+  +     events: &[Value],
+  +     limit: usize,
+  +     group_by_session: bool,
+  + ) -> Result<String, String> {
+        let failures: Vec<&Value> = events
+            .iter()
+            .rev()
+  ···
+            "{BOLD}Tool failure events{RESET} (showing {})\n\n",
+            failures.len()
+        ));
+  -     for event in &failures {
+  + 
+  +     fn format_failure_line(event: &Value) -> String {
+            let ts = event
+                .get("timestamp_ms")
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (72 → 112 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (72 → 112 lines)
+  - fn build_tool_failures_report(events: &[Value], limit: usize) -> Result<String, String> {
+  + fn build_tool_failures_report(
+  +     events: &[Value],
+  +     limit: usize,
+  +     group_by_session: bool,
+  + ) -> Result<String, String> {
+        let failures: Vec<&Value> = events
+            .iter()
+            .rev()
+  ···
+            "{BOLD}Tool failure events{RESET} (showing {})\n\n",
+            failures.len()
+        ));
+  -     for event in &failures {
+  + 
+  +     fn format_failure_line(event: &Value) -> String {
+            let ts = event
+                .get("timestamp_ms")
+                .and_then(|v| v.as_i64())
+  ···
+  ... (49 more lines)
+ ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me update the usage line in handle_failures to also show the --by-session flag for tools. Let me check what the current usage says.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me update the usage message in `handle_failures` to show the `--by-session` flag:
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:786..796 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me update the usage line to show the `--by-session` flag for the `tools` subcommand.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         eprintln!("{YELLOW}         yoyo state failures tools [--limit N]{RESET}");
+  +         eprintln!("{YELLOW}         yoyo state failures tools [--limit N] [--by-session]{RESET}");
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 1 lines)
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (1 → 1 lines)
+  -         eprintln!("{YELLOW}         yoyo state failures tools [--limit N]{RESET}");
+  +         eprintln!("{YELLOW}         yoyo state failures tools [--limit N] [--by-session]{RESET}");
+ ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add a test for the grouped output. Let me find where the test module is in `src/commands_state.rs` and add a test there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (40ms)
+  ▶ todo ✓ (42ms)
+  2 tools completed in 126ms (2 ✓)
+
+
