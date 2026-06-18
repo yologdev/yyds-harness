@@ -65,11 +65,14 @@ use crate::commands_state::build_graph_tools_report;
 use crate::commands_state::build_graph_versions_payload;
 use crate::commands_state::build_graph_versions_report;
 
+const GRAPH_ID_DISCOVERY_HINT: &str =
+    "  Tip: discover valid IDs with 'state tail --limit 10', 'state graph hotspots', 'state evals', or 'state patches'";
+
 pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("clusters") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -82,7 +85,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("impact") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -95,7 +98,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("signals") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -108,7 +111,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("evidence") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -124,7 +127,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("files") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -140,7 +143,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("evals") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -156,7 +159,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("patches") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -172,7 +175,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("decisions") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -188,7 +191,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("hypotheses") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -204,7 +207,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("versions") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -220,7 +223,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("runs") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -236,7 +239,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("artifacts") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -252,7 +255,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("models") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -268,7 +271,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("tools") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -284,7 +287,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("commands") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -300,7 +303,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("tests") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -316,7 +319,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("commits") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -332,7 +335,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("memories") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -348,7 +351,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("issues") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -364,7 +367,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("cache") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -380,7 +383,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("failures") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -396,7 +399,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("policies") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -412,7 +415,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("protocol") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -428,7 +431,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("timeline") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -451,7 +454,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     if args.get(3).map(|arg| arg.as_str()) == Some("summary") {
         let Some(id) = args.get(4) else {
             eprintln!(
-                        "{YELLOW}  Usage: yoyo state graph summary <event-id|patch-id|eval-id|commit> [--depth N] [--json]{RESET}"
+                        "{YELLOW}  Usage: yoyo state graph summary <event-id|patch-id|eval-id|commit> [--depth N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                     );
             return;
         };
@@ -463,7 +466,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     }
     let Some(id) = args.get(3) else {
         eprintln!(
-                    "{YELLOW}  Usage: yoyo state graph <event-id|patch-id|eval-id|commit> [--depth N] [--to TARGET]\n         yoyo state graph summary <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph hotspots [--limit N] [--json]{RESET}"
+                    "{YELLOW}  Usage: yoyo state graph <event-id|patch-id|eval-id|commit> [--depth N] [--to TARGET]\n         yoyo state graph summary <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph hotspots [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                 );
         return;
     };
