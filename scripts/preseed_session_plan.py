@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 from pathlib import Path
 
@@ -493,6 +494,16 @@ def _has_protected_files(task: dict[str, object]) -> bool:
     return bool(task_files & set(PROTECTED_IMPLEMENTATION_FILES))
 
 
+def _candidate_files_exist(candidate: dict[str, object]) -> bool:
+    """Return True if at least one file listed in the candidate's files field exists."""
+    files_str = str(candidate.get("files") or "")
+    for path in files_str.split(","):
+        path = path.strip()
+        if path and os.path.isfile(path):
+            return True
+    return False
+
+
 _ANALYSIS_ONLY_METRICS = (
     "task_analysis_only_attempt_count",
     "task_no_edit_revert_count",
@@ -517,6 +528,8 @@ def choose_task(assessment: str) -> dict[str, object]:
         if any(key in lower for key in task.get("reject_keys", ())):
             continue
         if _has_protected_files(task):
+            continue
+        if not _candidate_files_exist(task):
             continue
         if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
             if analysis_only_active:
@@ -546,7 +559,7 @@ def choose_task(assessment: str) -> dict[str, object]:
         candidates[0]["contradiction_reason"] = reason
         return candidates[0]
 
-    return {
+    fallback = {
         "title": "Repair evidence-backed planning after no-task sessions",
         "files": "scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py",
         "objective": (
@@ -572,6 +585,10 @@ def choose_task(assessment: str) -> dict[str, object]:
             "planning_failed remains visible when it occurs.",
         ],
     }
+    if not _candidate_files_exist(fallback):
+        # Guarantee at least one existing file
+        fallback["files"] = "scripts/preseed_session_plan.py"
+    return fallback
 
 
 def render_task(task: dict[str, object], day: str, session_time: str) -> str:
@@ -920,6 +937,34 @@ resolved API keys to spawned workers. `api_key_present` now reports true.
         fallback = choose_task("No known current bug matched this assessment.")
         assert fallback["title"] == "Repair evidence-backed planning after no-task sessions", fallback
         assert not _has_protected_files(fallback), fallback
+        # --- File-existence validation tests ---
+        # All TASKS candidates must have at least one existing file
+        for candidate in TASKS:
+            assert _candidate_files_exist(candidate), (
+                f"Candidate '{candidate['title']}' has no existing files: {candidate.get('files')}"
+            )
+        # Helper: candidate with all-existing files returns True
+        assert _candidate_files_exist({"files": "scripts/preseed_session_plan.py"})
+        # Helper: candidate with some-existing files returns True
+        assert _candidate_files_exist(
+            {"files": "scripts/preseed_session_plan.py, nonexistent/file/ghost.py"}
+        )
+        # Helper: candidate with all-missing files returns False
+        assert not _candidate_files_exist(
+            {"files": "nonexistent/file/ghost.py, another/missing/path.rs"}
+        )
+        # Helper: candidate with empty files returns False
+        assert not _candidate_files_exist({"files": ""})
+        assert not _candidate_files_exist({})
+        # Fallback always has at least one existing file
+        assert _candidate_files_exist(fallback), "Fallback task files don't exist"
+        # Analysis-only task passes file-existence check
+        for candidate in TASKS:
+            if candidate["title"] == "Make analysis-only task pressure landable":
+                assert _candidate_files_exist(candidate), (
+                    f"Analysis-only task files don't exist: {candidate['files']}"
+                )
+                break
         print("preseed_session_plan self-tests passed")
         return 0
     if args.assessment is None:
