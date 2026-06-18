@@ -114,6 +114,8 @@ TASKS = [
         "keys": ("why last-failure", "cold-start", "cold start", "no state event found"),
         "reject_keys": (
             "now properly explains cold-start",
+            "cold-start diagnostics now",
+            "cold-start diagnostics now inspect",
             "fixed cold-start",
             "replaced \"no state log found\"",
             "no sessions completed yet",
@@ -186,13 +188,18 @@ TASKS = [
     {
         "keys": (
             "force analysis-only attempts into action",
+            "force reverted tasks to leave concrete evidence",
             "task_analysis_only_attempt_count",
             "analysis-only task attempts",
             "analysis only task attempts",
             "task_no_edit_revert_count",
+            "reverted_no_edit",
             "no-edit revert",
+            "no edit revert",
             "implementation ended without file progress",
             "implementation task reverted without touching files",
+            "tasks planned but reverted without touching",
+            "reverted without touching any source file",
         ),
         "title": "Make analysis-only task pressure landable",
         "files": "scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py",
@@ -201,9 +208,10 @@ TASKS = [
             "landable follow-up task instead of selecting broad or protected-file harness work."
         ),
         "why": (
-            "Recent evo evidence showed implementation attempts ending with no file progress and no "
-            "terminal evidence. The next seed must target landable task-selection logic so DeepSeek "
-            "can improve the loop without touching protected evolution files."
+            "Recent evo evidence showed implementation attempts ending with no file progress, "
+            "`reverted_no_edit`, and no terminal evidence. The next seed must target landable "
+            "task-selection logic so DeepSeek can improve the loop without touching protected "
+            "evolution files."
         ),
         "success": [
             "Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup.",
@@ -216,7 +224,7 @@ TASKS = [
         ],
         "evidence": [
             "Future task manifests show landable Files entries for task-success repair pressure.",
-            "Future trajectory pressure leads with implementation failure repair when `task_analysis_only_attempt_count` is above 0 and task_success_rate is 0.0.",
+            "Future trajectory pressure leads with implementation failure repair when `task_analysis_only_attempt_count`, `reverted_no_edit`, or task_success_rate evidence shows no-edit task failure.",
         ],
     },
     {
@@ -666,6 +674,25 @@ lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; stat
         assert "scripts/evolve.sh" not in str(task["files"]), task
         text = render_task(task, "107", "21:55")
         assert "task_analysis_only_attempt_count" in text, text
+
+        assessment = """# Assessment
+
+## Recent Changes
+**Day 109 (23:02) — 3/3 tasks verified:**
+- Task 1: Cold-start diagnostics now inspect directory state before reporting "no events file"
+
+## Graph-derived Next-Task Pressure
+1. **Force reverted tasks to leave concrete evidence** (reverted_no_edit=1): Implementation tasks reverted without touching files; require early scoped edit, obsolete note, or concrete blocker
+2. **Raise verified task success rate** (0.667): Dominant failure: reverted_no_edit. The fix should target task *planning* quality, not implementation robustness
+
+## Bugs / Friction Found
+MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but reverted without touching any source file.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Make analysis-only task pressure landable", task
+        assert task["title"] != "Improve cold-start state failure diagnostics", task
+        text = render_task(task, "110", "18:26")
+        assert "reverted_no_edit" in text, text
 
         assessment = """# Assessment
 
