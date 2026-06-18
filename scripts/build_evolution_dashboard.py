@@ -479,6 +479,10 @@ def unique_delta_count(left: list[str], right: list[str]) -> int:
     return len(normalized_set(left) - normalized_set(right))
 
 
+def unique_delta_labels(left: list[str], right: list[str], max_items: int = 20) -> list[str]:
+    return sorted(normalized_set(left) - normalized_set(right))[:max_items]
+
+
 def evidence_text(value: Any, max_len: int = 220) -> str:
     text = " ".join(str(value or "").split())
     text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", text)
@@ -2665,6 +2669,8 @@ def work_summary(
         },
         "state_only_failed_tool_count": unique_delta_count(state_failed_tools_all, transcript_failed_tools_all),
         "transcript_only_failed_tool_count": unique_delta_count(transcript_failed_tools_all, state_failed_tools_all),
+        "state_only_failed_tool_labels": unique_delta_labels(state_failed_tools_all, transcript_failed_tools_all),
+        "transcript_only_failed_tool_labels": unique_delta_labels(transcript_failed_tools_all, state_failed_tools_all),
     }
     attempted = int(outcome.get("tasks_attempted") or 0)
     succeeded = int(outcome.get("tasks_succeeded") or 0)
