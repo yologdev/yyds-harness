@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Implementation adds `_candidate_files_exist()` helper with `os.path.isfile()` checks, integrates it into the candidate loop after `_has_protected_files()` (line 532), validates the fallback task with a hard fallback to `scripts/preseed_session_plan.py` (line 588-590), and covers all five required self-test cases (all-existing, some-missing, all-missing, empty, fallback). Both verifiers pass (`python3 scripts/preseed_session_plan.py --test` and `python3 -m unittest scripts.test_state_graph_tools` — 57 tests OK).
