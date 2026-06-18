@@ -2061,9 +2061,7 @@ fn build_tool_failures_report(
         } else {
             error_summary.to_string()
         };
-        format!(
-            "  {DIM}{ts}{RESET}  {BOLD}{tool_name}{RESET}  {RED}{error_summary}{RESET}"
-        )
+        format!("  {DIM}{ts}{RESET}  {BOLD}{tool_name}{RESET}  {RED}{error_summary}{RESET}")
     }
 
     if group_by_session {
