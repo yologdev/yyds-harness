@@ -85,6 +85,7 @@ impl DeepSeekUsage {
     /// Returns `true` when both `cache_hit_tokens` and `cache_miss_tokens` are
     /// populated, meaning the cache ratio is independently verifiable from
     /// token counts rather than derived from prose claims alone.
+    #[allow(dead_code)]
     pub fn is_token_backed(&self) -> bool {
         self.cache_hit_tokens.is_some() && self.cache_miss_tokens.is_some()
     }
