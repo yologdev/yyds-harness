@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Implementation adds cold-start diagnostic error surfacing to `build_why_report` for `last-failure` queries, with thorough tests covering empty state, in-progress sessions, non-last-failure IDs, and missing diagnostics. All verifier tests pass (cargo check + cargo test --lib why_report), existing behavior is preserved, and output distinguishes no-history from missing-diagnostics from active runs.

@@ -1,0 +1,470 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the test failure. The test `commands_state::tests::why_report_surfaces_diagnostic_error_when_no_failure_found` is panicking because it expects to see "diagnostic error" in the output but instead gets "no state event found for 'last-failure'".
+
+Let me look at the test and the implementation to understand what's happening.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'why_report_surfaces_diagnostic_error_when_no_failure_found' (*.rs) ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test and the surrounding context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17720..17840 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the test. It expects `build_why_report` to surface diagnostic errors. Let me look at the `build_why_report` function to understand the implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' (*.rs) ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `build_why_report` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3079..3279 ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The test expects that when there's an in-progress session (Case 2: RunStarted but no RunCompleted), the diagnostic error is surfaced by `take_diagnostic_error()`. But looking at the code flow:
+
+1. Case 1: `stash_diagnostic_error("auth_error: invalid API key (401)")` — calls `build_why_report` with empty events. The code at line 3204 calls `take_diagnostic_error()` and uses it. This works.
+
+2. Case 2: The test re-uses the same `in_progress` events, but `take_diagnostic_error()` was already called in Case 1 — it consumes the diagnostic error! Let me re-read Case 1 more carefully...
+
+Wait, actually `take_diagnostic_error()` takes the diagnostic, so after Case 1, it's consumed. So Case 2 wouldn't have it... But the error message shows Case 2 failed with "should surface diagnostic error for in-progress session". The output shows the full error message from `err2`, which includes "No diagnostic error evidence is available." So the diagnostic was already consumed by Case 1.
+
+But wait — the test failure output shows the full error message printed for Case 2, and it says "should surface diagnostic error for in-progress session, got: no state event found for 'last-failure'...". So the diagnostic was not in Case 2's output.
+
+But look more carefully at the test code. After Case 1 calls `build_why_report`, the diagnostic is consumed. Then Case 2 calls `build_why_report` again with `in_progress` events, but there's no diagnostic error stashed anymore. That's the bug in the test — Case 2 needs its own `stash_diagnostic_error()` call.
+
+Wait, let me re-read the test again:
+
+```rust
+// Stash a diagnostic error (simulating a startup failure).
+crate::state::stash_diagnostic_error("auth_error: invalid API key (401)");
+
+// Case 1: empty events (fresh state after init)
+let events: Vec<Value> = vec![];
+let err = build_why_report(&events, "last-failure").unwrap_err();
+// ...assertions...
+
+// Case 2: events with RunStarted but no RunCompleted (session in progress)
+let in_progress = vec![...];
+let err2 = build_why_report(&in_progress, "last-failure").unwrap_err();
+// ...assertions...
+```
+
+The issue is that `take_diagnostic_error()` in Case 1 consumes the diagnostic, so Case 2 doesn't have one. Case 2 should fail too.
+
+But actually looking at the error output more carefully:
+
+```
+---- commands_state::tests::why_report_surfaces_diagnostic_error_when_no_failure_found stdout ----
+thread 'commands_state::tests::why_report_surfaces_diagnostic_error_when_no_failure_found' ... panicked at src/commands_state.rs:17770:9:
+should surface diagnostic error for in-progress session, got: no state event found for 'last-failure'
+...
+No diagnostic error evidence is available.
+```
+
+So the test only fails at line 17770 - Case 2. Case 1 passes. Let me look at `take_diagnostic_error` and `stash_diagnostic_error` to understand how they work.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn stash_diagnostic_error' (*.rs)  ▶ search 'fn take_diagnostic_error' (*.rs) ✓ (66ms)
+ ✓ (70ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at both functions in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:70..100 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `take_diagnostic_error()` calls `cell.take()`, which consumes the diagnostic error. After Case 1, the diagnostic is consumed, so Case 2 doesn't see it.
+
+The test needs to stash again between Case 1 and Case 2. Let me look at the test more carefully. The issue is clear: Case 1 calls `build_why_report` which calls `take_diagnostic_error()` (consuming it), and then Case 2 tries to also use it but it's already consumed.
+
+The fix is to add `crate::state::stash_diagnostic_error("auth_error: invalid API key (401)");` before Case 2 (and also before Case 3 to make sure the test for Case 3 has the diagnostic available, though Case 3 checks that the diagnostic is NOT surfaced).
+
+Wait, let me re-read the test case 3:
+
+```rust
+// Case 3: diagnostic error NOT surfaced for non-last-failure IDs
+let err3 = build_why_report(&events, "evt-nonexistent").unwrap_err();
+assert!(
+    !err3.contains("nearby diagnostic error"),
+    "should NOT surface diagnostic error for custom IDs, got: {err3}"
+);
+```
+
+Case 3 uses `&events` which is the empty `events` vec. And `"evt-nonexistent"` is not `"last-failure"`. The code at line 3203 only surfaces diagnostic errors for `id == "last-failure"`, so Case 3 should pass even if a diagnostic is stashed. But there's no diagnostic stashed at this point because it was consumed by Case 1.
+
+And Case 4:
+```rust
+// Case 4: when no diagnostic error is stashed, no diagnostic section appears
+let err4 = build_why_report(&events, "last-failure").unwrap_err();
+assert!(
+    !err4.contains("nearby diagnostic error"),
+    "should NOT surface diagnostic header when none is stashed, got: {err4}"
+);
+```
+
+Case 4 also uses `&events` (empty) and expects no diagnostic. This should pass since there's no diagnostic.
+
+So the fix is to add `stash_diagnostic_error` before Case 2 (and possibly also before Case 3, though it shouldn't matter for correctness there). Let me fix the test.
+
+Actually, looking at it again: Case 2 needs the diagnostic stashed. I need to add `crate::state::stash_diagnostic_error("auth_error: invalid API key (401)");` right before the Case 2 section.
+
+Let me also verify: after Case 2, Case 3 needs a stashed diagnostic to verify it's NOT surfaced. Let me check...
+
+Line 3203: `if id == "last-failure"` — so for `"evt-nonexistent"`, the diagnostic code won't execute. This means we need a diagnostic stashed before Case 3 to actually test that it's NOT surfaced. Otherwise, the test passes trivially because there's simply no diagnostic.
+
+But wait, Case 4 tests that when no diagnostic is stashed, no diagnostic section appears. For this test, we need to ensure the diagnostic IS consumed before Case 4. So the sequence should be:
+
+1. Initial stash
+2. Case 1 - consumes it
+3. Re-stash for Case 2
+4. Case 2 - consumes it
+5. Re-stash for Case 3
+6. Case 3 - does NOT consume it (not last-failure), so it's still available
+7. Case 4 - consumes it (but then Case 4 asserts it doesn't have diagnostic section)
+
+Hmm, that's problematic. After Case 3, the diagnostic is still stashed, so Case 4 would find it (since Case 4 uses `"last-failure"`). That would make Case 4 fail because it expects no diagnostic section.
+
+Wait, let me re-read Case 4: it says "when no diagnostic error is stashed, no diagnostic section appears". The comment says `take_diagnostic_error clears it, so the next call should not show it`. So the intent is that Case 4 has no diagnostic. 
+
+The sequence with the fix:
+1. Initial stash
+2. Case 1 - consumes it (diagnostic cleared)
+3. Stash again for Case 2
+4. Case 2 - consumes it (diagnostic cleared)
+5. Case 3 - no diagnostic, doesn't matter
+6. Case 4 - no diagnostic, correct
+
+That works! But actually, should Case 3 have a diagnostic? Let me think about it - the test wants to verify that even when a diagnostic IS available, it's NOT surfaced for non-last-failure IDs. Currently Case 3 uses `&events` (empty) and `"evt-nonexistent"`.
+
+Looking at the code flow in `build_why_report`:
+1. `find_target_event(events, id)` returns `None` (empty events + nonexistent ID)
+2. Enters the `None` branch
+3. Various conditionals about events
+4. At line 3203: `if id == "last-failure"` — this is false for `"evt-nonexistent"`, so the diagnostic code is skipped
+
+So Case 3 passes even without a diagnostic. But to properly test the assertion, we should have a diagnostic stashed to ensure it's truly not included. Let me re-examine: if no diagnostic is stashed, the test passes trivially. If we stash one before Case 3, the test still passes (because the code path skips non-last-failure IDs). So stashing before Case 3 is better and more thorough.
+
+But then Case 4 would have a diagnostic still stashed (since Case 3 doesn't consume it), and Case 4 would assert no diagnostic section... which would fail.
+
+So the proper sequence:
+1. Initial stash
+2. Case 1 - consumes
+3. Re-stash for Case 2
+4. Case 2 - consumes
+5. Re-stash for Case 3
+6. Case 3 - does NOT consume (not last-failure)
+7. Manually clear diagnostic (or let Case 4 fail)
+
+Hmm, I could call `take_diagnostic_error()` after Case 3 to clear it, or just not stash before Case 3. Actually, the simplest fix that makes the test pass is:
+
+Just add `stash_diagnostic_error` before Case 2. Don't add before Case 3. Case 3 passes trivially (no diagnostic available, and the assertion is `!err3.contains("nearby diagnostic error")` which is true). Case 4 also passes trivially (no diagnostic, and assertions are `!err4.contains(...)` and `err4.contains("no diagnostic evidence")`).
+
+Wait, but Case 4 at line 17790 checks `err4.contains("no diagnostic evidence")`. Let me look at the code... Line 3212-3218:
+
+```rust
+err.push_str("\n\nNo diagnostic error evidence is available. This may indicate:\n");
+err.push_str("  - no startup failures occurred, or\n");
+err.push_str("  - the diagnostic was already consumed by a previous state command.\n");
+err.push_str("Run 'yyds state doctor' for a full state health check.");
+```
+
+So "no diagnostic evidence" is in the output when `take_diagnostic_error()` returns None. And Case 4 asserts `err4.contains("no diagnostic evidence")`. So Case 4 should pass when no diagnostic is stashed.
+
+The fix is simply to add `crate::state::stash_diagnostic_error("auth_error: invalid API key (401)");` before Case 2. Let me verify this is sufficient.
+
+Yes, that's all that's needed. Case 1 consumes the diagnostic. Before Case 2, re-stash it so Case 2 can find it. Case 2 consumes it. Case 3 and Case 4 proceed without diagnostic.
+────────────────────────────────────────────────────────────────────────────────
+
+The test failure is clear: `take_diagnostic_error()` consumes the stashed error (it's a `take`, not a `peek`), so Case 1 consumes it and Case 2 finds none. I need to re-stash before Case 2.
+            // Case 2: events with RunStarted but no RunCompleted (session in progress)
+  +         crate::state::stash_diagnostic_error("auth_error: invalid API key (401)");
+            let in_progress = vec![event(
+  ✓ Auto-approved: edit: src/commands_state.rs (2 → 3 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (2 → 3 lines)
+            // Case 2: events with RunStarted but no RunCompleted (session in progress)
+  +         crate::state::stash_diagnostic_error("auth_error: invalid API key (401)");
+            let in_progress = vec![event(
+ ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the failing test to verify it passes.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the specific failing test:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state::tes… ✓ (32.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now Case 4 fails. The error says "should note missing diagnostic evidence", but the output does contain "No diagnostic error evidence is available". Let me look more closely...
+
+Wait, the output is:
+```
+No diagnostic error evidence is available. This may indicate:
+  - no startup failures occurred, or
+  - the diagnostic was already consumed by a previous state command.
+Run 'yyds state doctor' for a full state health check.
+```
+
+But the test at line 17790 asserts `err4.contains("no diagnostic evidence")`. The actual text says "No diagnostic error evidence is available". So "no diagnostic evidence" is not a substring of "No diagnostic error evidence is available". The test is looking for a lowercase "no diagnostic evidence" but the actual text has "No diagnostic error evidence".
+
+But wait, `contains` on a String does case-sensitive matching. So "no diagnostic evidence" does NOT match "No diagnostic error evidence is available".
+
+But this test was passing before my change at line 17790... Let me re-read the test output from the original failure:
+
+Original failure:
+```
+panicked at src/commands_state.rs:17770:9:
+should surface diagnostic error for in-progress session, got: no state event found for 'last-failure'
+```
+
+Only line 17770 failed (Case 2 assertion). Cases 1, 3, and 4 passed previously. So "no diagnostic evidence" was matching something before.
+
+But wait, after my fix, Case 2 now passes, and the diagnostic is consumed. Now Case 4 fails at line 17790. Let me look at Case 4 again:
+
+```rust
+// Case 4: when no diagnostic error is stashed, no diagnostic section appears
+// (take_diagnostic_error clears it, so the next call should not show it)
+let err4 = build_why_report(&events, "last-failure").unwrap_err();
+assert!(
+    !err4.contains("nearby diagnostic error"),
+    "should NOT surface diagnostic header when none is stashed, got: {err4}"
+);
+assert!(
+    err4.contains("no diagnostic evidence"),
+    "should note missing diagnostic evidence, got: {err4}"
+);
+```
+
+Case 4 uses `&events` which is the empty `vec![]`. Now that Case 2 consumed the diagnostic, there's no diagnostic for Case 4. But the assertion at line 17790 checks for "no diagnostic evidence" — the actual text says "No diagnostic error evidence is available". 
+
+Hmm, but the original test passed Case 4 before my edit... How? Let me think about this.
+
+Before my edit: Case 1 consumed the diagnostic. Case 2 didn't have one, so no diagnostic was consumed by Case 2. Then Case 3 also didn't consume (it's not last-failure). Then Case 4 — also no diagnostic. The assertion `err4.contains("no diagnostic evidence")` should have failed on the original code too... unless the text was different before.
+
+Wait, let me look at the original error message more carefully:
+
+Original failure at line 17770:
+```
+should surface diagnostic error for in-progress session, got: no state event found for 'last-failure'
+
+State summary:
+  events: 1 total
+  runs: 1 started, 0 completed
+  ...
+A session is currently in progress.
+...
+No diagnostic error evidence is available. This may indicate:
+  - no startup failures occurred, or
+  - the diagnostic was already consumed by a previous state command.
+Run 'yyds state doctor' for a full state health check.
+```
+
+The text "No diagnostic error evidence is available" is present. So `err4.contains("no diagnostic evidence")` should FAIL because "no diagnostic evidence" is not a substring of "No diagnostic error evidence is available".
+
+But the original test only failed at line 17770 (Case 2), NOT at line 17790 (Case 4). This means Case 4 was passing in the original run. How?
+
+Let me look at the code path again... When `events` is empty and `id` is `"last-failure"`:
+
+```rust
+if events.is_empty() || (run_completed_count == 0 && !run_started) {
+    // enters here for empty events
+    ...
+    if id == "last-failure" {
+        // tries take_diagnostic_error() 
+    }
+}
+```
+
+In the original code, Case 2 didn't consume the diagnostic (because it didn't have one), so Case 4 wouldn't either. That's consistent.
+
+But wait — before my edit, the ONLY `stash_diagnostic_error` call was at the top. Case 1 consumed it. Then Case 2 didn't have one (no stash), Case 3 didn't have one, Case 4 didn't have one. So Case 4's assertion at line 17790 should have produced "should note missing diagnostic evidence", and the actual output would include "No diagnostic error evidence is available" — which does NOT contain "no diagnostic evidence".
+
+Unless the original code checked for a different string... Let me look at the original test file before my edit.
+
+Actually wait, let me look at the git status to see what changes exist in the working tree.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check if there were other changes already in the working tree:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/commands_state.rs… ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full diff to understand what was already changed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/commands_state.rs ✓ (88ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is being truncated. Let me use a different approach to see the full diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/commands_state.rs… ✓ (86ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/commands_state.rs… ✓ (102ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is being truncated by something. Let me try reading the specific sections of the file.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me read the current state of the implementation and test sections directly:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3196..3236 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the issue now. The implementation says:
+- "nearby diagnostic error:" (line 3207) 
+- "No diagnostic error evidence is available." (line 3212)
+
+And the test checks for:
+- `err.contains("nearby diagnostic error")` — this matches "nearby diagnostic error:" (case-sensitive contains)
+- `err.contains("no diagnostic evidence")` — this does NOT match "No diagnostic error evidence is available" because:
+  1. "no diagnostic evidence" ≠ "No diagnostic error evidence" (case + extra word)
+  2. But `contains` is case-sensitive in Rust...
+
+Wait, actually `str::contains` IS case-sensitive. So "no diagnostic evidence" does NOT contain as a substring in "No diagnostic error evidence is available".
+
+But the original test passed Case 4 before my edit! Let me think about why...
+
+In the original code (before the implementation changes), there was NO diagnostic error handling code. So `take_diagnostic_error()` wasn't called, and the text "No diagnostic error evidence is available" wasn't generated. So Case 4 was simply checking something else entirely.
+
+Wait, but the test was ADDED as part of this implementation. So the test AND the implementation are both new. The test was written to match the implementation. But Case 4's assertion at line 17790 uses "no diagnostic evidence" while the implementation writes "No diagnostic error evidence is available." which does NOT contain "no diagnostic evidence" (case-sensitive).
+
+Let me check: "No diagnostic error evidence is available." Does it contain "no diagnostic evidence" ? Let me think...
+
+"No diagnostic error evidence is available"
+Contains "no diagnostic evidence" ?
+- "No" != "no" (case difference)
+So no, it doesn't contain it.
+
+But the test was passing before for Case 4? No, actually the original failure only showed Case 2 failing. If Case 4 also failed, both would show. But the test runner stops at the first panic... So Case 2 panicked first, and Case 4 was never reached.
+
+Now that I fixed Case 2, Case 4 is reached and fails. The assertion string "no diagnostic evidence" doesn't match the implementation text "No diagnostic error evidence is available" — it's a case mismatch.
+
+The fix: change the test assertion from "no diagnostic evidence" to "no diagnostic" or adjust the implementation. The simplest fix is to change the test string to be a case-insensitive check or use the exact text.
+
+Actually, the simplest fix is to change "no diagnostic evidence" to "No diagnostic error evidence" in the test:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I see — after fixing Case 2, Case 4 fails because the test was never reached before (Case 2 panicked first). The assertion string `"no diagnostic evidence"` doesn't match the implementation's `"No diagnostic error evidence is available"` (case-sensitive `contains`). Let me fix the test assertion:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17782..17797 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to fix the assertion. The implementation at line 3212 says: `"No diagnostic error evidence is available. This may indicate:\n"`. So the test should check for "No diagnostic error evidence" (case-sensitive).
+
+But wait, should I change the test or the implementation? The test's intent is to verify that when no diagnostic is stashed, a message about missing diagnostics appears. The current implementation uses "No diagnostic error evidence is available" and the test checks for "no diagnostic evidence". The mismatch is that the test uses lowercase while the implementation uses sentence case, AND the test omits "error".
+
+The safest fix is to change the test to match the implementation. Let me use "No diagnostic error evidence" in the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert!(
+  -             err4.contains("no diagnostic evidence"),
+  +             err4.contains("No diagnostic error evidence"),
+                "should note missing diagnostic evidence, got: {err4}"
+            );
+  ✓ Auto-approved: edit: src/commands_state.rs (4 → 4 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (4 → 4 lines)
+            assert!(
+  -             err4.contains("no diagnostic evidence"),
+  +             err4.contains("No diagnostic error evidence"),
+                "should note missing diagnostic evidence, got: {err4}"
+            );
+ ✓ (54ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me re-run the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state::tes… ✓ (32.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes now. Let me run `cargo fmt -- --check` and `cargo check` as required.
+────────────────────────────────────────────────────────────────────────────────
+
+Test passes. Now let me run the required verification gates:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's a formatting issue in the implementation code (not my test fix). Let me fix it by running `cargo fmt`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && c… ✓ (8.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both pass. Now let me run the focused tests again to confirm everything is good - the specific test plus the broader module tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Both gates pass. Let me run the broader test suite for the affected module:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state stat… ✓ (98ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `cargo test commands_state state` syntax doesn't work that way. Let me run just the test for the commands_state module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state -- -… ✓ (34.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+All 169 `commands_state` tests pass (including the previously-failing `why_report_surfaces_diagnostic_error_when_no_failure_found`). 
+
+**Summary of fixes:**
+
+1. **Missing re-stash before Case 2** (line 17759): `take_diagnostic_error()` consumes the stashed error, so Case 1 cleared it. Added `crate::state::stash_diagnostic_error(...)` before Case 2 so the diagnostic is available for the in-progress session test.
+
+2. **Case-sensitive string mismatch in Case 4 assertion** (line 17791): The test checked for `"no diagnostic evidence"` but the implementation writes `"No diagnostic error evidence is available"`. Changed to `"No diagnostic error evidence"`. This bug was hidden before because Case 2 panicked first.
+
+3. **Formatting** (`cargo fmt`): Fixed a long line in the implementation code that was added by the original task.
+
+
