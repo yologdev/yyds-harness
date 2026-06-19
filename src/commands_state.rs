@@ -3196,6 +3196,30 @@ fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
                 if failure_count == 1 { "" } else { "s" }
             ));
         }
+
+        // Surface nearby diagnostic errors for last-failure queries so
+        // cold-start / startup-failure users get actionable evidence
+        // instead of just "no state event found".
+        if id == "last-failure" {
+            if let Some(diag) = crate::state::take_diagnostic_error() {
+                let mut diag_err = String::new();
+                diag_err.push_str("\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n");
+                diag_err.push_str("nearby diagnostic error:\n");
+                diag_err.push_str(&format!("  {diag}\n"));
+                diag_err.push_str(
+                    "\nUse the error above to diagnose the most recent startup failure.\n",
+                );
+                err = diag_err + &err;
+            } else {
+                err.push_str("\n\nNo diagnostic error evidence is available. This may indicate:\n");
+                err.push_str("  - no startup failures occurred, or\n");
+                err.push_str(
+                    "  - the diagnostic was already consumed by a previous state command.\n",
+                );
+                err.push_str("Run 'yyds state doctor' for a full state health check.");
+            }
+        }
+
         return Err(err);
     };
 
@@ -17703,6 +17727,69 @@ mod tests {
         assert_ne!(
             err4, err5,
             "error-runs and mixed-runs outputs must be distinct"
+        );
+    }
+
+    #[test]
+    fn why_report_surfaces_diagnostic_error_when_no_failure_found() {
+        // When no target failure event exists, build_why_report should surface
+        // any stashed diagnostic error so cold-start / startup-failure users
+        // get actionable evidence instead of just "no state event found".
+
+        // Stash a diagnostic error (simulating a startup failure).
+        crate::state::stash_diagnostic_error("auth_error: invalid API key (401)");
+
+        // Case 1: empty events (fresh state after init)
+        let events: Vec<Value> = vec![];
+        let err = build_why_report(&events, "last-failure").unwrap_err();
+        assert!(
+            err.contains("no state event found for 'last-failure'"),
+            "should still report no event found, got: {err}"
+        );
+        assert!(
+            err.contains("nearby diagnostic error"),
+            "should surface diagnostic error header, got: {err}"
+        );
+        assert!(
+            err.contains("auth_error: invalid API key"),
+            "should include the stashed error text, got: {err}"
+        );
+
+        // Case 2: events with RunStarted but no RunCompleted (session in progress)
+        crate::state::stash_diagnostic_error("auth_error: invalid API key (401)");
+        let in_progress = vec![event(
+            "evt-start",
+            "RunStarted",
+            "run-diag-1",
+            json!({"task": "x"}),
+        )];
+        let err2 = build_why_report(&in_progress, "last-failure").unwrap_err();
+        assert!(
+            err2.contains("in progress"),
+            "should mention session in progress, got: {err2}"
+        );
+        assert!(
+            err2.contains("nearby diagnostic error"),
+            "should surface diagnostic error for in-progress session, got: {err2}"
+        );
+
+        // Case 3: diagnostic error NOT surfaced for non-last-failure IDs
+        let err3 = build_why_report(&events, "evt-nonexistent").unwrap_err();
+        assert!(
+            !err3.contains("nearby diagnostic error"),
+            "should NOT surface diagnostic error for custom IDs, got: {err3}"
+        );
+
+        // Case 4: when no diagnostic error is stashed, no diagnostic section appears
+        // (take_diagnostic_error clears it, so the next call should not show it)
+        let err4 = build_why_report(&events, "last-failure").unwrap_err();
+        assert!(
+            !err4.contains("nearby diagnostic error"),
+            "should NOT surface diagnostic header when none is stashed, got: {err4}"
+        );
+        assert!(
+            err4.contains("No diagnostic error evidence"),
+            "should note missing diagnostic evidence, got: {err4}"
         );
     }
 
