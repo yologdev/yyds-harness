@@ -1,0 +1,631 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. I need to fix state diagnostic timeouts on large events files. The core problem is that `handle_evals`, `handle_patches`, and `handle_tool_failures` all call `read_events()` which reads the entire 39MB events.jsonl file with no size protection.
+
+Let me start by reading the evolve skill and the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs:900..980 ✓ (133ms)
+ ✓ (127ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the three functions that need modification:
+
+1. `handle_evals` (line 916) - calls `read_events(&path)` which reads the entire file
+2. `handle_patches` (line 939) - calls `read_events(&path)` which reads the entire file
+3. `handle_tool_failures` - need to find this one
+
+Let me also find `handle_tool_failures`, `read_events`, `read_events_lenient`, `read_tail_events`, and the dispatch function `handle_state_subcommand` to understand the full picture.
+
+The task says:
+- For `handle_evals`: add `--recent N` flag (default N=500), use `read_tail_events` by default, add `--all` flag
+- For `handle_patches`: same pattern
+- For `handle_tool_failures`: already has `--limit`, change to use `read_tail_events` when `--limit` is specified
+
+Let me read more of the file to understand the full context.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_tool_failures' in src/commands_state.rs  ▶ search 'fn read_events' in src/commands_state.rs  ▶ search 'fn read_tail_events' in src/commands_state.rs  ▶ search 'fn handle_state_subcommand' in src/commands_state.rs ✓ (202ms)
+ ✓ (250ms)
+ ✓ (251ms)
+ ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the relevant functions: `handle_tool_failures`, `read_events`, `read_events_lenient`, `read_tail_events`, and the dispatch in `handle_state_subcommand`.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.4s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:831..916  ▶ read src/commands_state.rs:1219..1299  ▶ read src/commands_state.rs:27..177 ✓ (243ms)
+ ✓ (443ms)
+ ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also look at the `handle_failures` dispatch function (not `handle_tool_failures` - there seems to be a dispatch function that routes between tool failures and other types):
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.7s (3 ✓)
+
+Now let me find the `handle_failures` dispatch and `read_tail` helper:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_failures' in src/commands_state.rs  ▶ search 'fn read_tail' in src/commands_state.rs ✓ (99ms)
+ ✓ (93ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `handle_failures` and `read_tail` to understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:782..832  ▶ read src/commands_state.rs:1207..1257 ✓ (180ms)
+ ✓ (183ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also check `read_tail` - I see that `read_tail` reads the FULL file into a string, then keeps only the last `limit` lines in a VecDeque. So it also reads the full file. This is still a problem but better than `read_events` because it does less per-line work (no JSON parsing, no compatibility normalization).
+
+Actually, `read_tail` still reads the entire file into memory with `std::fs::read_to_string`. For a 39MB file, that's still a lot but should complete faster than parsing all 34K events. The bottleneck is likely the `read_tail` function's `std::fs::read_to_string` reading the whole file. 
+
+But the assessment evidence says `state failures --recent` PASSes (uses `read_events_lenient` too but `handle_failures` also reads the full file). Let me re-read...
+
+Actually wait: `handle_failures` (line 782) with `--recent` also calls `read_events_lenient(&path)` which reads the full file. But the assessment says `state failures --recent` PASSes. So the full-file read might not actually be the bottleneck, or it completes in under 10s for `handle_failures`.
+
+Hmm, but the assessment says:
+- `state evals` → TIMEOUT (10s)
+- `state patches` → TIMEOUT (10s)
+- `state failures tools` → TIMEOUT (10s)
+- `state failures --recent` → PASS
+
+The difference between `handle_failures` and `handle_evals` is: `handle_failures` uses `read_events_lenient` while `handle_evals` uses `read_events` (which calls `read_compatibility_events`). `read_compatibility_events` might be doing more work per event.
+
+But the task's objective is clear: make these commands use bounded reads by default.
+
+Let me also look at the `build_eval_report` and `build_tool_failures_report` functions to understand what they do with the events.
+
+Actually, I think I have enough context. Let me plan the changes:
+
+### Plan:
+
+1. **`handle_evals`** (line 916):
+   - Add `--recent N` flag (default N=500)
+   - Add `--all` flag to restore full scan
+   - When `--all` is present: use `read_events` (full scan)
+   - Otherwise: use `read_tail_events(&path, recent_count)` 
+   - When `--harness-version` or `--patch-id` is present without `--all`: scan recent events only (with a note)
+
+2. **`handle_patches`** (line 939):
+   - Add `--recent N` flag (default N=500)
+   - Add `--all` flag to restore full scan
+   - When `--all` is present: use `read_events` (full scan)
+   - Otherwise: use `read_tail_events(&path, recent_count)`
+   - When `--status` is present: scan recent events by default, full scan with `--all`
+
+3. **`handle_tool_failures`** (line 831):
+   - When `--limit` is specified: use `read_tail_events(&path, limit * 2)` as read window, but cap at some reasonable value
+   - When `--by-session` used without `--limit`: default to recent 500 events
+   - Add `--all` flag for full scan
+
+4. **Update help text** in `print_usage` or wherever usage is shown.
+
+Let me also find where the usage for these commands is documented. Let me search for the usage text.
+
+Actually, I also need to look at the `read_tail` function more carefully. It does `std::fs::read_to_string(path)?` which reads the whole file. So `read_tail_events` still reads the full file. But it keeps only the last N lines and parses fewer JSON objects. This is still significantly faster than parsing all 34K events.
+
+The bottleneck is probably in `read_events` → `read_compatibility_events` which does both reading + normalizing + parsing for ALL events. `read_tail` just keeps last N lines as strings.
+
+Now, the task says this is about making commands complete in <2 seconds. The `read_tail` still reads the full 39MB file but does minimal processing. Let me check if reading a 39MB file + keeping last N lines takes <2 seconds. It should be fine - reading 39MB from disk is fast, and the string splitting/line counting is O(n) but trivial.
+
+OK, let me proceed with the implementation.
+
+First, let me find where `print_usage` is, so I can update help text.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.1s (2 ✓)
+
+Now I have a clear understanding of the code. Let me find the usage/help text for these commands:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn print_usage' in src/commands_state.rs ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the print_usage function to see the current help text for evals, patches, and failures tools.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14248..14328 ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the context I need. Let me also look at the `handle_cache` function to see how it already reads the whole file — that's another candidate but not in scope.
+
+Let me also check the `build_eval_report` and `build_tool_failures_report` to understand what they do, and find `build_patch_list_report` and `build_patch_show_report`.
+
+Actually, I don't need to read those. The plan is clear:
+
+1. `handle_evals`: default to 500 recent events via `read_tail_events`, add `--recent N` and `--all` flags.
+2. `handle_patches`: default to 500 recent events via `read_tail_events`, add `--recent N` and `--all` flags.
+3. `handle_tool_failures`: when `--limit` is specified, use `read_tail_events` with `limit * 2`, cap at file size. When no `--limit` but `--by-session`, default to 500 recent events.
+4. Update `print_usage` help text.
+
+Let me now implement the changes. I'll also need to handle the `--all` flag case for evals and patches.
+
+For `handle_evals`:
+- Parse `--recent N` (default 500)
+- Parse `--all` flag
+- If `--all`: use `read_events` (full scan)
+- Otherwise: use `read_tail_events(&path, recent_count)`
+- When `--harness-version` or `--patch-id` is present without `--all`: scan recent events with a note
+
+For `handle_patches`:
+- Parse `--recent N` (default 500)  
+- Parse `--all` flag
+- If `--all`: use `read_events` (full scan)
+- Otherwise: use `read_tail_events(&path, recent_count)`
+- When `--status` used without `--all`: scan recent events
+
+For `handle_tool_failures`:
+- When `--limit` is specified: use `read_tail_events(&path, limit * 2)` with `limit*2` as read window
+- When `--by-session` without `--limit`: default to recent 500 events  
+- Add `--all` flag for full scan
+
+Let me also check whether `handle_cache` should be similarly fixed... It's not in scope.
+
+Now let me also think about the edge case for `handle_tool_failures`: the task says "When --by-session is used without --limit, default to recent 500 events". But the current code has `limit` defaulting to 10 when `--limit` isn't specified. So:
+- If `--limit N` is explicitly specified: use `read_tail_events(&path, N * 2)` as read window  
+- If `--limit` is NOT specified but `--by-session` IS specified: default to 500 recent events
+- If neither is specified: default to recent events with `limit` (10) and use `read_tail_events(&path, limit * 2)` 
+
+Wait, let me re-read the task more carefully:
+
+"For handle_tool_failures (line 831): already accepts --limit but reads full file. Change to use read_tail_events when --limit is specified (use limit*2 as read window to allow for filtering; cap at file size). When --by-session is used without --limit, default to recent 500 events."
+
+So:
+- `--limit N` specified: read_tail_events(path, N * 2)
+- `--by-session` without `--limit`: read_tail_events(path, 500)
+- Neither? The task doesn't explicitly say. The current default is limit=10. I think we should keep the default and use read_tail_events with limit*2: read_tail_events(path, 20).
+
+Actually, let me re-read more carefully. The current code:
+```rust
+let limit = flag_value(args, "--limit")
+    .and_then(|raw| raw.parse::<usize>().ok())
+    .unwrap_or(10);
+```
+
+So when no `--limit` is specified, limit=10. Then it reads ALL events with `read_events_lenient`.
+
+The task wants:
+- When `--limit` is specified: use `read_tail_events(path, limit * 2)` 
+- When `--by-session` is used without `--limit`: default to recent 500 events
+
+For the case where neither `--limit` nor `--by-session` is specified: I'll use the default limit (10) multiplied by 2 as the read window: `read_tail_events(path, 20)`.
+
+Let me now implement all changes.
+
+Alright, let me create a todo list and start editing.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. Let me create a task list and start implementing.
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (52ms)
+  ▶ todo ✓ (55ms)
+  ▶ todo ✓ (96ms)
+  ▶ todo ✓ (98ms)
+  ▶ todo ✓ (93ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start editing. I'll modify the three functions one by one, starting with `handle_evals`.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 1.9s (5 ✓)
+
+Now let me implement. Starting with `handle_evals`:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (49ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me write the edit for handle_evals.
+────────────────────────────────────────────────────────────────────────────────
+
+
+    fn handle_evals(args: &[String]) {
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  -         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  -         return;
+  -     };
+  +     let all = args.iter().any(|a| a == "--all");
+  +     let recent = flag_value(args, "--recent")
+  +         .and_then(|raw| raw.parse::<usize>().ok())
+  +         .unwrap_or(500);
+        let harness_version = args
+            .iter()
+            .position(|a| a == "--harness-version")
+  ···
+            .position(|a| a == "--patch-id")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.as_str());
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (22 → 41 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (22 → 41 lines)
+    fn handle_evals(args: &[String]) {
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  -         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  -         return;
+  -     };
+  +     let all = args.iter().any(|a| a == "--all");
+  +     let recent = flag_value(args, "--recent")
+  +         .and_then(|raw| raw.parse::<usize>().ok())
+  +         .unwrap_or(500);
+        let harness_version = args
+            .iter()
+            .position(|a| a == "--harness-version")
+  ···
+            .position(|a| a == "--patch-id")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.as_str());
+  + 
+  +     // Use tail-read by default; --all restores full-file scan.
+  +     let events = if all {
+  ... (19 more lines)
+ ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me edit handle_patches.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (45ms)
+  ▶ todo ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me edit handle_patches. I need to re-read the current code around line 939 to get the exact old_text for the edit.
+
+Wait, I already read it above. Let me write the replacement.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:958..988 ✓ (49ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+For `handle_patches`, the `show` subcommand needs to search for a specific patch-id. With tail-read only, the patch might be missed. The `--all` flag should enable full scan for `show` too. Let me implement this carefully.
+
+The task says:
+- For handle_patches (line 939): same pattern — `--recent N` with default 500, `--all` for full scan. When `--status` is present, scan recent events by default, full scan with `--all`.
+
+The `show` subcommand searches for a specific patch-id. Without `--all`, it scans only recent 500 events. If the patch is older, the user must use `--all`. This is reasonable.
+
+Let me implement:
+────────────────────────────────────────────────────────────────────────────────
+
+
+    fn handle_patches(args: &[String]) {
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  -         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  -         return;
+  -     };
+  + 
+  +     // Parse flags before show subcommand dispatch so --all applies to show too.
+  +     let all = args.iter().any(|a| a == "--all");
+  +     let recent = flag_value(args, "--recent")
+  +         .and_then(|raw| raw.parse::<usize>().ok())
+  +         .unwrap_or(500);
+    
+        if args.first().map(|s| s.as_str()) == Some("show") {
+            let Some(id) = args.get(1) else {
+  -             eprintln!("{YELLOW}  Usage: yoyo state patches show <patch-id>{RESET}");
+  +             eprintln!("{YELLOW}  Usage: yoyo state patches show <patch-id> [--all]{RESET}");
+                return;
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (29 → 66 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (29 → 66 lines)
+    fn handle_patches(args: &[String]) {
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  -         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  -         return;
+  -     };
+  + 
+  +     // Parse flags before show subcommand dispatch so --all applies to show too.
+  +     let all = args.iter().any(|a| a == "--all");
+  +     let recent = flag_value(args, "--recent")
+  +         .and_then(|raw| raw.parse::<usize>().ok())
+  +         .unwrap_or(500);
+    
+        if args.first().map(|s| s.as_str()) == Some("show") {
+            let Some(id) = args.get(1) else {
+  -             eprintln!("{YELLOW}  Usage: yoyo state patches show <patch-id>{RESET}");
+  +             eprintln!("{YELLOW}  Usage: yoyo state patches show <patch-id> [--all]{RESET}");
+                return;
+  +         };
+  +         let events = if all {
+  ... (43 more lines)
+ ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me edit handle_tool_failures. The task says:
+- When --limit is specified: use read_tail_events(path, limit * 2) as read window
+- When --by-session is used without --limit: default to recent 500 events
+- Add --all for full scan
+
+Current code:
+```rust
+fn handle_tool_failures(args: &[String]) {
+    let limit = flag_value(args, "--limit")
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(10);
+    let by_session = args.iter().any(|a| a == "--by-session");
+    let path = default_events_path();
+    let (events, skipped) = match read_events_lenient(&path) {
+        Ok(result) => result,
+        Err(_) => {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        }
+    };
+    ...
+```
+
+I need to change the event reading to use read_tail_events when --all is not specified. Let me handle this carefully.
+
+When --limit is explicitly specified:
+- read window = limit * 2 (capped at usize::MAX)
+- Use read_tail_events(path, read_window)
+
+When --by-session without --limit:
+- Use read_tail_events(path, 500)
+
+When neither (default case, limit=10):
+- Use read_tail_events(path, 20) (limit * 2 = 20)
+
+When --all is specified:
+- Use read_events_lenient (full scan)
+
+Actually wait, let me think about this more carefully. The `read_tail_events` returns Vec<Value> (no skip count). The current code uses `read_events_lenient` which returns `(Vec<Value>, usize)`. I need to handle the skipped count differently.
+
+Let me also check: does `read_tail_events` have a skip count? No, it just silently drops unparseable lines. I could either:
+1. Use read_tail_events and lose the skip count
+2. Add a lenient variant of read_tail_events
+3. When using read_events_lenient, pass limit to it
+
+Actually, the simplest approach: for the tail-read path, just use read_tail_events and set skipped=0 (we don't track skipped lines in tail mode). For the full-path with --all, use read_events_lenient.
+
+Let me implement:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (47ms)
+  ▶ todo ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me edit handle_tool_failures.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.3s (2 ✓)
+
+
+    fn handle_tool_failures(args: &[String]) {
+  -     let limit = flag_value(args, "--limit")
+  -         .and_then(|raw| raw.parse::<usize>().ok())
+  -         .unwrap_or(10);
+  +     let limit_raw = flag_value(args, "--limit");
+  +     let explicit_limit = limit_raw.as_ref().and_then(|raw| raw.parse::<usize>().ok());
+  +     let limit = explicit_limit.unwrap_or(10);
+        let by_session = args.iter().any(|a| a == "--by-session");
+  +     let all = args.iter().any(|a| a == "--all");
+        let path = default_events_path();
+  -     let (events, skipped) = match read_events_lenient(&path) {
+  -         Ok(result) => result,
+  -         Err(_) => {
+  -             eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  -             return;
+  + 
+  +     let (events, skipped) = if all {
+  +         match read_events_lenient(&path) {
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (40 → 62 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (40 → 62 lines)
+    fn handle_tool_failures(args: &[String]) {
+  -     let limit = flag_value(args, "--limit")
+  -         .and_then(|raw| raw.parse::<usize>().ok())
+  -         .unwrap_or(10);
+  +     let limit_raw = flag_value(args, "--limit");
+  +     let explicit_limit = limit_raw.as_ref().and_then(|raw| raw.parse::<usize>().ok());
+  +     let limit = explicit_limit.unwrap_or(10);
+        let by_session = args.iter().any(|a| a == "--by-session");
+  +     let all = args.iter().any(|a| a == "--all");
+        let path = default_events_path();
+  -     let (events, skipped) = match read_events_lenient(&path) {
+  -         Ok(result) => result,
+  -         Err(_) => {
+  -             eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  -             return;
+  + 
+  +     let (events, skipped) = if all {
+  +         match read_events_lenient(&path) {
+  +             Ok(result) => result,
+  +             Err(_) => {
+  ... (24 more lines)
+ ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me update the help text in `print_usage`. I need to update:
+- `evals [--harness-version VERSION] [--patch-id PATCH]` → `evals [--recent N] [--all] [--harness-version VERSION] [--patch-id PATCH]`
+- `patches [--status STATUS]` → `patches [--recent N] [--all] [--status STATUS]`
+- Need to also add `failures tools` line since it's currently shown as `failures --recent`
+
+Let me find the current help text lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (48ms)
+  ▶ todo ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to update `print_usage` to document the new flags. Let me find the exact lines to edit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14248..14258 ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The line numbers shifted due to insertions. Let me search for `print_usage` again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn print_usage' in src/commands_state.rs ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The line number shifted from 14248 to 14326 due to my earlier insertions. Let me read the function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14326..14376 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to update the help text. Let me edit the usage lines for `evals`, `patches`, and `failures` to reflect the new flags.
+
+The key lines to change:
+- `  evals [--harness-version VERSION] [--patch-id PATCH]` → `  evals [--recent N] [--all] [--harness-version VERSION] [--patch-id PATCH]`
+- `  patches [--status STATUS]` → `  patches [--recent N] [--all] [--status STATUS]`
+- `  patches show <patch-id>` → `  patches show <patch-id> [--all]`
+- `  failures --recent` → `  failures --recent [--limit N]`
+- Add: `  failures tools [--limit N] [--by-session] [--all]`
+
+Let me use precise old_text matching.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -   evals [--harness-version VERSION] [--patch-id PATCH]
+  -   patches [--status STATUS]
+  -   patches show <patch-id>
+  +   evals [--recent N] [--all] [--harness-version VERSION] [--patch-id PATCH]
+  +   patches [--recent N] [--all] [--status STATUS]
+  +   patches show <patch-id> [--all]
+      why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]
+      summary [--limit N] [--tail]
+      lineage <event-id|patch-id|commit>
+  -   failures --recent
+  +   failures --recent [--limit N]
+  +   failures tools [--limit N] [--by-session] [--all]
+      crashes [--limit N] [--json]
+      cache --recent"
+  ✓ Auto-approved: edit: src/commands_state.rs (9 → 10 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (9 → 10 lines)
+  -   evals [--harness-version VERSION] [--patch-id PATCH]
+  -   patches [--status STATUS]
+  -   patches show <patch-id>
+  +   evals [--recent N] [--all] [--harness-version VERSION] [--patch-id PATCH]
+  +   patches [--recent N] [--all] [--status STATUS]
+  +   patches show <patch-id> [--all]
+      why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]
+      summary [--limit N] [--tail]
+      lineage <event-id|patch-id|commit>
+  -   failures --recent
+  +   failures --recent [--limit N]
+  +   failures tools [--limit N] [--by-session] [--all]
+      crashes [--limit N] [--json]
+      cache --recent"
+ ✗ (139ms)
+    │ old_text not found in src/commands_state.rs.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue is that the `old_text` needs to match exactly including the start of the first line. Let me read the complete exact text that I want to replace. Let me look at lines 14327-14329 more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14327..14330 ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to find the exact text snippet to replace. Let me use a smaller, more precise substring that includes the relevant lines. The old text is part of a very long string literal. Let me use a smaller portion of the string that's unique.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -   evals [--harness-version VERSION] [--patch-id PATCH]
+  -   patches [--status STATUS]
+  -   patches show <patch-id>
+  +   evals [--recent N] [--all] [--harness-version VERSION] [--patch-id PATCH]
+  +   patches [--recent N] [--all] [--status STATUS]
+  +   patches show <patch-id> [--all]
+      why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]
+      summary [--limit N] [--tail]
+      lineage <event-id|patch-id|commit>
+  -   failures --recent
+  +   failures --recent [--limit N]
+  +   failures tools [--limit N] [--by-session] [--all]
+      crashes [--limit N] [--json]
+      cache --recent"
+  ✓ Auto-approved: edit: src/commands_state.rs (9 → 10 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (9 → 10 lines)
+  -   evals [--harness-version VERSION] [--patch-id PATCH]
+  -   patches [--status STATUS]
+  -   patches show <patch-id>
+  +   evals [--recent N] [--all] [--harness-version VERSION] [--patch-id PATCH]
+  +   patches [--recent N] [--all] [--status STATUS]
+  +   patches show <patch-id> [--all]
+      why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]
+      summary [--limit N] [--tail]
+      lineage <event-id|patch-id|commit>
+  -   failures --recent
+  +   failures --recent [--limit N]
+  +   failures tools [--limit N] [--by-session] [--all]
+      crashes [--limit N] [--json]
+      cache --recent"
+ ✗ (137ms)
+    │ old_text not found in src/commands_state.rs.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue is that the string is a single long literal in the source code. The lines I'm seeing in the `read_file` output are rendered with newlines interpreted. But in the actual source, the string uses `\n` escape sequences. So the old_text I'm providing doesn't match the source text which uses `\n` within the string literal.
+
+I need to use the literal `\n` characters in the old_text. Let me use grep to find the exact bytes.
+
+Actually, looking more carefully at the hint, it says the raw content uses `\n` escape sequences. So the text in the file is literally:
+
+```
+  policies --recent [--limit N]\n  fixes --recent [--class CLASS] [--limit N]\n  rollbacks --recent [--limit N] [--json]\n  evals [--harness-version VERSION] [--patch-id PATCH]\n  patches [--status STATUS]\n  patches show <patch-id>\n  why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]\n  summary [--limit N] [--tail]\n  lineage <event-id|patch-id|commit>\n  failures --recent\n  crashes [--limit N] [--json]\n  cache --recent"
+```
+
+So when I use the edit_file tool, I need to match the raw bytes in the file, which have `\n` as literal backslash-n, not actual newlines. Let me construct the old_text with literal `\n` sequences.
+
+Wait, the edit_file tool says "old_text must match exactly (including whitespace and indentation)". So I need to use the exact bytes from the file. In the file, the text looks like:
+
+```
+  evals [--harness-version VERSION] [--patch-id PATCH]\n  patches [--status STATUS]\n  patches show <patch-id>\n  why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]\n  summary [--limit N] [--tail]\n  lineage <event-id|patch-id|commit>\n  failures --recent\n  crashes [--limit N] [--json]\n  cache --recent"
+```
+
+Let me use bash grep to get the exact text.
+────────────────────────────────────────────────────────────────────────────────
+
+The file uses literal `\n` escape sequences inside the string. Let me use grep to get the exact bytes:
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'evals \[--harness-version' src/commands_state.rs ✓ (89ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output is truncated but I can see line 14328 has the entire string. Let me use sed or a python one-liner to extract the exact text I need to replace.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (19 lines) ✓ (95ms)
+
+
