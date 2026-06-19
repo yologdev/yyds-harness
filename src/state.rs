@@ -3273,6 +3273,26 @@ fn now_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex, MutexGuard};
+
+    static STATE_GLOBAL_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn state_global_test_lock() -> MutexGuard<'static, ()> {
+        STATE_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn reset_global_recorder_for_test() {
+        *GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        RUN_HAD_ERROR.with(|c| c.set(false));
+        LAST_RUN_ERROR.with(|c| {
+            let _ = c.take();
+        });
+        LAST_DIAGNOSTIC_ERROR.with(|c| {
+            let _ = c.take();
+        });
+    }
 
     #[test]
     fn state_adapter_boundary_is_explicit() {
@@ -6639,6 +6659,8 @@ mod tests {
 
     #[test]
     fn panic_hook_records_to_state() {
+        let _state_lock = state_global_test_lock();
+        reset_global_recorder_for_test();
         let dir = tempfile::tempdir().unwrap();
         let events_path = dir.path().join("events.jsonl");
         let config = StateConfig {
@@ -6718,6 +6740,8 @@ mod tests {
 
     #[test]
     fn run_completion_guard_reports_error_on_panic() {
+        let _state_lock = state_global_test_lock();
+        reset_global_recorder_for_test();
         let dir = tempfile::tempdir().unwrap();
         let events_path = dir.path().join("events.jsonl");
         let config = StateConfig {
@@ -6775,6 +6799,8 @@ mod tests {
 
     #[test]
     fn run_completion_guard_reports_completed_on_normal_exit() {
+        let _state_lock = state_global_test_lock();
+        reset_global_recorder_for_test();
         let dir = tempfile::tempdir().unwrap();
         let events_path = dir.path().join("events.jsonl");
         let config = StateConfig {
@@ -6810,6 +6836,8 @@ mod tests {
 
     #[test]
     fn init_global_closes_orphaned_run_from_previous_session() {
+        let _state_lock = state_global_test_lock();
+        reset_global_recorder_for_test();
         let dir = tempfile::tempdir().unwrap();
         let events_path = dir.path().join("events.jsonl");
 
@@ -6907,6 +6935,8 @@ mod tests {
 
     #[test]
     fn init_global_does_not_double_close_when_last_event_is_run_completed() {
+        let _state_lock = state_global_test_lock();
+        reset_global_recorder_for_test();
         let dir = tempfile::tempdir().unwrap();
         let events_path = dir.path().join("events.jsonl");
 
