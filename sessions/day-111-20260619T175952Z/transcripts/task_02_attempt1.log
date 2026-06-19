@@ -1,0 +1,564 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the target file to understand the current state of the code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py ✓ (180ms)
+ ✓ (189ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the current code. I need to understand:
+
+1. The `_candidate_files_exist` function (added Day 111) - it checks file existence but not git tracking
+2. The `choose_task` function - how it selects tasks
+3. The TASKS dictionary - the task definitions with Files entries
+
+Let me read the full file more carefully, especially the `_candidate_files_exist` function and `choose_task` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+Let me read the full file to see the complete implementation, especially the `_candidate_files_exist` and `choose_task` functions.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:920..  ▶ search '_candidate_files_exist' in scripts/preseed_session_plan.py  ▶ search 'def choose_task' in scripts/preseed_session_plan.py ✓ (141ms)
+ ✓ (287ms)
+ ✓ (298ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant functions: `_candidate_files_exist`, `_has_protected_files`, and `choose_task`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:490..550 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the rest of the `choose_task` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:549..599 ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the code. Let me analyze the situation:
+
+1. `_candidate_files_exist` (line 497-504): Checks if at least one file listed in a task's `files` field exists on disk using `os.path.isfile()`. This only checks existence, not whether the file is git-tracked.
+
+2. `choose_task` (line 518-591): Filters tasks through several checks including `_candidate_files_exist`, and returns the first non-contradicted task.
+
+The issue: `os.path.isfile()` returns True for any file that exists on disk, including:
+- Gitignored files
+- Generated artifacts (like build output)
+- Files in directories like `target/`, `__pycache__/`, etc.
+- Files outside the working tree
+
+The fix: Instead of (or in addition to) `os.path.isfile()`, we should check that the file is tracked by git using `git ls-files --error-unmatch <path>`.
+
+Let me think about the implementation:
+
+1. Add a helper `_file_is_tracked(path)` that checks if a file is git-tracked
+2. Modify `_candidate_files_exist` to check git tracking instead of just existence
+
+But wait - the task says "Fallback: If the file-existence check from Day 111 already covers all real cases and the 7 reverted_no_edit tasks were caused by a different mechanism (e.g., assessment/planning timing), write a findings note and mark the task as no-repro."
+
+I need to verify whether the current file-existence check is sufficient. Let me check: do any of the TASKS have files that exist on disk but are gitignored? Let me look at the TASKS list to find Files entries and check them against git.
+
+Let me look at the FULL TASKS list to see what files are referenced. The TASKS dict is truncated in what I read.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me see all the TASKS entries and check for gitignored files.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:99..199  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git ls-files --others --ignore… ✓ (203ms)
+ ✓ (305ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check: are any files referenced in TASKS that exist but are gitignored? Let me extract all the files from TASKS and check them against git.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+Let me check which TASKS files are gitignored or not tracked:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (14 lines) ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output is truncated. Let me get a more complete picture.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (26 lines) ✓ (119ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All task files are either both existing and tracked, or not both. Wait — the output shows "--- DONE ---" with no issues, meaning every file in the TASKS list is either:
+- exists AND tracked (the good case), or 
+- doesn't exist AND not tracked (will be caught by the existence check)
+
+So the current `_candidate_files_exist` check seems to be working — no task references a file that exists on disk but isn't git-tracked.
+
+But wait, this doesn't mean the problem doesn't exist. The issue might be more subtle. Let me think about what "reverted_no_edit" tasks mean. The task description says "7 reverted_no_edit tasks across 5 recent sessions" — these are tasks that were selected by the preseed picker and then couldn't be implemented because the files don't exist.
+
+Let me check: the assessment text mentions "Preseed task picker still occasionally selects tasks pointing at renamed/moved files". So maybe the problem is files that WERE tracked but have been renamed/moved, and they still exist on disk as tracked files — just with different content. The file-existence check would pass because the file exists, but the task is targeting old functionality that doesn't exist anymore.
+
+Actually, wait. Let me re-read the task more carefully:
+
+"Evidence: Trajectory shows 7 reverted_no_edit tasks across 5 recent sessions (Day 110-111 window). The root cause: the preseed picker selects tasks pointing at files that don't exist or are not part of the working tree."
+
+"Day 111 added a file-existence check to preseed_session_plan.py, but this only catches non-existent files — it doesn't catch gitignored files, generated artifacts, or files outside the repo that happen to exist on disk."
+
+So the concern is:
+1. A task's Files: points to `some_generated_file.py` that IS generated (exists on disk), is gitignored, and is NOT tracked
+2. `_candidate_files_exist` sees it exists on disk and returns True
+3. The task gets selected
+4. The implementation agent tries to edit it, but since it's generated/gitignored, the agent can't/shouldn't modify it
+5. The task gets reverted_no_edit
+
+Now, from my check above, no current TASKS have this problem. But the concern is future-proofing — when new tasks are added or files are renamed, we want to catch this.
+
+Actually, wait. Let me re-read the fallback clause: "If the file-existence check from Day 111 already covers all real cases..."
+
+Looking at the actual evidence more carefully: the current TASKS list doesn't have any gitignored files. All files referenced are either tracked+exists or neither. So the existing `_candidate_files_exist` check is sufficient for the current TASKS.
+
+However, the task's instruction says to add git-tracked checking. This is a future-proof hardening measure. The success criteria says: "The preseed picker skips tasks whose Files: entries point to untracked, gitignored, or non-existent paths."
+
+The fallback option says: "If the file-existence check from Day 111 already covers all real cases and the 7 reverted_no_edit tasks were caused by a different mechanism (e.g., assessment/planning timing), write a findings note and mark the task as no-repro."
+
+But I don't think this is a "no-repro" case. The hardening is still valid — adding a git-tracked check makes the preseed picker more robust. Even if no current TASKS have gitignored files, future task additions could introduce them.
+
+Let me implement this. I'll:
+
+1. Add a helper `_file_is_tracked(path)` that checks `git ls-files --error-unmatch <path>`
+2. Modify `_candidate_files_exist` to also check git tracking
+3. Update the self-tests to cover git-ignored files
+4. Ensure the fallback still works
+
+Let me think about edge cases:
+- What if git is not available? Fall back to the existing file-existence check.
+- What if the file doesn't exist at all? The current `os.path.isfile()` check already handles that.
+- The check should be cheap. I can cache `git ls-files` output once.
+
+Let me implement this:
+
+```python
+_git_tracked_cache: set[str] | None = None
+
+def _git_tracked_files() -> set[str]:
+    """Return the set of git-tracked files (cached)."""
+    global _git_tracked_cache
+    if _git_tracked_cache is not None:
+        return _git_tracked_cache
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "ls-files"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            _git_tracked_cache = set(result.stdout.splitlines())
+        else:
+            _git_tracked_cache = set()
+    except Exception:
+        _git_tracked_cache = set()
+    return _git_tracked_cache
+
+def _file_is_tracked(path: str) -> bool:
+    """Return True if path is tracked by git."""
+    return path in _git_tracked_files()
+
+def _candidate_files_exist(candidate: dict[str, object]) -> bool:
+    """Return True if at least one file listed in the candidate's files field exists AND is git-tracked."""
+    files_str = str(candidate.get("files") or "")
+    tracked = _git_tracked_files()
+    for path in files_str.split(","):
+        path = path.strip()
+        if not path:
+            continue
+        if os.path.isfile(path) and path in tracked:
+            return True
+    return False
+```
+
+Wait, but the task says: "If git is not available (unlikely in this repo), fall back to the existing file-existence check rather than blocking task selection entirely."
+
+Let me handle that: if `git ls-files` fails, we should fall back to the regular file-existence check. When I cache the git output as an empty set, the check would return False for all files, which would block all tasks. That's wrong.
+
+Let me handle this better:
+
+```python
+_GIT_AVAILABLE: bool | None = None
+_git_tracked_cache: set[str] | None = None
+
+def _git_tracked_files() -> set[str] | None:
+    """Return the set of git-tracked files (cached), or None if git unavailable."""
+    global _git_tracked_cache, _GIT_AVAILABLE
+    if _GIT_AVAILABLE is False:
+        return None
+    if _git_tracked_cache is not None:
+        return _git_tracked_cache
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "ls-files"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            _GIT_AVAILABLE = True
+            _git_tracked_cache = set(result.stdout.splitlines())
+            return _git_tracked_cache
+        else:
+            _GIT_AVAILABLE = False
+            return None
+    except Exception:
+        _GIT_AVAILABLE = False
+        return None
+
+def _candidate_files_exist(candidate: dict[str, object]) -> bool:
+    """Return True if at least one file listed in the candidate's files field exists.
+    
+    When git is available, only git-tracked files are counted.
+    When git is unavailable, falls back to plain file existence.
+    """
+    files_str = str(candidate.get("files") or "")
+    tracked = _git_tracked_files()
+    for path in files_str.split(","):
+        path = path.strip()
+        if not path:
+            continue
+        if not os.path.isfile(path):
+            continue
+        if tracked is not None and path not in tracked:
+            continue  # exists but not git-tracked; skip
+        return True
+    return False
+```
+
+Now for the self-tests. The existing tests check:
+1. All TASKS candidates must have at least one existing file
+2. Candidate with all-existing files returns True
+3. Candidate with some-existing files returns True
+4. Candidate with all-missing files returns False
+5. Candidate with empty files returns False
+6. Fallback always has at least one existing file
+
+I need to add tests for the git-tracked check. But the tests run in the repo, so `scripts/preseed_session_plan.py` IS git-tracked. I can test with a file that exists but isn't tracked.
+
+Actually, let me think about what test to add. I need a file that exists on disk but is NOT git-tracked. In the repo, gitignored files like Cargo.lock or files in `target/` could work, but I shouldn't create test files just for this.
+
+Let me use `target/CACHEDIR.TAG` or `Cargo.lock` which are both gitignored files that exist.
+
+Wait, but `Cargo.lock` might or might not be gitignored depending on the repo setup. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git check-ignore target/CACHED… ✓ (86ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - `target/CACHEDIR.TAG`, `Cargo.lock`, and `ISSUES_TODAY.md` are all gitignored and exist on disk. I can use any of these for testing.
+
+Now let me implement the changes:
+
+1. Add `_git_tracked_files()` and `_GIT_AVAILABLE` caching
+2. Modify `_candidate_files_exist` to use git tracking
+3. Add self-test cases for git-tracked checking
+
+Let me also think about the `import subprocess` - it's already available in Python's stdlib. But looking at the imports at the top of the file (lines 4-9), only `argparse`, `os`, `re`, and `pathlib.Path` are imported. I'll need to add `subprocess`.
+
+Actually wait, let me also add it inline in the function to keep imports minimal, or add it to the top. Let me add it to the top for cleanliness.
+
+Let me plan the exact edits:
+
+1. Add `import subprocess` at the top
+2. Add `_GIT_AVAILABLE`, `_git_tracked_cache`, and `_git_tracked_files()` function after `_has_protected_files`
+3. Modify `_candidate_files_exist` to incorporate git tracking
+4. Update self-tests
+
+Let me also read the test section more carefully for the exact assertions to update.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the hardening:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (31ms)
+  ▶ todo ✓ (58ms)
+  ▶ todo ✓ (94ms)
+  ▶ todo ✓ (94ms)
+  ▶ todo ✓ (111ms)
+  ▶ todo ✓ (96ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start implementing.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 1.9s (6 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the import and the helper functions, then modify `_candidate_files_exist`.
+────────────────────────────────────────────────────────────────────────────────
+
+First, add the `subprocess` import:
+    import argparse
+    import os
+    import re
+  + import subprocess
+    from pathlib import Path
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (4 → 5 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (4 → 5 lines)
+    import argparse
+    import os
+    import re
+  + import subprocess
+    from pathlib import Path
+ ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the git-tracking helpers after `_has_protected_files`:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (30ms)
+  ▶ todo ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the helpers. I'll add them between `_has_protected_files` and `_candidate_files_exist`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.9s (2 ✓)
+
+
+        files_str = str(task.get("files") or "")
+        task_files = {path.strip() for path in files_str.split(",") if path.strip()}
+        return bool(task_files & set(PROTECTED_IMPLEMENTATION_FILES))
+  + 
+  + 
+  + _GIT_AVAILABLE: bool | None = None
+  + _git_tracked_cache: set[str] | None = None
+  + 
+  + 
+  + def _git_tracked_files() -> set[str] | None:
+  +     """Return the set of git-tracked files (cached), or None if git unavailable."""
+  +     global _GIT_AVAILABLE, _git_tracked_cache
+  +     if _GIT_AVAILABLE is False:
+  +         return None
+  +     if _git_tracked_cache is not None:
+  +         return _git_tracked_cache
+  +     try:
+  +         result = subprocess.run(
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (15 → 52 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (15 → 52 lines)
+        files_str = str(task.get("files") or "")
+        task_files = {path.strip() for path in files_str.split(",") if path.strip()}
+        return bool(task_files & set(PROTECTED_IMPLEMENTATION_FILES))
+  + 
+  + 
+  + _GIT_AVAILABLE: bool | None = None
+  + _git_tracked_cache: set[str] | None = None
+  + 
+  + 
+  + def _git_tracked_files() -> set[str] | None:
+  +     """Return the set of git-tracked files (cached), or None if git unavailable."""
+  +     global _GIT_AVAILABLE, _git_tracked_cache
+  +     if _GIT_AVAILABLE is False:
+  +         return None
+  +     if _git_tracked_cache is not None:
+  +         return _git_tracked_cache
+  +     try:
+  +         result = subprocess.run(
+  +             ["git", "ls-files"],
+  +             capture_output=True, text=True, timeout=10,
+  ... (33 more lines)
+ ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me update the self-tests to add git-tracked scenarios.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (34ms)
+  ▶ todo ✓ (79ms)
+  ▶ todo ✓ (94ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me update the self-tests. I need to add test cases for:
+1. A gitignored file that exists on disk but is NOT tracked → should return False (when only that file is listed)
+2. A mix of gitignored + tracked files → should return True (at least one tracked)
+3. All gitignored → should return False
+
+I can use `target/CACHEDIR.TAG` as a gitignored file that exists. And `scripts/preseed_session_plan.py` is tracked and exists.
+
+Let me look at the current test block and add the new tests.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+Now add git-tracked test cases to the self-test block. The existing tests are around line 940. Let me add new test cases after the existing file-existence tests:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:940..970 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the exact test area I need to add to.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:968..1018 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add git-tracked test cases. I'll insert them after the existing file-existence tests but before the "preseed_session_plan self-tests passed" print. I'll add tests that verify:
+
+1. A gitignored file that exists but isn't tracked → `_candidate_files_exist` returns False
+2. A mix of gitignored + tracked files → returns True
+3. All gitignored → returns False
+
+I'll use `target/CACHEDIR.TAG` (gitignored, exists) and `scripts/preseed_session_plan.py` (tracked, exists).
+────────────────────────────────────────────────────────────────────────────────
+
+
+                        f"Analysis-only task files don't exist: {candidate['files']}"
+                    )
+                    break
+  +         # --- Git-tracked file validation tests ---
+  +         # gitignored file that exists on disk but is NOT tracked => False
+  +         assert os.path.isfile("target/CACHEDIR.TAG"), (
+  +             "Test precond: target/CACHEDIR.TAG must exist")
+  +         assert not _candidate_files_exist(
+  +             {"files": "target/CACHEDIR.TAG"}), (
+  +             "gitignored file should be rejected")
+  +         # Mix: gitignored (exists) + tracked (exists) => True
+  +         assert _candidate_files_exist(
+  +             {"files": "target/CACHEDIR.TAG, scripts/preseed_session_plan.py"}), (
+  +             "mixed tracked+ignored: at least one tracked file should pass")
+  +         # All gitignored => False
+  +         assert not _candidate_files_exist(
+  +             {"files": "target/CACHEDIR.TAG, Cargo.lock"}), (
+  +             "all-gitignored files should be rejected")
+            print("preseed_session_plan self-tests passed")
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (8 → 23 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (8 → 23 lines)
+                        f"Analysis-only task files don't exist: {candidate['files']}"
+                    )
+                    break
+  +         # --- Git-tracked file validation tests ---
+  +         # gitignored file that exists on disk but is NOT tracked => False
+  +         assert os.path.isfile("target/CACHEDIR.TAG"), (
+  +             "Test precond: target/CACHEDIR.TAG must exist")
+  +         assert not _candidate_files_exist(
+  +             {"files": "target/CACHEDIR.TAG"}), (
+  +             "gitignored file should be rejected")
+  +         # Mix: gitignored (exists) + tracked (exists) => True
+  +         assert _candidate_files_exist(
+  +             {"files": "target/CACHEDIR.TAG, scripts/preseed_session_plan.py"}), (
+  +             "mixed tracked+ignored: at least one tracked file should pass")
+  +         # All gitignored => False
+  +         assert not _candidate_files_exist(
+  +             {"files": "target/CACHEDIR.TAG, Cargo.lock"}), (
+  +             "all-gitignored files should be rejected")
+            print("preseed_session_plan self-tests passed")
+ ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the self-tests to see if they pass.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (31ms)
+  ▶ todo ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (98ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Self-tests pass. Let me also run the py_compile verification and then check git diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c "import py_compile;… ✓ (98ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both verifications pass. Let me check the git diff to confirm the changes look right.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (79ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The only file changed is `scripts/preseed_session_plan.py`, which is the task's Edit Surface. Let me also verify the diff content to make sure everything is clean.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff ✓ (104ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks clean. Only `scripts/preseed_session_plan.py` changed, which is exactly the Edit Surface. The changes are:
+
+1. Added `import subprocess`
+2. Added `_GIT_AVAILABLE` and `_git_tracked_cache` module-level cache variables
+3. Added `_git_tracked_files()` helper with caching and git-available fallback
+4. Modified `_candidate_files_exist` to gate on git-tracked files when git is available
+5. Added 3 new self-tests for git-tracked scenarios
+
+All verifications pass. Let me now commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (30ms)
+  ▶ todo ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to run the required checks: `cargo fmt -- --check`, then `cargo build` or the smallest cargo test. Since this is a Python script (not Rust), I only need to run the Python-level verifiers. But the evolve skill says "Run focused verification after changes: cargo fmt -- --check, then cargo build or the smallest cargo test/clippy command directly tied to the changed task surface."
+
+Since the only changed file is a Python script, `cargo fmt -- --check` will pass trivially (no Rust files changed). Let me still run it as required, then commit.
+
+Actually wait, cargo fmt checks Rust files. Since no Rust files changed, it should be fine. But let me still run it as the evolve skill requires, then commit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clean. Now commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (74ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Done. Let me mark the final todo as done and provide the summary.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the commit landed correctly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -1 && echo "… ✓ (95ms)
+
+

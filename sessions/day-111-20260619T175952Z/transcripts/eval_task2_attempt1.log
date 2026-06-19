@@ -1,0 +1,102 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me review the task and the diff carefully.
+
+The task is about hardening the preseed task picker with a git-tracked file check. The goal is to ensure tasks are only selected when their target files are git-tracked and present in the working tree.
+
+Let me analyze what was implemented:
+
+1. Added `import subprocess` at the top
+2. Added `_GIT_AVAILABLE`, `_git_tracked_cache` globals
+3. Added `_git_tracked_files()` function - returns cached set of git-tracked files or None
+4. Modified `_candidate_files_exist()` to only count git-tracked files when git is available, falling back to plain file existence when git is unavailable
+5. Added self-tests for the git-tracked file check
+
+Let me verify the implementation against success criteria:
+
+1. **The preseed picker skips tasks whose Files: entries point to untracked, gitignored, or non-existent paths.** - Yes, the modified `_candidate_files_exist()` checks against `git ls-files` output and only considers a file valid if it's both present on disk AND git-tracked.
+
+2. **The picker still selects tasks when all Files: entries are git-tracked and present.** - The logic returns True when at least one file is tracked and exists, which is the same threshold as before (at least one file exists).
+
+3. **The existing PROTECTED_IMPLEMENTATION_FILES check continues to work correctly.** - `_has_protected_files` is unchanged.
+
+Implementation notes from the task:
+- ✅ Helper that checks `git ls-files` - done via `_git_tracked_files()`
+- ✅ Integrated into `_candidate_files_exist()` / `choose_task()` selection
+- ✅ Cheap (one git command, cached)
+- ✅ Git unavailable fallback - returns None from `_git_tracked_files()`, then falls back to plain existence check
+- ✅ Did not modify TASKS dictionary
+
+Now let me verify the self-tests. The tests use `target/CACHEDIR.TAG` as a gitignored file and `scripts/preseed_session_plan.py` as a tracked file. The test also references `Cargo.lock` as gitignored. Let me check if `Cargo.lock` is gitignored.
+
+Actually wait - in this repo, `Cargo.lock` might not be gitignored. Let me check. The task says "All gitignored => False" with `target/CACHEDIR.TAG, Cargo.lock`. If `Cargo.lock` is tracked, this test would fail.
+
+Let me run the self-test to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ python3 scripts/preseed_session_plan.py 2>&1 | tail -5  ▶ $ git ls-files --error-unmatch Cargo.lock 2>&1 && echo "TRACKED" || echo "NOT_TRAC… ✓ (36ms)
+ ✓ (116ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`Cargo.lock` is not tracked (it's in .gitignore). So `Cargo.lock` as a gitignored file is correct. But wait - the test also requires that `Cargo.lock` exists on disk as a file. Let me run the self-tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/preseed_session_plan.py --test 2>&1 ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Self-tests pass. Now let me also verify the `Cargo.lock` situation more carefully. The test says `Cargo.lock` is "all-gitignored" - `git ls-files` shows it's not tracked, and it exists on disk. Good.
+
+Now let me also run the compile check as specified in the verifier:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c "import py_compile; py_compile.compile('scripts/preseed_session_plan.… ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both verifications pass. Let me now check if there are any other concerns with the diff.
+
+Let me look at the test assertions more carefully:
+
+1. `target/CACHEDIR.TAG` exists and is gitignored → `_candidate_files_exist` returns False → ✅
+2. Mix of gitignored + tracked → returns True → ✅
+3. All gitignored (`target/CACHEDIR.TAG` and `Cargo.lock`) → returns False → ✅
+
+Wait, but `Cargo.lock` being gitignored seems odd. Let me check if this is a harness repo vs the original yoyo repo. The CLADO.md says this is a "self-evolving coding agent CLI built on yoagent." Let me check the gitignore.
+
+Actually, `Cargo.lock` is gitignored in this repo? Let me verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la Cargo.lock 2>&1 && git check-ignore Cargo.lock 2>&1 ✓ (37ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`Cargo.lock` is gitignored (git check-ignore returns the filename). And it exists on disk. So the test assertion is correct - `Cargo.lock` is a gitignored file that exists on disk but is not tracked.
+
+All checks pass. The implementation matches the task description:
+- Git-tracked file check added
+- Falls back to plain existence when git unavailable
+- Self-tests included
+- Protected files check untouched
+- Test and compile verification both pass
+
+This is a clear PASS.
+────────────────────────────────────────────────────────────────────────────────
+
+Both verifiers pass cleanly:
+• `python3 scripts/preseed_session_plan.py --test` → "preseed_session_plan self-tests passed"
+• `python3 -c "import py_compile; py_compile.compile(...)"` → "PY_COMPILE OK"
+
+The implementation adds a cached `git ls-files` check to `_candidate_files_exist()`, falling back to plain file existence when git is unavailable — exactly what the task requested. Self-tests cover gitignored-only, mixed tracked+ignored, and all-gitignored scenarios.
+  + Verdict: PASS
+  + Reason: The diff adds a git-tracked file check via cached `git ls-files` to `_candidate_files_exist()`, with self-tests covering gitignored and mixed-file scenarios. Both verifier commands (--test and py_compile) pass, and the existing PROTECTED_IMPLEMENTATION_FILES logic is untouched.
+  ✓ Auto-approved: write: session_plan/eval_task_2.md (2 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/eval_task_2.md (2 lines) ✓ (19ms)
