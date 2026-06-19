@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -494,13 +495,50 @@ def _has_protected_files(task: dict[str, object]) -> bool:
     return bool(task_files & set(PROTECTED_IMPLEMENTATION_FILES))
 
 
+_GIT_AVAILABLE: bool | None = None
+_git_tracked_cache: set[str] | None = None
+
+
+def _git_tracked_files() -> set[str] | None:
+    """Return the set of git-tracked files (cached), or None if git unavailable."""
+    global _GIT_AVAILABLE, _git_tracked_cache
+    if _GIT_AVAILABLE is False:
+        return None
+    if _git_tracked_cache is not None:
+        return _git_tracked_cache
+    try:
+        result = subprocess.run(
+            ["git", "ls-files"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            _GIT_AVAILABLE = True
+            _git_tracked_cache = set(result.stdout.splitlines())
+            return _git_tracked_cache
+        _GIT_AVAILABLE = False
+        return None
+    except Exception:
+        _GIT_AVAILABLE = False
+        return None
+
+
 def _candidate_files_exist(candidate: dict[str, object]) -> bool:
-    """Return True if at least one file listed in the candidate's files field exists."""
+    """Return True if at least one file listed in the candidate's files field exists.
+
+    When git is available, only git-tracked files are counted.
+    When git is unavailable, falls back to plain file existence.
+    """
     files_str = str(candidate.get("files") or "")
+    tracked = _git_tracked_files()
     for path in files_str.split(","):
         path = path.strip()
-        if path and os.path.isfile(path):
-            return True
+        if not path:
+            continue
+        if not os.path.isfile(path):
+            continue
+        if tracked is not None and path not in tracked:
+            continue
+        return True
     return False
 
 
@@ -965,6 +1003,21 @@ resolved API keys to spawned workers. `api_key_present` now reports true.
                     f"Analysis-only task files don't exist: {candidate['files']}"
                 )
                 break
+        # --- Git-tracked file validation tests ---
+        # gitignored file that exists on disk but is NOT tracked => False
+        assert os.path.isfile("target/CACHEDIR.TAG"), (
+            "Test precond: target/CACHEDIR.TAG must exist")
+        assert not _candidate_files_exist(
+            {"files": "target/CACHEDIR.TAG"}), (
+            "gitignored file should be rejected")
+        # Mix: gitignored (exists) + tracked (exists) => True
+        assert _candidate_files_exist(
+            {"files": "target/CACHEDIR.TAG, scripts/preseed_session_plan.py"}), (
+            "mixed tracked+ignored: at least one tracked file should pass")
+        # All gitignored => False
+        assert not _candidate_files_exist(
+            {"files": "target/CACHEDIR.TAG, Cargo.lock"}), (
+            "all-gitignored files should be rejected")
         print("preseed_session_plan self-tests passed")
         return 0
     if args.assessment is None:
