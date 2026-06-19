@@ -829,16 +829,38 @@ fn handle_failures(args: &[String]) {
 }
 
 fn handle_tool_failures(args: &[String]) {
-    let limit = flag_value(args, "--limit")
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .unwrap_or(10);
+    let limit_raw = flag_value(args, "--limit");
+    let explicit_limit = limit_raw.as_ref().and_then(|raw| raw.parse::<usize>().ok());
+    let limit = explicit_limit.unwrap_or(10);
     let by_session = args.iter().any(|a| a == "--by-session");
+    let all = args.iter().any(|a| a == "--all");
     let path = default_events_path();
-    let (events, skipped) = match read_events_lenient(&path) {
-        Ok(result) => result,
-        Err(_) => {
-            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
-            return;
+
+    let (events, skipped) = if all {
+        match read_events_lenient(&path) {
+            Ok(result) => result,
+            Err(_) => {
+                eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+                return;
+            }
+        }
+    } else {
+        // Tail-read window: when --limit is explicit use limit*2;
+        // when --by-session without --limit use 500; otherwise use a small
+        // default window (20 for default limit=10).
+        let tail_window = if explicit_limit.is_some() {
+            (limit * 2).min(100_000)
+        } else if by_session {
+            500
+        } else {
+            (limit * 2).min(100_000)
+        };
+        match read_tail_events(&path, tail_window) {
+            Ok(events) => (events, 0usize),
+            Err(_) => {
+                eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+                return;
+            }
         }
     };
     if events.is_empty() {
@@ -915,10 +937,10 @@ fn handle_cache(args: &[String]) {
 
 fn handle_evals(args: &[String]) {
     let path = default_events_path();
-    let Ok(events) = read_events(&path) else {
-        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
-        return;
-    };
+    let all = args.iter().any(|a| a == "--all");
+    let recent = flag_value(args, "--recent")
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(500);
     let harness_version = args
         .iter()
         .position(|a| a == "--harness-version")
@@ -930,6 +952,25 @@ fn handle_evals(args: &[String]) {
         .and_then(|i| args.get(i + 1))
         .map(|s| s.as_str());
 
+    // Use tail-read by default; --all restores full-file scan.
+    let events = if all {
+        match read_events(&path) {
+            Ok(events) => events,
+            Err(_) => {
+                eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+                return;
+            }
+        }
+    } else {
+        match read_tail_events(&path, recent) {
+            Ok(events) => events,
+            Err(_) => {
+                eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+                return;
+            }
+        }
+    };
+
     match build_eval_report(&events, harness_version, patch_id) {
         Ok(report) => println!("{report}"),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
@@ -938,15 +979,34 @@ fn handle_evals(args: &[String]) {
 
 fn handle_patches(args: &[String]) {
     let path = default_events_path();
-    let Ok(events) = read_events(&path) else {
-        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
-        return;
-    };
+
+    // Parse flags before show subcommand dispatch so --all applies to show too.
+    let all = args.iter().any(|a| a == "--all");
+    let recent = flag_value(args, "--recent")
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(500);
 
     if args.first().map(|s| s.as_str()) == Some("show") {
         let Some(id) = args.get(1) else {
-            eprintln!("{YELLOW}  Usage: yoyo state patches show <patch-id>{RESET}");
+            eprintln!("{YELLOW}  Usage: yoyo state patches show <patch-id> [--all]{RESET}");
             return;
+        };
+        let events = if all {
+            match read_events(&path) {
+                Ok(events) => events,
+                Err(_) => {
+                    eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+                    return;
+                }
+            }
+        } else {
+            match read_tail_events(&path, recent) {
+                Ok(events) => events,
+                Err(_) => {
+                    eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+                    return;
+                }
+            }
         };
         match build_patch_show_report(&events, id) {
             Ok(report) => println!("{report}"),
@@ -954,6 +1014,24 @@ fn handle_patches(args: &[String]) {
         }
         return;
     }
+
+    let events = if all {
+        match read_events(&path) {
+            Ok(events) => events,
+            Err(_) => {
+                eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+                return;
+            }
+        }
+    } else {
+        match read_tail_events(&path, recent) {
+            Ok(events) => events,
+            Err(_) => {
+                eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+                return;
+            }
+        }
+    };
 
     let status_filter = args
         .iter()
