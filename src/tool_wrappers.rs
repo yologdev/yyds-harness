@@ -987,11 +987,69 @@ impl ToolFailureTracker {
     }
 }
 
+/// Inspect an error message and return a tool-category-specific recovery hint
+/// when the message matches a known failure pattern (e.g., bash exit codes,
+/// regex parse errors). Returns `None` when the message doesn't match any
+/// targeted pattern.
+fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
+    let msg_lower = error_msg.to_lowercase();
+    match tool_name {
+        "bash" => {
+            if msg_lower.contains("exit code")
+                || msg_lower.contains("exit status")
+                || msg_lower.contains("command failed")
+            {
+                Some(
+                    "Check the exit code with `echo $?` after the command. \
+                     For piped commands, prepend `set -o pipefail;` to catch failures \
+                     in any part of the pipeline. Retry with `set -x` at the start of \
+                     your command to trace each step."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("timed out") {
+                Some(
+                    "The command timed out. Try reducing scope: limit file traversal depth, \
+                     add a `timeout` wrapper, or split the work into smaller sequential commands."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("failed to spawn") {
+                Some(
+                    "The command failed to spawn — the binary may not be installed. \
+                     Check with `which <binary>` or `command -v <binary>`. \
+                     If missing, install it or use an alternative tool."
+                        .to_string(),
+                )
+            } else {
+                None
+            }
+        }
+        "search" => {
+            if msg_lower.contains("regex parse")
+                || msg_lower.contains("regex syntax")
+                || msg_lower.contains("invalid regex")
+                || msg_lower.contains("unmatched")
+            {
+                Some(
+                    "The regex pattern failed to parse. Retry with `regex=false` for a \
+                     literal (substring) search, or escape regex metacharacters \
+                     (parentheses, brackets, dots, pipes) with backslashes."
+                        .to_string(),
+                )
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// A wrapper tool that enriches error messages with recovery hints.
 ///
 /// On success the failure counter resets. On failure the counter increments
 /// and a tool-specific recovery hint (from `prompt_retry::tool_recovery_hint`)
-/// is appended to the error message.
+/// is appended to the error message. When the error message matches a known
+/// failure pattern (bash exit codes, regex parse errors), an additional
+/// targeted hint is appended with tool-category-specific next steps.
 #[allow(dead_code)] // Public API — wired in a follow-up task
 pub(crate) struct RecoveryHintTool {
     inner: Box<dyn AgentTool>,
@@ -1030,9 +1088,13 @@ impl AgentTool for RecoveryHintTool {
             Err(yoagent::types::ToolError::Failed(msg)) => {
                 let attempt = self.tracker.record_failure(&tool_name);
                 let hint = crate::prompt_retry::tool_recovery_hint(&tool_name, attempt);
-                Err(yoagent::types::ToolError::Failed(format!(
-                    "{msg}\n\n💡 Recovery hint: {hint}"
-                )))
+                let targeted = targeted_recovery_hint(&tool_name, &msg);
+                let decorated = if let Some(t) = targeted {
+                    format!("{msg}\n\n💡 Recovery hint: {hint}\n🎯 Targeted hint: {t}")
+                } else {
+                    format!("{msg}\n\n💡 Recovery hint: {hint}")
+                };
+                Err(yoagent::types::ToolError::Failed(decorated))
             }
             Err(other) => {
                 // Non-Failed errors (NotFound, InvalidArgs, Cancelled) pass through
@@ -2755,6 +2817,118 @@ mod tests {
         assert!(
             err.contains("different approach"),
             "Unknown tool hint should suggest a different approach: {err}"
+        );
+    }
+
+    // =========================================================================
+    // targeted_recovery_hint — bash and search pattern matching
+    // =========================================================================
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_exit_code() {
+        let hint = targeted_recovery_hint("bash", "Exit code: 1\nsome output");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("echo $?"));
+        assert!(hint.contains("set -o pipefail"));
+        assert!(hint.contains("set -x"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_timed_out() {
+        let hint = targeted_recovery_hint("bash", "Command timed out after 300s");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("reducing"));
+        assert!(hint.contains("timeout"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_failed_to_spawn() {
+        let hint = targeted_recovery_hint("bash", "Failed to spawn: No such file");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("which"));
+        assert!(hint.contains("command -v"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_search_regex_parse_error() {
+        let hint = targeted_recovery_hint("search", "regex parse error near position 5");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("regex=false"));
+        assert!(hint.contains("literal"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_search_invalid_regex() {
+        let hint = targeted_recovery_hint("search", "invalid regex syntax");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("regex=false"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_search_unmatched_paren() {
+        let hint = targeted_recovery_hint("search", "unmatched ( in pattern");
+        assert!(hint.is_some());
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_no_match_returns_none() {
+        // Non-bash, non-search tools get None
+        assert!(targeted_recovery_hint("read_file", "file not found").is_none());
+        // Bash with a message that doesn't match any pattern
+        assert!(targeted_recovery_hint("bash", "some generic error").is_none());
+        // Search with a non-regex error
+        assert!(targeted_recovery_hint("search", "no results found").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recovery_hint_with_targeted_hint_appended() {
+        // Integration test: RecoveryHintTool with a bash exit code error
+        // should include both the generic recovery hint and the targeted hint
+        let tracker = ToolFailureTracker::new();
+        let tool = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "bash",
+                fail_msg: Some("Exit code: 42\ncommand not found: foo".to_string()),
+            }),
+            &tracker,
+        );
+        let err = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("💡 Recovery hint:"));
+        assert!(err.contains("🎯 Targeted hint:"));
+        assert!(err.contains("echo $?"));
+        assert!(err.contains("set -x"));
+    }
+
+    #[tokio::test]
+    async fn test_recovery_hint_no_targeted_for_non_matching_error() {
+        // When the error message doesn't match a targeted pattern,
+        // only the generic Recovery hint should appear
+        let tracker = ToolFailureTracker::new();
+        let tool = with_recovery_hints(
+            Box::new(ConfigurableMockTool {
+                tool_name: "bash",
+                fail_msg: Some("permission denied".to_string()),
+            }),
+            &tracker,
+        );
+        let err = tool
+            .execute(serde_json::json!({}), test_tool_context())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("💡 Recovery hint:"));
+        assert!(
+            !err.contains("🎯 Targeted hint:"),
+            "Non-matching error should not have targeted hint: {err}"
         );
     }
 
