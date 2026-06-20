@@ -246,6 +246,8 @@ impl AgentTool for ProjectSearchTool {
                 && (stderr_lower.contains("unmatched")
                     || stderr_lower.contains("invalid")
                     || stderr_lower.contains("regex parse")
+                    || stderr_lower.contains("regex syntax")
+                    || stderr_lower.contains("regex engine")
                     || stderr_lower.contains("unclosed")
                     || stderr_lower.contains("empty pattern")
                     || stderr_lower.contains("repetition"));
@@ -334,6 +336,7 @@ fn build_project_rg_args(
         args.push("--glob".to_string());
         args.push(glob.to_string());
     }
+    args.push("--".to_string());
     args.push(pattern.to_string());
     args.push(path.to_string());
     ("rg".to_string(), args)
@@ -374,6 +377,7 @@ fn build_project_grep_args(
     ] {
         args.push(format!("--exclude-dir={dir}"));
     }
+    args.push("--".to_string());
     args.push(pattern.to_string());
     args.push(path.to_string());
     ("grep".to_string(), args)
