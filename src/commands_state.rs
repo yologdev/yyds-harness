@@ -151,7 +151,10 @@ fn handle_doctor() {
                 let mut fail_list: Vec<(String, String)> = Vec::new();
 
                 for ev in &events {
-                    let typ = ev.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let typ = ev
+                        .get("event_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
                     *types.entry(typ.to_string()).or_default() += 1;
 
                     match typ {
