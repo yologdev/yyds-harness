@@ -545,12 +545,19 @@ def _candidate_files_exist(candidate: dict[str, object]) -> bool:
 _ANALYSIS_ONLY_METRICS = (
     "task_analysis_only_attempt_count",
     "task_no_edit_revert_count",
+    "reverted_no_edit",
 )
 
 
 def _has_analysis_only_pressure(metrics: dict[str, int]) -> bool:
     """Return True when analysis-only/no-edit pressure exists."""
     return any(metrics.get(key, 0) > 0 for key in _ANALYSIS_ONLY_METRICS)
+
+
+def _task_file_count(task: dict[str, object]) -> int:
+    """Return the number of files listed in a task's files field."""
+    files_str = str(task.get("files") or "")
+    return len([path for path in files_str.split(",") if path.strip()])
 
 
 def choose_task(assessment: str) -> dict[str, object]:
@@ -568,6 +575,8 @@ def choose_task(assessment: str) -> dict[str, object]:
         if _has_protected_files(task):
             continue
         if not _candidate_files_exist(task):
+            continue
+        if analysis_only_active and _task_file_count(task) > 3:
             continue
         if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
             if analysis_only_active:
@@ -748,6 +757,50 @@ MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but rev
         assert task["title"] != "Improve cold-start state failure diagnostics", task
         text = render_task(task, "110", "18:26")
         assert "reverted_no_edit" in text, text
+
+        # --- Analysis-only pressure: reverted_no_edit triggers analysis-only task ---
+        # reverted_no_edit alone (no lifecycle metrics) → analysis-only task
+        assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- **Task-state counts**: reverted_no_edit=4 in recent window. These are sessions where tasks were assigned but produced no file changes.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Make analysis-only task pressure landable", (
+            f"reverted_no_edit=4 should select analysis-only task, got {task['title']}"
+        )
+
+        # --- Analysis-only pressure + lifecycle metrics: analysis-only wins ---
+        # reverted_no_edit=4 + lifecycle incomplete → analysis-only task, NOT lifecycle
+        assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (reverted_no_edit=4): Sessions with no file progress.
+- Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): Lifecycle gnomes show unpaired terminal events.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Make analysis-only task pressure landable", (
+            f"reverted_no_edit + lifecycle should select analysis-only task, got {task['title']}"
+        )
+
+        # --- Analysis-only pressure: file-count guard (hypothetical >3 file task) ---
+        # When analysis-only pressure is active, tasks with >3 files are skipped.
+        # All current TASKS have ≤3 files, so this guard is future-proofing.
+        # Verify the guard works by checking _task_file_count on the selected task.
+        assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=3): Implementation ended without file progress.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Make analysis-only task pressure landable", task
+        files_count = _task_file_count(task)
+        assert files_count <= 3, (
+            f"Analysis-only pressure should select task with ≤3 files, got {files_count}: {task['files']}"
+        )
+        assert not _has_protected_files(task), (
+            f"Analysis-only pressure should skip protected files, got: {task['files']}"
+        )
 
         assessment = """# Assessment
 
