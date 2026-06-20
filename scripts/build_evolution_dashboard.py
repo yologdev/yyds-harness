@@ -7277,8 +7277,14 @@ HTML = r"""<!doctype html>
       if (!Object.keys(evidence).length) return `<p class="muted">No action evidence provenance recorded.</p>`;
       const stateOnlyFails = Number(evidence.state_only_failed_tool_count || 0);
       const transcriptOnlyFails = Number(evidence.transcript_only_failed_tool_count || 0);
+      const stateOnlyLabels = Array.isArray(evidence.state_only_failed_tool_labels) && evidence.state_only_failed_tool_labels.length
+        ? ` (${text(evidence.state_only_failed_tool_labels.join(", "))})`
+        : "";
+      const transcriptOnlyLabels = Array.isArray(evidence.transcript_only_failed_tool_labels) && evidence.transcript_only_failed_tool_labels.length
+        ? ` (${text(evidence.transcript_only_failed_tool_labels.join(", "))})`
+        : "";
       const drift = stateOnlyFails || transcriptOnlyFails
-        ? `<br><span class="warn">${text(stateOnlyFails)} state-only / ${text(transcriptOnlyFails)} transcript-only failed tool action(s)</span>`
+        ? `<br><span class="warn">${text(stateOnlyFails)} state-only${stateOnlyLabels} / ${text(transcriptOnlyFails)} transcript-only${transcriptOnlyLabels} failed tool action(s)</span>`
         : "";
       return `<p class="muted">Merged action counts preserve state-event and transcript evidence without hiding provenance.${drift}</p>
         <div class="detail-grid">
