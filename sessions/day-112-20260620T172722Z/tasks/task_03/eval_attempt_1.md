@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The implementation adds `targeted_recovery_hint()` in `src/tool_wrappers.rs` with bash-specific hints (exit code → echo $?, set -o pipefail, set -x) and search-specific hints (regex parse → regex=false, literal search, escape metacharacters), only fires on ToolError::Failed, does not touch src/tools.rs, and all 16 new+existing tests pass with the task's build/test baseline confirming green.

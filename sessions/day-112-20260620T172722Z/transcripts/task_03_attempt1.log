@@ -1,0 +1,559 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task:
+
+1. Extend `RecoveryHintTool` in `src/tool_wrappers.rs` to provide tool-category-specific recovery advice
+2. For bash exit-code failures: suggest checking `echo $?`, inspecting stderr, using `set -x`, `set -o pipefail`
+3. For search pattern failures (regex parse errors): suggest retrying with `regex=false` for literal search
+4. Keep changes minimal - add 2-3 hint conditions, don't refactor architecture
+
+Let me first read the evolve skill and then the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ read src/tool_wrappers.rs:940..1040 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the RecoveryHintTool implementation and also find the `tool_recovery_hint` function in `prompt_retry.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1039..1099  ▶ search 'tool_recovery_hint' in src/prompt_retry.rs ✓ (13ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `tool_recovery_hint` function in `src/prompt_retry.rs` to see the current implementation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn tool_recovery_hint' in src/prompt_retry.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `tool_recovery_hint` function in `src/prompt_retry.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:100..150 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the current `tool_recovery_hint` function. It already has bash-specific and search-specific hints for both attempt 1 and attempt >= 2. But the task says the hints are "generic" and wants more targeted hints.
+
+Let me read more to see the full function, especially for attempt 1 for "search" tool:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:149..199 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current state. The `tool_recovery_hint` function already has tool-specific hints for both bash and search. But the task says "Current hints are generic; no bash-specific or search-specific recovery advice." Let me re-read the task more carefully.
+
+The task says:
+- For bash tool failures: "detect non-zero exit codes in the error message" and append specific hints
+- For search tool failures: "detect regex parse errors in the error message" and append specific hints
+
+Wait, the key insight is: the current `tool_recovery_hint` function takes `tool_name` and `attempt` as parameters. It returns a generic hint based on which tool failed. But the task says to make hints that are responsive to the _specific error message_ — i.e., look at the error message content and provide targeted advice.
+
+Looking at the `RecoveryHintTool` implementation in `src/tool_wrappers.rs`:
+```rust
+let hint = crate::prompt_retry::tool_recovery_hint(&tool_name, attempt);
+Err(yoagent::types::ToolError::Failed(format!(
+    "{msg}\n\n💡 Recovery hint: {hint}"
+)))
+```
+
+The current approach passes only `tool_name` and `attempt`, not the `msg` (error message content). To provide targeted hints based on error content (e.g., "non-zero exit code" vs "regex parse error"), we need to either:
+
+1. Change `tool_recovery_hint` to also accept `msg` and inspect it, OR
+2. Keep the logic in `RecoveryHintTool::execute` and build targeted hints there
+
+The task says "Keep changes minimal: add 2-3 hint conditions, do not refactor the RecoveryHintTool architecture, do not change its public API." So I should keep `tool_recovery_hint`'s signature unchanged and instead modify `RecoveryHintTool::execute` to inspect the error message and append additional targeted hints.
+
+Actually, re-reading the task: "This task only modifies RecoveryHintTool's generic hint logic." So I think the intent is to make the `tool_recovery_hint` function more targeted by looking at the error message somehow.
+
+But wait, `tool_recovery_hint` doesn't receive the error message. So I need to either:
+1. Add the inspection logic in `RecoveryHintTool::execute` (in tool_wrappers.rs), or
+2. Modify `tool_recovery_hint` to accept `msg`
+
+The task says the edit surface is `src/tool_wrappers.rs` (RecoveryHintTool implementation, around line 949-1000), not `src/prompt_retry.rs`. So I should modify the `RecoveryHintTool::execute` method to inspect the error message and append targeted hints.
+
+Let me plan:
+- In `RecoveryHintTool::execute`, after calling `tool_recovery_hint`, also inspect the `msg` for specific patterns
+- For bash: look for "exit code", "exit status", "command failed", non-zero exit codes
+- For search: look for "regex parse", "regex syntax", "unmatched", "invalid regex"
+- Append targeted recovery hints accordingly
+
+Let me also check `ToolError` to understand the error types:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'enum ToolError' in src ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`ToolError` is from yoagent. Let me check how it's imported/used in the project.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ToolError::Failed' in src ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at what the bash tool error messages look like when there's a non-zero exit code. Let me check the `StreamingBashTool` in `tools.rs`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:620..670 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! So the bash tool actually returns an `Ok(ToolResult)` even when exit code is non-zero — it just includes the exit code in the output text and details. Let me verify this by checking — it seems like the bash tool does NOT return `ToolError::Failed` for non-zero exit codes. So the recovery hints in the RecoveryHintTool wouldn't fire for bash exit-code failures!
+
+Let me re-read the code more carefully:
+
+```rust
+let formatted = if exit_code != 0 {
+    format!(
+        "Exit code: {exit_code}. Tip: use explicit paths (./script.sh, not script.sh) and -- to separate flags from positional args.\n{output}"
+    )
+} else {
+    output
+};
+
+Ok(TR {...})
+```
+
+So non-zero exit codes are returned as `Ok(ToolResult)` with the exit code in the text. The `RecoveryHintTool` only fires on `ToolError::Failed`. This means bash exit-code failures would NOT get recovery hints through this mechanism.
+
+Wait, but the task says that bash tool errors with non-zero exit codes should get recovery hints. Let me re-read the task:
+
+"Bash tool failures that produce non-zero exit codes include a recovery hint..."
+
+But the bash tool returns them as Ok, not Err. So maybe the task is unaware of this implementation detail?
+
+Hmm, but there are also other cases where bash might return `ToolError::Failed` — like "Command timed out", "Failed to spawn", "Failed to wait". The task mentions "bash exit-code failures" which are specifically non-zero exit codes.
+
+Since the bash tool wraps non-zero exit codes in `Ok()` results, the `RecoveryHintTool` won't catch them. This is a problem.
+
+But wait — the task says "only modifies RecoveryHintTool's generic hint logic." So maybe I should:
+
+1. Add the targeted hints to `RecoveryHintTool::execute` for `ToolError::Failed` messages that contain bash or search error patterns
+2. These would fire for bash failures like "Command timed out", "Failed to spawn", etc.
+
+For the non-zero exit code case, the bash tool already embeds a tip: "Tip: use explicit paths (./script.sh, not script.sh) and -- to separate flags from positional args." So the most common case is already handled.
+
+Let me think about what the task is really asking. The evidence says:
+- "Graph pressure #1 (bash_tool_error=12)" — 12 bash tool errors
+- "Graph pressure #5 (search_error_count=1)" — 1 search error
+
+These are likely ToolError::Failed cases, not Ok-with-non-zero-exit-code cases. The bash_tool_error=12 probably includes things like timeouts, spawn failures, etc.
+
+So the approach should be:
+1. In `RecoveryHintTool::execute`, when we get `ToolError::Failed(msg)`, inspect `msg` for:
+   - bash patterns: "exit code", "timed out", "Failed to spawn", "Failed to wait", "command failed"
+   - search patterns: "regex", "invalid", "unmatched"
+2. Append targeted recovery hints based on what's detected in the message
+
+Let me now implement this. First, let me also check if there are existing tests for RecoveryHintTool:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'test.*recovery_hint|recovery_hint.*test|RecoveryHintTool' in src ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No tests. Let me also check the `tool_wrappers.rs` test section to see what tests exist nearby.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search '#\[cfg\(test\)\]' in src/tool_wrappers.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No tests in tool_wrappers.rs. Let me check the tests directory:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'RecoveryHint' in src ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are tests at line 2591. Let me read them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:2591..2671 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of the tests to see the full test suite for RecoveryHintTool:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:2670..2820 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the codebase. Let me also look at the `ConfigurableMockTool` since the tests use it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct ConfigurableMockTool' in src/tool_wrappers.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1979..2019 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me plan my implementation:
+
+The current `RecoveryHintTool::execute` does:
+1. Calls inner tool's `execute`
+2. On `Ok` — records success, returns Ok
+3. On `ToolError::Failed(msg)` — records failure, calls `tool_recovery_hint(tool_name, attempt)` and appends it
+4. On other errors — records failure, passes through
+
+My plan:
+1. In `RecoveryHintTool::execute`, on `ToolError::Failed(msg)`, after calling `tool_recovery_hint`, also inspect `msg` for specific patterns:
+   - For bash tools: look for "exit code" (non-zero exit code), "timed out", "Failed to spawn", "Failed to wait" — append targeted bash recovery hints
+   - For search tools: look for "regex" patterns — append targeted search recovery hints
+
+But wait — the task says "Keep changes minimal: add 2-3 hint conditions, do not refactor the RecoveryHintTool architecture, do not change its public API." So maybe it's better to modify `tool_recovery_hint` in `prompt_retry.rs` instead? But the task says the Edit Surface is `src/tool_wrappers.rs`.
+
+Hmm, let me re-read the task's instructions more carefully:
+
+"Do NOT modify the search tool's own regex error detection in `src/tools.rs` — that's task_02's scope. This task only modifies RecoveryHintTool's generic hint logic."
+
+So I should modify RecoveryHintTool. Let me think about the best approach.
+
+Option A: Modify `RecoveryHintTool::execute` to inspect `msg` and append targeted hints.
+Option B: Modify `tool_recovery_hint` in `prompt_retry.rs` to accept `msg` and return targeted hints.
+
+Since the task says "Edit Surface: src/tool_wrappers.rs", I'll go with Option A — modify `RecoveryHintTool::execute`.
+
+Actually, wait. Let me re-read the task again more carefully...
+
+"Extend `RecoveryHintTool` to provide tool-category-specific recovery advice for bash exit-code failures and search pattern errors, so the agent receives actionable next steps immediately in the error message rather than needing to diagnose the failure from raw stderr."
+
+The key value proposition is:
+1. For bash: check `echo $?`, inspect stderr, retry with `set -x` for debugging
+2. For search: retry with `regex=false` for literal search
+
+Let me implement this. I'll add targeted hint inspection in `RecoveryHintTool::execute`.
+
+Let me also look at what the actual bash tool error messages look like so I can match them correctly:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at the actual bash tool error messages to understand the patterns I need to match:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'Exit code:' in src/tools.rs  ▶ search 'Command timed out' in src/tools.rs ✓ (13ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait — the bash tool returns non-zero exit codes as `Ok(ToolResult)`, not `ToolError::Failed`. So the `RecoveryHintTool` would never see these. Only `ToolError::Failed` cases would go through the recovery hint flow.
+
+But the bash tool does return `ToolError::Failed` for:
+- "Command timed out after {n}s"
+- "Failed to spawn: {e}"
+- "Failed to wait: {e}"
+
+These are the cases where RecoveryHintTool would fire for bash. The non-zero exit code case is returned as `Ok` with the exit code embedded in the content.
+
+However, the task's success criteria says:
+"Bash tool failures that produce non-zero exit codes include a recovery hint suggesting: check `echo $?`, inspect stderr, retry with `set -x` for debugging."
+
+This seems to assume that non-zero exit codes are returned as errors. But they're not — they're returned as Ok. This is a design mismatch.
+
+I have a few options:
+1. Make the bash tool return `ToolError::Failed` for non-zero exit codes (but that's outside the task scope — it says not to modify tools.rs)
+2. Add the recovery hint to the Ok result somehow (but RecoveryHintTool only operates on errors)
+3. Accept that the task's assumption about how bash errors work is slightly off, and implement the best version I can: add targeted hints to the error messages that DO go through RecoveryHintTool (timeouts, spawn failures, wait failures), and note in my approach that the non-zero exit code case is handled differently (embedded tip in the Ok result).
+
+Actually, re-reading the task description again, the task says "bash exit-code failures" but the evidence says "bash_tool_error=12" — these are actual ToolError::Failed cases. So the task might be slightly confused about the mechanism, but the intent is clear: make bash ToolError::Failed cases give better recovery hints.
+
+Let me just implement it cleanly. I'll modify `RecoveryHintTool::execute` to inspect the error message for both bash and search patterns and append targeted hints.
+
+For bash:
+- Pattern matches: "timed out", "Failed to spawn", "Failed to wait", "exit code" (in case future changes make exit codes errors)
+
+For search:
+- Pattern matches: "regex", "invalid regex", "unmatched"
+
+Let me also add a test. Now let me write the code.
+
+Actually, there's an important detail. The current `RecoveryHintTool::execute` for `ToolError::Failed` is:
+
+```rust
+Err(yoagent::types::ToolError::Failed(msg)) => {
+    let attempt = self.tracker.record_failure(&tool_name);
+    let hint = crate::prompt_retry::tool_recovery_hint(&tool_name, attempt);
+    Err(yoagent::types::ToolError::Failed(format!(
+        "{msg}\n\n💡 Recovery hint: {hint}"
+    )))
+}
+```
+
+I should add targeted hint logic AFTER the generic `tool_recovery_hint` call. But the task says not to refactor. So simplest: add logic that appends an additional targeted hint based on the error message content.
+
+Let me implement it now. I'll use a closure or helper function that inspects the message and returns an optional additional hint.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.2s (2 ✓)
+
+Now I have a clear picture. Let me read the full `RecoveryHintTool::execute` one more time and then implement:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:990..1040 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the information I need. Let me implement the change:
+
+1. Add a helper function `targeted_hint` (private, in the same file) that inspects the error message and returns an optional additional targeted hint.
+2. Modify `RecoveryHintTool::execute` to append the targeted hint when available.
+3. Add tests.
+
+Let me write the code now. I'll keep it minimal.
+
+Actually, I realize I should keep it even simpler. The task says "add 2-3 hint conditions, do not refactor the RecoveryHintTool architecture, do not change its public API." So I can just modify the `execute` method to inspect the message inline.
+
+Let me write it:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me implement the changes. I'll add targeted recovery hint logic to `RecoveryHintTool::execute`:
+                Err(yoagent::types::ToolError::Failed(msg)) => {
+                    let attempt = self.tracker.record_failure(&tool_name);
+                    let hint = crate::prompt_retry::tool_recovery_hint(&tool_name, attempt);
+  -                 Err(yoagent::types::ToolError::Failed(format!(
+  -                     "{msg}\n\n💡 Recovery hint: {hint}"
+  -                 )))
+  +                 let targeted = targeted_recovery_hint(&tool_name, &msg);
+  +                 let decorated = if let Some(t) = targeted {
+  +                     format!("{msg}\n\n💡 Recovery hint: {hint}\n🎯 Targeted hint: {t}")
+  +                 } else {
+  +                     format!("{msg}\n\n💡 Recovery hint: {hint}")
+  +                 };
+  +                 Err(yoagent::types::ToolError::Failed(decorated))
+                }
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (7 → 11 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (7 → 11 lines)
+                Err(yoagent::types::ToolError::Failed(msg)) => {
+                    let attempt = self.tracker.record_failure(&tool_name);
+                    let hint = crate::prompt_retry::tool_recovery_hint(&tool_name, attempt);
+  -                 Err(yoagent::types::ToolError::Failed(format!(
+  -                     "{msg}\n\n💡 Recovery hint: {hint}"
+  -                 )))
+  +                 let targeted = targeted_recovery_hint(&tool_name, &msg);
+  +                 let decorated = if let Some(t) = targeted {
+  +                     format!("{msg}\n\n💡 Recovery hint: {hint}\n🎯 Targeted hint: {t}")
+  +                 } else {
+  +                     format!("{msg}\n\n💡 Recovery hint: {hint}")
+  +                 };
+  +                 Err(yoagent::types::ToolError::Failed(decorated))
+                }
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the `targeted_recovery_hint` function. Let me add it right before the `RecoveryHintTool` struct or after the `with_recovery_hints` function. I'll add it as a module-level function near the RecoveryHintTool implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the `targeted_recovery_hint` function. I'll place it right before the `RecoveryHintTool` struct:
+  + /// Inspect an error message and return a tool-category-specific recovery hint
+  + /// when the message matches a known failure pattern (e.g., bash exit codes,
+  + /// regex parse errors). Returns `None` when the message doesn't match any
+  + /// targeted pattern.
+  + fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
+  +     let msg_lower = error_msg.to_lowercase();
+  +     match tool_name {
+  +         "bash" => {
+  +             if msg_lower.contains("exit code")
+  +                 || msg_lower.contains("exit status")
+  +                 || msg_lower.contains("command failed")
+  +             {
+  +                 Some(
+  +                     "Check the exit code with `echo $?` after the command. \
+  +                      For piped commands, prepend `set -o pipefail;` to catch failures \
+  +                      in any part of the pipeline. Retry with `set -x` at the start of \
+  +                      your command to trace each step."
+  +                         .to_string(),
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (7 → 65 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (7 → 65 lines)
+  + /// Inspect an error message and return a tool-category-specific recovery hint
+  + /// when the message matches a known failure pattern (e.g., bash exit codes,
+  + /// regex parse errors). Returns `None` when the message doesn't match any
+  + /// targeted pattern.
+  + fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
+  +     let msg_lower = error_msg.to_lowercase();
+  +     match tool_name {
+  +         "bash" => {
+  +             if msg_lower.contains("exit code")
+  +                 || msg_lower.contains("exit status")
+  +                 || msg_lower.contains("command failed")
+  +             {
+  +                 Some(
+  +                     "Check the exit code with `echo $?` after the command. \
+  +                      For piped commands, prepend `set -o pipefail;` to catch failures \
+  +                      in any part of the pipeline. Retry with `set -x` at the start of \
+  +                      your command to trace each step."
+  +                         .to_string(),
+  +                 )
+  +             } else if msg_lower.contains("timed out") {
+  ... (46 more lines)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add tests. I need to add tests that verify:
+1. Bash exit code failure messages get targeted hints
+2. Bash timeout messages get targeted hints
+3. Bash spawn failure messages get targeted hints
+4. Search regex parse error messages get targeted hints
+5. Non-matching error messages don't get targeted hints
+6. Successful results don't get hints
+
+Let me add these tests near the existing RecoveryHintTool tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add tests. I'll add them near the existing RecoveryHintTool tests:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:2730..2750 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the end of the RecoveryHintTool tests to add new tests after them:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:2810..2825 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add targeted recovery hint tests after line 2821, before the ToolFailureTracker section.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert!(
+                err.contains("different approach"),
+                "Unknown tool hint should suggest a different approach: {err}"
+  +         );
+  +     }
+  + 
+  +     // =========================================================================
+  +     // targeted_recovery_hint — bash and search pattern matching
+  +     // =========================================================================
+  + 
+  +     #[test]
+  +     fn test_targeted_recovery_hint_bash_exit_code() {
+  +         let hint = targeted_recovery_hint("bash", "Exit code: 1\nsome output");
+  +         assert!(hint.is_some());
+  +         let hint = hint.unwrap();
+  +         assert!(hint.contains("echo $?"));
+  +         assert!(hint.contains("set -o pipefail"));
+  +         assert!(hint.contains("set -x"));
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (8 → 120 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (8 → 120 lines)
+            assert!(
+                err.contains("different approach"),
+                "Unknown tool hint should suggest a different approach: {err}"
+  +         );
+  +     }
+  + 
+  +     // =========================================================================
+  +     // targeted_recovery_hint — bash and search pattern matching
+  +     // =========================================================================
+  + 
+  +     #[test]
+  +     fn test_targeted_recovery_hint_bash_exit_code() {
+  +         let hint = targeted_recovery_hint("bash", "Exit code: 1\nsome output");
+  +         assert!(hint.is_some());
+  +         let hint = hint.unwrap();
+  +         assert!(hint.contains("echo $?"));
+  +         assert!(hint.contains("set -o pipefail"));
+  +         assert!(hint.contains("set -x"));
+  +     }
+  + 
+  ... (98 more lines)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me build and run the relevant tests. First, let's do a format check, then build, then run the tool_wrappers tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check formatting and build:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 | he… ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passed. Now let's build:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -20 ✓ (14.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, build succeeded. Now let's run the tests:
+────────────────────────────────────────────────────────────────────────────────
+
+Build succeeded. Now let's run the tests:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- --tes… ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also run the specific tool_wrappers tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test tool_wrappers 2>&1 … ✓ (27.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The bash timeout test failed because the hint message doesn't contain "reduce" — it uses "reducing" instead. Let me fix the test. The hint says "Try reducing scope: limit file traversal depth, add a `timeout` wrapper, or split the work into smaller sequential commands."
+
+Let me fix this assertion.
+────────────────────────────────────────────────────────────────────────────────
+
+The test assertion needs fixing — the hint uses "reducing" not "reduce". Let me fix it:
+            let hint = targeted_recovery_hint("bash", "Command timed out after 300s");
+            assert!(hint.is_some());
+            let hint = hint.unwrap();
+  -         assert!(hint.contains("timed out"));
+  -         assert!(hint.contains("reduce"));
+  +         assert!(hint.contains("reducing"));
+  +         assert!(hint.contains("timeout"));
+        }
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (8 → 8 lines)
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (8 → 8 lines)
+            let hint = targeted_recovery_hint("bash", "Command timed out after 300s");
+            assert!(hint.is_some());
+            let hint = hint.unwrap();
+  -         assert!(hint.contains("timed out"));
+  -         assert!(hint.contains("reduce"));
+  +         assert!(hint.contains("reducing"));
+  +         assert!(hint.contains("timeout"));
+        }
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me rerun the tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test tool_wrappers 2>&1 … ✓ (31.0s)
+
+

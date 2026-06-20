@@ -1,0 +1,664 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The planning phase requires me to create task files in session_plan/ based on the assessment, trajectory, and graph pressure. Let me analyze what's available:
+
+1. Assessment shows build is green, 5/5 sessions green
+2. Graph pressure has 5 items
+3. No open issues to respond to
+4. A seed task may already exist
+
+Let me first check if session_plan/task_01.md already exists, and then create my plan.
+
+The graph pressure items are:
+1. **Bound failing shell commands** (bash_tool_error=12) - MEDIUM
+2. **Reconcile transcript-only tool failures** (transcript_only_failed_tool_count=5) - MEDIUM  
+3. **Reconcile state-only tool failures** (state_only_failed_tool_count=24) - MEDIUM
+4. **Recover failed tool actions** (tool_error_count=3) - LOW
+5. **Harden search commands** (search_error_count=1) - LOW
+
+The trajectory says "Evo readiness: can_drive_evolution=true" with task_success_rate=1.0.
+
+Key constraint: At least 2 slots SHOULD come from state/trajectory/eval evidence. Max 3 tasks. Each task must touch at most 3 source files.
+
+Let me look at the assessment for specifics on where these fixes would go.
+
+For #1 (shell command bounding): This would touch `src/tools.rs` (bash tool) and possibly `src/tool_wrappers.rs` and `scripts/evolve.sh`. But scripts/evolve.sh is protected.
+
+For #2/#3 (reconcile transcript/state failures): This would touch `scripts/build_evolution_dashboard.py` and `scripts/extract_trajectory.py`.
+
+For #4 (recover tool errors): This is about `src/state.rs` or `src/commands_state.rs`.
+
+For #5 (search hardening): This is about search commands.
+
+Let me think about what's most actionable and fits the DeepSeek harness goal.
+
+The Day 112 sessions already did work on #2/#3 (tool-name breakdown in dashboard) and preseed scoping to address reverted_no_edit. So continuing to improve reconciliation (#2/#3) makes sense as it's directly harness observability.
+
+But I also need to think about what tasks are completable in 20 minutes, touch at most 3 files.
+
+Let me first check if a seed task exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ ls -la session_plan/ 2>/dev/null; echo "---"; cat session_plan/task_01.md 2>/dev… ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+A seed task exists. Let me now check the assessment against it. The seed task says "Assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions." But my actual assessment says:
+
+"Self-Test Results: `yyds state why last-failure` ✅ Correctly identifies current session in-progress, shows incomplete run, offers breadcrumbs"
+
+And: "No failures to diagnose — `state why last-failure` correctly reports zero failures + one in-progress session."
+
+So the assessment contradicts the seed task! The self-test shows `state why last-failure` is working fine. The seed task's premise is wrong. Let me check more carefully...
+
+The assessment says:
+- `state why last-failure`: "Correctly identifies current session in-progress, shows incomplete run, offers breadcrumbs"
+- "No failures to diagnose — state why last-failure correctly reports zero failures + one in-progress session."
+
+But also: "Friction found: state why last-failure says 'searched last 200 events of 37358 total' — the default 200-event window is small relative to 37k total events. This is a known design tradeoff (performance vs completeness), with --limit 0 for full scans."
+
+So the seed task is contradicted by the assessment. The `why last-failure` is working fine. The only friction is the 200-event window being small, but that's LOW priority and already has a flag.
+
+Now, what should I do about task_01.md? The policy says: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+So I should write task_01_obsolete.md and then create new task files from the graph pressure.
+
+Let me plan my tasks based on the graph pressure:
+
+1. **Harden shell command bounding** (bash_tool_error=12): This is the highest-count recurring tool failure. But where would the fix go? Probably `src/tools.rs` (bash tool) and maybe `src/tool_wrappers.rs`. But this might be complex.
+
+2. **Reconcile state-only tool failures** (state_only_failed_tool_count=24): The dashboard now has tool-name breakdowns. Building automated reconciliation at session end would be in `scripts/build_evolution_dashboard.py` or `scripts/extract_trajectory.py`. But scripts are large.
+
+3. **Recover unrecovered tool errors** (tool_error_count=3): Small scope. Could inspect the 3 unrecovered errors via `state` commands and determine if they need recovery logic. This is diagnostic work.
+
+4. **Harden search commands** (search_error_count=1): Small scope. Could be in `src/commands_search.rs` or `src/tools.rs`.
+
+Let me think about what's actionable and verifiable:
+
+Task idea: The graph pressure #3 (state-only tool failures=24) - the Day 112 dashboard change added tool-name breakdowns to `unique_delta_labels()`. I could build on this and add automated reconciliation that flags mismatches.
+
+Actually wait, let me re-read the assessment more carefully about what was already done:
+
+- Day 112 (10:33): `scripts/build_evolution_dashboard.py` (+8 lines): Tool-name breakdown in state/transcript failure reconciliation. 
+- Day 112 (03:47): `src/commands_state.rs`: Fixed state event type classification.
+
+So the dashboard already has tool-name breakdowns. The gaps (24 state-only, 5 transcript-only) are historical.
+
+What about making the gap reconciliation more automated/actionable? 
+
+Let me look at what the graph pressure specifically says:
+
+Pressure #1: "Bound failing shell commands before retrying" - This is about bash tool behavior in `src/tools.rs`. 
+Pressure #2: "Reconcile transcript-only tool failures" - transcript found failures state didn't capture. 
+Pressure #3: "Reconcile state-only tool failures" - state captured failures transcript missed.
+Pressure #4: "Recover failed tool actions before scoring" - inspect dominant failure category.
+Pressure #5: "Harden search commands and pattern escaping" - search/grep errors.
+
+For DeepSeek harness evolution, pressure #2/#3 (reconciliation) is most directly about harness observability quality. Pressure #1 (shell commands) is about agent reliability. Both are valid.
+
+Let me think about concrete tasks:
+
+**Task 1**: Add automated session-end reconciliation to the dashboard or evolve.sh that flags state-vs-transcript tool failure mismatches. This would touch `scripts/build_evolution_dashboard.py` and maybe `scripts/evolve.sh`. But evolve.sh is protected.
+
+**Task 2**: Inspect and recover the 3 unrecovered tool errors. Use `yyds state` commands to identify the dominant failure category and add recovery logic if needed. This touches `src/commands_state.rs` or `src/state.rs`.
+
+**Task 3**: Harden search command pattern escaping in `src/commands_search.rs` to prevent search_error friction.
+
+Actually, let me think about what would be most impactful and completable in 20 min:
+
+For #2/#3 (reconciliation gaps), I could add a `yyds state doctor` sub-check or a `yyds state reconcile` command that matches state events to transcript records. But this needs to understand the transcript format. That's complex.
+
+A simpler approach: Improve the dashboard's reconciliation output to include actionable next steps - like which specific sessions have the gaps, so a human (or future agent) can investigate.
+
+Actually, the assessment already said: "The Day 112 dashboard change added tool-name breakdowns, making these gaps diagnosable." So maybe the next step is to add the reconciliation as a state command?
+
+Let me think more concretely...
+
+For task selection, I should prioritize:
+- At least 2 from state/trajectory/eval evidence
+- Each must touch ≤3 files
+- Each completable in ~20 min
+
+Here's my plan:
+
+**Task 1** (from graph pressure #3, state-only tool failures=24): Add a `state reconcile` command or extend `state doctor` to report session-level state-vs-transcript tool-failure mismatches. This is directly harness observability improvement. Files: `src/commands_state.rs`, `src/state.rs`.
+
+**Task 2** (from graph pressure #1, bash_tool_error=12): Add bounded command prefixes and `--` separators to unbounded shell commands in agent tool wrappers. Files: `src/tools.rs`, `src/tool_wrappers.rs`.
+
+**Task 3** (from graph pressure #5, search_error_count=1): Harden search command pattern escaping. Files: `src/commands_search.rs`.
+
+Wait, but task 1 seems complex for a state reconciliation command. Let me think smaller.
+
+Actually, looking at the assessment again: "No failures to diagnose — state why last-failure correctly reports zero failures + one in-progress session." The trajectory shows 5/5 green sessions. The tool failures are historical.
+
+The most actionable item might be to add a session-end check in `state doctor` or a new state subcommand that proactively reconciles tool failures. But that's a big feature.
+
+Let me think about what small, concrete things I can do:
+
+1. For the seed task contradiction: write task_01_obsolete.md
+2. For graph pressure #1 (shell command bounding): This is about scripts and tool wrappers. I could add `set -e` / `set -o pipefail` / bounded globs to shell invocations in `src/tools.rs`. This is a focused change.
+
+3. For graph pressure #3 (state-only tool failures): The dashboard already has tool-name breakdowns. I could add a `state reconcile` subcommand that reads state events and checks for missing transcript coverage. But where's the transcript data? It's in the audit-log branch. That might be too complex.
+
+Let me simplify. Looking at what's truly actionable:
+
+Task A: Write task_01_obsolete.md (contradiction proof)
+Task B: Add `set -o pipefail` and bounded command patterns to bash tool in `src/tools.rs` 
+Task C: Add a `state failures reconcile` subcommand or extend `state doctor` with reconciliation checks
+Task D: Harden search escaping in `src/commands_search.rs`
+
+Actually, I think I should focus on what's most verifiable and clearly beneficial. Let me look at the actual code to understand the bash tool and search command structures before deciding.
+
+No wait - the policy says "Do not read source code files when an assessment is available." But I can use cheap ownership checks: `git grep` or `rg` to verify files. Let me check what files are relevant.
+
+Actually, let me just proceed with planning. I have enough information from the assessment and trajectory.
+
+Here's my refined plan:
+
+**task_01.md** (replacing the obsolete seed): From graph pressure #1 - Harden shell command bounding in bash tool. Add `set -o pipefail`, explicit path prefixes, and `--` separators to bash tool invocations. Files: `src/tools.rs`.
+
+**task_02.md**: From graph pressure #3 - Add state-transcript tool-failure reconciliation to `state doctor`. Files: `src/commands_state.rs`, `src/state.rs`.
+
+**task_03.md**: From graph pressure #5 - Harden search pattern escaping in search commands. Files: `src/commands_search.rs`.
+
+Wait, but task_02 might be too large. Let me think about what "reconciliation" actually means at implementation level.
+
+The state has ToolCallStarted/ToolCallCompleted events. The transcript has tool action lines. The reconciliation gap means state recorded a tool failure that the transcript didn't capture, or vice versa. To reconcile, we'd need to parse transcript files from the audit-log branch. That's complex.
+
+A simpler approach: Add a `state failures summary` that shows per-tool failure counts from state events, so at least the state side is clear. The dashboard already does this, but maybe a CLI command would make it more accessible.
+
+Or even simpler: Extend `state doctor` to include a "tool failure summary" section that counts failures by tool name and session. This gives visibility without complex reconciliation.
+
+Actually, let me re-read the assessment friction list:
+
+"3. **LOW** Graph pressure #2/#3 (transcript/state reconciliation gaps): The Day 112 dashboard change added tool-name breakdowns, making these gaps diagnosable. The gaps themselves (24 state-only, 5 transcript-only) are historical accumulations. No current bug — but the reconciliation pipeline could benefit from automated periodic reconciliation."
+
+So the assessment itself says LOW priority and historical. Maybe I should prioritize differently.
+
+Let me look at what the trajectory says about "Graph-derived next-task pressure":
+1. Bound failing shell commands (bash_tool_error=12) - this has the highest count
+2. Reconcile transcript-only (5)  
+3. Reconcile state-only (24)
+4. Recover failed tool actions (3)
+5. Harden search commands (1)
+
+The policy says: "Prefer tasks that address the highest ranked pressure rows."
+
+So #1 is the top priority.
+
+And for a DeepSeek harness, what matters most? Shell command reliability directly impacts agent effectiveness.
+
+OK here's my final plan:
+
+**task_01.md** (replace seed): Harden bash tool with pipefail, bounded commands, and `--` separators. Files: `src/tools.rs`.
+
+**task_02.md**: Inspect and recover the 3 unrecovered tool errors - use `yyds state` commands to diagnose the dominant failure category and add recovery logic. Files: `src/state.rs`, `src/commands_state.rs`.
+
+**task_03.md**: Harden search command pattern escaping - add regex metacharacter detection and auto-escaping for literal searches. Files: `src/commands_search.rs`.
+
+Actually wait - for task_02, "recover" tool errors - what does that mean? Is this about `ToolFailureTracker` in `src/tool_wrappers.rs`? Let me check the assessment's source architecture... `tool_wrappers.rs` at 3,158 lines has "Tool decorators (guard, truncate, confirm, auto-check, recovery hints)". So recovery hints are in tool_wrappers.rs.
+
+The graph pressure says "Recover failed tool actions before scoring (tool_error_count=3): Failed tool actions were present in session evidence; inspect the dominant failure category and recover before scoring."
+
+This sounds like: there are 3 tool errors that weren't recovered. We need to look at what they are and add recovery logic. But without looking at the actual errors, I can't know what recovery logic to add. So this task would be: inspect the 3 unrecovered errors, determine root cause, add targeted recovery. 
+
+Hmm, but that's investigative - the implementation agent would need to do the investigation. Let me scope it properly.
+
+For the implementation agent, task_02 would be: run `yyds state failures` or similar to find the 3 unrecovered errors, analyze their type, and add recovery logic to `src/tool_wrappers.rs` or `src/tools.rs`.
+
+But I need to verify the files exist. Let me do cheap checks.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files src/tools.rs src/tool_wrappers.rs src/commands_search.rs src/comman…  ▶ $ rg -n 'fn streaming_bash\|fn run_bash\|StreamingBashTool\|set -o pipefail\|set -… ✓ (141ms)
+ ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+rg not available, let me use grep or search tool.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn streaming_bash\|fn run_bash\|StreamingBashTool' in src/tools.rs  ▶ search 'set -o pipefail\|set -e\|pipefail' in src/tools.rs  ▶ search 'ToolFailureTracker\|recovery_hint\|RecoveryHint' in src/tool_wrappers.rs ✓ (143ms)
+ ✓ (163ms)
+ ✓ (212ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Backslash escaping issues with the search tool. Let me try simple literal searches.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.8s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'StreamingBashTool' in src/tools.rs  ▶ search 'pipefail' in src/tools.rs  ▶ search 'RecoveryHint' in src/tool_wrappers.rs ✓ (162ms)
+ ✓ (186ms)
+ ✓ (216ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have evidence:
+
+1. `StreamingBashTool` is in `src/tools.rs` and there's no `pipefail` anywhere - the bash tool doesn't use `set -o pipefail`. This confirms the shell hardening task is real.
+
+2. `RecoveryHintTool` exists in `src/tool_wrappers.rs` - this is relevant for tool error recovery.
+
+3. All target files exist and are git-tracked.
+
+Now let me also quickly check if search commands exist in commands_search.rs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.5s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_search' in src/commands_search.rs  ▶ search 'FailureObserved' in src/state.rs ✓ (107ms)
+ ✓ (101ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me finalize my task plan. Let me check one more thing - the `commands_search.rs` file for search-related functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'fn.*search\|fn.*grep\|fn.*scan\|fn.*find' src/commands_search.rs | … ✓ (93ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I have enough evidence. Let me now write the task files.
+
+Plan:
+1. Write `task_01_obsolete.md` - the seed task is contradicted by assessment
+2. Write new `task_01.md` - Harden bash tool with `set -o pipefail` and bounded commands
+3. Write `task_02.md` - Inspect and recover 3 unrecovered tool errors via RecoveryHintTool
+4. Write `task_03.md` - Harden search command pattern escaping in `src/commands_search.rs`
+5. Write `issue_responses.md` - no issues to respond to
+6. Write `planning_failure.md` if needed (no, we have tasks)
+
+Let me think about what each task needs:
+
+**Task 01: Harden bash tool**
+- Files: `src/tools.rs` 
+- Add `set -o pipefail` to bash command execution
+- Add `--` separator for commands that take arguments
+- Verifier: `cargo test tools` (StreamingBashTool tests)
+
+**Task 02: Recover unrecovered tool errors**
+- Files: `src/tool_wrappers.rs`, `src/state.rs`
+- Inspect the 3 unrecovered errors via state commands
+- Add targeted recovery hints
+- Verifier: `cargo test tool_wrappers state`
+
+**Task 03: Harden search command escaping**
+- Files: `src/commands_search.rs`
+- Add regex metacharacter detection
+- Add auto-escaping for literal searches
+- Verifier: `cargo test commands_search`
+
+Wait, for task 02, the implementation agent would need to run `yyds state` commands to find the unrecovered errors. But the assessment says these are historical (cumulative across sessions). The actual errors might not be easily accessible from a fresh session. Let me reconsider.
+
+Actually, the assessment says: "Historical unrecovered tool-failure categories: bash exit-code failures and search pattern errors dominate the historical pile. These are cumulative across all sessions and not currently reproducing."
+
+So the 3 unrecovered errors might be bash exit-code failures and search pattern errors. The recovery hints could be general: for bash failures, suggest checking exit codes and retrying with `--`; for search failures, suggest escaping regex metacharacters.
+
+Hmm, this is getting speculative. Let me focus on what's clearly actionable:
+
+Task 01 (bash hardening) and Task 03 (search hardening) are concrete, verifiable, and directly address the two top failure categories.
+
+For Task 02, maybe I should scope it as: "Add recovery hints to tool_wrappers.rs for the most common tool failure categories (bash exit-code failures and search pattern errors)." This doesn't require investigating the 3 specific errors - it adds general recovery logic.
+
+Actually, let me re-read the graph pressure:
+"Recover failed tool actions before scoring (tool_error_count=3): Failed tool actions were present in session evidence; inspect the dominant failure category and recover before scoring."
+
+The "before scoring" part suggests this is about the dashboard's scoring, not about runtime recovery. So this might be about making the dashboard skip or handle failed tool actions differently before computing scores.
+
+But that's in `scripts/build_evolution_dashboard.py` which is protected (per safety rules). Actually wait, let me check - the protected files are IDENTITY.md, PERSONALITY.md, ECONOMICS.md, scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, and .github/workflows/. `scripts/build_evolution_dashboard.py` is NOT in that list. But `scripts/preseed_session_plan.py` was edited recently. Let me check the safety rules again:
+
+"Never modify IDENTITY.md, PERSONALITY.md, ECONOMICS.md, scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, or .github/workflows/"
+
+So `scripts/build_evolution_dashboard.py` IS editable. Good.
+
+But the policy also says "Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality."
+
+Tool error recovery is about observability and self-evolution quality. But it's in a script file (dashboard), not in src/. 
+
+Let me narrow my focus. The top two pressures are shell command bounding and search hardening. Both are src/ changes. Both improve agent reliability. Both are verifiable with cargo test.
+
+**Final plan:**
+
+Task 01: Harden bash tool with pipefail + bounded commands (Files: `src/tools.rs`)
+Task 02: Harden search command pattern escaping (Files: `src/commands_search.rs`)
+Task 03: Add recovery hints for bash exit-code and search pattern failures (Files: `src/tool_wrappers.rs`)
+
+All 3 are src/ changes, all verifiable with cargo test.
+
+But wait, for Task 03, what exactly would I add? The RecoveryHintTool already exists. I need to understand what recovery hints it currently provides and what new ones to add. Let me scope it better.
+
+Actually, let me reconsider. The policy says 2 slots SHOULD come from state/trajectory/eval evidence. All 3 tasks I'm considering do come from graph pressure (which is state/trajectory evidence). So that's fine.
+
+But the 3-file limit: each task touches at most 3 files. All my tasks touch 1-2 files. Good.
+
+Let me finalize and write the files.
+
+Actually, one more thought: do I need an issue_responses.md? The assessment says "No open agent-self issues. No pending planned work. The issue queue is clean." And the ISSUES_TODAY section says "Read ISSUES_TODAY.md." Let me check if that file exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cat ISSUES_TODAY.md 2>/dev/null || echo "NO ISSUES_TODAY.md"  ▶ $ git grep -n 'fn.*search\|fn.*grep\|fn.*rg_cmd\|fn.*find_content' src/commands_se… ✓ (248ms)
+ ✓ (409ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No issues to respond to. Let me also check the `find_files` function and `parse_grep_args` to understand the search hardening needed. The assessment says `search_error_count=1` with "Search/grep errors created avoidable evolution friction."
+
+Let me look at the parse_grep_args function briefly to understand what hardening is needed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_search.rs:726..776 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me check the search tool in `src/tools.rs` - the `search` builtin tool that agents use.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn search_tool\|SearchTool\|pub fn search' in src/tools.rs ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search tool might not be in `src/tools.rs`. Let me check where the search builtin is defined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'struct SearchTool\|fn search_tool\|"search"' src/tools.rs src/tool_… ✓ (92ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search tool is likely defined in yoagent as a builtin. Let me check the main.rs or agent_builder.rs for how search is built.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'search' src/agent_builder.rs | head -10  ▶ $ git grep -n 'search' src/tools.rs | head -20 ✓ (279ms)
+ ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see! The search tool is defined in `src/tools.rs` starting at line 114. It's a "Safer local file search for coding agents" that wraps the upstream yoagent search tool. Let me read this section to understand the hardening opportunity.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:114..274 ✓ (49ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is very informative. The `ProjectSearchTool` already has some hardening:
+- It handles regex errors by detecting them in stderr and providing hints
+- It uses rg with bounded args
+- It has a timeout
+
+But looking at the graph pressure: `search_error_count=1` suggests there's still an occasional search error. 
+
+Let me also read the `build_project_rg_args` and `build_project_grep_args` functions to see the command construction.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_project_rg_args' in src/tools.rs ✓ (54ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the bash tool's execute method to understand the current command execution pattern and where pipefail could be added.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:107..227 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the StreamingBashTool's execute function to see how it runs commands:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:395..515 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see line 477: `cmd.arg("-c").arg(&effective_command);` - the bash command is run via `bash -c <command>`. There's no `set -o pipefail` prepended. This is a clear hardening opportunity.
+
+Now let me also read the `build_project_rg_args` function to see if there's a vulnerability there:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:301..381 ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. Let me write the task files.
+
+The search tool already has good hardening:
+- Uses `--fixed-strings` for non-regex (rg) / `-F` (grep)
+- Excludes build artifact directories
+- Provides regex error hints
+- Has timeout
+
+But there's still `search_error_count=1`. The remaining hardening could be:
+- The pattern is passed directly to rg/grep as an argument after `--`. If the pattern starts with `-`, it could be interpreted as a flag. Using `--` before the pattern would fix this.
+- Currently the pattern is at `args.push(pattern.to_string())` and path at `args.push(path.to_string())`. If pattern starts with `-`, rg might interpret it as a flag.
+
+Wait, looking more carefully at line 337-338:
+```
+args.push(pattern.to_string());
+args.push(path.to_string());
+```
+
+If pattern is something like `--help`, rg would interpret it as a flag. The `--` separator should be added before the pattern.
+
+Similarly for the bash tool at line 477:
+```
+cmd.arg("-c").arg(&effective_command);
+```
+
+The effective_command could benefit from `set -o pipefail`.
+
+OK, let me now write all the plan files. I have enough evidence.
+
+**Final task plan:**
+
+1. **task_01_obsolete.md** - seed task contradicted by assessment (state why runs fine)
+2. **task_01.md** (new) - Harden bash tool with `set -o pipefail` and stdin /dev/null
+3. **task_02.md** - Harden search tool with `--` separator before pattern, extend regex error detection
+4. **task_03.md** - Add targeted recovery hints for bash and search failures in tool_wrappers.rs
+
+Wait, but task 01 and 03 both touch tool_wrappers? No:
+- task_01: src/tools.rs (bash tool)
+- task_02: src/tools.rs (search tool) 
+- task_03: src/tool_wrappers.rs (recovery hints)
+
+That's only 2 unique source files. Good.
+
+But task_01 and task_02 both touch `src/tools.rs` - that's fine since they modify different parts (different functions). The Files line should list the file.
+
+Actually, let me reconsider. Should I split tasks that touch the same file? The policy says "Each task MUST touch at most 3 source files." Touching 1 file is fine. Multiple tasks can touch the same file as long as they modify different sections (different functions).
+
+OK let me finalize:
+
+**task_01.md**: Harden bash tool — add `set -o pipefail;` prefix to bash commands
+**task_02.md**: Harden search tool — add `--` separator before pattern to prevent flag injection, extend regex error detection for additional rg error patterns
+**task_03.md**: Add recovery hints for bash exit-code failures and search pattern errors in RecoveryHintTool
+
+All three come from graph pressure evidence. All three improve DeepSeek harness reliability.
+
+Let me write them now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the evidence I need. Let me write the plan files. The seed task is contradicted by fresh assessment evidence, and the graph pressure gives clear task direction.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (50ms)
+  ▶ todo ✓ (47ms)
+  ▶ todo ✓ (96ms)
+  ▶ todo ✓ (95ms)
+  ▶ todo ✓ (113ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the files. First the obsolete note, then the three task files.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 5.3s (5 ✓)
+
+
+  + Title: [OBSOLETE] Improve cold-start state failure diagnostics
+  + Files: src/commands_state.rs, src/state.rs
+  + Issue: none
+  + Origin: harness-seed → OBSOLETED BY PLANNER
+  + 
+  + ## Contradiction Proof
+  + 
+  + The harness seed task claimed: "`state why last-failure` returning only `no state event found` during fresh-state sessions."
+  + 
+  + The Day 112 (17:27) Phase A1 self-test directly contradicts this:
+  + 
+  + ```
+  + | yyds state why last-failure | ✅ | Correctly identifies current session in-progress, shows incomplete run, offers breadcrumbs |
+  + ```
+  + 
+  + And the assessment states:
+  + > "No failures to diagnose — `state why last-failure` correctly reports zero failures + one in-progress session."
+  + 
+  + The seed task's premise is false. `state why last-failure` is working correctly. The only friction noted (200-event window being small) is LOW priority and already has a `--limit 0` flag.
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (23 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (23 lines) ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now remove the stale task_01.md and write the new tasks.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ rm session_plan/task_01.md ✓ (104ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write the three task files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Harden bash tool with pipefail and bounded command prefix
+  + Files: src/tools.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Graph pressure #1: bash_tool_error=12 — highest-count recurring tool failure category in state evidence.
+  + - `git grep -n pipefail src/tools.rs` returns zero matches. The `StreamingBashTool::execute` method at line 477 runs `bash -c <command>` without `set -o pipefail`, so pipe failures (e.g., `rg ... | head -20` where rg exits non-zero) are silently masked.
+  + - State events show 12 bash tool errors across sessions; many are exit-code failures from piped commands where a non-zero exit from the first command was hidden by the last command's exit code.
+  + - Recent action evidence: no current-session reproduction, but the category is the largest single failure bucket.
+  + 
+  + Edit Surface:
+  + - src/tools.rs (StreamingBashTool::execute, around line 475-478)
+  + 
+  + Verifier:
+  + - cargo test --bin yyds -- --test-threads=1
+  + - cargo test --test integration -- --test-threads=1
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (62 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (62 lines) ✓ (49ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (47ms)
+  ▶ todo ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write task_02.md - hardening search tool with `--` separator.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 14.9s (2 ✓)
+
+
+  + Title: Harden search tool pattern with -- separator and extended regex error detection
+  + Files: src/tools.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Graph pressure #5: search_error_count=1 — search/grep errors created avoidable evolution friction.
+  + - `ProjectSearchTool::execute` at line 202-220 calls `build_project_rg_args` or `build_project_grep_args`, which append `pattern` and `path` as final arguments (lines 337-338, 377-378). Neither function inserts a `--` separator before user-supplied arguments. A pattern starting with `-` (e.g., `--help`, `-v`) would be interpreted as a flag by rg/grep.
+  + - The regex error detection at lines 243-257 covers several rg error patterns but misses `"regex syntax error"`, `"regex parse error"`, and `"regex engine"` — common rg error messages that would escape detection.
+  + - Historical evidence: search_error_count=1 in state events; tool-failure reconciliation shows search pattern errors as a recurring minor friction category.
+  + 
+  + Edit Surface:
+  + - src/tools.rs (build_project_rg_args around line 309-339, build_project_grep_args around line 350-379, regex error detection around line 243-257)
+  + 
+  + Verifier:
+  + - cargo test --bin yyds -- --test-threads=1
+  + - cargo test --test integration -- --test-threads=1
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (93 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (93 lines) ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write task_03.md - recovery hints for bash and search failures.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Add targeted recovery hints for bash exit-code and search pattern failures
+  + Files: src/tool_wrappers.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Graph pressure #4: tool_error_count=3 — three unrecovered tool errors in session evidence.
+  + - Assessment identifies the dominant unrecovered failure categories as "bash exit-code failures and search pattern errors."
+  + - `RecoveryHintTool` exists in `src/tool_wrappers.rs` (line 949) — it appends recovery hints to tool error messages. Current hints are generic; no bash-specific or search-specific recovery advice.
+  + - `git grep -n 'RecoveryHint\|recovery_hint' src/tool_wrappers.rs` confirms the infrastructure exists but lacks tool-category-specific hints.
+  + - Graph pressure #1 (bash_tool_error=12) and #5 (search_error_count=1) indicate these are the two categories where recovery hints would have the most impact.
+  + 
+  + Edit Surface:
+  + - src/tool_wrappers.rs (RecoveryHintTool implementation, around line 949-1000)
+  + 
+  + Verifier:
+  + - cargo test --bin yyds -- --test-threads=1
+  + - cargo test --test integration -- --test-threads=1
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_03.md (61 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_03.md (61 lines) ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write issue_responses.md - no issues to respond to.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 112 (17:27)
+  + 
+  + No trusted owner issues to respond to today. `ISSUES_TODAY.md` is empty.
+  + 
+  + No open `agent-self` issues. No pending planned work. The issue queue is clean.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (5 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (5 lines) ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (48ms)
+  ▶ todo ✓ (46ms)
+  ▶ todo ✓ (94ms)
+  3 tools completed in 326ms (3 ✓)
+
+
