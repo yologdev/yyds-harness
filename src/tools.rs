@@ -474,8 +474,13 @@ impl AgentTool for StreamingBashTool {
         // Apply RTK prefix for supported commands
         let effective_command = maybe_prefix_rtk(command);
 
+        // Prepend pipefail so that non-zero exits in piped commands
+        // propagate to the tool result instead of being silently masked
+        // by the last command's exit code.
+        let guarded_command = format!("set -o pipefail; {}", effective_command);
+
         let mut cmd = tokio::process::Command::new("bash");
-        cmd.arg("-c").arg(&effective_command);
+        cmd.arg("-c").arg(&guarded_command);
 
         if let Some(ref cwd) = self.cwd {
             cmd.current_dir(cwd);
@@ -2027,6 +2032,29 @@ mod tests {
                 assert!(
                     !text.contains("Tip:"),
                     "exit 0 should not contain recovery tip: {text}"
+                );
+            }
+            _ => panic!("Expected text content"),
+        }
+    }
+
+    /// pipefail: when a pipe member fails mid-pipeline, the non-zero exit
+    /// propagates to the tool result instead of being masked by the last
+    /// command's exit code.
+    #[tokio::test]
+    async fn test_streaming_bash_pipefail_propagates_first_command_exit() {
+        let tool = StreamingBashTool::default();
+        let ctx = test_tool_context(None);
+        // The first command exits 3, cat exits 0. With pipefail, exit=3.
+        let params = serde_json::json!({"command": "sh -c 'exit 3' | cat"});
+        let result = tool.execute(params, ctx).await.unwrap();
+        assert_eq!(result.details["exit_code"], 3);
+        assert_eq!(result.details["success"], false);
+        match &result.content[0] {
+            yoagent::types::Content::Text { text } => {
+                assert!(
+                    text.starts_with("Exit code: 3."),
+                    "pipe-failing command should report exit-code line: {text}"
                 );
             }
             _ => panic!("Expected text content"),
