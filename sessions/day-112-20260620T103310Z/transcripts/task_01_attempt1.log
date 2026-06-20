@@ -1,0 +1,631 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and reading the relevant files. The task is about making analysis-only task pressure landable - specifically, when the harness detects that a previous session had tasks that produced no file edits (reverted_no_edit > 0), the preseed picker should select a smaller, more concrete task rather than another broad task.
+
+Let me first read the evolve skill, then the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py ✓ (165ms)
+ ✓ (158ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the key functions in preseed_session_plan.py - particularly `choose_task()`, `current_evidence_text()`, and the `choose_task` logic. Let me also check if `scripts/state_graph_tools.py` and `scripts/test_state_graph_tools.py` exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+Let me check the key functions and verify the other files exist:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la scripts/state_graph_tools.py scripts/test_state_graph_tools.py 2>&1  ▶ read scripts/preseed_session_plan.py:140..340 ✓ (53ms)
+ ✓ (354ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the `choose_task` function and the `current_evidence_text` function to understand the current logic:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+Let me read the choose_task and analysis functions:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:340..590 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the `choose_task` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:589..689 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current code. Let me trace through the logic:
+
+1. `choose_task()` iterates through `TASKS` and checks if task keys are present in the lowercased assessment text
+2. For the "Make analysis-only task pressure landable" task (entry at lines 190-231), its keys include `reverted_no_edit`, `task_analysis_only_attempt_count`, etc.
+3. When `_has_analysis_only_pressure(metrics)` is True, the lifecycle task is skipped (line 573-575)
+4. But the analysis-only task itself needs to be selected when pressure is active
+
+The problem: The current code detects analysis-only pressure and uses it to skip the lifecycle task, but it doesn't have special logic to *ensure* the analysis-only task is selected with proper constraints (≤3 files, no protected files, scoped to specific tool/script/function).
+
+Let me look at what happens when analysis-only pressure is active. The analysis-only task (lines 190-231) has keys like `reverted_no_edit`, `task_analysis_only_attempt_count`. If those appear in the assessment, the task would be matched as a candidate. But the task's own "files" field includes `scripts/state_graph_tools.py` and `scripts/test_state_graph_tools.py` which are NOT in PROTECTED_IMPLEMENTATION_FILES... wait, let me check.
+
+Actually, looking at the task, it has:
+```
+"files": "scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py"
+```
+
+None of these are in PROTECTED_IMPLEMENTATION_FILES, so `_has_protected_files` would return False.
+
+The issue is more subtle. The task title says "Make analysis-only task pressure landable" - it's about making the task selection system pick landable tasks when analysis-only pressure exists. The current code:
+
+1. Already skips lifecycle tasks when analysis-only pressure is active (lines 572-575)
+2. The analysis-only task itself is matched via its keys
+
+But what's missing is a constraint on what task gets selected when analysis-only pressure exists. The task's Success Criteria says:
+- "The selected seed Files list contains no protected implementation files." (already enforced by `_has_protected_files`)
+- "Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup." (already done at lines 572-575)
+- "Preseed self-tests cover the analysis-only/no-edit pressure path."
+
+Wait, the task description says:
+"When `reverted_no_edit` > 0 or `task_analysis_only_attempt_count` > 0 is detected, the preseed picker selects a task whose Files list: (a) has ≤3 files, (b) contains no files in PROTECTED_IMPLEMENTATION_FILES, and (c) is scoped to a specific tool, script, or function rather than a broad subsystem."
+
+So the key change is: when analysis-only pressure is active, we should constrain which task gets selected. The current code doesn't enforce ≤3 files or scope constraints.
+
+Let me look at the broader picture. The issue is that when analysis-only pressure exists (`reverted_no_edit > 0` or `task_analysis_only_attempt_count > 0`), the system should still pick a task, but it should be a small, concrete, landable task - not a broad subsystem task.
+
+Currently, when analysis-only pressure is detected:
+1. Lifecycle task is skipped (good)
+2. But the candidate selection continues normally through all other tasks
+
+What we need: when analysis-only pressure is active, we should apply additional filters to prefer small, concrete tasks. Specifically:
+- Task files must be ≤3 (count comma-separated entries)
+- Task files must not be in PROTECTED_IMPLEMENTATION_FILES
+- The task should be scoped to a specific tool/script/function
+
+Let me think about what changes to make:
+
+1. Add a function to count files in a task's files field
+2. Add a function to check if a task is "broad" (too many files or broad scope)
+3. Modify `choose_task()` to apply additional filtering when `analysis_only_active` is True
+
+Actually, looking more carefully at the code flow:
+
+When `analysis_only_active` is True:
+- The lifecycle task gets skipped (lines 572-575)
+- All other tasks go through normal candidate processing
+- The first non-contradicted candidate is returned
+
+The "Make analysis-only task pressure landable" task itself would be matched as a candidate if its keys are present. But wait - if `reverted_no_edit` is in the assessment, then this task's keys match, and it enters the candidate list. 
+
+But this seems circular - the analysis-only task is selected, and it's about fixing the very pressure detection that selected it. The problem statement says the concern is that when analysis-only pressure is detected, the preseed picker might select a broad task (like lifecycle cleanup) that itself won't produce edits.
+
+Let me re-read the task more carefully:
+
+"Objective: Ensure that when graph-derived pressure detects analysis-only/no-edit task attempts (reverted_no_edit > 0 or task_analysis_only_attempt_count > 0), the preseed picker selects a small, landable follow-up task instead of selecting broad harness work or protected-file changes."
+
+So the change is in `choose_task()`: when `analysis_only_active` is True, the picker must filter candidates to only those with ≤3 files and no protected files. This is a filtering constraint, not just selecting the analysis-only task itself.
+
+Currently the code at lines 563-585:
+```python
+for task in TASKS:
+    if not any(key in lower for key in task["keys"]):
+        continue
+    if any(key in lower for key in task.get("reject_keys", ())):
+        continue
+    if _has_protected_files(task):
+        continue
+    if not _candidate_files_exist(task):
+        continue
+    if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+        if analysis_only_active:
+            continue
+        ...
+    if task["title"] == SEARCH_FRICTION_TASK_TITLE:
+        ...
+    candidates.append(task)
+```
+
+So when `analysis_only_active` is True:
+1. The lifecycle task is skipped
+2. All other valid tasks enter `candidates`
+
+What we need to add: when `analysis_only_active` is True, we should also filter out candidates that have >3 files OR are "broad" in scope.
+
+But how do we determine if a task is "broad"? The task says "scoped to a specific tool, script, or function rather than a broad subsystem." We could use a heuristic: count files in the "files" field. Tasks with 1-3 files focused on specific tools are "landable", tasks with more files or referencing broad subsystems are not.
+
+Let me check which tasks have many files:
+
+Looking at TASKS:
+1. API key propagation: 3 files - `src/tools.rs, src/agent_builder.rs, src/lib.rs`
+2. Cache metrics: 3 files - `src/prompt.rs, src/deepseek.rs, src/state.rs`
+3. Cold-start diagnostics: 2 files - `src/commands_state.rs, src/commands_state_tests.rs`
+4. Flaky test: 1 file - `src/state.rs`
+5. Analysis-only task landable: 3 files - `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`
+6. Lifecycle: 3 files - `scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py`
+7. Search friction: 3 files - `src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py`
+8. Extract state CLI: 2 files - `src/commands_state.rs, src/commands_state_graph.rs`
+
+So all tasks already have ≤3 files! The key constraint the task wants is about `PROTECTED_IMPLEMENTATION_FILES`. Let me check which tasks have protected files...
+
+Looking at PROTECTED_IMPLEMENTATION_FILES:
+```python
+PROTECTED_IMPLEMENTATION_FILES = (
+    "scripts/evolve.sh",
+    "scripts/format_issues.py",
+    "scripts/build_site.py",
+    "skills/self-assess/SKILL.md",
+    "skills/evolve/SKILL.md",
+)
+```
+
+None of the TASKS entries reference these files directly! So `_has_protected_files` would always return False for the existing tasks.
+
+Hmm, wait. Let me re-read the task more carefully. The core question is: what exactly should the code change be?
+
+The task says the problem is: "the preseed picker can still select tasks that trigger this pattern" (analysis-only/no-edit). The fix is to make the picker select a "small, landable follow-up task" when analysis-only pressure is detected.
+
+Let me look at this from a different angle. When `analysis_only_active` is True:
+- The lifecycle task is skipped (already done)
+- But what if ALL candidates are contradicted? Then the fallback is used (lines 600-629)
+- The fallback task has 3 files but references `scripts/task_manifest.py` and `scripts/test_task_manifest.py` which might not exist
+
+Actually, I think the key insight is: when analysis-only pressure is active, the task selection should ONLY consider tasks that are themselves about fixing the analysis-only problem (i.e., the analysis-only task itself), and it should ensure those tasks are "landable" (small scope, no protected files).
+
+Wait, let me re-read the success criteria more carefully:
+
+"When `reverted_no_edit` > 0 or `task_analysis_only_attempt_count` > 0 is detected, the preseed picker selects a task whose Files list: (a) has ≤3 files, (b) contains no files in PROTECTED_IMPLEMENTATION_FILES, and (c) is scoped to a specific tool, script, or function rather than a broad subsystem."
+
+So when analysis-only pressure exists:
+- The selected task must have ≤3 files
+- No protected files
+- Scoped to specific tool/script/function
+
+This is about adding an additional filter in `choose_task()` when `analysis_only_active` is True. We need to:
+1. Add a `_task_file_count()` helper
+2. Add a `_is_broad_task()` or similar helper  
+3. In the candidate loop, when `analysis_only_active`, skip tasks with >3 files
+
+But wait - ALL tasks already have ≤3 files. So the "≤3 files" constraint is already satisfied by all tasks.
+
+Let me re-think. Maybe the concern is about the FALLBACK task or about tasks that might be added in the future that have more than 3 files. The task is about making a guard that ensures when analysis-only pressure is active, only small tasks are selected.
+
+Also, re-reading the evidence: `reverted_no_edit=4` - the assessment shows 4 sessions where tasks produced no file changes. This is a live problem.
+
+Let me also check: does the analysis-only task itself get properly selected when analysis-only pressure is active? Its keys include `reverted_no_edit`, `task_analysis_only_attempt_count`. If those appear as metrics in the assessment (e.g., `reverted_no_edit: 4`), then the task would match.
+
+But wait - the metric pattern is `reverted_no_edit: 4`, and the task keys are `"reverted_no_edit"`, `"task_analysis_only_attempt_count"`. These would match in the `lower` text. So yes, the analysis-only task would be a candidate.
+
+Now, the issue might be that when analysis-only pressure is active, we want to ensure the analysis-only task is selected *instead of* other tasks that might also match. Currently, it iterates TASKS in order and returns the first non-contradicted candidate.
+
+Let me check the ordering: the analysis-only task is at index 4 (0-based), after API key, cache metrics, cold-start, and flaky test. If any of those also match, they'd be returned first.
+
+So the fix should be: when `analysis_only_active` is True, we should prioritize the analysis-only task over other candidates. Or alternatively, when `analysis_only_active` is True, we should only consider tasks that have ≤3 files and are not broad.
+
+Actually wait, let me re-read the task title: "Make analysis-only task pressure landable". The task says the preseed picker should select a "small, landable follow-up task". The analysis-only task itself IS about fixing the preseed picker.
+
+I think the most practical change is:
+1. When `analysis_only_active` is True, add a filter that ensures the selected task has ≤3 files and no protected files
+2. Since the analysis-only task is itself about fixing this very problem, when analysis_only pressure is active, we should prioritize it (or similar small tasks) over other candidates
+
+Looking at the actual code flow again: if `analysis_only_active` is True, the lifecycle task gets skipped. Then all other matching tasks become candidates. The first non-contradicted one is returned. The analysis-only task keys include `reverted_no_edit` and `task_analysis_only_attempt_count` - if those metrics appear in the assessment, this task would match.
+
+But what if the analysis-only task's keys DON'T appear in the assessment? Then the analysis-only task wouldn't be a candidate, and some other task would be selected - potentially a broad one.
+
+So the change should be: when `analysis_only_active` is True from the metrics, we should ensure the analysis-only task is always considered as a candidate (regardless of key matching), and we should prefer small tasks.
+
+Let me now implement:
+
+1. Add a `_task_file_count` function
+2. Modify `choose_task()` to:
+   a. When `analysis_only_active`, filter candidates to only those with ≤3 files
+   b. When `analysis_only_active`, prefer the analysis-only task
+   c. Add self-tests for the analysis-only pressure path
+
+Actually, let me re-read the task's Fallback more carefully: "If the assessment or trajectory shows zero `reverted_no_edit` counts and zero `task_analysis_only_attempt_count`, mark this task obsolete"
+
+So the task is only applicable when analysis-only pressure exists. If it doesn't exist, the task is obsolete.
+
+Let me now check if the analysis-only pressure metrics actually exist in the current state. Let me search for them in assessment-like files:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look for the analysis-only metrics in the assessment evidence to verify the task is live:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'reverted_no_edit' in .  ▶ search 'task_analysis_only_attempt_count' in . ✓ (105ms)
+ ✓ (97ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - the assessment confirms `reverted_no_edit=4`. The task is live. Now let me check the self-test section to understand how analysis-only is currently tested:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+Let me read the self-test code to see what's already tested:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:700..800 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the self-test function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:799..899 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full test suite. Let me also read the rest of the tests and understand the current structure:
+
+The self-tests already cover:
+1. Analysis-only pressure detected → selects "Make analysis-only task pressure landable" (lines 720-731)
+2. reverted_no_edit=1 → selects analysis-only task (lines 733-750)
+3. Lifecycle metrics present → selects lifecycle task (lines 761-763)
+
+Now, what needs to change? The task says:
+- When `reverted_no_edit` > 0 or `task_analysis_only_attempt_count` > 0, the preseed picker selects a task with ≤3 files, no protected files, and scoped to specific tool/script/function (not broad subsystem).
+
+Currently the analysis-only task IS selected when these metrics appear. But the task's goal is more nuanced: the selected task must be "landable" - small and concrete.
+
+Let me think about what the actual missing behavior is:
+
+1. The analysis-only task is selected when pressure exists ✓
+2. But the code doesn't validate that the selected task has ≤3 files (enforced during analysis-only pressure) - this is new
+3. The code doesn't ensure no protected files (already enforced by `_has_protected_files`)
+4. The code doesn't ensure the task is "scoped to specific tool/script/function" - this is fuzzy
+
+Looking at the actual code flow, when analysis-only pressure is active:
+- Lifecycle task is skipped
+- All other matching tasks become candidates
+- First non-contradicted candidate wins
+
+The risk the task identifies: when analysis-only pressure exists, what if some OTHER broad task also matches and gets selected before the analysis-only task? For instance, what if task keys for a broader task also appear in the assessment?
+
+The fix: when `analysis_only_active` is True, we should:
+1. Only consider candidates with ≤3 files
+2. Ensure no protected files (already done)
+3. Prefer the analysis-only task or similar small, concrete tasks
+
+Let me implement:
+
+1. Add a `_task_file_count()` helper
+2. Modify `choose_task()` to add additional filtering when `analysis_only_active` is True
+3. Add self-tests for the new behavior
+
+Let me also check `state_graph_tools.py` to understand what graph-derived metrics look like:
+
+Actually, thinking about this more carefully, let me look at what analysis-only pressure detection currently does:
+
+```python
+analysis_only_active = _has_analysis_only_pressure(metrics)
+```
+
+And `_has_analysis_only_pressure`:
+```python
+def _has_analysis_only_pressure(metrics: dict[str, int]) -> bool:
+    return any(metrics.get(key, 0) > 0 for key in _ANALYSIS_ONLY_METRICS)
+```
+
+Where `_ANALYSIS_ONLY_METRICS = ("task_analysis_only_attempt_count", "task_no_edit_revert_count")`.
+
+But the task specifically mentions `reverted_no_edit` - this is NOT in `_ANALYSIS_ONLY_METRICS`! Let me check...
+
+Looking at the task description: "When `reverted_no_edit` > 0 or `task_analysis_only_attempt_count` > 0 is detected"
+
+But `_ANALYSIS_ONLY_METRICS` has `task_analysis_only_attempt_count` and `task_no_edit_revert_count`, not `reverted_no_edit`.
+
+Wait, `reverted_no_edit` IS in the task keys:
+```python
+"keys": (
+    ...
+    "task_no_edit_revert_count",
+    "reverted_no_edit",
+    ...
+),
+```
+
+But it's NOT in `_ANALYSIS_ONLY_METRICS`. So `_has_analysis_only_pressure` wouldn't catch `reverted_no_edit=4`.
+
+This is a gap! `reverted_no_edit` is a metric from the dashboard/trajectory that indicates analysis-only behavior, but it's not checked by `_has_analysis_only_pressure`. The task says we need to detect BOTH `reverted_no_edit` and `task_analysis_only_attempt_count`.
+
+Let me add `reverted_no_edit` to `_ANALYSIS_ONLY_METRICS`.
+
+Now let me plan the implementation:
+
+1. Add `reverted_no_edit` to `_ANALYSIS_ONLY_METRICS`
+2. Add a `_task_file_count()` helper
+3. Modify `choose_task()` to filter by file count when `analysis_only_active` is True
+4. Add self-tests that verify:
+   a. When `reverted_no_edit` > 0, the analysis-only task is selected
+   b. When analysis-only pressure is active, tasks with >3 files are NOT selected
+   c. When analysis-only pressure is active, tasks with protected files are NOT selected
+
+Let me now implement. First, let me check the current `_ANALYSIS_ONLY_METRICS`:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me verify the key gap — `reverted_no_edit` is NOT in `_ANALYSIS_ONLY_METRICS`:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:545..565 ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed: `reverted_no_edit` is NOT in `_ANALYSIS_ONLY_METRICS`. It should be. The task explicitly says `reverted_no_edit > 0` should trigger analysis-only pressure.
+
+Now let me plan the changes:
+
+1. Add `"reverted_no_edit"` to `_ANALYSIS_ONLY_METRICS`
+2. Add a `_task_file_count()` function
+3. In `choose_task()`, when `analysis_only_active` is True, add a guard that filters candidates to those with ≤3 files and no protected files on top of the existing filtering
+4. Add self-tests that exercise:
+   - `reverted_no_edit=4` → analysis_only_active → selects small task
+   - Analysis-only pressure filters out broad tasks
+   - Analysis-only pressure skips protected files
+
+The existing `_has_protected_files` already filters protected files for all tasks (line 568), so that's covered. The new thing is the file count filter.
+
+Let me also think about whether we need changes in `state_graph_tools.py`. Let me check if there's pressure signal computation that needs updating:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check if `state_graph_tools.py` needs changes for pressure signals:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'analysis_only' in scripts/state_graph_tools.py ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the relevant sections in state_graph_tools.py:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:55..75  ▶ read scripts/state_graph_tools.py:1470..1500 ✓ (177ms)
+ ✓ (177ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The `state_graph_tools.py` already has `task_analysis_only_attempt_count` in its gnome metrics and generates pressure signals for it. But I notice it generates:
+- "Force reverted tasks to leave concrete evidence" for `task_no_edit_revert_count`
+- "Force analysis-only attempts into action" for `task_analysis_only_attempt_count`
+
+It does NOT have `reverted_no_edit` as a separate metric. The `reverted_no_edit` is a task state classification, not a gnome metric. Let me check where `reverted_no_edit` comes from in the dashboard:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'reverted_no_edit' in scripts/build_evolution_dashboard.py ✓ (49ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`reverted_no_edit` is a task state classification in the dashboard. It's used in the "Your Trajectory" output from `extract_trajectory.py`. It shows up as a task-state count like `reverted_no_edit=4`. The `numeric_metrics()` regex would catch `reverted_no_edit=4` and set `metrics["reverted_no_edit"] = 4`.
+
+So the fix is clear:
+1. Add `"reverted_no_edit"` to `_ANALYSIS_ONLY_METRICS`
+2. Add a `_task_file_count()` helper
+3. In `choose_task()`, when `analysis_only_active`, also filter by file count (≤3 files)
+4. Add self-tests for the new behavior
+
+Now let me also think about what `state_graph_tools.py` needs. The task says: "scripts/state_graph_tools.py — if pressure signal computation needs a new graph-derived metric, add it here". I think `reverted_no_edit` is already computed in the dashboard. The graph tools already have `task_analysis_only_attempt_count` and `task_no_edit_revert_count`. Since `reverted_no_edit` comes from the dashboard trajectory, not the graph tools, maybe state_graph_tools.py doesn't need changes.
+
+But wait, to properly integrate, maybe we should add `reverted_no_edit` as a metric that the graph tools compute. Let me check if it's already there...
+
+Actually, looking at `extract_trajectory.py`, `reverted_no_edit` is rendered in the trajectory output and would appear in the assessment via the "Your Trajectory" section. The `numeric_metrics` function would capture it. So the graph tools might not need changes.
+
+Let me focus on the preseed picker changes:
+
+1. Add `"reverted_no_edit"` to `_ANALYSIS_ONLY_METRICS`
+2. Add a `_task_file_count()` function
+3. In `choose_task()`, when `analysis_only_active`, filter by file count (≤3)
+4. Add self-tests
+
+Let me now implement these changes.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now I have a clear picture. The key gap is that `reverted_no_edit` is not in `_ANALYSIS_ONLY_METRICS`, and there's no file-count guard when analysis-only pressure is active. Let me implement the changes:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (49ms)
+  ▶ todo ✓ (47ms)
+  ▶ todo ✓ (112ms)
+  ▶ todo ✓ (95ms)
+  ▶ todo ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the changes. I need to:
+
+1. Add `reverted_no_edit` to `_ANALYSIS_ONLY_METRICS`
+2. Add `_task_file_count()` helper
+3. Modify `choose_task()` to filter by file count when analysis-only pressure is active
+4. Add self-tests
+
+Let me start with the edits:
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.9s (5 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me make the edits now.
+────────────────────────────────────────────────────────────────────────────────
+
+**Step 1:** Add `reverted_no_edit` to `_ANALYSIS_ONLY_METRICS`:
+    _ANALYSIS_ONLY_METRICS = (
+        "task_analysis_only_attempt_count",
+        "task_no_edit_revert_count",
+  +     "reverted_no_edit",
+    )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (4 → 5 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (4 → 5 lines)
+    _ANALYSIS_ONLY_METRICS = (
+        "task_analysis_only_attempt_count",
+        "task_no_edit_revert_count",
+  +     "reverted_no_edit",
+    )
+ ✓ (49ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now add `_task_file_count()` helper. I'll add it right after `_has_analysis_only_pressure`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (49ms)
+  ▶ todo ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add _task_file_count helper:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+**Step 2:** Add `_task_file_count()` helper right after `_has_analysis_only_pressure`:
+    def _has_analysis_only_pressure(metrics: dict[str, int]) -> bool:
+        """Return True when analysis-only/no-edit pressure exists."""
+        return any(metrics.get(key, 0) > 0 for key in _ANALYSIS_ONLY_METRICS)
+  + 
+  + 
+  + def _task_file_count(task: dict[str, object]) -> int:
+  +     """Return the number of files listed in a task's files field."""
+  +     files_str = str(task.get("files") or "")
+  +     return len([path for path in files_str.split(",") if path.strip()])
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (3 → 9 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (3 → 9 lines)
+    def _has_analysis_only_pressure(metrics: dict[str, int]) -> bool:
+        """Return True when analysis-only/no-edit pressure exists."""
+        return any(metrics.get(key, 0) > 0 for key in _ANALYSIS_ONLY_METRICS)
+  + 
+  + 
+  + def _task_file_count(task: dict[str, object]) -> int:
+  +     """Return the number of files listed in a task's files field."""
+  +     files_str = str(task.get("files") or "")
+  +     return len([path for path in files_str.split(",") if path.strip()])
+ ✓ (49ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now Step 3: add the landability filter in `choose_task()` when analysis-only pressure is active. I need to read the current choose_task function again to make a precise edit:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (47ms)
+  ▶ todo ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the landability filter. Let me re-read the candidate loop:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+**Step 3:** Add landability filter in `choose_task()`. Let me read the current candidate loop:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:562..602 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add the landability filter. When `analysis_only_active` is True, I should skip tasks with >3 files. I'll add this check after the existing `if not _candidate_files_exist(task)` line, since that's where we've already validated the task is viable. The check should apply to all tasks, not just lifecycle.
+
+Actually, looking at this more carefully, the task says "the preseed picker selects a task whose Files list: (a) has ≤3 files". ALL current tasks have ≤3 files, so this filter wouldn't change any existing behavior. But it's a guard against future tasks that might have more files.
+
+The more impactful part is making sure the analysis-only task gets selected (which it already does via key matching) AND that no broad task sneaks through.
+
+Let me add the file-count guard for when analysis-only pressure is active:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll add the file-count guard. When analysis-only pressure is active, tasks with >3 files should be skipped:
+            if not _candidate_files_exist(task):
+  +             continue
+  +         if analysis_only_active and _task_file_count(task) > 3:
+                continue
+            if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (3 → 5 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (3 → 5 lines)
+            if not _candidate_files_exist(task):
+  +             continue
+  +         if analysis_only_active and _task_file_count(task) > 3:
+                continue
+            if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+ ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run the self-tests to see if the existing tests still pass:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (48ms)
+  ▶ todo ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (98ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, existing tests pass. Now I need to add new self-tests that:
+1. Verify `reverted_no_edit` triggers analysis-only pressure
+2. Verify that when analysis-only pressure is active, the analysis-only task is selected
+3. Verify the file-count guard works (tasks with >3 files are filtered out)
+
+Let me also add a test that verifies the combination: `reverted_no_edit` + lifecycle metrics present → analysis-only task selected (not lifecycle).
+
+Let me now add the tests. I need to find a good place. Let me look at the existing analysis-only tests:
+────────────────────────────────────────────────────────────────────────────────
+
+Good, existing tests pass. Now let me add the new self-tests. Let me find the right insertion point:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:745..765 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add new tests after the existing analysis-only tests (after line 759). Let me craft the tests:
+
+1. Test: `reverted_no_edit=4` alone (without lifecycle metrics) → selects analysis-only task
+2. Test: `reverted_no_edit` + lifecycle metrics → analysis-only task takes priority over lifecycle
+3. Test: analysis-only pressure active + a broad task with >3 files → that task is NOT selected
+
+Let me also check if I should verify the `_has_analysis_only_pressure` function now detects `reverted_no_edit`:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the self-tests. I'll insert them after the existing analysis-only tests:
+            assert "reverted_no_edit" in text, text
+  + 
+  +         # --- Analysis-only pressure: reverted_no_edit triggers analysis-only task ---
+  +         # reverted_no_edit alone (no lifecycle metrics) → analysis-only task
+  +         assessment = """# Assessment
+  + 
+  + ## Graph-derived Next-Task Pressure
+  + - **Task-state counts**: reverted_no_edit=4 in recent window. These are sessions where tasks were assigned but produced no file changes.
+  + """
+  +         task = choose_task(assessment)
+  +         assert task["title"] == "Make analysis-only task pressure landable", (
+  +             f"reverted_no_edit=4 should select analysis-only task, got {task['title']}"
+  +         )
+  + 
+  +         # --- Analysis-only pressure + lifecycle metrics: analysis-only wins ---
+  +         # reverted_no_edit=4 + lifecycle incomplete → analysis-only task, NOT lifecycle
+  +         assessment = """# Assessment
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (3 → 47 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (3 → 47 lines)
+            assert "reverted_no_edit" in text, text
+  + 
+  +         # --- Analysis-only pressure: reverted_no_edit triggers analysis-only task ---
+  +         # reverted_no_edit alone (no lifecycle metrics) → analysis-only task
+  +         assessment = """# Assessment
+  + 
+  + ## Graph-derived Next-Task Pressure
+  + - **Task-state counts**: reverted_no_edit=4 in recent window. These are sessions where tasks were assigned but produced no file changes.
+  + """
+  +         task = choose_task(assessment)
+  +         assert task["title"] == "Make analysis-only task pressure landable", (
+  +             f"reverted_no_edit=4 should select analysis-only task, got {task['title']}"
+  +         )
+  + 
+  +         # --- Analysis-only pressure + lifecycle metrics: analysis-only wins ---
+  +         # reverted_no_edit=4 + lifecycle incomplete → analysis-only task, NOT lifecycle
+  +         assessment = """# Assessment
+  + 
+  + ## Graph-derived Next-Task Pressure
+  + - Force analysis-only attempts into action (reverted_no_edit=4): Sessions with no file progress.
+  ... (27 more lines)
+ ✓ (52ms)
+
+

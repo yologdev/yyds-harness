@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Both verifiers pass (`python3 scripts/preseed_session_plan.py --test` + `python3 -m unittest scripts.test_state_graph_tools`). The implementation adds `reverted_no_edit` to analysis-only pressure metrics, a `_task_file_count()` guard that skips tasks with >3 files when analysis-only pressure is active, and self-tests covering all three success criteria (≤3 files, no protected files, scoped task selection). Scope narrowed to just `preseed_session_plan.py` per the task's own fallback note, which is explicitly allowed.
