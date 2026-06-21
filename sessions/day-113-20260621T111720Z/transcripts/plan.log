@@ -1,0 +1,589 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the assessment and trajectory to create a focused session plan. 
+
+Key evidence from the assessment:
+
+1. **Stale-task selection by preseed planner** (HIGH) — Day 113's session was handed a task marked `obsolete_already_satisfied`. The preseed picker checks file existence but not whether the feature/fix is already present.
+
+2. **Task verification rate at 0.0 for assessment-only sessions** (MEDIUM) — metric definition issue.
+
+3. **Run lifecycle inflation** (LOW) — 114 run_incomplete sessions, most are intentional short runs.
+
+The trajectory graph-derived pressure also points at:
+- Raise verified task success rate (task_success_rate=0.0) — the stale-task problem
+- Require strict verifier evidence for tasks
+- Require terminal task evidence before completion
+- Bound failing shell commands before retrying
+- Replace stale or already-satisfied tasks
+
+Let me prioritize:
+
+1. **Task 1**: Fix the stale-task selection — this is the highest priority because it directly wastes sessions. The preseed picker (`scripts/preseed_session_plan.py`) needs a post-selection validation step.
+
+2. **Task 2**: Fix task_verification_rate metric for no-task sessions — this inflates pressure signals incorrectly.
+
+3. **Task 3**: Run lifecycle inflation — mark assessment-only/no-op sessions with distinct completion status.
+
+Let me first check if session_plan/task_01.md already exists, then check the preseed picker for ownership.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls session_plan/ 2>/dev/null  ▶ $ wc -l scripts/preseed_session_plan.py scripts/extract_trajectory.py scripts/log_… ✓ (251ms)
+ ✓ (519ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md and assessment.md in session_plan/. Let me read the existing task_01.md to see what was preseeded.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This task was preseeded from the harness. Let me evaluate it against the assessment evidence.
+
+The assessment explicitly says: `yyds state why last-failure` → correct: reports in-progress session, incomplete run ✅. So the "no state event found" claim in the preseed task is NOT currently true based on the assessment evidence. The assessment says the command works correctly.
+
+The assessment's HIGH priority item is the stale-task selection problem. The assessment says the preseed task is already satisfied. Let me check if the task is actually obsolete.
+
+The assessment said:
+- Self-test: `yyds state why last-failure` → correct: reports in-progress session, incomplete run ✅
+- The assessment also notes the stale-task problem as HIGH priority
+
+So the preseeded task_01.md is potentially stale/obsolete — the very problem the assessment identifies as HIGH priority! The assessment confirms `state why last-failure` already works.
+
+But wait — the assessment might be from a different state. Let me verify by actually running the command.
+
+Actually, the assessment says the command works. The preseed task says it returns "no state event found". These are contradictory. Let me check which one is right.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run -- state why last-failure 2>&1 | head -30 ✓ (7.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the preseed task claim "state why last-failure returning only 'no state event found'" — it does return "no state event found" but it also provides useful information afterward. It shows the run that's in-progress and gives actionable next steps. The command already works well enough.
+
+The assessment says this command is working correctly. The preseeded task is targeting something that's already functional. This is exactly the kind of stale-task problem the assessment identifies as HIGH priority.
+
+So the preseeded task_01.md is itself stale/obsolete. I should mark it as obsolete and write proper evidence-backed tasks.
+
+Let me verify the assessment's findings by checking what the assessment said: "yyds state why last-failure → correct: reports in-progress session, incomplete run ✅"
+
+Yes, the assessment confirmed this works. The preseed task is stale.
+
+Now let me write the actual tasks based on evidence:
+
+**Task 1**: Fix stale-task selection in preseed picker. The preseed picker (`scripts/preseed_session_plan.py`) checks file existence but not whether the described feature/fix is already present. This wastes ~20% of sessions.
+
+But wait — this task is about `scripts/preseed_session_plan.py`, which is in the PROTECTED_IMPLEMENTATION_FILES list according to the repo map. Let me check.
+
+Looking at the repo map: `const PROTECTED_IMPLEMENTATION_FILES` in preseed_session_plan.py itself. And the safety rules say: "Never modify `scripts/evolve.sh`, `scripts/format_issues.py`, `scripts/build_site.py`, or `.github/workflows/`". `scripts/preseed_session_plan.py` is NOT in that list, so it should be editable.
+
+Let me look at the preseed picker to understand what validation it currently does.
+
+Actually, let me focus on what I can plan from assessment evidence without reading source. The assessment says:
+
+1. HIGH: Stale-task selection — preseed picker checks file existence but doesn't check feature/fix presence
+2. MEDIUM: task_verification_rate=0.0 for no-task sessions  
+3. LOW: Run lifecycle inflation
+
+For the stale-task problem, I need to modify `scripts/preseed_session_plan.py`. But let me check if I can also address the task_verification_rate issue in `scripts/extract_trajectory.py` or `scripts/log_feedback.py`.
+
+The task_verification_rate is computed in the trajectory extractor (`scripts/extract_trajectory.py`) and/or log feedback (`scripts/log_feedback.py`). The assessment says: "Make `task_verification_rate` return None when no tasks were attempted, and skip the pressure signal."
+
+For the run lifecycle inflation, this would involve `src/state.rs` and possibly `src/commands_state.rs`.
+
+Let me pick the tasks:
+
+1. **Task 1** (replaces stale preseed): Fix stale-task detection in preseed picker — add a git-blame-based freshness check to `scripts/preseed_session_plan.py`
+2. **Task 2**: Fix task_verification_rate for no-task sessions in `scripts/extract_trajectory.py`
+3. **Task 3**: Mark assessment-only sessions with distinct completion status — `src/state.rs` and `src/commands_state.rs`
+
+Wait, but task 1 is about `scripts/preseed_session_plan.py` which is a single file. The assessment suggests checking "whether the proposed change would be a no-op by examining git blame / recent commits touching target files." This means adding a post-selection validation to the Python script.
+
+Actually, let me re-read the assessment more carefully. The assessment's candidate task says: "Add a post-selection validation step that checks whether the proposed change would be a no-op by examining git blame / recent commits touching target files."
+
+Hmm, but this could be complex. Let me think about a simpler approach. The problem is: the preseed picker selected a task that was already satisfied. The assessment notes the picker checks file existence but not feature presence.
+
+A simpler approach: before finalizing a task, check if any of the target files have been recently modified and if the modification looks like it already implements the described change. But this is hard to do automatically.
+
+Let me think more practically. The actual problem observed: "Day 113's session was handed a task marked `obsolete_already_satisfied`." The implementation agent marked it obsolete. So the question is: why did the preseed picker select a task that would turn out to be obsolete?
+
+Let me look at what happened in Day 113's early session. The trajectory says: "day-113 (2026-06-21 04:37:16): tasks 0/1 ⚠️ — 0/1 strict verified; task states: obsolete_already_satisfied=1"
+
+So the preseed picker chose a task that was already satisfied. The assessment's HIGH priority is fixing this selection.
+
+A practical approach: add a check in the preseed picker to run `git log --oneline -5 -- <target_files>` for each candidate task and skip tasks where recent commits already touch the target files with similar descriptions. Or even simpler: check if `git diff HEAD~3 -- <target_files>` is empty (no recent changes), which suggests the task might be stale in the opposite direction. Actually, the problem is the task was ALREADY done, so recent commits WOULD touch the target files.
+
+Wait, the simplest approach: after the preseed picker selects a task, check `git log --oneline -3 -- <target_files>` and if there are recent commits, check whether the task description matches what was done. But this requires understanding task semantics.
+
+Let me take a different approach. The assessment mentions: "the picker checks whether target files exist, but doesn't check whether the feature or fix described by the task is already present."
+
+A practical approach would be: for each candidate task, grep the target files for key terms from the task description. If the key terms are already present (indicating the feature/fix is there), mark the task as potentially stale and skip it.
+
+Actually, let me step back. The preseed picker works with a fixed set of tasks (TASKS constant). It selects tasks based on metrics. The problem is that a task was selected that was already satisfied. 
+
+The simplest fix: add a freshness check. Before selecting a task, verify that the target files haven't been modified in a way that makes the task obsolete. This could be done by:
+1. Checking if target files exist (already done)
+2. Checking `git log --oneline -1 -- <target_files>` and comparing the commit message to the task description
+
+But this is getting complex. Let me think about what's minimal and verifiable.
+
+Actually, maybe the simpler approach is just: for each candidate task, check `git diff --stat HEAD~1 -- <target_files>`. If the diff is non-empty and the task is about adding something, the recent changes might have already addressed it. Flag it for review.
+
+Or even simpler: add a "last verified" timestamp to each task and skip tasks that haven't been re-verified in the last N sessions.
+
+OK, let me just write the tasks. I'll focus on practical, small changes:
+
+**Task 1**: Add stale-task detection to preseed picker. Check `git log --oneline -5 -- <Files>` for each candidate task and skip tasks whose target files have been touched in the last 3 commits (suggesting recent work that may have already satisfied the task).
+
+**Task 2**: Fix task_verification_rate metric in trajectory extractor to return None when 0 tasks were attempted.
+
+**Task 3**: Add a "no-op" completion status for assessment-only sessions in state.rs.
+
+Let me write these task files now. First, I need to obsolete the existing task_01.md since the assessment evidence contradicts it.
+────────────────────────────────────────────────────────────────────────────────
+
+The preseeded task_01.md is stale — the assessment explicitly confirms `yyds state why last-failure` works correctly. Let me verify, then write evidence-backed tasks.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5 -- script…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -3 -- src/co… ✓ (253ms)
+ ✓ (517ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — the preseed picker was recently modified (Day 111, Day 112), and state/commands_state were recently modified too. The stale-task problem persists despite recent hardening of the preseed picker. 
+
+Now let me check if the preseed picker's current stale-check logic can be improved. Let me also verify that the assessment's claim about `state why last-failure` working is correct (I already did — it returns useful output).
+
+Let me write the task files now. The preseeded task_01.md is stale. I'll:
+
+1. Write session_plan/task_01_obsolete.md explaining why the preseed task is stale
+2. Write session_plan/task_01.md with the HIGH priority stale-task fix
+3. Write session_plan/task_02.md with the task_verification_rate fix
+4. Write session_plan/task_03.md with the run lifecycle fix (LOW priority, but landable)
+
+Actually, let me reconsider task priorities. The assessment says:
+- HIGH: stale-task selection
+- MEDIUM: task_verification_rate
+- LOW: run lifecycle inflation
+
+And the assessment also notes: the stale-task problem wastes ~20% of sessions. Let me focus on that.
+
+For task 2, I could do the task_verification_rate fix in `scripts/extract_trajectory.py`.
+For task 3, I could do the run lifecycle fix in `src/state.rs` and `src/commands_state.rs`.
+
+But actually, let me re-examine. The trajectory says: "task states: obsolete_already_satisfied=1" for the day-113 session. This IS the stale task problem. Let me focus on making the preseed picker better at detecting already-satisfied tasks.
+
+A practical approach: for each candidate task, the preseed picker should check git log for recent modifications to target files and compare against the task description. Specifically:
+
+1. Get the target files from the task
+2. Run `git log --oneline -3 -- <files>`
+3. If recent commits touch the target files, grep the commit messages for keywords from the task description
+4. If there's a match, flag the task as potentially stale
+
+But this is still hard to do properly. Let me think of a simpler heuristic...
+
+Actually, the simplest thing that would help: after selecting a task, run `git diff HEAD~3 -- <target_files>` and if the diff shows recent changes to the target files, print a warning and consider the task stale. The reasoning: if target files were recently changed, the described fix/feature may already be partially or fully implemented.
+
+Even simpler: just check `git log --oneline -1 -- <target_files>` and if the most recent commit is within the last day AND touches the target files, mark the task as potentially stale. This is a heuristic but would catch the Day 113 case.
+
+OK let me just write the tasks. I'll keep them focused and verifiable.
+
+For the preseed picker task, the Files line would be: `scripts/preseed_session_plan.py`
+
+Let me check what the current staleness checks look like:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.8s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'stale\|obsolete\|alre… ✓ (68ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The preseed picker currently has the concept of stale tasks but the detection is primarily in the `check_task_contradiction` function which compares the task against current assessment evidence. Let me look more at the contradiction check.
+
+Let me look at the `check_task_contradiction` function and understand what it does currently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'def check_task_contra… ✓ (97ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `check_task_contradiction` function to understand current stale detection.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:432..562 ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the `choose_task` function to see how it selects tasks and where staleness could be caught.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:563..663 ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the preseed picker's flow:
+
+1. `choose_task(assessment)` is called with the assessment text
+2. It iterates through TASKS, checking if task keys appear in assessment, reject_keys don't appear, files aren't protected, and candidate files exist
+3. Then it checks each candidate for contradiction against the assessment
+4. Returns the first non-contradicted candidate
+
+The issue is in `check_task_contradiction` — it only checks the assessment text for evidence of resolution. But if the assessment doesn't mention the resolution (e.g., it's from an assessment-only session that didn't check the specific feature), the contradiction check won't catch it.
+
+The problem from Day 113: the preseed task was about "Improve cold-start state failure diagnostics" (the same one we got). The assessment self-tests say `yyds state why last-failure → correct: reports in-progress session, incomplete run ✅`. So the assessment DOES show this works. But the preseed picker still selected it.
+
+Wait, let me re-read. The assessment says:
+```
+- `yyds state why last-failure` → correct: reports in-progress session, incomplete run ✅
+```
+
+And the task keys for this task would be things like "cold-start", "state failure", "last-failure", etc. Let me look at how `_line_shows_resolution` works...
+
+Actually, looking at the contradiction check: it looks at "Recent Changes" and "Self-Test Results" sections. The self-test says it's working. But the `_line_shows_resolution` function might not match because the task keys might not appear in that line. Let me check what keys the cold-start task has.
+
+Let me look at the TASKS constant.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'cold.start\|state.fai… ✓ (79ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 116 shows the keys for the cold-start task: `("why last-failure", "cold-start", "cold start", "no state event found")`
+
+The assessment contains: `yyds state why last-failure → correct: reports in-progress session, incomplete run ✅`
+
+The `_line_shows_resolution` function should match "why last-failure" in that line. Let me check what the resolution function looks for.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '_line_shows_resolutio… ✓ (87ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:411..441 ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `_RESOLUTION_SIGNALS`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '_RESOLUTION_SIGNALS' … ✓ (118ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the resolution signals:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:392..412 ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The `_line_shows_resolution` function checks if a line contains both a task key AND a resolution signal. But the self-test line is:
+
+```
+- `yyds state why last-failure` → correct: reports in-progress session, incomplete run ✅
+```
+
+This contains "why last-failure" (a task key) and "correct" — but "correct" is NOT in `_RESOLUTION_SIGNALS`. So the line fails the resolution signal check.
+
+Then `_self_tests_show_resolution` checks for checkmark/pass/green AND a task key. The line has ✅ so it passes the checkmark check, and it has "why last-failure" so it should match!
+
+Wait, let me re-check. The self-tests line has `✅` (U+2705). The check in `_self_tests_show_resolution` is `"\u2705" not in line`. So it should find the checkmark. And "why last-failure" is in the line. So `_self_tests_show_resolution` should return True.
+
+But wait — the `check_task_contradiction` function first checks Recent Changes, then Self-Test Results. If `_self_tests_show_resolution` returns True, the task should be contradicted and skipped.
+
+So why wasn't it? Let me look more carefully. The `check_task_contradiction` is called at line 597:
+
+```python
+for candidate in candidates:
+    contradicted, reason = check_task_contradiction(candidate, assessment)
+    if not contradicted:
+        candidate["validated_against_assessment"] = True
+        return candidate
+```
+
+So if the cold-start task is a candidate AND the contradiction check returns True, it should be skipped. But the task was still selected...
+
+Hmm, wait. Let me look at how `extract_section` works. Maybe the "Self-Test Results" section isn't being extracted properly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'def extract_section' … ✓ (88ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the extract_section function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:373..393 ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `extract_section` looks for `## <heading>` (level-2 headings). The `check_task_contradiction` calls:
+```python
+recent_changes = extract_section(assessment, "recent changes")
+self_tests = extract_section(assessment, "self-test results")
+```
+
+And the assessment has:
+```
+## Self-Assessment Results
+```
+
+Wait, the assessment might use "## Self-Assessment Results" not "## Self-Test Results". Let me check the actual assessment that was fed to the preseed picker for Day 113.
+
+Actually, let me check what heading the assessment uses for self-test results. The assessment shown above says "## Self-Test Results" — but let me verify.
+
+Actually, looking at the assessment text in the prompt: `### Build Status` and other subsections. The section is `## Self-Assessment Results` or `## Self-Test Results`? Let me look more carefully...
+
+The assessment starts with `## Build Status` and has sections like `## Recent Changes`, `## Source Architecture`, `## Self-Test Results`, `## Evolution History`, etc.
+
+Wait, I see `### Build Status` — that's h3, not h2. Let me check...
+
+Looking at the assessment:
+```
+## Build Status
+## Recent Changes (last 3 sessions)
+## Source Architecture
+## Self-Test Results
+## Evolution History (last 10 runs)
+...
+```
+
+The `extract_section` function looks for `## ` headings. So `extract_section(assessment, "self-test results")` should match `## Self-Test Results`.
+
+Now, the self-test results section contains:
+```
+- `yyds state why last-failure` → correct: reports in-progress session, incomplete run ✅
+```
+
+`_self_tests_show_resolution` checks: line has no flaky/fail/failed/error/retry → passes. Line has ✅ or "pass" or "green" → line has ✅ → passes. Line has any task key → "why last-failure" is in the line → passes. So it should return True.
+
+So the contradiction check SHOULD have caught this... unless there's a bug in how the assessment is being parsed, or the assessment didn't have this line at the time the preseed picker ran.
+
+Wait, the preseed picker runs during the harness setup, BEFORE the assessment is written. Let me look at how the preseed picker is invoked in evolve.sh.
+
+Actually, let me re-read the CLAUDE.md: "The harness may have already created session_plan/task_01.md from assessment evidence before you started."
+
+So the preseed picker creates task_01.md from the CURRENT assessment. The assessment I see now is the same one that was fed to the preseed picker. And the assessment clearly shows `state why last-failure` working correctly.
+
+So either:
+1. The contradiction check has a bug (maybe the heading matching is case-sensitive in an unexpected way)
+2. The task wasn't contradicted because the assessment at the time was different
+
+Let me test this. Let me run the preseed picker against the current assessment.
+
+Actually, let me just check: does `_self_tests_show_resolution` work correctly with the ✅ character? The check is `"\u2705" not in line`. Let me verify the assessment has this character.
+
+The assessment says: `reports in-progress session, incomplete run ✅` — yes, it has the checkmark.
+
+OK so I think the issue might be subtler. Let me re-read the flow:
+
+1. First, `choose_task` filters TASKS to candidates where task keys appear in assessment
+2. Then, `check_task_contradiction` is called on each candidate
+
+For the cold-start task, keys are `("why last-failure", "cold-start", "cold start", "no state event found")`. The assessment contains "why last-failure". So it passes the key filter.
+
+Then `check_task_contradiction`:
+- `recent_changes = extract_section(assessment, "recent changes")` — the assessment section "Recent Changes" contains info about Day 112/111 sessions, not about cold-start diagnostics
+- `_line_shows_resolution` checks each line of Recent Changes — none would match because the task keys don't appear in Recent Changes
+- `self_tests = extract_section(assessment, "self-test results")` — gets the Self-Test Results section
+- `_self_tests_show_resolution(self_tests, task_keys)` — should find "why last-failure" and ✅
+
+So theoretically it should work. Let me just run the actual test to see:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (18 lines) ✓ (72ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The check returned False! Let me debug why. The line is:
+
+```
+- `yyds state why last-failure` → correct: reports in-progress session, incomplete run ✅
+```
+
+The check is:
+1. `if any(word in lower for word in ("flaky", "fail", "failed", "error", "retry")): continue` — does "fail" appear in the lowercased line? Let me check: "failure" contains "fail"! Yes, "last-failure" contains "failure" which contains "fail". That's the bug!
+
+The word "failure" contains "fail", so the line is skipped by the flaky/fail/failed/error/retry filter!
+
+That's the root cause. The `_self_tests_show_resolution` function skips lines containing "fail" as a substring, which catches "failure" and prevents the resolution detection from working.
+
+This is a clean, small bug. The fix is to use word-boundary matching for the exclusion words, so "failure" isn't falsely matched by "fail".
+
+Now let me write the tasks. The preseeded task_01.md is stale because:
+1. The assessment shows the feature already works
+2. The reason the preseed picker didn't detect this is a specific bug: `_self_tests_show_resolution` skips lines containing "failure" because "fail" is a substring match
+
+So my tasks should be:
+
+**Task 1**: Fix the `_self_tests_show_resolution` bug in `scripts/preseed_session_plan.py` — change the substring check for "fail" to a word-boundary check so "failure" isn't falsely excluded. This directly addresses the stale-task problem.
+
+**Task 2**: Fix task_verification_rate metric in `scripts/extract_trajectory.py` to handle no-task sessions.
+
+**Task 3**: Run lifecycle inflation — mark assessment-only sessions in `src/state.rs`.
+
+Actually, let me reconsider. Task 1 alone is quite small — it's just fixing a word-boundary check. Let me also add the `task_verification_rate` fix.
+
+Let me write the task files now.
+────────────────────────────────────────────────────────────────────────────────
+
+Found the root cause. The `_self_tests_show_resolution` function skips lines containing "fail" as a substring, which catches "last-**fail**ure" and prevents contradiction detection. This is why the preseed picker keeps selecting already-satisfied tasks. Let me now write the task files.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have clear evidence:
+
+1. The preseeded task_01.md is stale — the assessment's self-tests show `yyds state why last-failure` already works correctly
+2. The root cause of the stale-task problem is a bug in `_self_tests_show_resolution`: "fail" is matched as a substring, causing "failure" (in "last-failure") to be falsely excluded from resolution detection
+
+Let me write:
+
+1. `task_01_obsolete.md` — explains why the preseeded task is stale
+2. `task_01.md` — Fix the `_self_tests_show_resolution` bug (HIGH priority, directly fixes stale-task selection)
+3. `task_02.md` — Fix task_verification_rate for no-task sessions (MEDIUM priority)
+4. `issue_responses.md`
+
+Let me skip task 3 (run lifecycle inflation, LOW priority) since it's the lowest priority and the other two are more impactful.
+
+Actually wait — should I write a task for the stale-task detection fix, or should I ALSO keep the task for the preseed picker? The assessment says the stale-task problem is HIGH priority. Let me think about what's the most impactful single change:
+
+- Fixing the `_self_tests_show_resolution` bug: directly fixes the stale-task detection that failed to catch the cold-start task being already satisfied
+- Fixing the task_verification_rate metric: fixes a misleading metric
+
+The `_self_tests_show_resolution` bug is the root cause of the stale-task problem. Fixing it is the highest priority.
+
+Let me write both tasks.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll obsolete the stale preseed task and write evidence-backed replacement tasks.
+  + # Task 01 OBSOLETE — Stale Preseed Task
+  + 
+  + ## Original Task
+  + **Title**: Improve cold-start state failure diagnostics
+  + **Files**: src/commands_state.rs, src/state.rs
+  + 
+  + ## Why Obsolete
+  + 
+  + The assessment's Self-Test Results explicitly show this feature already works:
+  + 
+  + ```
+  + yyds state why last-failure → correct: reports in-progress session, incomplete run ✅
+  + ```
+  + 
+  + Direct verification confirms useful output:
+  + ```
+  + However, 1 incomplete run detected (started but not completed):
+  +   github-actions-27902575295 — started 2m 55s ago, no RunCompleted event
+  + Run: yyds state trace <run-id> for details, or yyds state crashes for crash analysis.
+  + ```
+  ... (12 more lines)
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (32 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (32 lines) ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the actual task files. Task_01 should fix the `_self_tests_show_resolution` bug, and task_02 should fix the task_verification_rate metric.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - Title: Improve cold-start state failure diagnostics
+  - Files: src/commands_state.rs, src/state.rs
+  + Title: Fix stale-task detection: word-boundary match for "fail" in self-test resolution check
+  + Files: scripts/preseed_session_plan.py
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Origin: planner
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions. That leaves yyds unable to explain the earliest failures that block evolution.
+  + - Day 113's preseed picker selected "Improve cold-start state failure diagnostics" despite the assessment's Self-Test Results showing `yyds state why last-failure → correct: reports in-progress session, incomplete run ✅`. This task was already satisfied.
+  + - Root cause confirmed by direct test: `_self_tests_show_resolution()` returns False for a line containing "why last-failure" and ✅ because the substring check for "fail" matches "failure" in "last-failure".
+  + - `python3 -c "from scripts.preseed_session_plan import _self_tests_show_resolution; print(_self_tests_show_resolution('why last-failure → correct ✅', ('why last-failure',)))"` → False (should be True)
+  + - This directly causes the stale-task problem flagged as HIGH in the assessment: "task states: obsolete_already_satisfied=1"
+    
+    Edit Surface:
+  - - src/commands_state.rs, src/state.rs
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (52 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (52 lines) ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write task_02.md for the task_verification_rate fix. Let me first verify the claim by checking extract_trajectory.py.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'task_verification_rat… ✓ (91ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how task_verification_rate is used to generate graph pressure signals, particularly around lines 325-326 and the render functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:315..365 ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how `task_verification_rate` is used to generate graph pressure suggestions. Let me check the `render_graph_suggestions` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'task_verification_rat… ✓ (76ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what `int_metric` and `numeric_metric` do, and how the rate is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'def int_metric\|def n… ✓ (114ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at these functions and how task_success_rate / task_verification_rate are used in the graph pressure suggestions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:270..300 ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the graph suggestion code that generates the "Require strict verifier evidence for tasks" pressure signal. Let me search for where task_verification_rate triggers a pressure signal.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'verification_rate\|ve… ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the graph suggestion code around `task_pressure_suggestion` to see where task_verification_rate=0.0 generates a pressure signal.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'def task_pressure_sug… ✓ (106ms)
+
+
