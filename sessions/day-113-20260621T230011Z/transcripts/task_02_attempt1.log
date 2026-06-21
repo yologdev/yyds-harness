@@ -1,0 +1,391 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill to understand the implementation contract, then examine the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/tools.rs:630..710  ▶ read src/tool_wrappers.rs:940..1020 ✓ (477ms)
+ ✓ (459ms)
+ ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the state module to understand how `state::record` and `state::is_initialized` work.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record' in src (*.rs)  ▶ search 'fn is_initialized' in src (*.rs)  ▶ search 'FailureObserved' in src (*.rs) ✓ (159ms)
+ ✓ (167ms)
+ ✓ (314ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I have the picture. Let me read the state module to understand the `record` function and `is_initialized`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.1s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:120..150  ▶ read src/state.rs:425..465  ▶ read src/state.rs:20..70 ✓ (445ms)
+ ✓ (438ms)
+ ✓ (343ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the Actor enum to check if there's a Tool variant:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.7s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:146..171 ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`Actor::Tool` exists. Now let me understand the complete picture:
+
+1. `state::record(EventType::FailureObserved, Actor::Tool, payload)` is the call I need
+2. `state::is_initialized()` returns true if the global recorder is set up
+3. I need to record a FailureObserved event when a bash command exits with non-zero exit code
+
+The emission point should be in `StreamingBashTool`'s `invoke` method at around line 653 where `exit_code != 0` is checked.
+
+Let me now look at the StreamingBashTool struct definition and its invoke method to understand the full context, and also look at the existing tests for this tool.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct StreamingBashTool' in src (*.rs)  ▶ search 'StreamingBashTool' in src (*.rs) ✓ (109ms)
+ ✓ (125ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the full StreamingBashTool struct and its invoke method:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:47..167 ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the invoke method of StreamingBashTool from where it starts:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:399..499 ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the full invoke method to understand the exit path. I've already read lines 630-665 which contains the exit code handling. Now I need to understand the structure. Let me also read the tool_wrappers.rs more carefully around the RecoveryHintTool and ToolFailureTracker.
+
+The key change is:
+1. In `src/tools.rs` around line 653, after checking `exit_code != 0`, emit a state event
+2. But wait - I need to check if state is initialized first
+
+Let me look at the test infrastructure - are there tests for the state recording in the tools module? Let me also check how tests mock or use the state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:500..560  ▶ search 'stash_diagnostic_error' in src (*.rs) ✓ (120ms)
+ ✓ (150ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I understand the patterns:
+1. `state::stash_diagnostic_error` is used for errors that are reported in RunCompleted
+2. `state::record(EventType::FailureObserved, Actor::Tool, payload)` is what I need to call
+3. `state::is_initialized()` checks if the global recorder is set up
+
+Now let me look at the test setup for tools. The tests at `src/tools.rs:1661+` use `StreamingBashTool::default()`. I need to understand if state recording would cause issues in tests (since the global state might not be initialized in tests).
+
+Let me now check how tests typically initialize state:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'init_state' (*.rs) ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how tests interact with state. I see `state::record` handles the case where the recorder is `None` (it just returns). So even if state is not initialized, calling `record` is safe — it's a no-op. And there's `state::is_initialized()` to check.
+
+Now let me plan the implementation:
+
+1. In `src/tools.rs`, in the `StreamingBashTool::execute` method, after line 653 where `exit_code != 0` is checked, add state recording:
+```rust
+if exit_code != 0 {
+    // Record FailureObserved state event for tool failure tracking
+    if crate::state::is_initialized() {
+        let cmd_summary: String = command.chars().take(200).collect();
+        crate::state::record(
+            crate::state::EventType::FailureObserved,
+            crate::state::Actor::Tool,
+            serde_json::json!({
+                "tool": "bash",
+                "exit_code": exit_code,
+                "command_summary": cmd_summary,
+            }),
+        );
+    }
+    format!(...)
+}
+```
+
+2. Write a test that verifies this behavior. Since state may not be initialized in tests, the test should at least verify the code path doesn't panic.
+
+Let me now write the code. First, let me check the exact area again to make a surgical edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the change. The natural emission point is in `StreamingBashTool::execute` where `exit_code != 0` is already checked (line 653). I'll add a state recording call there, guarded by `is_initialized()`.
+
+Let me first write a test, then make the surgical edit.
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (55ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test section for StreamingBashTool to find where to add a test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1655..1735 ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the right test location. I'll look for the StreamingBashTool tests section specifically.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1880..1960 ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to find a test with non-zero exit code:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1960..2040 ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a solid understanding. Let me now:
+
+1. Make the surgical edit to `src/tools.rs` to add the state recording when exit_code != 0
+2. Write a test that verifies the behavior
+
+The key insight: since `state::is_initialized()` returns false in tests (no global recorder is set up), the state recording path will be a no-op in unit tests. That's fine — the test can verify the code doesn't panic and that the general execution works. For integration-level verification, the actual state event emission would be tested in a broader context.
+
+However, I should write a test that verifies:
+- The code doesn't panic when state is not initialized (which is already covered by existing tests)
+- When exit_code != 0, the command still returns properly formatted results
+
+Actually, let me think about this differently. I could write a test that:
+1. Sets up a mock state recorder
+2. Runs a bash command that fails
+3. Checks that the FailureObserved event was recorded
+
+But the global state system uses a `GLOBAL_RECORDER` static with `StateRecorder`. Let me check if there's a way to initialize it in tests...
+
+Looking at the state module, `GLOBAL_RECORDER` is a `Mutex<Option<StateRecorder>>`. The `record` function handles `None` gracefully (just returns). So testing without state is safe. The tests already run without state initialization and work fine.
+
+For the test, I can:
+1. Run a bash command that fails (like `exit 42`)
+2. Verify the tool still returns properly formatted results
+3. Verify no panic occurs
+
+But that's already tested by `test_streaming_bash_captures_exit_code`. The state recording path just needs to be a no-op when state isn't initialized.
+
+Let me think about what would be a useful test. Since state recording is a side effect on a global singleton, testing it properly would require initializing the global recorder. Let me check if there's a test helper for that.
+
+Actually, looking at the state module tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'with_test_recorder' in src (*.rs)  ▶ search 'set_global_recorder' in src (*.rs) ✓ (108ms)
+ ✓ (135ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `reset_global_recorder_for_test` to understand the test infrastructure:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3283..3323 ✓ (55ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see that the state module has tests that can reset the global recorder. But for the tools module tests, I think the simplest approach is to just test:
+1. That the code doesn't panic when state is not initialized (already covered)
+2. That when exit_code != 0, the state recording path is reached (we can verify this indirectly by checking that the details field still contains the exit code and the content is still properly formatted)
+
+Actually, since `state::is_initialized()` returns false in unit tests and `state::record()` is a no-op, there's no way to directly verify the state recording in a unit test without initializing the global recorder. But that's an integration concern.
+
+Let me think about what test would be most valuable here. I'll write a test that:
+1. Runs a failing bash command (exit 42)  
+2. Verifies it doesn't panic
+3. Verifies the result details still contain the exit code
+4. Verifies the content is properly formatted
+
+This is essentially a reinforcement of `test_streaming_bash_captures_exit_code` but explicitly tests the state-recording code path. However, this would be somewhat redundant with the existing test.
+
+A better approach: I should write a test that actually verifies the state event is recorded. To do this, I need to initialize a test state recorder. Let me check how to create one...
+
+Let me look at `init_session_state` or similar:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn init' in src (*.rs) ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:400..430 ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - `init_global` requires a `StateConfig` with an `events_path`. For tests, I'd need a temp directory. This is doable but complex for a tools-level unit test. 
+
+Given the pragmatic nature of this task, I think the right approach is:
+
+1. Make the surgical edit to add state recording in the `exit_code != 0` path
+2. Write a test that initializes state with a temp dir, runs a failing command, and verifies the event was recorded
+3. Verify `cargo test tools tool_wrappers` passes
+
+Let me look at how `StateConfig` is constructed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct StateConfig' in src (*.rs) ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the StateConfig:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:88..118 ✓ (56ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have enough context. Let me write the implementation. 
+
+The plan:
+1. In `src/tools.rs`, in the `execute` method after line 653 (where `exit_code != 0` is checked), add the state recording call
+2. Write a test that initializes state with a temp directory, runs a failing bash command, and checks that a FailureObserved event was recorded
+
+Let me now make the surgical edit to `src/tools.rs`. I need to add the recording after line 653 (the `if exit_code != 0` block). Let me look at the exact code:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll make the surgical edit. First, the state recording in `StreamingBashTool::execute`:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✗ (106ms)
+    │ Invalid arguments: Missing 'id' for done action
+  ▶ todo ✓ (94ms)
+  ▶ todo ✓ (141ms)
+  ▶ todo ✓ (112ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the surgical edit. I need to look at the exact code block around line 653. The current code is:
+
+```rust
+let formatted = if exit_code != 0 {
+    format!(
+        "Exit code: {exit_code}. Tip: use explicit paths (./script.sh, not script.sh) and -- to separate flags from positional args.\n{output}"
+    )
+} else {
+    output
+};
+```
+
+I need to add state recording between the `exit_code != 0` check and the `format!`. Let me make this a careful surgical edit:
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.0s (3 ✓, 1 ✗)
+
+
+            let formatted = if exit_code != 0 {
+  +             // Record FailureObserved state event so trajectory, log feedback,
+  +             // and state diagnostics agree on bash tool failure counts.
+  +             if crate::state::is_initialized() {
+  +                 let cmd_summary: String = command.chars().take(200).collect();
+  +                 crate::state::record(
+  +                     crate::state::EventType::FailureObserved,
+  +                     crate::state::Actor::Tool,
+  +                     serde_json::json!({
+  +                         "tool": "bash",
+  +                         "exit_code": exit_code,
+  +                         "command_summary": cmd_summary,
+  +                     }),
+  +                 );
+  +             }
+                format!(
+                    "Exit code: {exit_code}. Tip: use explicit paths (./script.sh, not script.sh) and -- to separate flags from positional args.\n{output}"
+                )
+  ✓ Auto-approved: edit: src/tools.rs (7 → 21 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (7 → 21 lines)
+            let formatted = if exit_code != 0 {
+  +             // Record FailureObserved state event so trajectory, log feedback,
+  +             // and state diagnostics agree on bash tool failure counts.
+  +             if crate::state::is_initialized() {
+  +                 let cmd_summary: String = command.chars().take(200).collect();
+  +                 crate::state::record(
+  +                     crate::state::EventType::FailureObserved,
+  +                     crate::state::Actor::Tool,
+  +                     serde_json::json!({
+  +                         "tool": "bash",
+  +                         "exit_code": exit_code,
+  +                         "command_summary": cmd_summary,
+  +                     }),
+  +                 );
+  +             }
+                format!(
+                    "Exit code: {exit_code}. Tip: use explicit paths (./script.sh, not script.sh) and -- to separate flags from positional args.\n{output}"
+                )
+ ✓ (55ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit is in place. Now let me write a test that verifies the state recording. I need to initialize the global state with a temp directory and check the events file after running a failing bash command.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check that `tempfile` is available in the dev-dependencies, and write a test:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'tempfile' in Cargo.toml ✓ (55ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`tempfile` is available in regular dependencies, not just dev-dependencies. Good. Now I also need to check if `serde_json` is available - it's already used in the tools module.
+
+Let me now write the test. I'll add it right after `test_streaming_bash_captures_exit_code` (which ends around line 2013). Let me read a bit after that to find the right insertion point:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:2013..2033 ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll add a test after the `test_streaming_bash_captures_exit_code` test. I need to:
+1. Initialize the global state with a temp directory
+2. Run a failing bash command
+3. Read the events JSONL file
+4. Verify a FailureObserved event was recorded with the correct payload
+
+Let me also check how `reset_global_recorder_for_test` works so I can clean up after the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3280..3300 ✓ (70ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `reset_global_recorder_for_test` function is private to the state module's tests (it's inside a `#[cfg(test)] mod tests` block). I can't use it from the tools module's tests. But I can directly reset the GLOBAL_RECORDER since I know how it works.
+
+Let me check if `GLOBAL_RECORDER` is accessible from other modules:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'static GLOBAL_RECORDER' in src (*.rs) ✓ (52ms)
+
+

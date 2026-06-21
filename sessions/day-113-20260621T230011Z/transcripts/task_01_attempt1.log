@@ -1,0 +1,373 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill to understand the implementation contract, then examine the relevant source code.
+
+The task is about tightening the messaging in `state why last-failure` so that when incomplete runs exist but no completed failures, the first line doesn't confusingly say "no state event found."
+
+Let me first read the evolve skill, then the source file at the key location.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs:1100..1220 ✓ (203ms)
+ ✓ (207ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the `build_why_report` function more carefully to understand the current behavior when `id == "last-failure"` and no FailureObserved event is found.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.5s (2 ✓)
+
+Let me read the `build_why_report` function to see the exact messaging:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs ✓ (54ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `build_why_report` function and the last-failure handling.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3082.. ✓ (75ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue clearly. In `build_why_report`:
+
+1. Line 3085: When `find_target_event` returns None for `id == "last-failure"`, the error message always starts with `"no state event found for 'last-failure'"`.
+2. This error is returned to the caller (in the `handle_state_why` function around line 1142-1200) which catches the error and shows the fallback incomplete runs scan.
+
+The task says: change the error message inside `build_why_report` so that when `id == "last-failure"`:
+- If there are ≥1 incomplete runs: first line says "No completed failure sessions found." 
+- If there are 0 incomplete runs: "No completed failure sessions found."
+
+But wait, `build_why_report` returns `Result<String, String>` — the Err variant is the error message. The caller (around line 1142-1200) catches this error, displays it, then does the fallback scan for incomplete runs.
+
+Looking at the evidence more carefully:
+- The "no state event found for 'last-failure'" is produced in line 3085 inside `build_why_report`
+- Then the caller catches the error and does the incomplete runs scan
+
+The key fix: inside `build_why_report`, when `id == "last-failure"` and no FailureObserved event is found, change the message. But we need to know about incomplete runs.
+
+Actually, looking at the structure more carefully:
+- `build_why_report` returns `Err(String)` when no FailureObserved is found
+- The caller catches this error and then does additional fallback scanning
+
+The simplest fix that's scoped to this task: In `build_why_report`, when `id == "last-failure"` and no target event is found, change the first line from "no state event found for 'last-failure'" to "No completed failure sessions found."
+
+Let me also check: when `id == "last-failure"`, is the fallback outside `build_why_report` (in `handle_state_why`) the place where incomplete runs are shown? Yes, lines 1156-1199 in `handle_state_why`. The `build_why_report` returns an error, and then the caller does the fallback.
+
+So the fix is in `build_why_report`: change the error message's first line when `id == "last-failure"`.
+
+But wait - there's also the case in lines 3131-3171 where `build_why_report` itself adds information about sessions in progress / incomplete runs. Let me check if those paths are reached for `last-failure`.
+
+Looking at the flow:
+1. `find_target_event(events, id)` is called — this searches for FailureObserved events (for "last-failure")
+2. If None, we enter the error path at line 3084
+3. Lines 3131-3171 add contextual information inside the error message
+
+So the fix should be straightforward: at line 3085, when `id == "last-failure"`, change the first line.
+
+Let me also check the existing tests for `build_why_report` to understand what assertions exist.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check the existing tests for `build_why_report`:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'why_report' in src/commands_state.rs ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the test for the last-failure case specifically and the error message handling.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'why_report_finds_last_failure' in src/commands_state.rs ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also search for tests that test the error case for last-failure in build_why_report.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'no state event found' in src/commands_state.rs ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test that checks the error message for last-failure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17730.. ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me read the full error-construction part of `build_why_report` more carefully to understand the complete flow:
+
+1. `find_target_event(events, "last-failure")` returns None → error path at line 3084
+2. Error starts with `"no state event found for 'last-failure'\n"` (line 3085)
+3. Then adds state summary (line 3087)
+4. Then adds context-dependent guidance (starting at line 3131)
+
+For the task:
+- When `id == "last-failure"`, change the first line from "no state event found for 'last-failure'" to "No completed failure sessions found."
+- The existing tests check for `"no state event found for 'last-failure'"` and need to be updated
+
+Let me also check: what does the code do after the state summary? Let me read the full path.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me read the full error construction path in `build_why_report`:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3082.. ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me continue reading to see the remaining parts of the error path in `build_why_report`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3180.. ✓ (71ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture of the code. Let me plan the changes:
+
+1. **In `build_why_report` (line 3085)**: Change the first line when `id == "last-failure"` from `"no state event found for 'last-failure'"` to `"No completed failure sessions found."`
+
+2. **Update the test at line 17749**: Change the assertion from checking `"no state event found for 'last-failure'"` to checking `"No completed failure sessions found"`
+
+3. **Check for other assertions**: Let me also check lines around 17789 for `err4.contains("no state event found")`
+
+Let me also look at the test `why_report_finds_last_failure` for completeness.
+
+Now let me also check if there are any other tests that reference the old message. I saw line 17749 and the search also found additional matches.
+
+Let me now make the change. The key edit is:
+
+Line 3085: `err.push_str(&format!("no state event found for '{id}'\n"));`
+
+Change to:
+```rust
+if id == "last-failure" {
+    err.push_str("No completed failure sessions found.\n");
+} else {
+    err.push_str(&format!("no state event found for '{id}'\n"));
+}
+```
+
+And update the test assertion.
+
+Let me also check the `handle_state_why` function to see the "No completed failed sessions exist" message at line 1119 — that's in a different code path (when `events.is_empty()` and no state events file path).
+
+Now let me also look for all the test assertions that check for the old message.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding. Let me also check all test assertions that reference the old message:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'no state event found' in src/commands_state.rs ✓ (70ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check the other matches (there are "4 more similar lines" and line 17749). The similar lines are likely in the code where `build_why_report` is called, or maybe in other error messages. Let me also check for the test that includes "no state event found for 'evt-nonexistent'":
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'no state event found for' in src/commands_state.rs ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — there's only one location in the source code (line 3085) and one test assertion (line 17749). Let me also check the other matches ("2 more similar lines") — probably just the search result count.
+
+Let me now make the change. I'll:
+
+1. Edit line 3085 to use conditional messaging for `last-failure`
+2. Update test assertion at line 17749
+
+Let me also look at lines 3189-3193 where there's already specific handling for `id == "last-failure"` — the guidance lines talk about "Try 'yoyo state crashes --limit 10' for crashed or incomplete sessions". This is consistent with the new messaging.
+
+Let me also look at lines 3206-3224 where diagnostic errors are surfaced for `last-failure` — that code already gets prepended to the error. This is after the first line is already set, so it should still work.
+
+OK, let me make the change now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. Let me make the surgical changes:
+
+1. **Line 3085**: Change the first line in the error message for `last-failure`
+2. **Line 17749**: Update the test assertion
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (53ms)
+  ▶ todo ✓ (62ms)
+  ▶ todo ✓ (94ms)
+  ▶ todo ✓ (93ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the edit to line 3085.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.4s (4 ✓)
+
+
+  -         err.push_str(&format!("no state event found for '{id}'\n"));
+  +         if id == "last-failure" {
+  +             err.push_str("No completed failure sessions found.\n");
+  +         } else {
+  +             err.push_str(&format!("no state event found for '{id}'\n"));
+  +         }
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 5 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (103ms)
+  ▶ edit src/commands_state.rs (1 → 5 lines)
+  -         err.push_str(&format!("no state event found for '{id}'\n"));
+  +         if id == "last-failure" {
+  +             err.push_str("No completed failure sessions found.\n");
+  +         } else {
+  +             err.push_str(&format!("no state event found for '{id}'\n"));
+  +         }
+ ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the test assertion at line 17749.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  -             err.contains("no state event found for 'last-failure'"),
+  +             err.contains("No completed failure sessions found."),
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 1 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (105ms)
+  ▶ todo ✓ (94ms)
+  ▶ edit src/commands_state.rs (1 → 1 lines)
+  -             err.contains("no state event found for 'last-failure'"),
+  +             err.contains("No completed failure sessions found."),
+ ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check the test assertion message at line 17750 which references the old message:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.7s (3 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17747.. ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — the test looks correct. The assertion at line 17752-17754 now checks for "No completed failure sessions found." and the assertion message at 17754 still says "should still report no event found" which was from the original. That's fine.
+
+Now let me also check the assertion message at 17754: it says "should still report no event found, got: {err}". I should update this to be more descriptive. Actually, let me just verify the two test assertions (for the `err` at line 17751 and the non-last-failure case at 17784) are consistent:
+
+1. `err` (last-failure, empty events): checks for "No completed failure sessions found." ✓
+2. `err3` (evt-nonexistent, empty events): checks for absence of "nearby diagnostic error" — it doesn't check for the first-line message because it's a non-last-failure id. That's fine.
+
+Let me also verify the `handle_state_why` function's fallback at line 1119 which also says "No completed failed sessions exist." — that's a different code path (when events file doesn't exist at all), so that's fine.
+
+Now let me run the verification: `cargo fmt -- --check` and then the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (54ms)
+  ▶ todo ✓ (69ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `cargo fmt -- --check` passes. Now run the focused test.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state stat… ✓ (108ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `cargo test` syntax didn't work because `commands_state` is the test module and `state` is likely being interpreted as an argument. Let me look at how to run specific tests. The test module in `commands_state.rs` is a `#[cfg(test)] mod tests`. Let me check the test name pattern.
+
+Actually, the issue is that `cargo test commands_state state` doesn't work because `state` is not a test name — it's trying to pass `state` as a positional argument. Let me search for how the tests are structured and run the right subset.
+
+The `Verifier` says: `cargo test commands_state state -- --test-threads=1`. But this doesn't seem to work as written. Let me try a different approach — search for tests related to `why_report` and `last-failure`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test why_report -- --tes… ✓ (32.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's another test that also checks for the old message! Let me fix it too.
+────────────────────────────────────────────────────────────────────────────────
+
+There's another test that checks the old message. Let me find and fix it:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17480.. ✓ (54ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Fix line 17486 too.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         assert!(err.contains("no state event found for 'last-failure'"));
+  +         assert!(err.contains("No completed failure sessions found."));
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 1 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (1 → 1 lines)
+  -         assert!(err.contains("no state event found for 'last-failure'"));
+  +         assert!(err.contains("No completed failure sessions found."));
+ ✓ (73ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check if there might be a non-last-failure ID case in that test that still checks for "no state event found for" — let me read the surrounding lines:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17570.. ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Line 17583 checks for "no state event found for 'evt-nonexistent'" — this is a non-last-failure ID, so it correctly still expects the old message format. That's correct behavior since our change only affects `id == "last-failure"`.
+
+Now let me also check the `why_report_cold_start_output` test (line 17586+) — those all use `build_why_report(&..., "last-failure").unwrap_err()` and check for specific content within the error. They don't assert on the first line, so they should continue to pass.
+
+Let me run the test again:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test why_report -- --tes… ✓ (32.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 32 `why_report` tests pass. Let me also run a broader check — `cargo build` and also let me run the full `cargo test commands_state` to make sure everything is OK:
+────────────────────────────────────────────────────────────────────────────────
+
+All 32 `why_report` tests pass. Let me also run `cargo build` and verify the diff:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (191ms)
+ ✓ (547ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Build passes and the only changed file is `src/commands_state.rs`, which is in the task's Edit Surface. Let me verify the diff shows the right changes:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 2>&1 ✓ (122ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks correct. Only `src/commands_state.rs` is changed — exactly in the task's Edit Surface.
+
+Changes:
+1. In `build_why_report` at line 3085: Now when `id == "last-failure"`, the first line says "No completed failure sessions found." instead of "no state event found for 'last-failure'". For all other IDs, the old message is preserved.
+2. Two test assertions updated to match the new message.
+
+Now let me commit. The harness says to run `cargo fmt` first and then `cargo build` or the smallest test. All passed. Let me commit now.
+────────────────────────────────────────────────────────────────────────────────
+
+The diff is clean — exactly one file changed, matching the task's Edit Surface. Let me commit:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (57ms)
+  ▶ todo ✓ (59ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed successfully. Let me mark the final todo as done and produce the terminal evidence.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.9s (3 ✓)
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (59ms)
+
+
